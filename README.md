@@ -85,6 +85,25 @@ The core reader has **no** dependency on FragPipe; the `msftbx` dependency is `o
 `org.mzpeak.fragpipe`. mzPeakJ stores intensities as `double[]`, so conversion into MSFTBX's
 `ISpectrum` is a zero-copy array passthrough.
 
+## Example tools
+
+Runnable end-to-end examples in [`org.mzpeak.examples`](src/main/java/org/mzpeak/examples) (each shares the
+`--ms-level`, `--rt-min`, `--rt-max` filter):
+
+```bash
+CP="target/classes:$(deps)"   # mvn dependency:build-classpath
+J="java --enable-native-access=ALL-UNNAMED -cp $CP"
+
+# Extract a filtered subset into a new mzPeak file (read + write)
+$J org.mzpeak.examples.ExtractSpectra in.mzpeak ms2.mzpeak --ms-level 2 --rt-min 5 --rt-max 30
+
+# Convert MSn spectra to Sequest .dta files
+$J org.mzpeak.examples.ConvertToDta in.mzpeak dta/ --ms-level 2 --default-charge 2
+
+# Extract an ion chromatogram (XIC) for a target m/z
+$J org.mzpeak.examples.ExtractXic in.mzpeak xic.csv --mz 810.79 --tol-ppm 20
+```
+
 ## Architecture
 
 For format internals and the decode rationale (the facet-join trap, chunk decoding, null-marking,
