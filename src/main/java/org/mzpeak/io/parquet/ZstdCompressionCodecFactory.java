@@ -33,7 +33,12 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
 
     @Override
     public BytesInputCompressor getCompressor(CompressionCodecName codecName) {
-        throw new UnsupportedOperationException("mzPeakJ is read-only; compression is not supported");
+        return switch (codecName) {
+            case UNCOMPRESSED -> PASSTHROUGH_COMPRESSOR;
+            case ZSTD -> ZSTD_COMPRESSOR;
+            default -> throw new UnsupportedOperationException(
+                    "mzPeakJ does not support writing Parquet codec " + codecName);
+        };
     }
 
     @Override
@@ -79,6 +84,41 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
             long n = Zstd.decompressByteArray(out, 0, decompressedSize, compressed, 0, compressed.length);
             checkSize(n, decompressedSize);
             output.put(out, 0, decompressedSize);
+        }
+
+        @Override
+        public void release() {
+        }
+    };
+
+    /** Parquet's default ZSTD level. */
+    private static final int ZSTD_LEVEL = 3;
+
+    private static final BytesInputCompressor PASSTHROUGH_COMPRESSOR = new BytesInputCompressor() {
+        @Override
+        public BytesInput compress(BytesInput bytes) {
+            return bytes;
+        }
+
+        @Override
+        public CompressionCodecName getCodecName() {
+            return CompressionCodecName.UNCOMPRESSED;
+        }
+
+        @Override
+        public void release() {
+        }
+    };
+
+    private static final BytesInputCompressor ZSTD_COMPRESSOR = new BytesInputCompressor() {
+        @Override
+        public BytesInput compress(BytesInput bytes) throws IOException {
+            return BytesInput.from(Zstd.compress(bytes.toByteArray(), ZSTD_LEVEL));
+        }
+
+        @Override
+        public CompressionCodecName getCodecName() {
+            return CompressionCodecName.ZSTD;
         }
 
         @Override
