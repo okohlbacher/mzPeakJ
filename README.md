@@ -6,7 +6,8 @@ format (Apache Parquet–based). Ported from the Rust reference implementation
 [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping)), with a converter into
 [FragPipe](https://github.com/Nesvilab/FragPipe)/MSFragger's I/O layer (MSFTBX).
 
-> Milestone 1 — reader-only, unpacked-directory, `point`-layout, spectra only. See **Scope & limitations**.
+> Reader-only. Reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` ZIP; `point` and
+> delta-`chunk` layouts; spectra **and** chromatograms. See **Scope & limitations** for what's deferred.
 
 ## Requirements
 
@@ -26,20 +27,33 @@ mvn verify
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Spectrum;
 
-try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.unpacked.mzpeak"))) {
+// Works for both an unpacked directory and a single-file .mzpeak ZIP:
+try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     System.out.println(reader.size() + " spectra");
 
-    // Random access by mzPeak spectrum index
+    // Random access by mzPeak spectrum index, native id, vendor scan number, or retention time
     Spectrum s = reader.getSpectrum(0).orElseThrow();
-    double[] mz = s.mz();          // m/z array
+    reader.getSpectrumByScanNumber(3);
+    reader.getSpectrumById("controllerType=0 controllerNumber=1 scan=3");
+    reader.getSpectrumByTime(12.5);
+
+    double[] mz = s.mz();          // m/z array (profile points or centroid m/z)
     double[] intensity = s.intensity();
+    s.peaks();                     // centroid peaks (for centroided spectra)
     System.out.println(s.description().msLevel() + " @ RT " + s.description().retentionTime());
 
-    // Iterate all spectra
-    for (Spectrum spec : reader) {
-        // ...
-    }
+    // Chromatograms (TIC, BPC, ...)
+    reader.getChromatogramById("TIC").ifPresent(tic -> System.out.println(tic.size() + " TIC points"));
+
+    for (Spectrum spec : reader) { /* iterate all spectra */ }
 }
+```
+
+### CLI
+
+```bash
+java --enable-native-access=ALL-UNNAMED -cp "target/classes:$(deps)" \
+     org.mzpeak.cli.MzPeakInfo path/to/run.mzpeak
 ```
 
 ### FragPipe / MSFragger conversion
@@ -81,24 +95,34 @@ compile-only dependency (parquet-java's API signatures reference `Configuration`
 - Tested against the vendored HUPO-PSI example `small.unpacked.mzpeak` (upstream commit pinned in
   `src/test/resources/mzpeak/.../UPSTREAM_COMMIT.txt`). The format is an unstable prototype.
 
-## Scope & limitations (milestone 1)
+## Scope & limitations
 
-Implemented: unpacked directory, `point` layout, spectra (MS1 + MSn), metadata + precursor facet joins,
-`double[]` m/z+intensity materialization, random access by index, iteration, MSFTBX adapter.
+**Implemented**
 
-**Deferred** (tracked in `.planning/REQUIREMENTS.md`):
+- Containers: unpacked `*.mzpeak/` directory **and** single-file (STORED) `.mzpeak` ZIP.
+- Layouts: `point` and delta-encoded `chunk`.
+- Spectra (MS1 + MSn) with metadata + precursor facet joins (by `source_index`), `double[]` m/z + intensity,
+  centroid peaks, and **profile reconstruction** of null-marked points (default on) so the materialized point
+  count matches the declared `number_of_data_points` (e.g. 13589 for spectrum 0 — matching the Rust reference).
+- Chromatograms (TIC, BPC, ...).
+- Random access by index, native id, vendor scan number, and nearest retention time; iteration.
+- MSFTBX/FragPipe adapter.
 
-- **Single-file `.mzpeak` ZIP** random access — only the unpacked directory form is read.
-- **`chunk` layout + MS-Numpress / delta** encodings — only `point` layout.
-- **Profile reconstruction.** Null-marked points (null m/z flanks) are **dropped**, so a profile spectrum's
-  materialized `pointCount()` may be less than its declared `numberOfDataPoints` (e.g. 11213 vs 13589 for
-  spectrum 0 of the fixture). Reconstruction via `mz_delta_model` is future work.
-- **Predicate/row-group pushdown.** Point files are read fully once and cached in memory (fine for the example
-  data; streaming/pushdown for large files is future work — `PEAK-03`).
-- **Chromatograms / wavelength spectra**, and **writing** mzPeak.
-- **Multi-precursor spectra**: the decoder keeps the first precursor per spectrum (the example format has one);
-  multi-precursor support is future work.
-- **Scan-number / RT lookup** maps beyond addressing by integer index.
+Cross-validated against the Rust `mzpeak_prototyping` reference test values across the unpacked / ZIP / chunked
+fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
+
+**Deferred / known limitations** (tracked in `.planning/REQUIREMENTS.md`):
+
+- **MS-Numpress chunks** (`mz_numpress_linear_bytes` / `intensity_numpress_slof_bytes`) are detected and
+  rejected with a clear error — full Numpress + delta-model reconstruction is future work.
+- **Profile/chunk reconstruction is approximate**: null-marked m/z are filled by linear interpolation between
+  real anchors (not the exact `mz_delta_model` polynomial), and chunk decode prepends the first chunk's
+  `chunk_start`. Point counts and anchor values match the reference; interpolated-point m/z are approximate.
+- **No predicate/row-group pushdown**: signal files are read fully once and cached (fine for example-scale
+  data; streaming for large files is future work — `PEAK-03`).
+- **Wavelength / UV spectra** (`wavelength_spectra_*`) are ignored; **writing** mzPeak is out of scope.
+- **Multi-precursor**: all precursor records are preserved, but selected ions are attached to the first
+  precursor (the example format has one precursor per MSn spectrum).
 
 ## Development
 

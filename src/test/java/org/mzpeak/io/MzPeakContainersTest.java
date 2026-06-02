@@ -54,6 +54,25 @@ class MzPeakContainersTest {
     }
 
     @Test
+    void chunkedArraysMatchPointLayout() {
+        // A centroid spectrum has no null-marking, so chunk decode must reproduce the point-layout arrays
+        // exactly (m/z and intensity) — guards against a chunk-only silent mismatch.
+        try (MzPeakReader point = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"));
+             MzPeakReader chunked = MzPeakReader.open(Path.of(BASE + "small.chunked.mzpeak"))) {
+            for (long idx : new long[] {5, 25}) {
+                Spectrum a = point.getSpectrum(idx).orElseThrow();
+                Spectrum b = chunked.getSpectrum(idx).orElseThrow();
+                assertThat(b.mz()).hasSize(a.mz().length);
+                assertThat(b.intensity()).hasSize(a.intensity().length);
+                for (int i = 0; i < a.mz().length; i++) {
+                    assertThat(b.mz()[i]).isCloseTo(a.mz()[i], within(1e-6));
+                    assertThat(b.intensity()[i]).isCloseTo(a.intensity()[i], within(1e-3));
+                }
+            }
+        }
+    }
+
+    @Test
     void readsTicChromatogram() {
         try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"))) {
             assertThat(reader.chromatograms()).hasSize(1);
