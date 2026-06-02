@@ -98,13 +98,13 @@ public final class FileSliceInputFile implements InputFile {
 
         @Override
         public int read(ByteBuffer dst) throws IOException {
+            if (!dst.hasRemaining()) {
+                return 0;
+            }
             if (pos >= length) {
                 return -1;
             }
             int want = (int) Math.min(dst.remaining(), length - pos);
-            if (want == 0) {
-                return 0;
-            }
             int savedLimit = dst.limit();
             dst.limit(dst.position() + want);
             int n = channel.read(dst, base + pos);

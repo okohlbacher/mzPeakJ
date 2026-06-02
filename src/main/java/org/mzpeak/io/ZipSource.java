@@ -32,11 +32,25 @@ final class ZipSource implements MzPeakSource {
 
     ZipSource(Path path) {
         this.path = path;
+        FileChannel ch = null;
         try {
-            this.channel = FileChannel.open(path, StandardOpenOption.READ);
-            this.index = ZipIndex.read(channel);
-        } catch (IOException e) {
-            throw new MzPeakException("Failed to open mzPeak archive " + path, e);
+            ch = FileChannel.open(path, StandardOpenOption.READ);
+            this.index = ZipIndex.read(ch);
+            this.channel = ch;
+        } catch (IOException | RuntimeException e) {
+            closeQuietly(ch);
+            throw (e instanceof MzPeakException me) ? me
+                    : new MzPeakException("Failed to open mzPeak archive " + path, e);
+        }
+    }
+
+    private static void closeQuietly(FileChannel ch) {
+        if (ch != null) {
+            try {
+                ch.close();
+            } catch (IOException ignored) {
+                // best effort on the failure path
+            }
         }
     }
 
@@ -71,17 +85,26 @@ final class ZipSource implements MzPeakSource {
         if (e.method() == ZipIndex.STORED) {
             return raw;
         }
+        if (e.method() != ZipIndex.DEFLATED) {
+            throw new MzPeakException("unsupported ZIP compression method " + e.method() + " for member " + name);
+        }
         byte[] out = new byte[(int) e.size()];
         Inflater inflater = new Inflater(true);
         try {
             inflater.setInput(raw);
             int total = 0;
-            while (total < out.length && !inflater.finished()) {
+            while (total < out.length) {
                 int n = inflater.inflate(out, total, out.length - total);
-                if (n == 0 && (inflater.finished() || inflater.needsInput())) {
-                    break;
+                if (n == 0) {
+                    if (inflater.finished() || inflater.needsInput() || inflater.needsDictionary()) {
+                        break; // no further progress possible
+                    }
                 }
                 total += n;
+            }
+            if (!inflater.finished() || total != out.length) {
+                throw new MzPeakException("truncated/corrupt DEFLATE member " + name + " in " + path
+                        + " (inflated " + total + " of " + out.length + " bytes)");
             }
             return out;
         } catch (DataFormatException ex) {

@@ -18,6 +18,7 @@ import java.util.Map;
 final class ZipIndex {
 
     static final int STORED = 0;
+    static final int DEFLATED = 8;
 
     /** One central-directory entry. */
     record Entry(String name, int method, long size, long compressedSize, long dataOffset) {
@@ -40,12 +41,16 @@ final class ZipIndex {
         if (totalEntries == 0xFFFF || cdOffset == U32_MAX || cdSize == U32_MAX) {
             throw new MzPeakException("zip64 archives are not supported");
         }
+        if (cdSize > Integer.MAX_VALUE || cdOffset > fileSize || cdSize > fileSize - cdOffset) {
+            throw new MzPeakException("corrupt zip: central directory out of bounds");
+        }
 
         ByteBuffer cd = readAt(channel, cdOffset, (int) cdSize);
         Map<String, Entry> entries = new LinkedHashMap<>();
         int p = 0;
+        int limit = cd.limit();
         for (int i = 0; i < totalEntries; i++) {
-            if (cd.getInt(p) != CDH_SIG) {
+            if (p < 0 || p > limit - 46 || cd.getInt(p) != CDH_SIG) {
                 throw new MzPeakException("corrupt zip central directory at offset " + p);
             }
             int method = cd.getShort(p + 10) & 0xFFFF;
@@ -55,6 +60,10 @@ final class ZipIndex {
             int extraLen = cd.getShort(p + 30) & 0xFFFF;
             int commentLen = cd.getShort(p + 32) & 0xFFFF;
             long localHeaderOffset = cd.getInt(p + 42) & U32_MAX;
+            long recordEnd = (long) p + 46 + nameLen + extraLen + commentLen;
+            if (recordEnd > limit) {
+                throw new MzPeakException("corrupt zip central directory: record overruns directory");
+            }
             byte[] nameBytes = new byte[nameLen];
             cd.position(p + 46);
             cd.get(nameBytes);
@@ -76,9 +85,20 @@ final class ZipIndex {
                 }
             }
 
+            if (size < 0 || compressedSize < 0 || localHeaderOffset < 0 || localHeaderOffset > fileSize) {
+                throw new MzPeakException("corrupt zip entry '" + name + "': size/offset out of range");
+            }
+            if (method == STORED && size != compressedSize) {
+                throw new MzPeakException("corrupt zip entry '" + name + "': STORED size mismatch");
+            }
             long dataOffset = dataOffset(channel, localHeaderOffset);
-            entries.put(name, new Entry(name, method, size, compressedSize, dataOffset));
-            p += 46 + nameLen + extraLen + commentLen;
+            if (dataOffset > fileSize || compressedSize > fileSize - dataOffset) {
+                throw new MzPeakException("corrupt zip entry '" + name + "': data range past end of archive");
+            }
+            if (entries.putIfAbsent(name, new Entry(name, method, size, compressedSize, dataOffset)) != null) {
+                throw new MzPeakException("duplicate member '" + name + "' in zip archive");
+            }
+            p = (int) recordEnd;
         }
         return entries;
     }
@@ -98,7 +118,14 @@ final class ZipIndex {
             int id = cd.getShort(q) & 0xFFFF;
             int dataSize = cd.getShort(q + 2) & 0xFFFF;
             int data = q + 4;
+            if (data + dataSize > end) {
+                throw new MzPeakException("corrupt zip extra field (overruns the record)");
+            }
             if (id == 0x0001) {
+                int needed = (needSize ? 8 : 0) + (needCompressed ? 8 : 0) + (needOffset ? 8 : 0);
+                if (dataSize < needed) {
+                    throw new MzPeakException("corrupt zip64 extra field (payload too short)");
+                }
                 long size = -1;
                 long compressed = -1;
                 long offset = -1;
@@ -137,7 +164,7 @@ final class ZipIndex {
         long start = fileSize - tailLen;
         ByteBuffer tail = readAt(channel, start, tailLen);
         for (int i = tailLen - 22; i >= 0; i--) {
-            if (tail.getInt(i) == EOCD_SIG) {
+            if (tail.getInt(i) == EOCD_SIG && (tail.getShort(i + 20) & 0xFFFF) == tailLen - i - 22) {
                 return tail.slice(i, tailLen - i).order(ByteOrder.LITTLE_ENDIAN);
             }
         }
