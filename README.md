@@ -106,6 +106,8 @@ intensity summary.
 
 ```bash
 ./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak -s
+# or the convenience wrapper:
+./mzpeak-fileinfo.sh src/test/resources/mzpeak/small.mzpeak -s
 ```
 
 #### `ExtractSpectra` — filter into a new mzPeak file (read **and** write)
