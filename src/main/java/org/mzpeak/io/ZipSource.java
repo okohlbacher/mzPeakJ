@@ -36,11 +36,6 @@ final class ZipSource implements MzPeakSource {
     }
 
     @Override
-    public boolean has(String name) {
-        return zip.getEntry(name) != null;
-    }
-
-    @Override
     public InputFile inputFile(String name) {
         return new ByteArrayInputFile(readEntry(name));
     }

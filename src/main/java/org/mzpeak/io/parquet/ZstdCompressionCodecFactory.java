@@ -13,11 +13,12 @@ import java.nio.ByteBuffer;
  *
  * <p>parquet-java's default codec factory ({@code org.apache.parquet.hadoop.CodecFactory}) builds a Hadoop
  * {@code Configuration} on every {@code getCodec} call, which pulls in the shaded Woodstox/Hadoop runtime.
- * mzPeak columns are ZSTD-compressed, so supplying this factory via
- * {@code ParquetReadOptions.builder().withCodecFactory(...)} lets us read without touching Hadoop at all.
+ * mzPeak columns are ZSTD-compressed, so supplying this factory (to both
+ * {@code ParquetReadOptions.builder().withCodecFactory(...)} and the writer's
+ * {@code ParquetWriter.Builder.withCodecFactory(...)}) lets us read and write without touching Hadoop at all.
  *
- * <p>Reader-only: handles {@code UNCOMPRESSED} and {@code ZSTD}. Other codecs throw — add them here if a
- * future mzPeak writer emits SNAPPY/GZIP/etc.
+ * <p>Handles {@code UNCOMPRESSED} and {@code ZSTD} for both decompression (read) and compression (write).
+ * Other codecs throw — add them here if a future mzPeak file uses SNAPPY/GZIP/etc.
  */
 public final class ZstdCompressionCodecFactory implements CompressionCodecFactory {
 
@@ -55,9 +56,12 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
         @Override
         public void decompress(ByteBuffer input, int compressedSize, ByteBuffer output, int decompressedSize) {
             int originalLimit = input.limit();
-            input.limit(input.position() + compressedSize);
-            output.put(input);
-            input.limit(originalLimit);
+            try {
+                input.limit(input.position() + compressedSize);
+                output.put(input);
+            } finally {
+                input.limit(originalLimit);
+            }
         }
 
         @Override

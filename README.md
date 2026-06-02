@@ -1,7 +1,10 @@
 # mzPeakJ
 
-A minimal **Java reader** for the [HUPO-PSI mzPeak](https://www.psidev.info/mzpeak) mass-spectrometry data
-format (Apache Parquet–based). Ported from the Rust reference implementation
+[![CI](https://github.com/okohlbacher/mzPeakJ/actions/workflows/ci.yml/badge.svg)](https://github.com/okohlbacher/mzPeakJ/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+A pure-JVM **Java reader and writer** for the [HUPO-PSI mzPeak](https://www.psidev.info/mzpeak)
+mass-spectrometry data format (Apache Parquet–based). Ported from the Rust reference implementation
 ([`mzpeaks`](https://github.com/mobiusklein/mzpeaks) / `mzdata` /
 [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping)), with a converter into
 [FragPipe](https://github.com/Nesvilab/FragPipe)/MSFragger's I/O layer (MSFTBX).
@@ -48,6 +51,19 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     for (Spectrum spec : reader) { /* iterate all spectra */ }
 }
 ```
+
+### Writing
+
+```java
+import org.mzpeak.io.MzPeakWriter;
+
+// ZSTD-compressed Parquet (point layout), to an unpacked directory or a single-file STORED ZIP:
+MzPeakWriter.writeDirectory(Path.of("out.mzpeak"), spectra, chromatograms);
+MzPeakWriter.writeArchive(Path.of("out.mzpeak"), spectra, chromatograms);
+```
+
+The writer is also fully Hadoop-free (writes via `LocalOutputFile` + the custom ZSTD codec). It round-trips
+through `MzPeakReader`. Writing of `chunk`/Numpress layouts and wavelength spectra is not supported.
 
 ### CLI
 
@@ -111,6 +127,7 @@ compile-only dependency (parquet-java's API signatures reference `Configuration`
 - Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type (`reader.wavelengthSpectra()`).
 - Random access by index, native id, vendor scan number, and nearest retention time; iteration.
 - MSFTBX/FragPipe adapter.
+- **Writing** mzPeak (ZSTD Parquet, point layout) to a directory or STORED ZIP — round-trips through the reader.
 
 Cross-validated against the Rust `mzpeak_prototyping` reference test values across the unpacked / ZIP / chunked
 fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
@@ -124,12 +141,19 @@ fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
   `chunk_start`. Point counts and anchor values match the reference; interpolated-point m/z are approximate.
 - **No predicate/row-group pushdown**: signal files are read fully once and cached (fine for example-scale
   data; streaming for large files is future work — `PEAK-03`).
-- **Writing** mzPeak is out of scope (reader only).
+- **Writing** is point-layout only (no `chunk`/Numpress encoding, no wavelength spectra).
 - **Multi-precursor**: all precursor records are preserved, but selected ions are attached to the first
   precursor (the example format has one precursor per MSn spectrum).
 
 ## Development
 
 This project is scaffolded with the GSD workflow harness (`.planning/`). Each phase boundary runs a `codex`
-CLI adversarial review; findings drove the hardening in `ZstdCompressionCodecFactory`, `PointArrayStore`, and
-`MsftbxAdapter`.
+CLI adversarial review; findings drove the hardening in `ZstdCompressionCodecFactory`, `SpectrumArrayStore`,
+the chunk-intensity alignment, and `MsftbxAdapter`. CI (`mvn verify` on JDK 17 + 21) runs via GitHub Actions.
+
+Project site: <https://okohlbacher.github.io/mzPeakJ/>
+
+## License
+
+[MIT](LICENSE) © 2026 Oliver Kohlbacher. Bundles HUPO-PSI mzPeak example fixtures (Apache-2.0) under
+`src/test/resources/`.

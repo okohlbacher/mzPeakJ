@@ -18,8 +18,6 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -64,13 +62,6 @@ public final class ParquetGroups {
         } catch (IOException e) {
             throw new UncheckedIOException("Failed reading Parquet input", e);
         }
-    }
-
-    /** Read all records into a list. Use only for small tables (e.g. metadata). */
-    public static List<Group> readAll(InputFile input) {
-        List<Group> out = new ArrayList<>();
-        forEach(input, out::add);
-        return out;
     }
 
     // ---- null / type-variance-aware leaf accessors -------------------------------------------------
@@ -123,46 +114,13 @@ public final class ParquetGroups {
         return v == null ? null : Math.toIntExact(v);
     }
 
-    /** Number of repeated elements for a list/repeated field (0 if absent). */
-    public static int repetitionCount(Group g, String field) {
-        return g.getType().containsField(field) ? g.getFieldRepetitionCount(field) : 0;
-    }
-
     private static final double[] EMPTY_DOUBLE = new double[0];
-    private static final byte[] EMPTY_BYTE = new byte[0];
 
     /**
-     * Read a (large_)list numeric column as {@code double[]}, widening FLOAT to double. Handles both the
-     * 3-level LIST encoding ({@code list -> element}) and a 2-level repeated primitive, navigating by field
+     * Read a (large_)list numeric column as {@code double[]}, widening FLOAT to double and preserving nulls as
+     * {@code NaN} (chunk {@code mz_chunk_values} use null markers for dropped flanking points). Handles both
+     * the 3-level LIST encoding ({@code list -> element}) and a 2-level repeated primitive, navigating by field
      * position so element names ({@code element}/{@code item}) don't matter.
-     */
-    public static double[] doubleList(Group g, String field) {
-        if (!has(g, field)) {
-            return EMPTY_DOUBLE;
-        }
-        Group wrapper = g.getGroup(field, 0);
-        if (wrapper.getType().getFieldCount() == 0) {
-            return EMPTY_DOUBLE;
-        }
-        String repName = wrapper.getType().getFields().get(0).getName();
-        boolean primitiveElements = wrapper.getType().getType(0).isPrimitive();
-        int n = wrapper.getFieldRepetitionCount(repName);
-        double[] out = new double[n];
-        for (int i = 0; i < n; i++) {
-            if (primitiveElements) {
-                out[i] = primitiveAsDouble(wrapper, repName, i);
-            } else {
-                Group element = wrapper.getGroup(repName, i);
-                String valName = element.getType().getFields().get(0).getName();
-                out[i] = primitiveAsDouble(element, valName, 0);
-            }
-        }
-        return out;
-    }
-
-    /**
-     * Like {@link #doubleList} but preserves nulls as {@code NaN} (chunk {@code mz_chunk_values} use null
-     * markers for dropped flanking points).
      */
     public static double[] doubleListNullable(Group g, String field) {
         if (!has(g, field)) {
@@ -184,31 +142,6 @@ public final class ParquetGroups {
                 String valName = element.getType().getFields().get(0).getName();
                 out[i] = element.getFieldRepetitionCount(valName) > 0
                         ? primitiveAsDouble(element, valName, 0) : Double.NaN;
-            }
-        }
-        return out;
-    }
-
-    /** Read a (large_)list of bytes (uint8) as {@code byte[]} (used for Numpress-encoded buffers). */
-    public static byte[] byteList(Group g, String field) {
-        if (!has(g, field)) {
-            return EMPTY_BYTE;
-        }
-        Group wrapper = g.getGroup(field, 0);
-        if (wrapper.getType().getFieldCount() == 0) {
-            return EMPTY_BYTE;
-        }
-        String repName = wrapper.getType().getFields().get(0).getName();
-        boolean primitiveElements = wrapper.getType().getType(0).isPrimitive();
-        int n = wrapper.getFieldRepetitionCount(repName);
-        byte[] out = new byte[n];
-        for (int i = 0; i < n; i++) {
-            if (primitiveElements) {
-                out[i] = (byte) wrapper.getInteger(repName, i);
-            } else {
-                Group element = wrapper.getGroup(repName, i);
-                String valName = element.getType().getFields().get(0).getName();
-                out[i] = (byte) element.getInteger(valName, 0);
             }
         }
         return out;

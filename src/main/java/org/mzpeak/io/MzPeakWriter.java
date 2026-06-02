@@ -16,6 +16,7 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SelectedIon;
@@ -24,9 +25,10 @@ import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
 import java.util.List;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -37,11 +39,13 @@ import java.util.zip.ZipOutputStream;
  * to an unpacked directory or a single-file (STORED) {@code .mzpeak} ZIP. Round-trips through {@link MzPeakReader}.
  *
  * <p>Scope (mirrors the reader's): spectra (MS1 + MSn, scalar metadata + precursor/selected-ion) and
- * chromatograms, point layout only. Profile spectra are written to {@code spectra_data.parquet}, centroided
- * spectra to {@code spectra_peaks.parquet}. Parameter/auxiliary-array lists, chunk/Numpress encoding, and
- * wavelength spectra are not written.
+ * chromatograms, point layout only. Profile spectra go to {@code spectra_data.parquet}, centroided spectra to
+ * {@code spectra_peaks.parquet}. Parameter/auxiliary-array lists, chunk/Numpress encoding, and wavelength
+ * spectra are not written.
  */
 public final class MzPeakWriter {
+
+    private static final String SCHEMA_PROPERTY = "parquet.example.schema";
 
     private MzPeakWriter() {
     }
@@ -52,48 +56,66 @@ public final class MzPeakWriter {
 
     /** Write an unpacked {@code *.mzpeak/} directory. */
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
+        validate(spectra, chromatograms);
+        boolean hasProfile = spectra.stream().anyMatch(s -> !isCentroid(s));
+        boolean hasPeaks = spectra.stream().anyMatch(MzPeakWriter::isCentroid);
+        boolean hasChromatograms = !chromatograms.isEmpty();
         try {
             Files.createDirectories(directory);
             writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra);
-            writePoints(directory.resolve("spectra_data.parquet"), spectra, false);
-            writePoints(directory.resolve("spectra_peaks.parquet"), spectra, true);
-            boolean hasChromatograms = !chromatograms.isEmpty();
+            if (hasProfile) {
+                writeSpectrumPoints(directory.resolve("spectra_data.parquet"), spectra, false);
+            }
+            if (hasPeaks) {
+                writeSpectrumPoints(directory.resolve("spectra_peaks.parquet"), spectra, true);
+            }
             if (hasChromatograms) {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
                 writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
             }
-            writeManifest(directory.resolve("mzpeak_index.json"), hasChromatograms);
+            writeManifest(directory.resolve("mzpeak_index.json"), hasProfile, hasPeaks, hasChromatograms);
         } catch (IOException e) {
             throw new MzPeakException("Failed to write mzPeak dataset to " + directory, e);
         }
     }
 
-    /** Write a single-file STORED {@code .mzpeak} ZIP by packing a freshly written directory. */
+    /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
-        Path tmp = archive.resolveSibling(archive.getFileName() + ".unpacked.tmp");
+        Path parent = archive.toAbsolutePath().getParent();
+        Path tmpDir = null;
+        Path tmpZip = null;
         try {
-            writeDirectory(tmp, spectra, chromatograms);
-            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
-                zip.setMethod(ZipOutputStream.STORED);
-                try (var members = Files.list(tmp)) {
-                    for (Path member : (Iterable<Path>) members.sorted()::iterator) {
-                        byte[] bytes = Files.readAllBytes(member);
-                        ZipEntry entry = new ZipEntry(member.getFileName().toString());
-                        entry.setSize(bytes.length);
-                        entry.setCompressedSize(bytes.length);
-                        CRC32 crc = new CRC32();
-                        crc.update(bytes);
-                        entry.setCrc(crc.getValue());
-                        zip.putNextEntry(entry);
-                        zip.write(bytes);
-                        zip.closeEntry();
-                    }
-                }
-            }
+            tmpDir = Files.createTempDirectory(parent, ".mzpeak-write-");
+            tmpZip = Files.createTempFile(parent, ".mzpeak-write-", ".zip");
+            writeDirectory(tmpDir, spectra, chromatograms);
+            packStored(tmpDir, tmpZip);
+            Files.move(tmpZip, archive, StandardCopyOption.REPLACE_EXISTING);
+            tmpZip = null;
         } catch (IOException e) {
             throw new MzPeakException("Failed to write mzPeak archive " + archive, e);
         } finally {
-            deleteRecursively(tmp);
+            deleteRecursively(tmpDir);
+            deleteRecursively(tmpZip);
+        }
+    }
+
+    private static void packStored(Path dir, Path zipFile) throws IOException {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(zipFile))) {
+            zip.setMethod(ZipOutputStream.STORED);
+            try (var members = Files.list(dir).sorted()) {
+                for (Path member : (Iterable<Path>) members::iterator) {
+                    byte[] bytes = Files.readAllBytes(member);
+                    CRC32 crc = new CRC32();
+                    crc.update(bytes);
+                    ZipEntry entry = new ZipEntry(member.getFileName().toString());
+                    entry.setSize(bytes.length);
+                    entry.setCompressedSize(bytes.length);
+                    entry.setCrc(crc.getValue());
+                    zip.putNextEntry(entry);
+                    zip.write(bytes);
+                    zip.closeEntry();
+                }
+            }
         }
     }
 
@@ -133,13 +155,18 @@ public final class MzPeakWriter {
                     .named("selected_ion"))
             .named("spectrum_metadata");
 
-    private static final MessageType POINT_SCHEMA = Types.buildMessage()
-            .addField(Types.requiredGroup()
-                    .required(PrimitiveTypeName.INT64).named("spectrum_index")
-                    .optional(PrimitiveTypeName.DOUBLE).named("mz")
-                    .optional(PrimitiveTypeName.DOUBLE).named("intensity")
-                    .named("point"))
-            .named("spectrum_data");
+    private static final MessageType SPECTRUM_DATA_SCHEMA = pointSchema("spectrum_index", "mz");
+    private static final MessageType CHROM_DATA_SCHEMA = pointSchema("chromatogram_index", "time");
+
+    private static MessageType pointSchema(String indexField, String xField) {
+        return Types.buildMessage()
+                .addField(Types.requiredGroup()
+                        .required(PrimitiveTypeName.INT64).named(indexField)
+                        .optional(PrimitiveTypeName.DOUBLE).named(xField)
+                        .optional(PrimitiveTypeName.DOUBLE).named("intensity")
+                        .named("point"))
+                .named("data");
+    }
 
     private static final MessageType CHROM_META_SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
@@ -151,14 +178,6 @@ public final class MzPeakWriter {
                     .named("chromatogram"))
             .named("chromatogram_metadata");
 
-    private static final MessageType CHROM_DATA_SCHEMA = Types.buildMessage()
-            .addField(Types.requiredGroup()
-                    .required(PrimitiveTypeName.INT64).named("chromatogram_index")
-                    .optional(PrimitiveTypeName.DOUBLE).named("time")
-                    .optional(PrimitiveTypeName.DOUBLE).named("intensity")
-                    .named("point"))
-            .named("chromatogram_data");
-
     // ---- writers ----------------------------------------------------------------------------------
 
     private static void writeSpectrumMetadata(Path file, List<Spectrum> spectra) throws IOException {
@@ -166,7 +185,6 @@ public final class MzPeakWriter {
         try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA)) {
             for (Spectrum s : spectra) {
                 SpectrumDescription d = s.description();
-                boolean centroid = d.signalContinuity() == SignalContinuity.CENTROID;
                 Group row = factory.newGroup();
 
                 Group spectrum = row.addGroup("spectrum");
@@ -183,8 +201,8 @@ public final class MzPeakWriter {
                     spectrum.add("MS_1000465_scan_polarity", polarity);
                 }
                 spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
-                spectrum.add(centroid ? "MS_1003059_number_of_peaks" : "MS_1003060_number_of_data_points",
-                        (long) s.mz().length);
+                spectrum.add(isCentroid(s) ? "MS_1003059_number_of_peaks" : "MS_1003060_number_of_data_points",
+                        (long) payloadSize(s));
 
                 Group scan = row.addGroup("scan");
                 scan.add("source_index", d.index());
@@ -192,58 +210,61 @@ public final class MzPeakWriter {
                     scan.add("MS_1000016_scan_start_time_unit_UO_0000031", d.retentionTime());
                 }
 
-                Precursor precursor = d.primaryPrecursor();
-                if (precursor != null) {
-                    Group p = row.addGroup("precursor");
-                    p.add("source_index", d.index());
-                    if (precursor.precursorIndex() != null) {
-                        p.add("precursor_index", precursor.precursorIndex());
-                    }
-                    if (precursor.precursorId() != null) {
-                        p.add("precursor_id", precursor.precursorId());
-                    }
-                    if (precursor.isolationWindow() != null) {
-                        Group iso = p.addGroup("isolation_window");
-                        addIfPresent(iso, "MS_1000827_isolation_window_target_mz",
-                                precursor.isolationWindow().targetMz());
-                        addIfPresent(iso, "MS_1000828_isolation_window_lower_offset",
-                                precursor.isolationWindow().lowerOffset());
-                        addIfPresent(iso, "MS_1000829_isolation_window_upper_offset",
-                                precursor.isolationWindow().upperOffset());
-                    }
-                    SelectedIon ion = precursor.primaryIon();
-                    if (ion != null) {
-                        Group si = row.addGroup("selected_ion");
-                        si.add("source_index", d.index());
-                        si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
-                        if (ion.charge() != null) {
-                            si.add("MS_1000041_charge_state", ion.charge());
-                        }
-                        addIfPresent(si, "MS_1000042_intensity_unit_MS_1000131", ion.intensity());
-                    }
-                }
+                writePrecursor(row, d);
                 writer.write(row);
             }
         }
     }
 
-    private static void writePoints(Path file, List<Spectrum> spectra, boolean centroidFile) throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(POINT_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, POINT_SCHEMA)) {
+    private static void writePrecursor(Group row, SpectrumDescription d) {
+        Precursor precursor = d.primaryPrecursor();
+        if (precursor == null) {
+            return;
+        }
+        Group p = row.addGroup("precursor");
+        p.add("source_index", d.index());
+        if (precursor.precursorIndex() != null) {
+            p.add("precursor_index", precursor.precursorIndex());
+        }
+        if (precursor.precursorId() != null) {
+            p.add("precursor_id", precursor.precursorId());
+        }
+        if (precursor.isolationWindow() != null && hasAnyWindowValue(precursor)) {
+            Group iso = p.addGroup("isolation_window");
+            addIfPresent(iso, "MS_1000827_isolation_window_target_mz", precursor.isolationWindow().targetMz());
+            addIfPresent(iso, "MS_1000828_isolation_window_lower_offset", precursor.isolationWindow().lowerOffset());
+            addIfPresent(iso, "MS_1000829_isolation_window_upper_offset", precursor.isolationWindow().upperOffset());
+        }
+        SelectedIon ion = precursor.primaryIon();
+        if (ion != null) {
+            Group si = row.addGroup("selected_ion");
+            si.add("source_index", d.index());
+            si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
+            if (ion.charge() != null) {
+                si.add("MS_1000041_charge_state", ion.charge());
+            }
+            addIfPresent(si, "MS_1000042_intensity_unit_MS_1000131", ion.intensity());
+        }
+    }
+
+    private static void writeSpectrumPoints(Path file, List<Spectrum> spectra, boolean centroidFile)
+            throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_DATA_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_DATA_SCHEMA)) {
             for (Spectrum s : spectra) {
-                boolean centroid = s.description().signalContinuity() == SignalContinuity.CENTROID;
-                if (centroid != centroidFile) {
+                if (isCentroid(s) != centroidFile) {
                     continue;
                 }
-                double[] mz = s.mz();
-                double[] intensity = s.intensity();
-                for (int i = 0; i < mz.length; i++) {
-                    Group row = factory.newGroup();
-                    Group point = row.addGroup("point");
-                    point.add("spectrum_index", s.index());
-                    point.add("mz", mz[i]);
-                    point.add("intensity", intensity[i]);
-                    writer.write(row);
+                if (centroidFile && !s.peaks().isEmpty()) {
+                    for (CentroidPeak peak : s.peaks()) {
+                        writePoint(writer, factory, "spectrum_index", s.index(), "mz", peak.mz(), peak.intensity());
+                    }
+                } else {
+                    double[] mz = s.mz();
+                    double[] intensity = s.intensity();
+                    for (int i = 0; i < mz.length; i++) {
+                        writePoint(writer, factory, "spectrum_index", s.index(), "mz", mz[i], intensity[i]);
+                    }
                 }
             }
         }
@@ -275,24 +296,35 @@ public final class MzPeakWriter {
                 double[] time = c.time();
                 double[] intensity = c.intensity();
                 for (int i = 0; i < time.length; i++) {
-                    Group row = factory.newGroup();
-                    Group point = row.addGroup("point");
-                    point.add("chromatogram_index", c.index());
-                    point.add("time", time[i]);
-                    point.add("intensity", intensity[i]);
-                    writer.write(row);
+                    writePoint(writer, factory, "chromatogram_index", c.index(), "time", time[i], intensity[i]);
                 }
             }
         }
     }
 
-    private static void writeManifest(Path file, boolean hasChromatograms) throws IOException {
+    private static void writePoint(ParquetWriter<Group> writer, SimpleGroupFactory factory,
+                                   String indexField, long index, String xField, double x, double intensity)
+            throws IOException {
+        Group row = factory.newGroup();
+        Group point = row.addGroup("point");
+        point.add(indexField, index);
+        point.add(xField, x);
+        point.add("intensity", intensity);
+        writer.write(row);
+    }
+
+    private static void writeManifest(Path file, boolean hasProfile, boolean hasPeaks, boolean hasChromatograms)
+            throws IOException {
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode root = mapper.createObjectNode();
         ArrayNode files = root.putArray("files");
-        addManifestEntry(files, "spectra_data.parquet", "spectrum", "data arrays");
-        addManifestEntry(files, "spectra_peaks.parquet", "spectrum", "peaks");
         addManifestEntry(files, "spectra_metadata.parquet", "spectrum", "metadata");
+        if (hasProfile) {
+            addManifestEntry(files, "spectra_data.parquet", "spectrum", "data arrays");
+        }
+        if (hasPeaks) {
+            addManifestEntry(files, "spectra_peaks.parquet", "spectrum", "peaks");
+        }
         if (hasChromatograms) {
             addManifestEntry(files, "chromatograms_metadata.parquet", "chromatogram", "metadata");
             addManifestEntry(files, "chromatograms_data.parquet", "chromatogram", "data arrays");
@@ -305,13 +337,47 @@ public final class MzPeakWriter {
 
     private static ParquetWriter<Group> openWriter(Path file, MessageType schema) throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
-        conf.set("parquet.example.schema", schema.toString());
+        conf.set(SCHEMA_PROPERTY, schema.toString());
         return ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(conf)
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build();
+    }
+
+    private static void validate(List<Spectrum> spectra, List<Chromatogram> chromatograms) {
+        for (Spectrum s : spectra) {
+            requireNonNegative(s.index(), "spectrum index");
+            Precursor p = s.description().primaryPrecursor();
+            if (p != null && p.precursorIndex() != null) {
+                requireNonNegative(p.precursorIndex(), "precursor_index");
+            }
+        }
+        for (Chromatogram c : chromatograms) {
+            requireNonNegative(c.index(), "chromatogram index");
+        }
+    }
+
+    private static void requireNonNegative(long value, String what) {
+        if (value < 0) {
+            throw new MzPeakException(what + " must be non-negative (mzPeak indices are uint64): " + value);
+        }
+    }
+
+    private static boolean isCentroid(Spectrum s) {
+        return s.description().signalContinuity() == SignalContinuity.CENTROID;
+    }
+
+    /** Number of points/peaks that will actually be written for this spectrum. */
+    private static int payloadSize(Spectrum s) {
+        return isCentroid(s) && !s.peaks().isEmpty() ? s.peaks().size() : s.mz().length;
+    }
+
+    private static boolean hasAnyWindowValue(Precursor p) {
+        return p.isolationWindow().targetMz() != null
+                || p.isolationWindow().lowerOffset() != null
+                || p.isolationWindow().upperOffset() != null;
     }
 
     private static void addIfPresent(Group group, String field, Double value) {
@@ -328,6 +394,9 @@ public final class MzPeakWriter {
     }
 
     private static Integer polarityCode(SpectrumDescription d) {
+        if (d.polarity() == null) {
+            return null;
+        }
         return switch (d.polarity()) {
             case POSITIVE -> 1;
             case NEGATIVE -> -1;
@@ -339,12 +408,12 @@ public final class MzPeakWriter {
         return d.signalContinuity() == SignalContinuity.CENTROID ? "MS:1000127" : "MS:1000128";
     }
 
-    private static void deleteRecursively(Path dir) {
-        if (!Files.exists(dir)) {
+    private static void deleteRecursively(Path path) {
+        if (path == null || !Files.exists(path)) {
             return;
         }
-        try (var paths = Files.walk(dir)) {
-            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+        try (var paths = Files.walk(path)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(p -> {
                 try {
                     Files.deleteIfExists(p);
                 } catch (IOException ignored) {

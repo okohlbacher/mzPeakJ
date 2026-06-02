@@ -50,8 +50,8 @@ final class SpectrumArrayStore {
         private final boolean reconstructProfile;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
-        private DoubleBuf mz = new DoubleBuf();
-        private DoubleBuf intensity = new DoubleBuf();
+        private DoubleArrayBuilder mz = new DoubleArrayBuilder();
+        private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
 
         Accumulator(Map<Long, Arrays> result, boolean reconstructProfile) {
             this.result = result;
@@ -168,8 +168,8 @@ final class SpectrumArrayStore {
                 throw new MzPeakException("signal file is not sorted by spectrum_index (index " + current
                         + " appears in multiple non-contiguous runs)");
             }
-            mz = new DoubleBuf();
-            intensity = new DoubleBuf();
+            mz = new DoubleArrayBuilder();
+            intensity = new DoubleArrayBuilder();
         }
 
         private static double orZero(Double d) {
@@ -249,27 +249,6 @@ final class SpectrumArrayStore {
                 m[k] = a + (b - a) * (k - left) / gap;
             }
             i = right + 1;
-        }
-    }
-
-    /** Minimal growable double array to avoid boxing. */
-    private static final class DoubleBuf {
-        private double[] a = new double[16];
-        private int n = 0;
-
-        void add(double v) {
-            if (n == a.length) {
-                a = java.util.Arrays.copyOf(a, a.length * 2);
-            }
-            a[n++] = v;
-        }
-
-        int size() {
-            return n;
-        }
-
-        double[] toArray() {
-            return java.util.Arrays.copyOf(a, n);
         }
     }
 }

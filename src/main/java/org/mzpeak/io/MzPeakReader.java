@@ -71,7 +71,11 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
                 idToIndex.put(d.id(), d.index());
                 Matcher m = SCAN_NUMBER.matcher(d.id());
                 if (m.find()) {
-                    scanNumberToIndex.putIfAbsent(Integer.parseInt(m.group(1)), d.index());
+                    try {
+                        scanNumberToIndex.putIfAbsent(Integer.parseInt(m.group(1)), d.index());
+                    } catch (NumberFormatException ignored) {
+                        // scan number does not fit in an int; not addressable by scan number
+                    }
                 }
             }
         }

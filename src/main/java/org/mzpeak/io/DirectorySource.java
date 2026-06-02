@@ -30,11 +30,6 @@ final class DirectorySource implements MzPeakSource {
     }
 
     @Override
-    public boolean has(String name) {
-        return Files.isRegularFile(resolveSafe(name));
-    }
-
-    @Override
     public InputFile inputFile(String name) {
         return new LocalInputFile(resolveSafe(name));
     }

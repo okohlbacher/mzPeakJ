@@ -14,9 +14,6 @@ public interface MzPeakSource extends AutoCloseable {
     /** Raw bytes of {@code mzpeak_index.json}. */
     byte[] readManifestBytes();
 
-    /** True if a member with this name exists. */
-    boolean has(String name);
-
     /** A parquet {@link InputFile} for a member. */
     InputFile inputFile(String name);
 

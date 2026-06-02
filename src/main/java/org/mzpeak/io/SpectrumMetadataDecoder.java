@@ -72,7 +72,9 @@ final class SpectrumMetadataDecoder {
                     if (idx < 0) {
                         throw new MzPeakException("spectrum.index exceeds supported range (uint64 high bit set): " + idx);
                     }
-                    builders.putIfAbsent(idx, Builder.from(spectrum, idx));
+                    if (builders.putIfAbsent(idx, Builder.from(spectrum, idx)) != null) {
+                        throw new MzPeakException("duplicate spectrum.index in metadata: " + idx);
+                    }
                 }
             }
             indexFacet(row, "scan", scansBySource);

@@ -23,7 +23,6 @@ final class WavelengthSpectrumStore {
     private static final String F_LAMBDA_MAX = "MS_1003812_lambda_max_unit_UO:0000018";
     private static final String F_WL_INDEX = "wavelength_spectrum_index";
     private static final String F_WAVELENGTH = "wavelength";
-    private static final String F_INTENSITY = "intensity";
 
     private final List<WavelengthSpectrum> all;
     private final Map<Long, WavelengthSpectrum> byIndex;
@@ -67,48 +66,16 @@ final class WavelengthSpectrumStore {
                     ParquetGroups.optDouble(s, F_LAMBDA_MAX)});
         });
 
-        // data: group points by wavelength_spectrum_index (sorted, contiguous)
-        Map<Long, DoubleBuf[]> data = new LinkedHashMap<>();
-        ParquetGroups.forEach(dataFile, row -> {
-            Group p = ParquetGroups.optGroup(row, "point");
-            if (p == null) {
-                return;
-            }
-            Long idx = ParquetGroups.optLong(p, F_WL_INDEX);
-            if (idx == null) {
-                return;
-            }
-            Double wl = ParquetGroups.optDouble(p, F_WAVELENGTH);
-            Double in = ParquetGroups.optDouble(p, F_INTENSITY);
-            DoubleBuf[] bufs = data.computeIfAbsent(idx, k -> new DoubleBuf[] {new DoubleBuf(), new DoubleBuf()});
-            bufs[0].add(wl == null ? Double.NaN : wl);
-            bufs[1].add(in == null ? 0.0 : in);
-        });
+        Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, F_WL_INDEX, F_WAVELENGTH);
 
         List<WavelengthSpectrum> all = new ArrayList<>(order.size());
         for (Long idx : order) {
             Object[] m = meta.get(idx);
-            DoubleBuf[] bufs = data.get(idx);
-            double[] wavelength = bufs == null ? new double[0] : bufs[0].toArray();
-            double[] intensity = bufs == null ? new double[0] : bufs[1].toArray();
+            PointArrays.XY xy = data.get(idx);
+            double[] wavelength = xy == null ? new double[0] : xy.x();
+            double[] intensity = xy == null ? new double[0] : xy.intensity();
             all.add(new WavelengthSpectrum(idx, (String) m[0], (Double) m[1], (Double) m[2], wavelength, intensity));
         }
         return new WavelengthSpectrumStore(all);
-    }
-
-    private static final class DoubleBuf {
-        private double[] a = new double[16];
-        private int n = 0;
-
-        void add(double v) {
-            if (n == a.length) {
-                a = java.util.Arrays.copyOf(a, a.length * 2);
-            }
-            a[n++] = v;
-        }
-
-        double[] toArray() {
-            return java.util.Arrays.copyOf(a, n);
-        }
     }
 }
