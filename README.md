@@ -104,7 +104,8 @@ compile-only dependency (parquet-java's API signatures reference `Configuration`
 - Spectra (MS1 + MSn) with metadata + precursor facet joins (by `source_index`), `double[]` m/z + intensity,
   centroid peaks, and **profile reconstruction** of null-marked points (default on) so the materialized point
   count matches the declared `number_of_data_points` (e.g. 13589 for spectrum 0 — matching the Rust reference).
-- Chromatograms (TIC, BPC, ...).
+- Chromatograms (TIC, DAD/absorption, ...).
+- Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type (`reader.wavelengthSpectra()`).
 - Random access by index, native id, vendor scan number, and nearest retention time; iteration.
 - MSFTBX/FragPipe adapter.
 
@@ -120,7 +121,7 @@ fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
   `chunk_start`. Point counts and anchor values match the reference; interpolated-point m/z are approximate.
 - **No predicate/row-group pushdown**: signal files are read fully once and cached (fine for example-scale
   data; streaming for large files is future work — `PEAK-03`).
-- **Wavelength / UV spectra** (`wavelength_spectra_*`) are ignored; **writing** mzPeak is out of scope.
+- **Writing** mzPeak is out of scope (reader only).
 - **Multi-precursor**: all precursor records are preserved, but selected ions are attached to the first
   precursor (the example format has one precursor per MSn spectrum).
 

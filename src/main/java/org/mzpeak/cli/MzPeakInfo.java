@@ -45,6 +45,11 @@ public final class MzPeakInfo {
                 System.out.printf("  - %s (%s) %d points%n", c.id(), c.typeCurie(), c.size());
             }
 
+            int wl = reader.wavelengthSpectra().size();
+            if (wl > 0) {
+                System.out.println("Wavelength (UV/DAD) spectra: " + wl);
+            }
+
             System.out.println("First " + Math.min(max, reader.size()) + " spectra:");
             for (int i = 0; i < Math.min(max, reader.size()); i++) {
                 var s = reader.getSpectrumAt(i);

@@ -49,6 +49,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private SpectrumArrayStore peakStore;
     private boolean chromatogramsLoaded;
     private ChromatogramStore chromatogramStore;
+    private boolean wavelengthLoaded;
+    private WavelengthSpectrumStore wavelengthStore;
 
     private MzPeakReader(MzPeakSource source, MzPeakManifest manifest, boolean reconstructProfile,
                          List<SpectrumDescription> descriptions, String dataFileName, String peaksFileName) {
@@ -220,6 +222,17 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return chromatograms0() == null ? Optional.empty() : chromatograms0().byId(id);
     }
 
+    // ---- wavelength (UV/DAD) spectra --------------------------------------------------------------
+
+    /** All wavelength (UV/DAD) spectra ordered by index; empty if the dataset has none. */
+    public List<org.mzpeak.model.WavelengthSpectrum> wavelengthSpectra() {
+        return wavelength0() == null ? List.of() : wavelength0().all();
+    }
+
+    public Optional<org.mzpeak.model.WavelengthSpectrum> getWavelengthSpectrum(long index) {
+        return wavelength0() == null ? Optional.empty() : wavelength0().byIndex(index);
+    }
+
     // ---- lazy stores ------------------------------------------------------------------------------
 
     private synchronized SpectrumArrayStore data() {
@@ -251,6 +264,19 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return chromatogramStore;
     }
 
+    private synchronized WavelengthSpectrumStore wavelength0() {
+        if (!wavelengthLoaded) {
+            String metaName = manifest.find("wavelength spectrum", "metadata")
+                    .map(MzPeakManifest.Entry::name).orElse(null);
+            String dataName = manifest.find("wavelength spectrum", "data arrays")
+                    .map(MzPeakManifest.Entry::name).orElse(null);
+            wavelengthStore = (metaName == null || dataName == null) ? null
+                    : WavelengthSpectrumStore.load(source.inputFile(metaName), source.inputFile(dataName));
+            wavelengthLoaded = true;
+        }
+        return wavelengthStore;
+    }
+
     @Override
     public Iterator<Spectrum> iterator() {
         return new Iterator<>() {
@@ -276,6 +302,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         dataStore = null;
         peakStore = null;
         chromatogramStore = null;
+        wavelengthStore = null;
         source.close();
     }
 }
