@@ -102,6 +102,9 @@ $J org.mzpeak.examples.ConvertToDta in.mzpeak dta/ --ms-level 2 --default-charge
 
 # Extract an ion chromatogram (XIC) for a target m/z
 $J org.mzpeak.examples.ExtractXic in.mzpeak xic.csv --mz 810.79 --tol-ppm 20
+
+# Summarize a file (an mzPeak-only port of the OpenMS FileInfo tool); -s adds intensity statistics
+$J org.mzpeak.examples.MzPeakFileInfo in.mzpeak -s
 ```
 
 ## Architecture

@@ -5,7 +5,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Spectrum;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -62,5 +65,20 @@ class ExamplesTest {
         var points = ExtractXic.compute(FIXTURE, targetMz, 0.01, filter("--ms-level", "1"));
         assertThat(points).hasSize(14); // 14 MS1 spectra
         assertThat(points.get(0).intensity()).isGreaterThan(0.0);
+    }
+
+    @Test
+    void fileInfoPrintsOpenMsStyleSummary() {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        MzPeakFileInfo.run(FIXTURE, true, new PrintStream(buffer, true, StandardCharsets.UTF_8));
+        String out = buffer.toString(StandardCharsets.UTF_8);
+        assertThat(out).contains("Number of spectra: 48");
+        assertThat(out).contains("MS levels: [1, 2]");
+        assertThat(out).contains("level 1: 14");
+        assertThat(out).contains("level 2: 34");
+        assertThat(out).contains("Number of chromatograms: 1");
+        assertThat(out).contains("total ion current");
+        assertThat(out).contains("Peak type per MS level");
+        assertThat(out).contains("median:"); // statistics (-s) mode
     }
 }
