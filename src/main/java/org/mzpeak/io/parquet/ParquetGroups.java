@@ -64,6 +64,15 @@ public final class ParquetGroups {
         }
     }
 
+    /** The Parquet footer key-value metadata map (file/run-level JSON documents live here). */
+    public static java.util.Map<String, String> footerKeyValue(InputFile input) {
+        try (ParquetFileReader reader = ParquetFileReader.open(input, readOptions())) {
+            return reader.getFooter().getFileMetaData().getKeyValueMetaData();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed reading Parquet footer", e);
+        }
+    }
+
     // ---- null / type-variance-aware leaf accessors -------------------------------------------------
 
     /** True if {@code field} exists in the group's schema and is present (non-null) in this record. */

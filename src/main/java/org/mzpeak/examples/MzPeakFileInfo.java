@@ -141,8 +141,9 @@ public final class MzPeakFileInfo {
                 out.println("Number of wavelength (UV/DAD) spectra: " + wavelength.size());
             }
 
+            // ---- file/run metadata (from the Parquet footer) ----
             out.println();
-            out.println("Instrument / activation metadata: not parsed by mzPeakJ (stored in the Parquet footer)");
+            printFileMetadata(out, reader.fileMetadata());
 
             // ---- statistics ----
             if (statistics) {
@@ -152,6 +153,66 @@ public final class MzPeakFileInfo {
                 printFiveNumberSummary(out, ms1Intensities);
             }
         }
+    }
+
+    private static final String MS_RESOLUTION = "MS:1000028";
+
+    private static void printFileMetadata(java.io.PrintStream out, org.mzpeak.model.meta.FileMetadata meta) {
+        org.mzpeak.model.meta.FileMetadata.MsRun run = meta.run();
+        if (run != null) {
+            out.println("Run: " + nz(run.id())
+                    + (run.startTime() != null ? "  (start " + run.startTime() + ")" : ""));
+        }
+        if (!meta.software().isEmpty()) {
+            out.println("Software:");
+            for (var s : meta.software()) {
+                out.println("  - " + s.displayName() + (s.version() != null ? " " + s.version() : ""));
+            }
+        }
+        if (meta.instrumentConfigurations().isEmpty()) {
+            out.println("Instrument configurations: (none in footer)");
+        } else {
+            out.println("Instrument configurations:");
+            for (var ic : meta.instrumentConfigurations()) {
+                out.println("  config " + ic.id() + ":");
+                for (var c : ic.components()) {
+                    StringBuilder line = new StringBuilder("    " + componentLabel(c.componentType()) + ": "
+                            + paramNames(c.parameters()));
+                    org.mzpeak.model.meta.FileMetadata.param(c.parameters(), MS_RESOLUTION)
+                            .ifPresent(p -> line.append("  (resolution ").append(p.value()).append(")"));
+                    out.println(line);
+                }
+            }
+        }
+        if (meta.fileDescription() != null && !meta.fileDescription().sourceFiles().isEmpty()) {
+            out.println("Source files:");
+            for (var sf : meta.fileDescription().sourceFiles()) {
+                out.println("  - " + nz(sf.name()));
+            }
+        }
+    }
+
+    private static String paramNames(java.util.List<org.mzpeak.model.meta.FileMetadata.Param> params) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (var p : params) {
+            if (p.name() != null && !p.name().isBlank()) {
+                names.add(p.name());
+            }
+        }
+        return names.isEmpty() ? "?" : String.join(", ", names);
+    }
+
+    private static String componentLabel(org.mzpeak.model.meta.FileMetadata.ComponentType t) {
+        return switch (t) {
+            case ION_SOURCE -> "ion source";
+            case ANALYZER -> "analyzer";
+            case DETECTOR -> "detector";
+            case UNKNOWN -> "component";
+        };
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
     }
 
     private static String peakType(SignalContinuity c) {

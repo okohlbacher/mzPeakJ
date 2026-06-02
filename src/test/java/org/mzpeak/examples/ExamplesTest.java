@@ -80,5 +80,9 @@ class ExamplesTest {
         assertThat(out).contains("total ion current");
         assertThat(out).contains("Peak type per MS level");
         assertThat(out).contains("median:"); // statistics (-s) mode
+        // footer metadata is now parsed (no longer "not parsed")
+        assertThat(out).contains("Software:");
+        assertThat(out).contains("analyzer:");
+        assertThat(out).doesNotContain("not parsed");
     }
 }

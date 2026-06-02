@@ -36,8 +36,11 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private final double[] sortedTimes;
     private final long[] timeIndexOrder;
 
+    private final String metadataFileName;
     private final String dataFileName;   // nullable
     private final String peaksFileName;  // nullable
+    private boolean fileMetadataLoaded;
+    private org.mzpeak.model.meta.FileMetadata fileMetadata;
 
     private boolean dataLoaded;
     private SpectrumArrayStore dataStore;
@@ -49,11 +52,13 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private WavelengthSpectrumStore wavelengthStore;
 
     private MzPeakReader(MzPeakSource source, MzPeakManifest manifest, boolean reconstructProfile,
-                         List<SpectrumDescription> descriptions, String dataFileName, String peaksFileName) {
+                         List<SpectrumDescription> descriptions, String metadataFileName,
+                         String dataFileName, String peaksFileName) {
         this.source = source;
         this.manifest = manifest;
         this.reconstructProfile = reconstructProfile;
         this.descriptions = descriptions;
+        this.metadataFileName = metadataFileName;
         this.dataFileName = dataFileName;
         this.peaksFileName = peaksFileName;
 
@@ -102,7 +107,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
                     SpectrumMetadataDecoder.decode(source.inputFile(metaEntry.name()));
             String dataFile = manifest.find("spectrum", "data arrays").map(MzPeakManifest.Entry::name).orElse(null);
             String peaksFile = manifest.find("spectrum", "peaks").map(MzPeakManifest.Entry::name).orElse(null);
-            return new MzPeakReader(source, manifest, reconstructProfile, descriptions, dataFile, peaksFile);
+            return new MzPeakReader(source, manifest, reconstructProfile, descriptions,
+                    metaEntry.name(), dataFile, peaksFile);
         } catch (RuntimeException e) {
             source.close();
             throw e;
@@ -225,6 +231,17 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     public Optional<org.mzpeak.model.WavelengthSpectrum> getWavelengthSpectrum(long index) {
         return wavelength0() == null ? Optional.empty() : wavelength0().byIndex(index);
+    }
+
+    // ---- file/run metadata ------------------------------------------------------------------------
+
+    /** File/run-level metadata (instrument, software, run, file description, ...) from the Parquet footer. */
+    public synchronized org.mzpeak.model.meta.FileMetadata fileMetadata() {
+        if (!fileMetadataLoaded) {
+            fileMetadata = FooterMetadataReader.read(source.inputFile(metadataFileName));
+            fileMetadataLoaded = true;
+        }
+        return fileMetadata;
     }
 
     // ---- lazy stores ------------------------------------------------------------------------------
