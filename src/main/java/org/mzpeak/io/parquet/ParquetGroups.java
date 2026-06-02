@@ -34,7 +34,8 @@ public final class ParquetGroups {
     private ParquetGroups() {
     }
 
-    private static ParquetReadOptions readOptions() {
+    /** Hadoop-free read options with the custom ZSTD codec factory (no Hadoop Configuration is built). */
+    public static ParquetReadOptions readOptions() {
         return ParquetReadOptions.builder(new PlainParquetConfiguration())
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .build();

@@ -338,12 +338,17 @@ public final class MzPeakWriter {
     private static ParquetWriter<Group> openWriter(Path file, MessageType schema) throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
         conf.set(SCHEMA_PROPERTY, schema.toString());
-        return ExampleParquetWriter.builder(new LocalOutputFile(file))
+        var builder = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(conf)
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
-                .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
-                .build();
+                .withWriteMode(ParquetFileWriter.Mode.OVERWRITE);
+        // Test hook: force a small row-group size to exercise the streaming reader's multi-row-group path.
+        String rowGroupSize = System.getProperty("mzpeak.writer.rowGroupSize");
+        if (rowGroupSize != null) {
+            builder = builder.withRowGroupSize(Long.parseLong(rowGroupSize));
+        }
+        return builder.build();
     }
 
     private static void validate(List<Spectrum> spectra, List<Chromatogram> chromatograms) {

@@ -310,8 +310,14 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     @Override
     public void close() {
-        dataStore = null;
-        peakStore = null;
+        if (dataStore != null) {
+            dataStore.close();
+            dataStore = null;
+        }
+        if (peakStore != null) {
+            peakStore.close();
+            peakStore = null;
+        }
         chromatogramStore = null;
         wavelengthStore = null;
         source.close();

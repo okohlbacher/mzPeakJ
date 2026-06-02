@@ -1,48 +1,159 @@
 package org.mzpeak.io;
 
 import ms.numpress.MSNumpress;
+import org.apache.parquet.column.page.PageReadStore;
+import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.hadoop.metadata.BlockMetaData;
+import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+import org.apache.parquet.io.ColumnIOFactory;
 import org.apache.parquet.io.InputFile;
+import org.apache.parquet.io.MessageColumnIO;
+import org.apache.parquet.io.RecordReader;
+import org.apache.parquet.schema.MessageType;
 import org.mzpeak.io.parquet.ParquetGroups;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
 /**
  * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) and groups its
- * rows by {@code spectrum_index} into parallel {@code double[]} m/z + intensity arrays. Supports both the
- * {@code point} layout (one row per point) and the {@code chunk} layout (one row per m/z chunk, with
- * delta-encoded {@code mz_chunk_values}). Numpress-encoded chunks are detected and rejected with a clear error.
+ * rows by {@code spectrum_index} into parallel {@code double[]} m/z + intensity arrays. Supports the
+ * {@code point} layout, the delta-encoded {@code chunk} layout, and MS-Numpress chunks.
  *
- * <p>Prototype strategy: the whole file is read once on construction and cached. Streaming / predicate
- * pushdown for large files is future work.
+ * <p><b>Streaming:</b> the file is <em>not</em> read whole. On open we read per-row-group min/max statistics
+ * for the {@code spectrum_index} column; {@link #get} decodes only the row group(s) covering the requested
+ * index, caching the last-decoded contiguous block run. For a single-row-group file this is equivalent to
+ * reading the file once; for a large multi-row-group file, memory is bounded to one block run rather than the
+ * whole file.
  */
-final class SpectrumArrayStore {
+final class SpectrumArrayStore implements AutoCloseable {
 
     record Arrays(double[] mz, double[] intensity) {
     }
 
-    private final Map<Long, Arrays> byIndex;
+    private final ParquetFileReader reader;
+    private final MessageType schema;
+    private final boolean reconstructProfile;
+    private final long[] rgMin;
+    private final long[] rgMax;
+    private final ColumnIOFactory columnIO = new ColumnIOFactory();
 
-    private SpectrumArrayStore(Map<Long, Arrays> byIndex) {
-        this.byIndex = byIndex;
-    }
+    // cache of the last-decoded contiguous block run [cachedFirst, cachedLast]
+    private int cachedFirst = -1;
+    private int cachedLast = -2;
+    private Map<Long, Arrays> cache = Map.of();
 
-    Arrays get(long spectrumIndex) {
-        return byIndex.get(spectrumIndex);
-    }
-
-    boolean contains(long spectrumIndex) {
-        return byIndex.containsKey(spectrumIndex);
+    private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, boolean reconstructProfile,
+                               long[] rgMin, long[] rgMax) {
+        this.reader = reader;
+        this.schema = schema;
+        this.reconstructProfile = reconstructProfile;
+        this.rgMin = rgMin;
+        this.rgMax = rgMax;
     }
 
     static SpectrumArrayStore load(InputFile file, boolean reconstructProfile) {
+        try {
+            ParquetFileReader reader = ParquetFileReader.open(file, ParquetGroups.readOptions());
+            MessageType schema = reader.getFooter().getFileMetaData().getSchema();
+            List<BlockMetaData> blocks = reader.getRowGroups();
+            long[] rgMin = new long[blocks.size()];
+            long[] rgMax = new long[blocks.size()];
+            for (int b = 0; b < blocks.size(); b++) {
+                long[] range = indexRange(blocks.get(b));
+                rgMin[b] = range[0];
+                rgMax[b] = range[1];
+            }
+            return new SpectrumArrayStore(reader, schema, reconstructProfile, rgMin, rgMax);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed opening spectrum signal file", e);
+        }
+    }
+
+    /** min/max of the {@code *.spectrum_index} column for a block; full range if stats are missing. */
+    private static long[] indexRange(BlockMetaData block) {
+        for (ColumnChunkMetaData col : block.getColumns()) {
+            if (col.getPath().toDotString().endsWith("spectrum_index")) {
+                Statistics<?> stats = col.getStatistics();
+                if (stats != null && stats.hasNonNullValue()
+                        && stats.genericGetMin() instanceof Long min && stats.genericGetMax() instanceof Long max) {
+                    return new long[] {min, max};
+                }
+            }
+        }
+        return new long[] {Long.MIN_VALUE, Long.MAX_VALUE}; // no usable stats -> always decode this block
+    }
+
+    synchronized Arrays get(long spectrumIndex) {
+        int first = firstBlock(spectrumIndex);
+        if (first < 0) {
+            return null;
+        }
+        int last = lastBlock(spectrumIndex, first);
+        if (first != cachedFirst || last != cachedLast) {
+            cache = decodeBlocks(first, last);
+            cachedFirst = first;
+            cachedLast = last;
+        }
+        return cache.get(spectrumIndex);
+    }
+
+    boolean contains(long spectrumIndex) {
+        return firstBlock(spectrumIndex) >= 0;
+    }
+
+    private int firstBlock(long index) {
+        for (int b = 0; b < rgMin.length; b++) {
+            if (index >= rgMin[b] && index <= rgMax[b]) {
+                return b;
+            }
+        }
+        return -1;
+    }
+
+    /** A spectrum may span consecutive blocks (its rows cross a row-group boundary); find the last such block. */
+    private int lastBlock(long index, int first) {
+        int last = first;
+        while (last + 1 < rgMin.length && index >= rgMin[last + 1] && index <= rgMax[last + 1]) {
+            last++;
+        }
+        return last;
+    }
+
+    private Map<Long, Arrays> decodeBlocks(int first, int last) {
         Map<Long, Arrays> result = new HashMap<>();
         Accumulator acc = new Accumulator(result, reconstructProfile);
-        ParquetGroups.forEach(file, acc);
-        acc.flush();
-        return new SpectrumArrayStore(result);
+        try {
+            for (int b = first; b <= last; b++) {
+                PageReadStore pages = reader.readRowGroup(b);
+                MessageColumnIO cio = columnIO.getColumnIO(schema);
+                RecordReader<Group> rr = cio.getRecordReader(pages, new GroupRecordConverter(schema));
+                long rows = pages.getRowCount();
+                for (long i = 0; i < rows; i++) {
+                    acc.accept(rr.read());
+                }
+            }
+            acc.flush();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed reading row groups " + first + ".." + last, e);
+        }
+        return result;
+    }
+
+    @Override
+    public void close() {
+        try {
+            reader.close();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed closing spectrum signal reader", e);
+        }
     }
 
     /** Buffers one spectrum's points/chunks and flushes when the sorted {@code spectrum_index} changes. */
