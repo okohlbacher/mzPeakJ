@@ -1,5 +1,7 @@
 package org.mzpeak.model.meta;
 
+import org.mzpeak.model.Param;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -22,12 +24,6 @@ public record FileMetadata(FileDescription fileDescription,
     public static final FileMetadata EMPTY =
             new FileMetadata(null, List.of(), List.of(), List.of(), List.of(), null);
 
-    /** A controlled-vocabulary or user parameter: {@code name}, optional {@code accession} CURIE + {@code unit}. */
-    public record Param(String name, String accession, Object value, String unit) {
-        public boolean hasAccession(String acc) {
-            return acc.equals(accession);
-        }
-    }
 
     public record SourceFile(String id, String name, String location, List<Param> parameters) {
     }

@@ -124,6 +124,80 @@ public final class ParquetGroups {
         return v == null ? null : Math.toIntExact(v);
     }
 
+    /**
+     * Read a (large_)list-of-structs column as a Java {@code List<Group>}. Handles both the standard
+     * 3-level Parquet LIST encoding ({@code list → element}) and a 2-level layout, navigating by field position
+     * so wrapper element names ({@code list}/{@code item}/{@code element}) are irrelevant.
+     */
+    public static java.util.List<Group> groupList(Group g, String field) {
+        if (!has(g, field)) {
+            return java.util.List.of();
+        }
+        Group wrapper = g.getGroup(field, 0);
+        if (wrapper.getType().getFieldCount() == 0) {
+            return java.util.List.of();
+        }
+        String repName = wrapper.getType().getFields().get(0).getName();
+        int n = wrapper.getFieldRepetitionCount(repName);
+        java.util.List<Group> out = new java.util.ArrayList<>(n);
+        boolean repIsPrimitive = wrapper.getType().getType(0).isPrimitive();
+        for (int i = 0; i < n; i++) {
+            if (repIsPrimitive) {
+                continue; // not a group — skip
+            }
+            Group slot = wrapper.getGroup(repName, i);
+            if (slot.getType().getFieldCount() == 1 && !slot.getType().getType(0).isPrimitive()) {
+                // 3-level list: slot wraps one element group
+                String elemName = slot.getType().getFields().get(0).getName();
+                if (slot.getFieldRepetitionCount(elemName) > 0) {
+                    out.add(slot.getGroup(elemName, 0));
+                }
+            } else {
+                out.add(slot); // 2-level list: slot is already the element
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Read a {@code parameters: large_list<struct{value{integer,float,string,boolean}, accession, name, unit}>}
+     * column into a list of {@link org.mzpeak.model.Param}. The value union has four optional slots; the first
+     * non-null wins.
+     */
+    public static java.util.List<org.mzpeak.model.Param> readParams(Group g, String field) {
+        java.util.List<Group> items = groupList(g, field);
+        java.util.List<org.mzpeak.model.Param> out = new java.util.ArrayList<>(items.size());
+        for (Group item : items) {
+            String name = optString(item, "name");
+            String accession = optString(item, "accession");
+            String unit = optString(item, "unit");
+            Object value = null;
+            Group valueGroup = optGroup(item, "value");
+            if (valueGroup != null) {
+                // The value union has four optional arms: integer, float, string, boolean.
+                // Collect all present arms; in valid data exactly one is non-null.
+                Long iVal = optLong(valueGroup, "integer");
+                Double fVal = optDouble(valueGroup, "float");
+                String sVal = optString(valueGroup, "string");
+                // boolean is stored as INT32 (0/1) in parquet Group; check field name "boolean"
+                Boolean bVal = null;
+                if (has(valueGroup, "boolean") && valueGroup.getType().getType("boolean").isPrimitive()) {
+                    bVal = valueGroup.getInteger("boolean", 0) != 0;
+                }
+                int count = (iVal != null ? 1 : 0) + (fVal != null ? 1 : 0)
+                        + (sVal != null ? 1 : 0) + (bVal != null ? 1 : 0);
+                if (count == 1) {
+                    value = iVal != null ? iVal : fVal != null ? fVal : sVal != null ? sVal : bVal;
+                } else if (count == 0) {
+                    value = null; // all-null union = no value
+                }
+                // count > 1: malformed union — leave value null rather than guess
+            }
+            out.add(new org.mzpeak.model.Param(name, accession, value, unit));
+        }
+        return out;
+    }
+
     private static final double[] EMPTY_DOUBLE = new double[0];
 
     /**

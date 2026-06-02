@@ -10,6 +10,15 @@ public record Tolerance(double value, Unit unit) {
 
     public enum Unit { PPM, DA }
 
+    public Tolerance {
+        if (unit == null) {
+            throw new IllegalArgumentException("Tolerance unit must not be null");
+        }
+        if (!Double.isFinite(value) || value < 0) {
+            throw new IllegalArgumentException("Tolerance value must be finite and non-negative: " + value);
+        }
+    }
+
     public static Tolerance ppm(double value) {
         return new Tolerance(value, Unit.PPM);
     }

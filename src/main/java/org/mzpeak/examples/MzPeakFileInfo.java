@@ -48,6 +48,7 @@ public final class MzPeakFileInfo {
             Map<Integer, Range[]> perLevelRanges = new TreeMap<>();          // [rt, mz, intensity]
             Map<Integer, SignalContinuity> perLevelContinuity = new TreeMap<>();
             Map<String, Long> chargeDist = new TreeMap<>();
+            Map<String, Long> activationMethodCounts = new TreeMap<>();
             List<Double> ms1Intensities = statistics ? new ArrayList<>() : null;
             long spectrumPeaks = 0;
 
@@ -83,6 +84,12 @@ public final class MzPeakFileInfo {
                     SelectedIon ion = p == null ? null : p.primaryIon();
                     String key = (ion != null && ion.charge() != null) ? ("charge " + ion.charge()) : "unknown";
                     chargeDist.merge(key, 1L, Long::sum);
+                    if (p != null && !p.activation().isEmpty()) {
+                        for (org.mzpeak.model.Param m : p.activation().methods()) {
+                            String mKey = m.name() != null ? m.name() : m.accession();
+                            activationMethodCounts.merge(mKey, 1L, Long::sum);
+                        }
+                    }
                 }
             }
 
@@ -118,6 +125,12 @@ public final class MzPeakFileInfo {
             if (!chargeDist.isEmpty()) {
                 out.println("Precursor charge distribution:");
                 chargeDist.forEach((k, v) -> out.println("  " + k + ": " + v));
+                out.println();
+            }
+
+            if (!activationMethodCounts.isEmpty()) {
+                out.println("Activation methods:");
+                activationMethodCounts.forEach((k, v) -> out.println("  " + k + ": " + v));
                 out.println();
             }
 
@@ -192,7 +205,7 @@ public final class MzPeakFileInfo {
         }
     }
 
-    private static String paramNames(java.util.List<org.mzpeak.model.meta.FileMetadata.Param> params) {
+    private static String paramNames(java.util.List<org.mzpeak.model.Param> params) {
         java.util.List<String> names = new java.util.ArrayList<>();
         for (var p : params) {
             if (p.name() != null && !p.name().isBlank()) {

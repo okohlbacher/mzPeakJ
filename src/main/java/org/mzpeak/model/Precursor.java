@@ -9,14 +9,23 @@ import java.util.List;
  * @param precursorId     native id of the precursor spectrum; may be {@code null}
  * @param isolationWindow isolation window; may be {@code null}
  * @param selectedIons    selected ions (usually one); never {@code null}, may be empty
+ * @param activation      activation description (dissociation method + energy); never {@code null}
  */
 public record Precursor(Long precursorIndex,
                         String precursorId,
                         IsolationWindow isolationWindow,
-                        List<SelectedIon> selectedIons) {
+                        List<SelectedIon> selectedIons,
+                        Activation activation) {
 
     public Precursor {
         selectedIons = selectedIons == null ? List.of() : List.copyOf(selectedIons);
+        activation = activation == null ? Activation.EMPTY : activation;
+    }
+
+    /** Backwards-compatible constructor without activation (defaults to empty). */
+    public Precursor(Long precursorIndex, String precursorId, IsolationWindow isolationWindow,
+                     List<SelectedIon> selectedIons) {
+        this(precursorIndex, precursorId, isolationWindow, selectedIons, Activation.EMPTY);
     }
 
     /** The first selected ion, or {@code null} if none. */

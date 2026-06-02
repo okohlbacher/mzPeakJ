@@ -7,7 +7,7 @@ import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.DataProcessing;
 import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
-import org.mzpeak.model.meta.FileMetadata.Param;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.meta.FileMetadata.ProcessingMethod;
 import org.mzpeak.model.meta.FileMetadata.Sample;
 import org.mzpeak.model.meta.FileMetadata.Software;

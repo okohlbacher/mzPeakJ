@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.Activation;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
@@ -47,6 +48,7 @@ final class SpectrumMetadataDecoder {
     // precursor facet
     private static final String F_PRECURSOR_INDEX = "precursor_index";
     private static final String F_PRECURSOR_ID = "precursor_id";
+    private static final String F_ACTIVATION = "activation";
     private static final String F_ISOLATION = "isolation_window";
     private static final String F_ISO_TARGET = "MS_1000827_isolation_window_target_mz";
     private static final String F_ISO_LOWER = "MS_1000828_isolation_window_lower_offset";
@@ -161,11 +163,16 @@ final class SpectrumMetadataDecoder {
                     ParquetGroups.optDouble(iso, F_ISO_TARGET),
                     ParquetGroups.optDouble(iso, F_ISO_LOWER),
                     ParquetGroups.optDouble(iso, F_ISO_UPPER));
+            Group activationGroup = ParquetGroups.optGroup(precursor, F_ACTIVATION);
+            Activation activation = activationGroup == null
+                    ? Activation.EMPTY
+                    : new Activation(ParquetGroups.readParams(activationGroup, "parameters"));
             out.add(new Precursor(
                     ParquetGroups.optLong(precursor, F_PRECURSOR_INDEX),
                     ParquetGroups.optString(precursor, F_PRECURSOR_ID),
                     window,
-                    i == 0 ? ions : List.of()));
+                    i == 0 ? ions : List.of(),
+                    activation));
         }
         return out;
     }
