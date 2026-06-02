@@ -10,7 +10,16 @@
   <packaging>jar</packaging>
 
   <name>mzPeakJ</name>
-  <description>Java reader for the HUPO-PSI mzPeak mass-spectrometry format (Parquet-based), with a FragPipe/MSFTBX adapter.</description>
+  <description>Java reader and writer for the HUPO-PSI mzPeak mass-spectrometry format (Parquet-based), with a FragPipe/MSFTBX adapter.</description>
+  <url>https://github.com/okohlbacher/mzPeakJ</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
