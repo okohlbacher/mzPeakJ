@@ -13,13 +13,29 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Locate a JDK: prefer $JAVA_HOME, else `java` on PATH.
-if [[ -n "${JAVA_HOME:-}" ]]; then
-  JAVA="$JAVA_HOME/bin/java"
-elif command -v java >/dev/null 2>&1; then
-  JAVA="java"
-else
-  echo "error: no JDK found. Set JAVA_HOME (JDK 17+) or put 'java' on your PATH." >&2
+# Locate a *working* JDK 17+. On macOS, /usr/bin/java is a stub that exists even with no JDK installed, so we
+# verify each candidate actually runs `java -version` before accepting it.
+works() { [[ -x "$1" ]] && "$1" -version >/dev/null 2>&1; }
+
+JAVA=""
+candidates=()
+[[ -n "${JAVA_HOME:-}" ]] && candidates+=("$JAVA_HOME/bin/java")
+if [[ -x /usr/libexec/java_home ]]; then
+  jh="$(/usr/libexec/java_home 2>/dev/null || true)"
+  [[ -n "$jh" ]] && candidates+=("$jh/bin/java")
+fi
+candidates+=(
+  /opt/homebrew/opt/openjdk@25/bin/java
+  /opt/homebrew/opt/openjdk/bin/java
+  /usr/local/opt/openjdk/bin/java
+  "$(command -v java 2>/dev/null || true)"
+)
+for c in "${candidates[@]}"; do
+  if [[ -n "$c" ]] && works "$c"; then JAVA="$c"; break; fi
+done
+if [[ -z "$JAVA" ]]; then
+  echo "error: no working JDK 17+ found. Set JAVA_HOME, e.g.:" >&2
+  echo "  export JAVA_HOME=/opt/homebrew/opt/openjdk@25" >&2
   exit 1
 fi
 
