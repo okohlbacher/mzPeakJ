@@ -14,8 +14,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Example: convert MSn spectra to classic Sequest {@code .dta} files (one per spectrum) — demonstrates reading.
@@ -31,7 +29,6 @@ import java.util.regex.Pattern;
 public final class ConvertToDta {
 
     private static final double PROTON = 1.007276466812;
-    private static final Pattern SCAN = Pattern.compile("scan=(\\d+)");
 
     private ConvertToDta() {
     }
@@ -85,17 +82,7 @@ public final class ConvertToDta {
     }
 
     private static int scanNumber(SpectrumDescription d) {
-        if (d.id() != null) {
-            Matcher m = SCAN.matcher(d.id());
-            if (m.find()) {
-                try {
-                    return Integer.parseInt(m.group(1));
-                } catch (NumberFormatException ignored) {
-                    // fall through to index
-                }
-            }
-        }
-        return (int) d.index();
+        return org.mzpeak.model.NativeId.scanNumber(d.id()).orElse((int) d.index());
     }
 
     private static String stripExtension(String name) {

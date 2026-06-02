@@ -14,8 +14,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Reads an mzPeak dataset — either an unpacked {@code *.mzpeak/} directory or a single-file (STORED)
@@ -27,8 +25,6 @@ import java.util.regex.Pattern;
  * {@code reconstructProfile=false} to get only the stored non-null points. Not thread-safe.
  */
 public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
-
-    private static final Pattern SCAN_NUMBER = Pattern.compile("scan=(\\d+)");
 
     private final MzPeakSource source;
     private final MzPeakManifest manifest;
@@ -69,14 +65,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             indexToOrdinal.put(d.index(), i);
             if (d.id() != null) {
                 idToIndex.put(d.id(), d.index());
-                Matcher m = SCAN_NUMBER.matcher(d.id());
-                if (m.find()) {
-                    try {
-                        scanNumberToIndex.putIfAbsent(Integer.parseInt(m.group(1)), d.index());
-                    } catch (NumberFormatException ignored) {
-                        // scan number does not fit in an int; not addressable by scan number
-                    }
-                }
+                org.mzpeak.model.NativeId.scanNumber(d.id())
+                        .ifPresent(scan -> scanNumberToIndex.putIfAbsent(scan, d.index()));
             }
         }
         // RT lookup: (time, index) sorted by time, excluding spectra with non-finite retention times.

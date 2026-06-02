@@ -45,15 +45,16 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 
-# Compile classes if needed, and cache the dependency classpath.
-if [[ ! -e "$DIR/target/classes/org/mzpeak/io/MzPeakReader.class" ]]; then
-  echo "Building mzPeakJ..." >&2
+# Build the self-contained shaded jar if it's missing, then run from it.
+SHADED="$(ls "$DIR"/target/mzpeakj-*-all.jar 2>/dev/null | head -1 || true)"
+if [[ -z "$SHADED" ]]; then
+  echo "Building mzPeakJ (one-time)..." >&2
   mvn -q -f "$DIR/pom.xml" -DskipTests package
+  SHADED="$(ls "$DIR"/target/mzpeakj-*-all.jar 2>/dev/null | head -1 || true)"
 fi
-CP_FILE="$DIR/target/classpath.txt"
-if [[ ! -s "$CP_FILE" ]]; then
-  mvn -q -f "$DIR/pom.xml" dependency:build-classpath -Dmdep.outputFile="$CP_FILE" >/dev/null
+if [[ -z "$SHADED" ]]; then
+  echo "error: shaded jar not found after build (expected target/mzpeakj-*-all.jar)." >&2
+  exit 1
 fi
 
-exec "$JAVA" --enable-native-access=ALL-UNNAMED \
-  -cp "$DIR/target/classes:$(cat "$CP_FILE")" "$@"
+exec "$JAVA" --enable-native-access=ALL-UNNAMED -cp "$SHADED" "$@"
