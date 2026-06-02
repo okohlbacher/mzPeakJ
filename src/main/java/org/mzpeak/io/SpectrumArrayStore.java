@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import ms.numpress.MSNumpress;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.parquet.ParquetGroups;
@@ -89,8 +90,8 @@ final class SpectrumArrayStore {
             if (ParquetGroups.has(chunk, "mz_numpress_linear_bytes")
                     || ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")
                     || ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
-                throw new MzPeakException("Numpress-encoded chunk layout is not yet supported "
-                        + "(spectrum_index " + si + "); use a delta-encoded or point-layout mzPeak file");
+                acceptNumpressChunk(chunk, si);
+                return;
             }
             double start = orZero(ParquetGroups.optDouble(chunk, "mz_chunk_start"));
             String encoding = ParquetGroups.optString(chunk, "chunk_encoding");
@@ -116,6 +117,49 @@ final class SpectrumArrayStore {
             } else {
                 throw new MzPeakException("chunk intensity length (" + chunkIntensity.length
                         + ") must equal m/z values (" + chunkMz.length + ") or values+1, for spectrum_index " + si);
+            }
+        }
+
+        /**
+         * Numpress chunk: m/z is MS-Numpress linear, intensity is MS-Numpress SLOF (or PIC). These encode the
+         * full absolute arrays directly — no chunk_start, no delta, no null-marking — so we decode and append 1:1.
+         */
+        private void acceptNumpressChunk(Group chunk, long si) {
+            if (!ParquetGroups.has(chunk, "mz_numpress_linear_bytes")) {
+                throw new MzPeakException("Numpress chunk without mz_numpress_linear_bytes is not supported "
+                        + "(spectrum_index " + si + ")");
+            }
+            double[] chunkMz = decodeNumpress(chunk, "mz_numpress_linear_bytes",
+                    MSNumpress.ACC_NUMPRESS_LINEAR, si, "m/z");
+            double[] chunkIntensity;
+            if (ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")) {
+                chunkIntensity = decodeNumpress(chunk, "intensity_numpress_slof_bytes",
+                        MSNumpress.ACC_NUMPRESS_SLOF, si, "intensity");
+            } else if (ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
+                chunkIntensity = decodeNumpress(chunk, "intensity_numpress_pic_bytes",
+                        MSNumpress.ACC_NUMPRESS_PIC, si, "intensity");
+            } else {
+                throw new MzPeakException("Numpress chunk missing an intensity buffer for spectrum_index " + si);
+            }
+            if (chunkMz.length != chunkIntensity.length) {
+                throw new MzPeakException("Numpress chunk m/z (" + chunkMz.length + ") and intensity ("
+                        + chunkIntensity.length + ") lengths differ for spectrum_index " + si);
+            }
+            for (int i = 0; i < chunkMz.length; i++) {
+                mz.add(chunkMz[i]);
+                intensity.add(chunkIntensity[i]);
+            }
+        }
+
+        private static double[] decodeNumpress(Group chunk, String field, String cvAccession, long si, String what) {
+            byte[] bytes = ParquetGroups.byteList(chunk, field);
+            if (bytes.length == 0) {
+                return new double[0];
+            }
+            try {
+                return MSNumpress.decode(cvAccession, bytes, bytes.length);
+            } catch (RuntimeException e) {
+                throw new MzPeakException("Failed to Numpress-decode " + what + " for spectrum_index " + si, e);
             }
         }
 

@@ -1,0 +1,21 @@
+mzPeakJ
+Copyright (c) 2026 Oliver Kohlbacher
+Licensed under the MIT License (see LICENSE).
+
+------------------------------------------------------------------------
+This product bundles the following third-party software:
+
+MS-Numpress (ms-numpress)
+  Files: src/main/java/ms/numpress/MSNumpress.java
+         src/main/java/ms/numpress/IntDecoder.java
+  Source: https://github.com/ms-numpress/ms-numpress
+  Copyright 2013 Johan Teleman
+  Licensed under the Apache License, Version 2.0
+  (http://www.apache.org/licenses/LICENSE-2.0).
+  The original Apache-2.0 license headers are retained in those files.
+
+HUPO-PSI mzPeak example data
+  Files: src/test/resources/mzpeak/**
+  Source: https://github.com/HUPO-PSI/mzPeak (pinned commit 03ccdb7)
+  Licensed under Apache License, Version 2.0.
+------------------------------------------------------------------------

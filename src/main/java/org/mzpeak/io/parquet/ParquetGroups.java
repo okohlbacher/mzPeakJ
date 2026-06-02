@@ -147,6 +147,33 @@ public final class ParquetGroups {
         return out;
     }
 
+    private static final byte[] EMPTY_BYTE = new byte[0];
+
+    /** Read a (large_)list of bytes (uint8, stored as INT32) as {@code byte[]} — used for Numpress buffers. */
+    public static byte[] byteList(Group g, String field) {
+        if (!has(g, field)) {
+            return EMPTY_BYTE;
+        }
+        Group wrapper = g.getGroup(field, 0);
+        if (wrapper.getType().getFieldCount() == 0) {
+            return EMPTY_BYTE;
+        }
+        String repName = wrapper.getType().getFields().get(0).getName();
+        boolean primitiveElements = wrapper.getType().getType(0).isPrimitive();
+        int n = wrapper.getFieldRepetitionCount(repName);
+        byte[] out = new byte[n];
+        for (int i = 0; i < n; i++) {
+            if (primitiveElements) {
+                out[i] = (byte) wrapper.getInteger(repName, i);
+            } else {
+                Group element = wrapper.getGroup(repName, i);
+                String valName = element.getType().getFields().get(0).getName();
+                out[i] = (byte) element.getInteger(valName, 0);
+            }
+        }
+        return out;
+    }
+
     private static double primitiveAsDouble(Group g, String field, int index) {
         PrimitiveTypeName p = g.getType().getType(field).asPrimitiveType().getPrimitiveTypeName();
         return switch (p) {

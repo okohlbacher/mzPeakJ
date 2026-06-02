@@ -70,11 +70,15 @@ Decoding a chunk (`decodeChunkMz` + `acceptChunk`):
 - Validated: for centroid spectra (no null-marking) the chunk decode is **byte-identical** to the point layout;
   for profile spectra the **total ion signal** matches within 1e-6.
 
-### numpress (deferred)
-A chunk may carry `mz_numpress_linear_bytes` (transform `MS:1002312`) and/or
-`intensity_numpress_slof_bytes` (`MS:1002314`) instead of plain values. mzPeakJ **detects and rejects** these
-with a clear `MzPeakException`. Full support needs an MS-Numpress decoder *plus* the delta-model
-reconstruction (§4) to reach the reference point counts — left as future work rather than shipped subtly wrong.
+### numpress (supported)
+A chunk may carry `mz_numpress_linear_bytes` (transform `MS:1002312`) and `intensity_numpress_slof_bytes`
+(`MS:1002314`) instead of plain values. mzPeakJ decodes these with the bundled Apache-2.0
+[MS-Numpress](https://github.com/ms-numpress/ms-numpress) Java decoders (`ms.numpress.MSNumpress`). Unlike the
+delta path, the Numpress buffers encode the **full absolute arrays directly — no `chunk_start`, no delta, no
+null-marking** (verified: the example file stores all 13589 points for spectrum 0), so decode-and-append 1:1
+gives the right result without the §4 reconstruction. Numpress is lossy by design (linear m/z is near-lossless
+fixed-point; SLOF intensity is log-scaled 16-bit), so values match the point layout only within tolerance.
+Numpress **PIC** and *writing* Numpress are not implemented.
 
 ## 4. Null-marking & profile reconstruction
 
@@ -146,10 +150,11 @@ equivalence and profile total-signal equivalence across containers. 21 tests; `m
 
 ## 9. Known limitations / deferred
 
-See README "Scope & limitations" and `.planning/REQUIREMENTS.md`. In short: MS-Numpress decoding, exact
-`mz_delta_model` reconstruction, predicate pushdown/streaming for large files, detail-level (metadata-only)
-loading, tolerance-based peak search, multi-precursor selected-ion partitioning, and writing of
-`chunk`/Numpress layouts and wavelength spectra (writing of point-layout spectra + chromatograms is supported).
+See README "Scope & limitations" and `.planning/REQUIREMENTS.md`. In short: exact `mz_delta_model`
+reconstruction, footer key-value **metadata modeling** (instrument/software/activation — see roadmap),
+predicate pushdown/streaming for large files, detail-level (metadata-only) loading, tolerance-based peak
+search, multi-precursor selected-ion partitioning, Numpress **PIC**, and writing of `chunk`/Numpress layouts
+and wavelength spectra (writing of point-layout spectra + chromatograms is supported).
 
 ## 10. Tooling notes
 

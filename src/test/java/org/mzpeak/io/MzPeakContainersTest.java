@@ -9,7 +9,6 @@ import org.mzpeak.model.Spectrum;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -26,7 +25,8 @@ class MzPeakContainersTest {
     @ValueSource(strings = {
             "small.unpacked.mzpeak",   // unpacked directory, point layout
             "small.mzpeak",            // single-file STORED ZIP, point layout
-            "small.chunked.mzpeak"     // single-file ZIP, delta-chunk layout
+            "small.chunked.mzpeak",    // single-file ZIP, delta-chunk layout
+            "small.numpress.mzpeak"    // single-file ZIP, MS-Numpress linear(mz)+SLOF(intensity) chunk layout
     })
     void readsConsistentlyAcrossContainers(String fixture) {
         try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + fixture))) {
@@ -126,12 +126,21 @@ class MzPeakContainersTest {
     }
 
     @Test
-    void numpressLayoutReportsClearError() {
-        try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + "small.numpress.mzpeak"))) {
-            assertThat(reader.size()).isEqualTo(48); // metadata still readable
-            assertThatThrownBy(() -> reader.getSpectrum(0))
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessageContaining("Numpress");
+    void numpressDecodesCloseToPointLayout() {
+        // MS-Numpress is lossy (linear m/z is near-lossless; SLOF intensity is log-scaled 16-bit), so a
+        // centroid spectrum decodes to the same peak count and m/z within a tiny tolerance, with intensities
+        // within ~1% relative.
+        try (MzPeakReader point = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"));
+             MzPeakReader numpress = MzPeakReader.open(Path.of(BASE + "small.numpress.mzpeak"))) {
+            Spectrum a = point.getSpectrum(5).orElseThrow();
+            Spectrum b = numpress.getSpectrum(5).orElseThrow();
+            assertThat(b.mz()).hasSize(a.mz().length);
+            for (int i = 0; i < a.mz().length; i++) {
+                assertThat(b.mz()[i]).isCloseTo(a.mz()[i], within(5e-4));
+                if (a.intensity()[i] > 0) {
+                    assertThat(b.intensity()[i]).isCloseTo(a.intensity()[i], within(0.01 * a.intensity()[i]));
+                }
+            }
         }
     }
 

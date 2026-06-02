@@ -84,7 +84,7 @@ immediately:
 | `small.unpacked.mzpeak/` | unpacked directory | 48 spectra (14 MS1 + 34 MS2), 1 TIC chromatogram |
 | `small.mzpeak` | single-file ZIP | same as above, packed |
 | `small.chunked.mzpeak` | single-file ZIP | same data, delta-`chunk` layout |
-| `small.numpress.mzpeak` | single-file ZIP | same data, MS-Numpress (read errors clearly — unsupported) |
+| `small.numpress.mzpeak` | single-file ZIP | same data, MS-Numpress (linear m/z + SLOF intensity) — read (lossy) |
 | `has_uv.mzpeak` | single-file ZIP | 212 MS spectra + 520 UV/DAD spectra + TIC & DAD chromatograms |
 
 ### `MzPeakInfo` — quick one-line-per-spectrum dump
@@ -172,7 +172,7 @@ but no Hadoop install, native libs, or config is needed.
 **Implemented**
 
 - Containers: unpacked `*.mzpeak/` directory **and** single-file (STORED) `.mzpeak` ZIP.
-- Layouts: `point` and delta-encoded `chunk`.
+- Layouts: `point`, delta-encoded `chunk`, and **MS-Numpress** `chunk` (linear m/z + SLOF intensity; lossy).
 - Spectra (MS1 + MSn) with metadata + precursor facet joins (by `source_index`), `double[]` m/z + intensity,
   centroid peaks, and **profile reconstruction** of null-marked points (default on) so the materialized point
   count matches the declared `number_of_data_points` (e.g. 13589 for spectrum 0 — matching the Rust reference).
@@ -185,8 +185,8 @@ fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
 
 **Deferred / known limitations:**
 
-- **MS-Numpress chunks** are detected and rejected with a clear error — full Numpress + delta-model
-  reconstruction is future work.
+- **MS-Numpress** linear (m/z) + SLOF (intensity) chunks are read (decoding is lossy, as the format intends).
+  Numpress **PIC** and **writing** Numpress are not implemented.
 - **Profile/chunk reconstruction is approximate**: null-marked m/z are filled by linear interpolation between
   real anchors (not the exact `mz_delta_model` polynomial). Point counts and total signal match the reference;
   interpolated-point m/z are approximate.
@@ -203,5 +203,6 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 
 ## License
 
-[MIT](LICENSE) © 2026 Oliver Kohlbacher. Bundles HUPO-PSI mzPeak example fixtures (Apache-2.0) under
-`src/test/resources/`.
+[MIT](LICENSE) © 2026 Oliver Kohlbacher. Bundles the Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress)
+decoders (`src/main/java/ms/numpress/`) and the HUPO-PSI mzPeak example fixtures (Apache-2.0) under
+`src/test/resources/`. See [NOTICE](NOTICE).
