@@ -54,15 +54,21 @@ public final class MzPeakWriter {
         writeDirectory(directory, spectra, List.of());
     }
 
-    /** Write an unpacked {@code *.mzpeak/} directory. */
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
+        writeDirectory(directory, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
+    }
+
+    /** Write an unpacked {@code *.mzpeak/} directory, including file/run metadata in the footer. */
+    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                      org.mzpeak.model.meta.FileMetadata fileMetadata) {
         validate(spectra, chromatograms);
         boolean hasProfile = spectra.stream().anyMatch(s -> !isCentroid(s));
         boolean hasPeaks = spectra.stream().anyMatch(MzPeakWriter::isCentroid);
         boolean hasChromatograms = !chromatograms.isEmpty();
+        java.util.Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
         try {
             Files.createDirectories(directory);
-            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra);
+            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra, footer);
             if (hasProfile) {
                 writeSpectrumPoints(directory.resolve("spectra_data.parquet"), spectra, false);
             }
@@ -79,15 +85,20 @@ public final class MzPeakWriter {
         }
     }
 
-    /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
+        writeArchive(archive, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
+    }
+
+    /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
+    public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                    org.mzpeak.model.meta.FileMetadata fileMetadata) {
         Path parent = archive.toAbsolutePath().getParent();
         Path tmpDir = null;
         Path tmpZip = null;
         try {
             tmpDir = Files.createTempDirectory(parent, ".mzpeak-write-");
             tmpZip = Files.createTempFile(parent, ".mzpeak-write-", ".zip");
-            writeDirectory(tmpDir, spectra, chromatograms);
+            writeDirectory(tmpDir, spectra, chromatograms, fileMetadata);
             packStored(tmpDir, tmpZip);
             Files.move(tmpZip, archive, StandardCopyOption.REPLACE_EXISTING);
             tmpZip = null;
@@ -180,9 +191,10 @@ public final class MzPeakWriter {
 
     // ---- writers ----------------------------------------------------------------------------------
 
-    private static void writeSpectrumMetadata(Path file, List<Spectrum> spectra) throws IOException {
+    private static void writeSpectrumMetadata(Path file, List<Spectrum> spectra,
+                                              java.util.Map<String, String> footer) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, footer)) {
             for (Spectrum s : spectra) {
                 SpectrumDescription d = s.description();
                 Group row = factory.newGroup();
@@ -336,6 +348,11 @@ public final class MzPeakWriter {
     // ---- helpers ----------------------------------------------------------------------------------
 
     private static ParquetWriter<Group> openWriter(Path file, MessageType schema) throws IOException {
+        return openWriter(file, schema, java.util.Map.of());
+    }
+
+    private static ParquetWriter<Group> openWriter(Path file, MessageType schema,
+                                                   java.util.Map<String, String> footerMetadata) throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
         conf.set(SCHEMA_PROPERTY, schema.toString());
         var builder = ExampleParquetWriter.builder(new LocalOutputFile(file))
@@ -343,6 +360,9 @@ public final class MzPeakWriter {
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE);
+        if (footerMetadata != null && !footerMetadata.isEmpty()) {
+            builder = builder.withExtraMetaData(footerMetadata);
+        }
         // Test hook: force a small row-group size to exercise the streaming reader's multi-row-group path.
         String rowGroupSize = System.getProperty("mzpeak.writer.rowGroupSize");
         if (rowGroupSize != null) {
