@@ -4,27 +4,36 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A pure-JVM **Java reader and writer** for the [HUPO-PSI mzPeak](https://www.psidev.info/mzpeak)
-mass-spectrometry data format (Apache Parquet–based). Ported from the Rust reference implementation
-([`mzpeaks`](https://github.com/mobiusklein/mzpeaks) / `mzdata` /
-[`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping)), with a converter into
-[FragPipe](https://github.com/Nesvilab/FragPipe)/MSFragger's I/O layer (MSFTBX).
+mass-spectrometry data format (Apache Parquet–based).
 
-> Reader-only. Reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` ZIP; `point` and
-> delta-`chunk` layouts; spectra **and** chromatograms. See **Scope & limitations** for what's deferred.
+> **⚠️ Demonstrator / proof-of-concept.** mzPeakJ is a *vibe-coded* demonstrator, written by following the
+> existing mzPeak reference implementations — the Rust crates
+> [`mzpeaks`](https://github.com/mobiusklein/mzpeaks) / `mzdata` /
+> [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping), and the HUPO-PSI
+> [mzPeak](https://github.com/HUPO-PSI/mzPeak) spec + example files. It is meant for exploration and to show
+> that a clean, dependency-light JVM reader/writer is feasible — **not** a hardened production library. mzPeak
+> itself is an unstable prototype format; this project is pinned to one upstream commit. Expect rough edges.
 
-## Requirements
+It reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` ZIP; the `point` and
+delta-`chunk` layouts; spectra (MS1 + MSn), chromatograms, and UV/DAD wavelength spectra; and it can write
+mzPeak back out. See **Scope & limitations** for what's deferred.
 
-- A JDK (built/tested with Homebrew `openjdk@25`). Set `JAVA_HOME` before building:
+## Requirements & build
+
+- A JDK 17+ (developed on Homebrew `openjdk@25`) and Maven 3.9+.
+- Set `JAVA_HOME` if `java` is not on your `PATH`:
   ```bash
-  export JAVA_HOME=/opt/homebrew/opt/openjdk@25
+  export JAVA_HOME=/opt/homebrew/opt/openjdk@25   # adjust to your JDK
   ```
-- Maven 3.9+.
+- Build and test:
+  ```bash
+  mvn verify
+  ```
 
-```bash
-mvn verify
-```
+The build is self-contained: it never uses a Hadoop FileSystem, `Configuration`, native libraries, or any
+cluster setup (see [DESIGN.md](DESIGN.md) §5).
 
-## Usage
+## Library usage
 
 ```java
 import org.mzpeak.io.MzPeakReader;
@@ -43,86 +52,106 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     double[] mz = s.mz();          // m/z array (profile points or centroid m/z)
     double[] intensity = s.intensity();
     s.peaks();                     // centroid peaks (for centroided spectra)
-    System.out.println(s.description().msLevel() + " @ RT " + s.description().retentionTime());
 
-    // Chromatograms (TIC, BPC, ...)
     reader.getChromatogramById("TIC").ifPresent(tic -> System.out.println(tic.size() + " TIC points"));
-
     for (Spectrum spec : reader) { /* iterate all spectra */ }
 }
 ```
 
-### Writing
+Writing:
 
 ```java
 import org.mzpeak.io.MzPeakWriter;
 
 // ZSTD-compressed Parquet (point layout), to an unpacked directory or a single-file STORED ZIP:
 MzPeakWriter.writeDirectory(Path.of("out.mzpeak"), spectra, chromatograms);
-MzPeakWriter.writeArchive(Path.of("out.mzpeak"), spectra, chromatograms);
+MzPeakWriter.writeArchive(Path.of("out.mzpeak"), spectra, chromatograms);   // round-trips through the reader
 ```
 
-The writer is also fully Hadoop-free (writes via `LocalOutputFile` + the custom ZSTD codec). It round-trips
-through `MzPeakReader`. Writing of `chunk`/Numpress layouts and wavelength spectra is not supported.
+## Running the CLI & examples
 
-### CLI
+A helper script builds the project and assembles the classpath for you:
 
 ```bash
-java --enable-native-access=ALL-UNNAMED -cp "target/classes:$(deps)" \
-     org.mzpeak.cli.MzPeakInfo path/to/run.mzpeak
+./run-example.sh <fully.qualified.MainClass> [args...]
 ```
 
-### FragPipe / MSFragger conversion
+The repository ships small HUPO-PSI example datasets under `src/test/resources/mzpeak/` you can run against
+immediately:
 
-```java
-import org.mzpeak.fragpipe.MsftbxAdapter;
-import umich.ms.datatypes.scan.IScan;
+| Fixture | Form | Contents |
+|---|---|---|
+| `small.unpacked.mzpeak/` | unpacked directory | 48 spectra (14 MS1 + 34 MS2), 1 TIC chromatogram |
+| `small.mzpeak` | single-file ZIP | same as above, packed |
+| `small.chunked.mzpeak` | single-file ZIP | same data, delta-`chunk` layout |
+| `small.numpress.mzpeak` | single-file ZIP | same data, MS-Numpress (read errors clearly — unsupported) |
+| `has_uv.mzpeak` | single-file ZIP | 212 MS spectra + 520 UV/DAD spectra + TIC & DAD chromatograms |
 
-IScan scan = MsftbxAdapter.toScan(spectrum); // umich.ms.datatypes IScan + attached ISpectrum
-```
-
-The core reader has **no** dependency on FragPipe; the `msftbx` dependency is `optional` and used only by
-`org.mzpeak.fragpipe`. mzPeakJ stores intensities as `double[]`, so conversion into MSFTBX's
-`ISpectrum` is a zero-copy array passthrough.
-
-## Example tools
-
-Runnable end-to-end examples in [`org.mzpeak.examples`](src/main/java/org/mzpeak/examples) (each shares the
-`--ms-level`, `--rt-min`, `--rt-max` filter):
+### `MzPeakInfo` — quick one-line-per-spectrum dump
 
 ```bash
-CP="target/classes:$(deps)"   # mvn dependency:build-classpath
-J="java --enable-native-access=ALL-UNNAMED -cp $CP"
-
-# Extract a filtered subset into a new mzPeak file (read + write)
-$J org.mzpeak.examples.ExtractSpectra in.mzpeak ms2.mzpeak --ms-level 2 --rt-min 5 --rt-max 30
-
-# Convert MSn spectra to Sequest .dta files
-$J org.mzpeak.examples.ConvertToDta in.mzpeak dta/ --ms-level 2 --default-charge 2
-
-# Extract an ion chromatogram (XIC) for a target m/z
-$J org.mzpeak.examples.ExtractXic in.mzpeak xic.csv --mz 810.79 --tol-ppm 20
-
-# Summarize a file (an mzPeak-only port of the OpenMS FileInfo tool); -s adds intensity statistics
-$J org.mzpeak.examples.MzPeakFileInfo in.mzpeak -s
+./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/small.mzpeak 6
 ```
+
+### Example tools (`org.mzpeak.examples`)
+
+All tools share the filter options **`--ms-level 1,2`** (comma-separated or repeated), **`--rt-min M`**,
+**`--rt-max M`** (retention time in the file's unit).
+
+#### `MzPeakFileInfo` — file summary (an mzPeak-only port of OpenMS `FileInfo`)
+
+Prints overall and per-MS-level ranges (RT / m/z / intensity), spectrum & peak counts per MS level, peak type
+(profile/centroid), precursor charge distribution, and chromatogram breakdown. `-s` adds a five-number
+intensity summary.
+
+```bash
+./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak -s
+```
+
+#### `ExtractSpectra` — filter into a new mzPeak file (read **and** write)
+
+```bash
+# Keep only MS2 spectra in the 0–0.1 min window, write a new single-file .mzpeak
+./run-example.sh org.mzpeak.examples.ExtractSpectra \
+    src/test/resources/mzpeak/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
+```
+If the output name ends in `.mzpeak` a single-file ZIP is written, otherwise an unpacked directory.
+
+#### `ConvertToDta` — MSn spectra → Sequest `.dta` files
+
+```bash
+./run-example.sh org.mzpeak.examples.ConvertToDta \
+    src/test/resources/mzpeak/small.mzpeak /tmp/dta --ms-level 2 --default-charge 2
+```
+One `.dta` per spectrum, named `<base>.<scan>.<scan>.<charge>.dta`; first line is `<MH+> <charge>`, then
+`<m/z> <intensity>` rows. `--default-charge` is used when a precursor charge is missing.
+
+#### `ExtractXic` — extracted-ion chromatogram for a target m/z
+
+```bash
+./run-example.sh org.mzpeak.examples.ExtractXic \
+    src/test/resources/mzpeak/small.mzpeak /tmp/xic.csv --mz 810.79 --tol-ppm 20
+```
+Writes `retention_time,intensity` rows (one per matching spectrum; MS1 by default). Tolerance via
+`--tol-ppm` (default 20) or `--tol-da`.
 
 ## Architecture
 
-For format internals and the decode rationale (the facet-join trap, chunk decoding, null-marking,
-Hadoop-free Parquet, type variance), see **[DESIGN.md](DESIGN.md)**.
+For format internals and the decode rationale (the facet-join trap, chunk decoding, null-marking, the
+Hadoop-free Parquet path, type variance), see **[DESIGN.md](DESIGN.md)**.
 
 | Package | Responsibility |
 |---|---|
-| `org.mzpeak.model` | Pure data: peak primitives (`CentroidPeak`, `DeconvolutedPeak`), `Spectrum`, `SpectrumDescription`, `Precursor`, `Tolerance`, ... |
-| `org.mzpeak.io` | `MzPeakReader`, `MzPeakManifest`, metadata decoder, point-array store |
-| `org.mzpeak.io.parquet` | Hadoop-free Parquet reading (`LocalInputFile` + `PlainParquetConfiguration` + a zstd-jni `CompressionCodecFactory`) |
-| `org.mzpeak.fragpipe` | `MsftbxAdapter` (isolated FragPipe/MSFTBX bridge) |
+| `org.mzpeak.model` | Pure data: peak primitives (`CentroidPeak`, `DeconvolutedPeak`), `Spectrum`, `SpectrumDescription`, `Precursor`, `Chromatogram`, `WavelengthSpectrum`, `Tolerance`, ... |
+| `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, source abstraction (dir/ZIP), metadata + array stores |
+| `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O (`LocalInputFile`/`LocalOutputFile` + `PlainParquetConfiguration` + a zstd-jni `CompressionCodecFactory`) |
+| `org.mzpeak.cli` / `org.mzpeak.examples` | Runnable demonstrator tools |
 
 **Parquet without Hadoop:** mzPeak columns are ZSTD-compressed. parquet-java's default codec factory builds a
 Hadoop `Configuration`; we instead supply `ZstdCompressionCodecFactory` (backed by the self-contained
-`zstd-jni` jar), so no Hadoop runtime/`FileSystem` is ever touched. `hadoop-client-api` is a `provided`
-compile-only dependency (parquet-java's API signatures reference `Configuration`) and is **not** shipped.
+`zstd-jni` jar), so no Hadoop FileSystem or `Configuration` is ever touched. parquet-java's classes still
+statically reference Hadoop types, so a single self-contained `hadoop-client-api` jar is on the classpath —
+but no Hadoop install, native libs, or config is needed.
 
 ## Format notes (for maintainers)
 
@@ -133,7 +162,7 @@ compile-only dependency (parquet-java's API signatures reference `Configuration`
   mzPeakJ joins strictly by `source_index` (placeholder rows with a null `source_index` are skipped).
 - Signal is long/tall `point{spectrum_index, mz, intensity}` rows in `spectra_data.parquet` (profile) and
   `spectra_peaks.parquet` (centroids).
-- Tested against the vendored HUPO-PSI example `small.unpacked.mzpeak` (upstream commit pinned in
+- Tested against the vendored HUPO-PSI example files (upstream commit pinned in
   `src/test/resources/mzpeak/.../UPSTREAM_COMMIT.txt`). The format is an unstable prototype.
 
 ## Scope & limitations
@@ -145,33 +174,28 @@ compile-only dependency (parquet-java's API signatures reference `Configuration`
 - Spectra (MS1 + MSn) with metadata + precursor facet joins (by `source_index`), `double[]` m/z + intensity,
   centroid peaks, and **profile reconstruction** of null-marked points (default on) so the materialized point
   count matches the declared `number_of_data_points` (e.g. 13589 for spectrum 0 — matching the Rust reference).
-- Chromatograms (TIC, DAD/absorption, ...).
-- Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type (`reader.wavelengthSpectra()`).
+- Chromatograms (TIC, DAD/absorption, ...) and wavelength (UV/DAD) spectra (`reader.wavelengthSpectra()`).
 - Random access by index, native id, vendor scan number, and nearest retention time; iteration.
-- MSFTBX/FragPipe adapter.
 - **Writing** mzPeak (ZSTD Parquet, point layout) to a directory or STORED ZIP — round-trips through the reader.
 
 Cross-validated against the Rust `mzpeak_prototyping` reference test values across the unpacked / ZIP / chunked
 fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
 
-**Deferred / known limitations** (tracked in `.planning/REQUIREMENTS.md`):
+**Deferred / known limitations:**
 
-- **MS-Numpress chunks** (`mz_numpress_linear_bytes` / `intensity_numpress_slof_bytes`) are detected and
-  rejected with a clear error — full Numpress + delta-model reconstruction is future work.
+- **MS-Numpress chunks** are detected and rejected with a clear error — full Numpress + delta-model
+  reconstruction is future work.
 - **Profile/chunk reconstruction is approximate**: null-marked m/z are filled by linear interpolation between
-  real anchors (not the exact `mz_delta_model` polynomial), and chunk decode prepends the first chunk's
-  `chunk_start`. Point counts and anchor values match the reference; interpolated-point m/z are approximate.
+  real anchors (not the exact `mz_delta_model` polynomial). Point counts and total signal match the reference;
+  interpolated-point m/z are approximate.
 - **No predicate/row-group pushdown**: signal files are read fully once and cached (fine for example-scale
-  data; streaming for large files is future work — `PEAK-03`).
+  data; streaming for large files is future work).
 - **Writing** is point-layout only (no `chunk`/Numpress encoding, no wavelength spectra).
-- **Multi-precursor**: all precursor records are preserved, but selected ions are attached to the first
-  precursor (the example format has one precursor per MSn spectrum).
 
 ## Development
 
-This project is scaffolded with the GSD workflow harness (`.planning/`). Each phase boundary runs a `codex`
-CLI adversarial review; findings drove the hardening in `ZstdCompressionCodecFactory`, `SpectrumArrayStore`,
-the chunk-intensity alignment, and `MsftbxAdapter`. CI (`mvn verify` on JDK 17 + 21) runs via GitHub Actions.
+Scaffolded with the GSD workflow harness (`.planning/`); each phase ran a `codex` CLI adversarial review whose
+findings drove much of the hardening. CI (`mvn verify` on JDK 17 + 21) runs via GitHub Actions.
 
 Project site: <https://okohlbacher.github.io/mzPeakJ/>
 

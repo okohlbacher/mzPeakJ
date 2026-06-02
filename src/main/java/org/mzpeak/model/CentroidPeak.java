@@ -2,7 +2,7 @@ package org.mzpeak.model;
 
 /**
  * A single m/z–intensity centroid. Mirrors {@code mzpeaks::CentroidPeak} (intensity widened to
- * {@code double} for FragPipe/MSFTBX compatibility).
+ * {@code double} for easy interop with downstream MS toolkits).
  *
  * @param mz        mass-to-charge
  * @param intensity signal magnitude

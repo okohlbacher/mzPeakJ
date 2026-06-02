@@ -1,10 +1,12 @@
 # mzPeakJ
 
 A pure-JVM **Java reader and writer** for the [HUPO-PSI mzPeak](https://www.psidev.info/mzpeak)
-mass-spectrometry data format (built on Apache Parquet), ported from the Rust reference
-implementation ([`mzpeaks`](https://github.com/mobiusklein/mzpeaks) / `mzdata` /
-[`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping)) and designed to convert
-into [FragPipe](https://github.com/Nesvilab/FragPipe)/MSFragger's I/O layer (MSFTBX).
+mass-spectrometry data format (built on Apache Parquet).
+
+> **Demonstrator / proof-of-concept** — vibe-coded by following the existing mzPeak reference
+> implementations (the Rust crates [`mzpeaks`](https://github.com/mobiusklein/mzpeaks) / `mzdata` /
+> [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping) and the HUPO-PSI spec + example
+> files). Built for exploration, not production. mzPeak is an unstable prototype format.
 
 [View on GitHub](https://github.com/okohlbacher/mzPeakJ){: .btn }
 &nbsp;
@@ -17,9 +19,10 @@ into [FragPipe](https://github.com/Nesvilab/FragPipe)/MSFragger's I/O layer (MSF
   wavelength spectra.
 - **Profile reconstruction** of null-marked points (point counts match the reference).
 - **Writes** mzPeak (ZSTD-compressed Parquet, point layout) to a directory or a STORED ZIP.
-- **Pure JVM, no Hadoop** — a custom zstd-jni codec keeps the Hadoop runtime entirely out, so the
-  artifact stays embeddable.
-- **FragPipe/MSFTBX adapter** — zero-copy `double[]` conversion to `IScan`/`ISpectrum`.
+- **No Hadoop runtime** — a custom zstd-jni codec means no Hadoop FileSystem, `Configuration`, or
+  native libraries are ever touched.
+- **Runnable example tools** — file summary (OpenMS-`FileInfo`-style), spectrum extractor, DTA
+  converter, and XIC extractor.
 
 ## Quick start
 

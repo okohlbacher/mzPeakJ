@@ -1,10 +1,14 @@
 # mzPeakJ — Design & Format Notes
 
 This document captures how the [mzPeak](https://www.psidev.info/mzpeak) format actually works (as observed in
-the HUPO-PSI example files) and the decisions behind this Java reader. It's the map for anyone extending
-mzPeakJ or porting the format elsewhere. Ground truth = the upstream `doc/index.md` **plus the actual example
-Parquet files** (the published paper has no schema detail). The format is an unstable prototype; this reader
-is pinned to upstream commit `03ccdb7` (see `src/test/resources/mzpeak/.../UPSTREAM_COMMIT.txt`).
+the HUPO-PSI example files) and the decisions behind this Java reader/writer. It's the map for anyone extending
+mzPeakJ or porting the format elsewhere.
+
+mzPeakJ is a **demonstrator**, vibe-coded by following the existing mzPeak reference implementations (the Rust
+crates `mzpeaks` / `mzdata` / `mzpeak_prototyping` and the HUPO-PSI spec). Ground truth = the upstream
+`doc/index.md` **plus the actual example Parquet files** (the published paper has no schema detail). The
+format is an unstable prototype; this project is pinned to upstream commit `03ccdb7`
+(see `src/test/resources/mzpeak/.../UPSTREAM_COMMIT.txt`).
 
 ## 1. What an mzPeak dataset is
 
@@ -87,17 +91,17 @@ bit-exact vs. the polynomial model. Pass `reconstructProfile=false` to get only 
 ## 5. Hadoop-free Parquet (and the ZSTD problem)
 
 mzPeak columns are **ZSTD-compressed**. parquet-java's default codec factory builds a Hadoop `Configuration`
-(pulling the shaded Woodstox/Hadoop runtime) on every codec lookup. To stay genuinely Hadoop-free (a hard
-constraint for FragPipe-embeddability), mzPeakJ:
+(pulling the shaded Woodstox/Hadoop runtime) on every codec lookup. To avoid the Hadoop runtime entirely,
+mzPeakJ:
 
-- reads via `LocalInputFile` / `ByteArrayInputFile` + `PlainParquetConfiguration` + the parquet-column
-  `Group` API (`ParquetGroups`), and
+- reads/writes via `LocalInputFile` / `ByteArrayInputFile` / `LocalOutputFile` + `PlainParquetConfiguration` +
+  the parquet-column `Group` API (`ParquetGroups`), and
 - supplies a custom `ZstdCompressionCodecFactory` backed by the self-contained `zstd-jni` jar, so the Hadoop
   `CodecFactory` (and `Configuration`) is **never** touched.
 
-`hadoop-client-api` is a **`provided`** (compile-only) dependency — parquet-java's public method signatures
-reference `Configuration`, so the class must be on the compile classpath, but it is **not shipped** and never
-instantiated at runtime. Verified: no `org.apache.hadoop` artifact at compile/runtime scope.
+The result never uses a Hadoop FileSystem, `Configuration`, native library, or cluster setup. parquet-java's
+classes do *statically reference* Hadoop types, however, so a single self-contained `hadoop-client-api` jar
+must be on the classpath (it ships as a normal dependency). "No Hadoop runtime" — not "no Hadoop jar".
 
 ## 6. Type-variance discipline
 
@@ -121,15 +125,16 @@ org.mzpeak.io           reading
   MzPeakSource          DirectorySource | ZipSource
   decoders/stores       MzPeakManifest · SpectrumMetadataDecoder · SpectrumArrayStore · ChromatogramStore
                         · WavelengthSpectrumStore
+  MzPeakWriter          writeDirectory / writeArchive (ZSTD point-layout Parquet + manifest; STORED zip)
   org.mzpeak.io.parquet ParquetGroups (Group API + typed/list accessors) · ZstdCompressionCodecFactory
                         · ByteArrayInputFile
-org.mzpeak.fragpipe     MsftbxAdapter  (Spectrum → umich.ms.datatypes IScan/ISpectrum; isolates msftbx)
 org.mzpeak.cli          MzPeakInfo     (dataset summary)
+org.mzpeak.examples     ExtractSpectra · ConvertToDta · ExtractXic · MzPeakFileInfo
 ```
 
-Intensity is `double[]` throughout (matching MSFTBX `ISpectrum`, so the FragPipe adapter is a zero-copy
-passthrough). Signal files are read fully and cached on first access — fine at example scale; row-group/page
-**predicate pushdown** for large files is future work.
+Intensity is `double[]` throughout (so consumers get arrays directly, no widening copy). Signal files are
+read fully and cached on first access — fine at example scale; row-group/page **predicate pushdown** for
+large files is future work.
 
 ## 8. Testing approach
 
@@ -143,7 +148,8 @@ equivalence and profile total-signal equivalence across containers. 21 tests; `m
 
 See README "Scope & limitations" and `.planning/REQUIREMENTS.md`. In short: MS-Numpress decoding, exact
 `mz_delta_model` reconstruction, predicate pushdown/streaming for large files, detail-level (metadata-only)
-loading, tolerance-based peak search, multi-precursor selected-ion partitioning, and writing mzPeak.
+loading, tolerance-based peak search, multi-precursor selected-ion partitioning, and writing of
+`chunk`/Numpress layouts and wavelength spectra (writing of point-layout spectra + chromatograms is supported).
 
 ## 10. Tooling notes
 

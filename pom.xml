@@ -10,7 +10,7 @@
   <packaging>jar</packaging>
 
   <name>mzPeakJ</name>
-  <description>Java reader and writer for the HUPO-PSI mzPeak mass-spectrometry format (Parquet-based), with a FragPipe/MSFTBX adapter.</description>
+  <description>A demonstrator Java reader and writer for the HUPO-PSI mzPeak mass-spectrometry format (Parquet-based).</description>
   <url>https://github.com/okohlbacher/mzPeakJ</url>
 
   <licenses>
@@ -28,12 +28,11 @@
     <jackson.version>2.18.2</jackson.version>
     <junit.version>5.11.4</junit.version>
     <assertj.version>3.26.3</assertj.version>
-    <msftbx.version>1.8.8</msftbx.version>
   </properties>
 
   <dependencies>
-    <!-- Parquet, Hadoop-free: we read via LocalInputFile + ParquetReadOptions + the parquet-column
-         Group API, so hadoop-common must NOT appear on the runtime classpath (BUILD-01). -->
+    <!-- Parquet via parquet-java. We read/write through LocalInputFile/LocalOutputFile + the parquet-column
+         Group API and a custom zstd-jni codec, so no Hadoop FileSystem or Configuration is ever touched. -->
     <dependency>
       <groupId>org.apache.parquet</groupId>
       <artifactId>parquet-hadoop</artifactId>
@@ -47,17 +46,13 @@
       <artifactId>parquet-column</artifactId>
       <version>${parquet.version}</version>
     </dependency>
-    <!-- parquet-java's public API (ParquetFileReader.open overloads) references
-         org.apache.hadoop.conf.Configuration, so the class must be on the COMPILE classpath even though
-         our LocalInputFile read path never instantiates it. hadoop-client-api is a single self-contained
-         shaded jar; 'provided' keeps it off the shipped artifact's transitive runtime classpath (BUILD-01).
-         NOTE: strict "zero org.apache.hadoop classes at runtime" is impractical with parquet-java; we instead
-         guarantee no Hadoop FileSystem/Configuration is touched (LocalInputFile) and no Hadoop is shipped. -->
+    <!-- parquet-java's classes statically reference Hadoop types, so hadoop-client-api must be on the
+         classpath at runtime. It is a single self-contained shaded jar; we never use the Hadoop FileSystem,
+         Configuration, native libs, or any cluster setup. -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-client-api</artifactId>
       <version>3.4.1</version>
-      <scope>provided</scope>
     </dependency>
 
     <!-- Pure-Java/self-contained-native ZSTD (mzPeak Parquet columns are ZSTD-compressed). Lets us supply
@@ -73,14 +68,6 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${jackson.version}</version>
-    </dependency>
-
-    <!-- FragPipe / MSFragger I/O layer (used only by the org.mzpeak.fragpipe adapter). -->
-    <dependency>
-      <groupId>com.github.chhh</groupId>
-      <artifactId>msftbx</artifactId>
-      <version>${msftbx.version}</version>
-      <optional>true</optional>
     </dependency>
 
     <!-- Test -->
