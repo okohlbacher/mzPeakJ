@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Polarity;
@@ -10,7 +11,6 @@ import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.SpectrumDescription;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -58,10 +58,10 @@ final class SpectrumMetadataDecoder {
     private SpectrumMetadataDecoder() {
     }
 
-    static List<SpectrumDescription> decode(Path metadataFile) {
+    static List<SpectrumDescription> decode(InputFile metadataFile) {
         Map<Long, Builder> builders = new LinkedHashMap<>();
         Map<Long, List<Group>> scansBySource = new HashMap<>();
-        Map<Long, Group> precursorBySource = new HashMap<>();
+        Map<Long, List<Group>> precursorsBySource = new HashMap<>();
         Map<Long, List<Group>> selectedIonsBySource = new HashMap<>();
 
         ParquetGroups.forEach(metadataFile, row -> {
@@ -76,13 +76,7 @@ final class SpectrumMetadataDecoder {
                 }
             }
             indexFacet(row, "scan", scansBySource);
-            Group precursor = ParquetGroups.optGroup(row, "precursor");
-            if (precursor != null) {
-                Long src = ParquetGroups.optLong(precursor, F_SOURCE_INDEX);
-                if (src != null) {
-                    precursorBySource.putIfAbsent(src, precursor); // keep-first if a writer emits duplicates
-                }
-            }
+            indexFacet(row, "precursor", precursorsBySource);
             indexFacet(row, "selected_ion", selectedIonsBySource);
         });
 
@@ -90,7 +84,7 @@ final class SpectrumMetadataDecoder {
         for (Builder b : builders.values()) {
             List<ScanEvent> scans = buildScans(scansBySource.get(b.index));
             List<Precursor> precursors = buildPrecursors(
-                    precursorBySource.get(b.index), selectedIonsBySource.get(b.index));
+                    precursorsBySource.get(b.index), selectedIonsBySource.get(b.index));
             out.add(new SpectrumDescription(
                     b.index, b.id, b.msLevel, b.time, b.polarity, b.continuity,
                     b.numberOfDataPoints, b.numberOfPeaks, scans, precursors));
@@ -124,27 +118,13 @@ final class SpectrumMetadataDecoder {
         return out;
     }
 
-    private static List<Precursor> buildPrecursors(Group precursor, List<Group> selectedIons) {
-        if (precursor == null && selectedIons == null) {
+    private static List<Precursor> buildPrecursors(List<Group> precursorGroups, List<Group> selectedIonGroups) {
+        if (precursorGroups == null && selectedIonGroups == null) {
             return List.of();
         }
-        Long precursorIndex = null;
-        String precursorId = null;
-        IsolationWindow window = null;
-        if (precursor != null) {
-            precursorIndex = ParquetGroups.optLong(precursor, F_PRECURSOR_INDEX);
-            precursorId = ParquetGroups.optString(precursor, F_PRECURSOR_ID);
-            Group iso = ParquetGroups.optGroup(precursor, F_ISOLATION);
-            if (iso != null) {
-                window = new IsolationWindow(
-                        ParquetGroups.optDouble(iso, F_ISO_TARGET),
-                        ParquetGroups.optDouble(iso, F_ISO_LOWER),
-                        ParquetGroups.optDouble(iso, F_ISO_UPPER));
-            }
-        }
         List<SelectedIon> ions = new ArrayList<>();
-        if (selectedIons != null) {
-            for (Group ion : selectedIons) {
+        if (selectedIonGroups != null) {
+            for (Group ion : selectedIonGroups) {
                 Double mz = ParquetGroups.optDouble(ion, F_SELECTED_MZ);
                 if (mz == null) {
                     continue;
@@ -154,7 +134,28 @@ final class SpectrumMetadataDecoder {
                         ParquetGroups.optDouble(ion, F_SELECTED_INTENSITY)));
             }
         }
-        return List.of(new Precursor(precursorIndex, precursorId, window, ions));
+        if (precursorGroups == null || precursorGroups.isEmpty()) {
+            // selected ions but no precursor record: surface a precursor carrying the ions
+            return List.of(new Precursor(null, null, null, ions));
+        }
+        // Build one Precursor per precursor record (no silent collapse). Selected ions for the spectrum are
+        // attached to the first precursor; multi-precursor ion partitioning is future work (the example
+        // format has exactly one precursor per MSn spectrum).
+        List<Precursor> out = new ArrayList<>(precursorGroups.size());
+        for (int i = 0; i < precursorGroups.size(); i++) {
+            Group precursor = precursorGroups.get(i);
+            Group iso = ParquetGroups.optGroup(precursor, F_ISOLATION);
+            IsolationWindow window = iso == null ? null : new IsolationWindow(
+                    ParquetGroups.optDouble(iso, F_ISO_TARGET),
+                    ParquetGroups.optDouble(iso, F_ISO_LOWER),
+                    ParquetGroups.optDouble(iso, F_ISO_UPPER));
+            out.add(new Precursor(
+                    ParquetGroups.optLong(precursor, F_PRECURSOR_INDEX),
+                    ParquetGroups.optString(precursor, F_PRECURSOR_ID),
+                    window,
+                    i == 0 ? ions : List.of()));
+        }
+        return out;
     }
 
     /** Mutable assembly holder for one spectrum's core fields. */

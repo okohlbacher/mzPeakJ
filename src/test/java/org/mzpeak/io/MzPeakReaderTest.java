@@ -49,14 +49,14 @@ class MzPeakReaderTest {
             assertThat(d.id()).contains("scan=1");
             assertThat(d.precursors()).isEmpty(); // MS1 must have no precursor (facet join correctness)
 
-            // Declared point count is 13589, but 2376 are null-marked flanks (null m/z) that the
-            // prototype drops (profile reconstruction via mz_delta_model is deferred); 11213 remain.
+            // With reconstruction on (default), null-marked flank points are filled, so the materialized
+            // count matches the declared number_of_data_points (matches the Rust reference: 13589).
             assertThat(d.numberOfDataPoints()).isEqualTo(13589L);
 
             Spectrum s = reader.getSpectrum(0).orElseThrow();
-            assertThat(s.pointCount()).isEqualTo(11213);
-            assertThat(s.mz()).hasSize(11213);
-            assertThat(s.intensity()).hasSize(11213);
+            assertThat(s.pointCount()).isEqualTo(13589);
+            assertThat(s.mz()).hasSize(13589);
+            assertThat(s.intensity()).hasSize(13589);
             assertThat(s.mz()[0]).isCloseTo(202.606575, within(1e-4));
             assertThat(s.intensity()[0]).isEqualTo(0.0);
             assertThat(s.intensity()[1]).isCloseTo(1938.1174, within(1e-2));

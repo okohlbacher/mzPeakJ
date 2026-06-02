@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -30,18 +28,14 @@ public final class MzPeakManifest {
         return files;
     }
 
-    /** Parse {@code mzpeak_index.json} from an unpacked mzPeak directory. */
-    public static MzPeakManifest fromDirectory(Path directory) {
-        Path manifestPath = directory.resolve("mzpeak_index.json");
-        if (!Files.isRegularFile(manifestPath)) {
-            throw new MzPeakException("Not an unpacked mzPeak directory (no mzpeak_index.json): " + directory);
-        }
+    /** Parse {@code mzpeak_index.json} from a source (directory or ZIP). */
+    public static MzPeakManifest fromSource(MzPeakSource source) {
         try {
             ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(Files.readAllBytes(manifestPath));
+            JsonNode root = mapper.readTree(source.readManifestBytes());
             JsonNode filesNode = root.get("files");
             if (filesNode == null || !filesNode.isArray()) {
-                throw new MzPeakException("mzpeak_index.json has no 'files' array: " + manifestPath);
+                throw new MzPeakException("mzpeak_index.json has no 'files' array in " + source.describe());
             }
             List<Entry> entries = new ArrayList<>();
             for (JsonNode f : filesNode) {
@@ -52,7 +46,7 @@ public final class MzPeakManifest {
             }
             return new MzPeakManifest(entries);
         } catch (IOException e) {
-            throw new MzPeakException("Failed to parse " + manifestPath, e);
+            throw new MzPeakException("Failed to parse mzpeak_index.json in " + source.describe(), e);
         }
     }
 

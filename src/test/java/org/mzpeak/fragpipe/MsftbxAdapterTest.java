@@ -29,8 +29,8 @@ class MsftbxAdapterTest {
             assertThat(scan.getPrecursor()).isNull();
 
             ISpectrum spectrum = scan.getSpectrum();
-            assertThat(spectrum.getMZs()).hasSize(11213);
-            assertThat(spectrum.getIntensities()).hasSize(11213);
+            assertThat(spectrum.getMZs()).hasSize(13589);
+            assertThat(spectrum.getIntensities()).hasSize(13589);
             // zero-copy: the adapter passes mzPeakJ's arrays straight through
             assertThat(spectrum.getMZs()).isSameAs(s.mz());
         }

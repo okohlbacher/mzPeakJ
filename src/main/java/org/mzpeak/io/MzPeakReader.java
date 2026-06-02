@@ -1,10 +1,10 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.io.InputFile;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -14,104 +14,168 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Reads an unpacked mzPeak directory (the {@code *.mzpeak/} form). Minimal milestone-1 surface:
- * open, count, metadata access, and spectrum (m/z + intensity) materialization, plus iteration.
+ * Reads an mzPeak dataset — either an unpacked {@code *.mzpeak/} directory or a single-file (STORED)
+ * {@code .mzpeak} ZIP. Surface: open, count, metadata access, spectrum (m/z + intensity + peaks)
+ * materialization, lookup by index / scan number / native id / retention time, iteration, and chromatograms.
  *
- * <p>Spectrum metadata is loaded eagerly on {@link #open(Path)}. The point/peak signal files are loaded
- * lazily on first access and cached. Supports the {@code point} layout, unpacked directory, spectra only.
- *
- * <p>Not thread-safe for concurrent first-access loading; treat one reader as single-threaded.
+ * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
+ * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); pass
+ * {@code reconstructProfile=false} to get only the stored non-null points. Not thread-safe.
  */
 public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
+    private static final Pattern SCAN_NUMBER = Pattern.compile("scan=(\\d+)");
+
+    private final MzPeakSource source;
     private final MzPeakManifest manifest;
+    private final boolean reconstructProfile;
     private final List<SpectrumDescription> descriptions;
     private final Map<Long, Integer> indexToOrdinal;
-    private final Path dataFile;   // nullable: spectra_data.parquet (profile points)
-    private final Path peaksFile;  // nullable: spectra_peaks.parquet (centroids)
+    private final Map<Integer, Long> scanNumberToIndex;
+    private final Map<String, Long> idToIndex;
+    private final double[] sortedTimes;
+    private final long[] timeIndexOrder;
+
+    private final String dataFileName;   // nullable
+    private final String peaksFileName;  // nullable
 
     private boolean dataLoaded;
-    private PointArrayStore dataStore;
+    private SpectrumArrayStore dataStore;
     private boolean peaksLoaded;
-    private PointArrayStore peakStore;
+    private SpectrumArrayStore peakStore;
+    private boolean chromatogramsLoaded;
+    private ChromatogramStore chromatogramStore;
 
-    private MzPeakReader(MzPeakManifest manifest,
-                         List<SpectrumDescription> descriptions,
-                         Path dataFile,
-                         Path peaksFile) {
+    private MzPeakReader(MzPeakSource source, MzPeakManifest manifest, boolean reconstructProfile,
+                         List<SpectrumDescription> descriptions, String dataFileName, String peaksFileName) {
+        this.source = source;
         this.manifest = manifest;
+        this.reconstructProfile = reconstructProfile;
         this.descriptions = descriptions;
-        this.dataFile = dataFile;
-        this.peaksFile = peaksFile;
+        this.dataFileName = dataFileName;
+        this.peaksFileName = peaksFileName;
+
         this.indexToOrdinal = new HashMap<>();
+        this.scanNumberToIndex = new HashMap<>();
+        this.idToIndex = new HashMap<>();
         for (int i = 0; i < descriptions.size(); i++) {
-            indexToOrdinal.put(descriptions.get(i).index(), i);
+            SpectrumDescription d = descriptions.get(i);
+            indexToOrdinal.put(d.index(), i);
+            if (d.id() != null) {
+                idToIndex.put(d.id(), d.index());
+                Matcher m = SCAN_NUMBER.matcher(d.id());
+                if (m.find()) {
+                    scanNumberToIndex.putIfAbsent(Integer.parseInt(m.group(1)), d.index());
+                }
+            }
+        }
+        // RT lookup: (time, index) sorted by time
+        Integer[] order = new Integer[descriptions.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        java.util.Arrays.sort(order, (a, b) ->
+                Double.compare(descriptions.get(a).retentionTime(), descriptions.get(b).retentionTime()));
+        this.sortedTimes = new double[order.length];
+        this.timeIndexOrder = new long[order.length];
+        for (int i = 0; i < order.length; i++) {
+            sortedTimes[i] = descriptions.get(order[i]).retentionTime();
+            timeIndexOrder[i] = descriptions.get(order[i]).index();
         }
     }
 
-    /** Open an unpacked mzPeak directory. */
-    public static MzPeakReader open(Path directory) {
-        if (!Files.isDirectory(directory)) {
-            throw new MzPeakException("Not a directory: " + directory
-                    + " (milestone 1 supports only the unpacked *.mzpeak directory form)");
+    /** Open an mzPeak dataset (directory or ZIP), reconstructing null-marked profile points. */
+    public static MzPeakReader open(Path path) {
+        return open(path, true);
+    }
+
+    /** Open an mzPeak dataset; {@code reconstructProfile=false} returns only stored (non-null) profile points. */
+    public static MzPeakReader open(Path path, boolean reconstructProfile) {
+        MzPeakSource source = MzPeakSource.open(path);
+        try {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+            MzPeakManifest.Entry metaEntry = manifest.find("spectrum", "metadata")
+                    .orElseThrow(() -> new MzPeakException("Manifest has no spectrum metadata file"));
+            List<SpectrumDescription> descriptions =
+                    SpectrumMetadataDecoder.decode(source.inputFile(metaEntry.name()));
+            String dataFile = manifest.find("spectrum", "data arrays").map(MzPeakManifest.Entry::name).orElse(null);
+            String peaksFile = manifest.find("spectrum", "peaks").map(MzPeakManifest.Entry::name).orElse(null);
+            return new MzPeakReader(source, manifest, reconstructProfile, descriptions, dataFile, peaksFile);
+        } catch (RuntimeException e) {
+            source.close();
+            throw e;
         }
-        MzPeakManifest manifest = MzPeakManifest.fromDirectory(directory);
-        MzPeakManifest.Entry metaEntry = manifest.find("spectrum", "metadata")
-                .orElseThrow(() -> new MzPeakException("Manifest has no spectrum metadata file"));
-        List<SpectrumDescription> descriptions =
-                SpectrumMetadataDecoder.decode(directory.resolve(metaEntry.name()));
-        Path dataFile = manifest.find("spectrum", "data arrays")
-                .map(e -> directory.resolve(e.name())).orElse(null);
-        Path peaksFile = manifest.find("spectrum", "peaks")
-                .map(e -> directory.resolve(e.name())).orElse(null);
-        return new MzPeakReader(manifest, descriptions, dataFile, peaksFile);
     }
 
     public MzPeakManifest manifest() {
         return manifest;
     }
 
-    /** Number of spectra. */
     public int size() {
         return descriptions.size();
     }
 
-    /** All spectrum metadata, ordered by spectrum index. */
     public List<SpectrumDescription> metadata() {
         return Collections.unmodifiableList(descriptions);
     }
 
-    /** Metadata for a spectrum by its mzPeak {@code index}. */
     public Optional<SpectrumDescription> getMetadata(long index) {
         Integer ordinal = indexToOrdinal.get(index);
         return ordinal == null ? Optional.empty() : Optional.of(descriptions.get(ordinal));
     }
 
-    /** Metadata by 0-based position in the (index-sorted) spectrum list. */
     public SpectrumDescription metadataAt(int ordinal) {
         return descriptions.get(ordinal);
     }
 
-    /** Full spectrum (metadata + m/z/intensity arrays + centroid peaks) by mzPeak {@code index}. */
     public Optional<Spectrum> getSpectrum(long index) {
         Integer ordinal = indexToOrdinal.get(index);
-        if (ordinal == null) {
-            return Optional.empty();
-        }
-        return Optional.of(materialize(descriptions.get(ordinal)));
+        return ordinal == null ? Optional.empty() : Optional.of(materialize(descriptions.get(ordinal)));
     }
 
-    /** Full spectrum by 0-based position in the spectrum list. */
     public Spectrum getSpectrumAt(int ordinal) {
         return materialize(descriptions.get(ordinal));
     }
 
+    /** Look up by native id string (e.g. {@code "controllerType=0 controllerNumber=1 scan=3"}). */
+    public Optional<Spectrum> getSpectrumById(String id) {
+        Long index = idToIndex.get(id);
+        return index == null ? Optional.empty() : getSpectrum(index);
+    }
+
+    /** Look up by vendor scan number parsed from the native id. */
+    public Optional<Spectrum> getSpectrumByScanNumber(int scanNumber) {
+        Long index = scanNumberToIndex.get(scanNumber);
+        return index == null ? Optional.empty() : getSpectrum(index);
+    }
+
+    /** The spectrum whose retention time is nearest {@code time}; empty only if there are no spectra. */
+    public Optional<Spectrum> getSpectrumByTime(double time) {
+        if (sortedTimes.length == 0) {
+            return Optional.empty();
+        }
+        int pos = java.util.Arrays.binarySearch(sortedTimes, time);
+        if (pos < 0) {
+            int ins = -pos - 1;
+            if (ins == 0) {
+                pos = 0;
+            } else if (ins >= sortedTimes.length) {
+                pos = sortedTimes.length - 1;
+            } else {
+                pos = (time - sortedTimes[ins - 1] <= sortedTimes[ins] - time) ? ins - 1 : ins;
+            }
+        }
+        return getSpectrum(timeIndexOrder[pos]);
+    }
+
     private Spectrum materialize(SpectrumDescription description) {
         long index = description.index();
-        PointArrayStore.Arrays profile = data() == null ? null : data().get(index);
-        PointArrayStore.Arrays centroids = peaks() == null ? null : peaks().get(index);
+        SpectrumArrayStore.Arrays profile = data() == null ? null : data().get(index);
+        SpectrumArrayStore.Arrays centroids = peaks() == null ? null : peaks().get(index);
 
         List<CentroidPeak> peakList = List.of();
         if (centroids != null) {
@@ -130,8 +194,6 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             mz = profile.mz();
             intensity = profile.intensity();
         } else if (centroids != null) {
-            // Centroid-only spectrum: expose the centroid coordinates as the array payload too,
-            // so consumers (incl. the FragPipe adapter) always get arrays.
             mz = centroids.mz();
             intensity = centroids.intensity();
         } else {
@@ -141,20 +203,50 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return new Spectrum(description, mz, intensity, peakList);
     }
 
-    private synchronized PointArrayStore data() {
+    // ---- chromatograms ----------------------------------------------------------------------------
+
+    /** All chromatograms (TIC, BPC, ...) ordered by index. */
+    public List<org.mzpeak.model.Chromatogram> chromatograms() {
+        return chromatograms0() == null ? List.of() : chromatograms0().all();
+    }
+
+    public Optional<org.mzpeak.model.Chromatogram> getChromatogram(long index) {
+        return chromatograms0() == null ? Optional.empty() : chromatograms0().byIndex(index);
+    }
+
+    public Optional<org.mzpeak.model.Chromatogram> getChromatogramById(String id) {
+        return chromatograms0() == null ? Optional.empty() : chromatograms0().byId(id);
+    }
+
+    // ---- lazy stores ------------------------------------------------------------------------------
+
+    private synchronized SpectrumArrayStore data() {
         if (!dataLoaded) {
-            dataStore = dataFile == null ? null : PointArrayStore.load(dataFile);
+            dataStore = dataFileName == null ? null
+                    : SpectrumArrayStore.load(source.inputFile(dataFileName), reconstructProfile);
             dataLoaded = true;
         }
         return dataStore;
     }
 
-    private synchronized PointArrayStore peaks() {
+    private synchronized SpectrumArrayStore peaks() {
         if (!peaksLoaded) {
-            peakStore = peaksFile == null ? null : PointArrayStore.load(peaksFile);
+            peakStore = peaksFileName == null ? null
+                    : SpectrumArrayStore.load(source.inputFile(peaksFileName), reconstructProfile);
             peaksLoaded = true;
         }
         return peakStore;
+    }
+
+    private synchronized ChromatogramStore chromatograms0() {
+        if (!chromatogramsLoaded) {
+            String metaName = manifest.find("chromatogram", "metadata").map(MzPeakManifest.Entry::name).orElse(null);
+            String dataName = manifest.find("chromatogram", "data arrays").map(MzPeakManifest.Entry::name).orElse(null);
+            chromatogramStore = (metaName == null || dataName == null) ? null
+                    : ChromatogramStore.load(source.inputFile(metaName), source.inputFile(dataName));
+            chromatogramsLoaded = true;
+        }
+        return chromatogramStore;
     }
 
     @Override
@@ -179,8 +271,9 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     @Override
     public void close() {
-        // In-memory caches; nothing to release in the prototype.
         dataStore = null;
         peakStore = null;
+        chromatogramStore = null;
+        source.close();
     }
 }
