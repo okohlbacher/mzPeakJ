@@ -9,11 +9,12 @@ See: .planning/PROJECT.md (updated 2026-06-01)
 
 ## Current Position
 
-Phase: 5 of 5 complete (autonomous run)
-Status: Prototype complete — 8 JUnit tests green against the vendored fixture; both codex gates run.
-Last activity: 2026-06-01 — Implemented phases 1-5 autonomously; end-of-phase codex review fixes applied.
+Phase: 5 of 5 complete + deferred-backlog push complete (autonomous run)
+Status: 18 JUnit tests green; `mvn verify` builds the jar; two codex review rounds applied.
+Last activity: 2026-06-01 — Cleared the deferred backlog: ZIP container, delta-chunk layout,
+chromatograms, scan#/id/RT lookups, profile reconstruction, CLI; codex round-2 hardening.
 
-Progress: [██████████] 100% (milestone 1 scope)
+Progress: [██████████] milestone 1 + most of the deferred backlog
 
 ### What was built
 - `mvn verify` green (JDK 25 / `JAVA_HOME=/opt/homebrew/opt/openjdk@25`).
@@ -26,6 +27,15 @@ Progress: [██████████] 100% (milestone 1 scope)
   (facet-join correctness), iteration, manifest roles, MSFTBX round-trip (zero-copy).
 - codex design review (pre-build) and adversarial review (post-build) both run; HIGH/MED findings fixed
   or documented (see README "Scope & limitations").
+
+### Deferred backlog (autonomous extension)
+Delivered: single-file STORED-ZIP container (MzPeakSource/ZipSource/ByteArrayInputFile), delta-`chunk`
+layout (validated byte-exact vs point layout for centroids; total-signal-exact for profiles), chromatograms,
+lookups by scan#/native-id/nearest-RT, approximate profile reconstruction (count matches reference 13589),
+CLI (org.mzpeak.cli.MzPeakInfo), Javadoc. Cross-validated against the Rust mzpeak_prototyping test oracle
+(spectrum 0=13589 pts, 5=650 peaks, 25=789 peaks) across unpacked/ZIP/chunked fixtures.
+Still deferred (see REQUIREMENTS.md): MS-Numpress decoding (clear error + test), exact mz_delta_model
+polynomial reconstruction, wavelength/UV spectra, predicate pushdown/streaming, writing.
 
 ## Performance Metrics
 
