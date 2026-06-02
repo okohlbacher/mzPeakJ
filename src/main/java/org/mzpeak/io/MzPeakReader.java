@@ -30,6 +30,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private final MzPeakManifest manifest;
     private final boolean reconstructProfile;
     private final List<SpectrumDescription> descriptions;
+    private final Map<Long, double[]> deltaModels;
     private final Map<Long, Integer> indexToOrdinal;
     private final Map<Integer, Long> scanNumberToIndex;
     private final Map<String, Long> idToIndex;
@@ -52,12 +53,13 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private WavelengthSpectrumStore wavelengthStore;
 
     private MzPeakReader(MzPeakSource source, MzPeakManifest manifest, boolean reconstructProfile,
-                         List<SpectrumDescription> descriptions, String metadataFileName,
+                         SpectrumMetadataDecoder.Decoded decoded, String metadataFileName,
                          String dataFileName, String peaksFileName) {
         this.source = source;
         this.manifest = manifest;
         this.reconstructProfile = reconstructProfile;
-        this.descriptions = descriptions;
+        this.descriptions = decoded.descriptions();
+        this.deltaModels = decoded.deltaModels();
         this.metadataFileName = metadataFileName;
         this.dataFileName = dataFileName;
         this.peaksFileName = peaksFileName;
@@ -103,11 +105,11 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
             MzPeakManifest.Entry metaEntry = manifest.find("spectrum", "metadata")
                     .orElseThrow(() -> new MzPeakException("Manifest has no spectrum metadata file"));
-            List<SpectrumDescription> descriptions =
+            SpectrumMetadataDecoder.Decoded decoded =
                     SpectrumMetadataDecoder.decode(source.inputFile(metaEntry.name()));
             String dataFile = manifest.find("spectrum", "data arrays").map(MzPeakManifest.Entry::name).orElse(null);
             String peaksFile = manifest.find("spectrum", "peaks").map(MzPeakManifest.Entry::name).orElse(null);
-            return new MzPeakReader(source, manifest, reconstructProfile, descriptions,
+            return new MzPeakReader(source, manifest, reconstructProfile, decoded,
                     metaEntry.name(), dataFile, peaksFile);
         } catch (RuntimeException e) {
             source.close();
@@ -249,7 +251,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private synchronized SpectrumArrayStore data() {
         if (!dataLoaded) {
             dataStore = dataFileName == null ? null
-                    : SpectrumArrayStore.load(source.inputFile(dataFileName), reconstructProfile);
+                    : SpectrumArrayStore.load(source.inputFile(dataFileName), reconstructProfile, deltaModels);
             dataLoaded = true;
         }
         return dataStore;
@@ -258,7 +260,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private synchronized SpectrumArrayStore peaks() {
         if (!peaksLoaded) {
             peakStore = peaksFileName == null ? null
-                    : SpectrumArrayStore.load(source.inputFile(peaksFileName), reconstructProfile);
+                    : SpectrumArrayStore.load(source.inputFile(peaksFileName), reconstructProfile, deltaModels);
             peaksLoaded = true;
         }
         return peakStore;

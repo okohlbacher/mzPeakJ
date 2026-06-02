@@ -37,6 +37,7 @@ final class SpectrumMetadataDecoder {
     private static final String F_REPRESENTATION = "MS_1000525_spectrum_representation";
     private static final String F_N_POINTS = "MS_1003060_number_of_data_points";
     private static final String F_N_PEAKS = "MS_1003059_number_of_peaks";
+    private static final String F_MZ_DELTA_MODEL = "mz_delta_model";
     // facet keys
     private static final String F_SOURCE_INDEX = "source_index";
     // scan facet
@@ -58,11 +59,12 @@ final class SpectrumMetadataDecoder {
     private SpectrumMetadataDecoder() {
     }
 
-    static List<SpectrumDescription> decode(InputFile metadataFile) {
+    static Decoded decode(InputFile metadataFile) {
         Map<Long, Builder> builders = new LinkedHashMap<>();
         Map<Long, List<Group>> scansBySource = new HashMap<>();
         Map<Long, List<Group>> precursorsBySource = new HashMap<>();
         Map<Long, List<Group>> selectedIonsBySource = new HashMap<>();
+        Map<Long, double[]> deltaModels = new HashMap<>();
 
         ParquetGroups.forEach(metadataFile, row -> {
             Group spectrum = ParquetGroups.optGroup(row, "spectrum");
@@ -74,6 +76,10 @@ final class SpectrumMetadataDecoder {
                     }
                     if (builders.putIfAbsent(idx, Builder.from(spectrum, idx)) != null) {
                         throw new MzPeakException("duplicate spectrum.index in metadata: " + idx);
+                    }
+                    double[] model = ParquetGroups.doubleListNullable(spectrum, F_MZ_DELTA_MODEL);
+                    if (model.length > 0) {
+                        deltaModels.put(idx, model);
                     }
                 }
             }
@@ -92,7 +98,11 @@ final class SpectrumMetadataDecoder {
                     b.numberOfDataPoints, b.numberOfPeaks, scans, precursors));
         }
         out.sort((a, b) -> Long.compare(a.index(), b.index()));
-        return out;
+        return new Decoded(out, deltaModels);
+    }
+
+    /** Decoded spectrum metadata plus the per-spectrum {@code mz_delta_model} polynomial coefficients. */
+    record Decoded(List<SpectrumDescription> descriptions, Map<Long, double[]> deltaModels) {
     }
 
     private static void indexFacet(Group row, String facetName, Map<Long, List<Group>> target) {

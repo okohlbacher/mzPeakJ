@@ -41,6 +41,7 @@ final class SpectrumArrayStore implements AutoCloseable {
     private final ParquetFileReader reader;
     private final MessageType schema;
     private final boolean reconstructProfile;
+    private final Map<Long, double[]> deltaModels;
     private final long[] rgMin;
     private final long[] rgMax;
     private final ColumnIOFactory columnIO = new ColumnIOFactory();
@@ -51,15 +52,16 @@ final class SpectrumArrayStore implements AutoCloseable {
     private Map<Long, Arrays> cache = Map.of();
 
     private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, boolean reconstructProfile,
-                               long[] rgMin, long[] rgMax) {
+                               Map<Long, double[]> deltaModels, long[] rgMin, long[] rgMax) {
         this.reader = reader;
         this.schema = schema;
         this.reconstructProfile = reconstructProfile;
+        this.deltaModels = deltaModels;
         this.rgMin = rgMin;
         this.rgMax = rgMax;
     }
 
-    static SpectrumArrayStore load(InputFile file, boolean reconstructProfile) {
+    static SpectrumArrayStore load(InputFile file, boolean reconstructProfile, Map<Long, double[]> deltaModels) {
         try {
             ParquetFileReader reader = ParquetFileReader.open(file, ParquetGroups.readOptions());
             MessageType schema = reader.getFooter().getFileMetaData().getSchema();
@@ -71,7 +73,7 @@ final class SpectrumArrayStore implements AutoCloseable {
                 rgMin[b] = range[0];
                 rgMax[b] = range[1];
             }
-            return new SpectrumArrayStore(reader, schema, reconstructProfile, rgMin, rgMax);
+            return new SpectrumArrayStore(reader, schema, reconstructProfile, deltaModels, rgMin, rgMax);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed opening spectrum signal file", e);
         }
@@ -129,7 +131,7 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private Map<Long, Arrays> decodeBlocks(int first, int last) {
         Map<Long, Arrays> result = new HashMap<>();
-        Accumulator acc = new Accumulator(result, reconstructProfile);
+        Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels);
         try {
             for (int b = first; b <= last; b++) {
                 PageReadStore pages = reader.readRowGroup(b);
@@ -160,14 +162,16 @@ final class SpectrumArrayStore implements AutoCloseable {
     private static final class Accumulator implements Consumer<Group> {
         private final Map<Long, Arrays> result;
         private final boolean reconstructProfile;
+        private final Map<Long, double[]> deltaModels;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
         private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
 
-        Accumulator(Map<Long, Arrays> result, boolean reconstructProfile) {
+        Accumulator(Map<Long, Arrays> result, boolean reconstructProfile, Map<Long, double[]> deltaModels) {
             this.result = result;
             this.reconstructProfile = reconstructProfile;
+            this.deltaModels = deltaModels;
         }
 
         @Override
@@ -318,7 +322,17 @@ final class SpectrumArrayStore implements AutoCloseable {
             if (!started) {
                 return;
             }
-            Arrays arrays = finalizeArrays(mz.toArray(), intensity.toArray(), reconstructProfile);
+            double[] mzArray = mz.toArray();
+            double[] intensityArray = intensity.toArray();
+            double[] model = deltaModels == null ? null : deltaModels.get(current);
+            Arrays arrays;
+            if (reconstructProfile && model != null && model.length > 0) {
+                // Exact reconstruction: fill null-marked m/z by stepping with the stored polynomial delta model.
+                polynomialFill(mzArray, model);
+                arrays = new Arrays(mzArray, intensityArray);
+            } else {
+                arrays = finalizeArrays(mzArray, intensityArray, reconstructProfile);
+            }
             if (result.putIfAbsent(current, arrays) != null) {
                 throw new MzPeakException("signal file is not sorted by spectrum_index (index " + current
                         + " appears in multiple non-contiguous runs)");
@@ -405,5 +419,51 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
             i = right + 1;
         }
+    }
+
+    /**
+     * Fill NaN m/z by stepping with the per-spectrum delta model {@code beta} (the mzPeak
+     * {@code mz_delta_model} polynomial: {@code delta(mz) = beta[0] + beta[1]*mz + beta[2]*mz^2 + ...}). Each
+     * filled point advances from its neighbour by the predicted local spacing — closer to the original grid
+     * than linear interpolation. Mirrors the reference reconstruction's use of the polynomial delta model.
+     */
+    static void polynomialFill(double[] m, double[] beta) {
+        int n = m.length;
+        int first = 0;
+        while (first < n && Double.isNaN(m[first])) {
+            first++;
+        }
+        if (first == n) {
+            return;
+        }
+        for (int k = first - 1; k >= 0; k--) {            // leading run: step backwards
+            m[k] = m[k + 1] - predict(m[k + 1], beta);
+        }
+        int i = first;
+        while (i < n) {
+            if (!Double.isNaN(m[i])) {
+                i++;
+                continue;
+            }
+            int right = i;
+            while (right < n && Double.isNaN(m[right])) {
+                right++;
+            }
+            int end = (right == n) ? n : right;           // interior or trailing run: step forwards
+            for (int k = i; k < end; k++) {
+                m[k] = m[k - 1] + predict(m[k - 1], beta);
+            }
+            i = right + 1;
+        }
+    }
+
+    private static double predict(double mz, double[] beta) {
+        double acc = 0;
+        double power = 1;
+        for (double b : beta) {
+            acc += b * power;
+            power *= mz;
+        }
+        return acc;
     }
 }
