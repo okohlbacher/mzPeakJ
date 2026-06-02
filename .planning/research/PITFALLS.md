@@ -1,0 +1,16 @@
+# Pitfalls Research — mzPeakJ
+
+Domain-specific traps (not generic advice). Each maps to the phase that should address it.
+
+| # | Pitfall | Warning signs | Prevention | Phase |
+|---|---|---|---|---|
+| 1 | **Hardcoding Parquet physical types.** Spec mandates writers MAY emit m/z as f32 or f64, intensity f32/i32/f64, `list` vs `large_list`, `string` vs `large_string`. | ClassCastException / wrong values on a second dataset. | Decode off logical type + array-index annotation; centralize column→array mapping. Test with both example files. | P3 |
+| 2 | **Assuming a scan-number or RT index exists.** mzPeak has neither; only the integer `index` is addressable, and vendor scan# is buried in the `id` nativeID string. | "find by scan number" returns wrong/empty. | Address by `index` only in v1; build scan#/RT maps from the metadata table explicitly (deferred feature). | P2 |
+| 3 | **Hadoop creeping in via parquet-java.** Default `parquet-hadoop` pulls `org.apache.hadoop.*`. | Fat jar, `Configuration`/`Path`/`UnsatisfiedLinkError` (winutils on Windows). | Use `PlainParquetConfiguration` + custom/`Local` `InputFile`; exclude `hadoop-common`/`hadoop-mapreduce`; assert no `org.apache.hadoop` on the runtime classpath in a test. | P0/P3 |
+| 4 | **"Packed parallel tables" misjoin.** `spectrum`/`scan`/`precursor`/`selected_ion` are independent dense facets joined by integer keys — NOT row-aligned; any facet may be null in a row. | MSn precursor m/z attached to wrong spectrum; null pointer on MS1. | Join strictly on `source_index == spectrum.index` via the validity bitmap; never zip by row position. | P2 |
+| 5 | **Reading whole files instead of pushing down.** Tall `point` tables can be huge; naive full scan per spectrum is O(n²). | Slow `getSpectrum`; high memory. | Use row-group min-max on `spectrum_index` + page index + `RowFilter`/`RowSelection`. Verify pushdown actually skips row groups (count rows read). | P3 |
+| 6 | **float→double widening churn at the FragPipe boundary.** mzPeak intensity may be f32; MSFTBX needs `double[]`. | Per-conversion array copies; precision surprises. | Store intensity as `double[]` in the model from the start (locked decision); widen once at decode. | P1/P4 |
+| 7 | **Pinning to a moving prototype.** mzPeak format + `mzpeak_prototyping` API are explicitly unstable. | Example files stop parsing after an upstream change. | Vendor the example fixtures and pin the upstream commit hash in P0; record it in the repo. | P0 |
+| 8 | **Profile data surprises (zero-run stripping / null-marking).** Some profile files drop/`null` flanking zeros and expect reconstruction via `mz_delta_model`. | Gaps/nulls in m/z; fewer points than `number_of_data_points`. | v1 reads stored points as-is and documents the limitation; treat null intensity as 0; full reconstruction deferred. | P3 |
+| 9 | **JDK not on PATH.** Only Homebrew openjdk@25 exists; bare `mvn`/`java` fail. | "Unable to locate a Java Runtime". | Export `JAVA_HOME=/opt/homebrew/opt/openjdk@25` in build scripts / `.mvn/jvm.config` or document it. | P0 |
+| 10 | **msftbx leaking into core.** Tight coupling makes the FragPipe dep mandatory. | Core can't be used without MSFragger jars. | Keep `org.mzpeak.fragpipe` a separate module; core has zero msftbx dep. | P1/P4 |
