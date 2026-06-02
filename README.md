@@ -71,6 +71,9 @@ The core reader has **no** dependency on FragPipe; the `msftbx` dependency is `o
 
 ## Architecture
 
+For format internals and the decode rationale (the facet-join trap, chunk decoding, null-marking,
+Hadoop-free Parquet, type variance), see **[DESIGN.md](DESIGN.md)**.
+
 | Package | Responsibility |
 |---|---|
 | `org.mzpeak.model` | Pure data: peak primitives (`CentroidPeak`, `DeconvolutedPeak`), `Spectrum`, `SpectrumDescription`, `Precursor`, `Tolerance`, ... |

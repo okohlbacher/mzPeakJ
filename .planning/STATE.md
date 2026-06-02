@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-06-01)
 
 ## Current Position
 
-Phase: 5 of 5 complete + deferred-backlog push complete (autonomous run)
-Status: 18 JUnit tests green; `mvn verify` builds the jar; two codex review rounds applied.
-Last activity: 2026-06-01 — Cleared the deferred backlog: ZIP container, delta-chunk layout,
-chromatograms, scan#/id/RT lookups, profile reconstruction, CLI; codex round-2 hardening.
+Phase: FROZEN & documented (reference-prototype exploration goal met)
+Status: 21 JUnit tests green; `mvn verify` builds the jar; DESIGN.md written; scope frozen.
+Last activity: 2026-06-01 — Added UV/wavelength spectra + multi-chromatogram coverage; wrote DESIGN.md;
+froze scope per "reference prototype" goal.
 
-Progress: [██████████] milestone 1 + most of the deferred backlog
+Progress: [██████████] reads every container, layout, and entity type in the example data except Numpress
 
 ### What was built
 - `mvn verify` green (JDK 25 / `JAVA_HOME=/opt/homebrew/opt/openjdk@25`).
