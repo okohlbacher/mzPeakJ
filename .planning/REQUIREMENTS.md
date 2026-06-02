@@ -49,4 +49,24 @@ FragPipe/MSFTBX adapter. All v1 requirements are hypotheses until shipped and va
 - **Thread-safe concurrent reads** — single-dataset, single-thread documented for v1; concurrency is a later concern
 
 ## Traceability
-*(Filled by the roadmapper — maps each REQ-ID to a phase.)*
+
+Every v1 requirement maps to exactly one phase. Coverage: 12/12.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| BUILD-01 | Phase 1 — Scaffold & Fixtures | Pending |
+| BUILD-02 | Phase 1 — Scaffold & Fixtures | Pending |
+| MODEL-01 | Phase 2 — Data Model | Pending |
+| MODEL-02 | Phase 2 — Data Model | Pending |
+| MAN-01 | Phase 3 — Manifest & Metadata Reader | Pending |
+| META-01 | Phase 3 — Manifest & Metadata Reader | Pending |
+| META-02 | Phase 3 — Manifest & Metadata Reader | Pending |
+| PEAK-01 | Phase 4 — Peak/Array Reader & API | Pending |
+| PEAK-02 | Phase 4 — Peak/Array Reader & API | Pending |
+| PEAK-03 | Phase 4 — Peak/Array Reader & API | Pending |
+| API-01 | Phase 4 — Peak/Array Reader & API | Pending |
+| FRAG-01 | Phase 5 — FragPipe Adapter & Tests | Pending |
+| TEST-01 | Phase 5 — FragPipe Adapter & Tests | Pending |
+
+**Note:** TEST-01's dedicated end-to-end acceptance lives in Phase 5, but each earlier phase
+carries its own tests against the vendored fixtures (see per-phase success criteria in ROADMAP.md).
