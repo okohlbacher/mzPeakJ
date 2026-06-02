@@ -32,11 +32,11 @@ build order is dictated by dependency direction, not by user-facing features.
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Scaffold & Fixtures** - Hadoop-free Maven build on JDK 25 + vendored, commit-pinned example fixtures
-- [ ] **Phase 2: Data Model** - Pure-data peak primitives + Spectrum model (intensity as `double[]`), zero I/O deps
-- [ ] **Phase 3: Manifest & Metadata Reader** - Parse `mzpeak_index.json`; read `spectra_metadata.parquet` into a spectrum list with joined precursor facets
-- [ ] **Phase 4: Peak/Array Reader & API** - Point-layout `double[]` m/z+intensity per index with pushdown random access, behind the public `MzPeakReader` API
-- [ ] **Phase 5: FragPipe Adapter & Tests** - Isolated `Spectrum → IScan/ISpectrum` MSFTBX adapter + full end-to-end JUnit suite on the fixture
+- [x] **Phase 1: Scaffold & Fixtures** - Hadoop-free Maven build on JDK 25 + vendored, commit-pinned example fixtures
+- [x] **Phase 2: Data Model** - Pure-data peak primitives + Spectrum model (intensity as `double[]`), zero I/O deps
+- [x] **Phase 3: Manifest & Metadata Reader** - Parse `mzpeak_index.json`; read `spectra_metadata.parquet` into a spectrum list with joined precursor facets
+- [x] **Phase 4: Peak/Array Reader & API** - Point-layout `double[]` m/z+intensity per index with pushdown random access, behind the public `MzPeakReader` API
+- [x] **Phase 5: FragPipe Adapter & Tests** - Isolated `Spectrum → IScan/ISpectrum` MSFTBX adapter + full end-to-end JUnit suite on the fixture
 
 ## Phase Details
 

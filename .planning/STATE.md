@@ -5,16 +5,27 @@
 See: .planning/PROJECT.md (updated 2026-06-01)
 
 **Core value:** Given an unpacked mzPeak dataset, return correct per-spectrum `double[]` m/z + intensity arrays and metadata that round-trip into FragPipe/MSFTBX.
-**Current focus:** Phase 1 — Scaffold & Fixtures
+**Current focus:** Milestone 1 prototype COMPLETE — all 5 phases delivered.
 
 ## Current Position
 
-Phase: 1 of 5 (Scaffold & Fixtures)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-06-01 — Roadmap created (5 phases, 12/12 requirements mapped)
+Phase: 5 of 5 complete (autonomous run)
+Status: Prototype complete — 8 JUnit tests green against the vendored fixture; both codex gates run.
+Last activity: 2026-06-01 — Implemented phases 1-5 autonomously; end-of-phase codex review fixes applied.
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100% (milestone 1 scope)
+
+### What was built
+- `mvn verify` green (JDK 25 / `JAVA_HOME=/opt/homebrew/opt/openjdk@25`).
+- Hadoop-free Parquet read (LocalInputFile + PlainParquetConfiguration + custom zstd-jni codec factory);
+  no `org.apache.hadoop` at compile/runtime scope.
+- `org.mzpeak.model` (peaks + Spectrum/SpectrumDescription/Precursor/Tolerance, intensity `double[]`).
+- `org.mzpeak.io` (MzPeakReader, MzPeakManifest, SpectrumMetadataDecoder with source_index facet joins,
+  PointArrayStore) + `org.mzpeak.fragpipe.MsftbxAdapter`.
+- 8 tests on `small.unpacked.mzpeak`: spectrum count/MS levels, MS1 profile arrays, MS2 centroid + precursor
+  (facet-join correctness), iteration, manifest roles, MSFTBX round-trip (zero-copy).
+- codex design review (pre-build) and adversarial review (post-build) both run; HIGH/MED findings fixed
+  or documented (see README "Scope & limitations").
 
 ## Performance Metrics
 
