@@ -17,8 +17,12 @@ A set of Apache Parquet files plus a `mzpeak_index.json` manifest, delivered as 
 - an **unpacked directory** `run.mzpeak/`, or
 - a **single file** `run.mzpeak` = an **uncompressed (STORED) ZIP** of the same members.
 
-`mzPeakJ` reads both via the `MzPeakSource` abstraction (`DirectorySource` / `ZipSource`). The manifest maps
-each member to a role `(entity_type, data_kind)` — **resolve files by role, never by hardcoded filename**:
+`mzPeakJ` reads both via the `MzPeakSource` abstraction (`DirectorySource` / `ZipSource`). Because the ZIP
+members are STORED, `ZipSource` parses the central directory (`ZipIndex`) and reads each Parquet member
+**in place** from its byte range via a seekable `FileSliceInputFile` over the archive's `FileChannel` — no
+copy into memory — so a single-file archive streams exactly like a directory. (The example archives use
+per-entry zip64 extra fields for sizes even with a non-zip64 EOCD, which `ZipIndex` handles.) The manifest
+maps each member to a role `(entity_type, data_kind)` — **resolve files by role, never by hardcoded filename**:
 
 | entity_type | data_kind | file (conventional) | mzPeakJ store |
 |---|---|---|---|

@@ -2,29 +2,39 @@ package org.mzpeak.io;
 
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.parquet.ByteArrayInputFile;
+import org.mzpeak.io.parquet.FileSliceInputFile;
 
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
+import java.nio.file.StandardOpenOption;
+import java.util.Map;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 
 /**
- * {@link MzPeakSource} over a single-file {@code .mzpeak} ZIP archive. The mzPeak spec requires members to be
- * STORED (uncompressed); members are read fully into memory and wrapped as {@link ByteArrayInputFile}s.
+ * {@link MzPeakSource} over a single-file {@code .mzpeak} ZIP archive.
+ *
+ * <p>mzPeak archives store their Parquet members STORED (uncompressed). Such members are read <em>in place</em>
+ * via a seekable {@link FileSliceInputFile} over the archive's {@link FileChannel} — no copy into memory — so
+ * reads from inside the archive are streaming and memory-bounded, exactly like an unpacked directory.
+ * (Compressed members, which the spec doesn't use, are inflated into memory as a fallback.)
  */
 final class ZipSource implements MzPeakSource {
 
-    /** Guard against pathological archives reading unbounded heap (byte[] is also capped at ~2 GiB). */
+    /** Guard the in-memory fallback (manifest read + compressed members) against unbounded heap. */
     private static final long MAX_MEMBER_BYTES = Integer.MAX_VALUE - 8;
 
     private final Path path;
-    private final ZipFile zip;
+    private final FileChannel channel;
+    private final Map<String, ZipIndex.Entry> index;
 
     ZipSource(Path path) {
         this.path = path;
         try {
-            this.zip = new ZipFile(path.toFile());
+            this.channel = FileChannel.open(path, StandardOpenOption.READ);
+            this.index = ZipIndex.read(channel);
         } catch (IOException e) {
             throw new MzPeakException("Failed to open mzPeak archive " + path, e);
         }
@@ -32,26 +42,67 @@ final class ZipSource implements MzPeakSource {
 
     @Override
     public byte[] readManifestBytes() {
-        return readEntry("mzpeak_index.json");
+        return readBytes("mzpeak_index.json");
     }
 
     @Override
     public InputFile inputFile(String name) {
-        return new ByteArrayInputFile(readEntry(name));
+        ZipIndex.Entry e = entry(name);
+        if (e.method() == ZipIndex.STORED) {
+            return new FileSliceInputFile(channel, e.dataOffset(), e.size()); // in place, seekable
+        }
+        return new ByteArrayInputFile(readBytes(name)); // compressed -> inflate into memory
     }
 
-    private byte[] readEntry(String name) {
-        ZipEntry entry = zip.getEntry(name);
-        if (entry == null) {
+    private ZipIndex.Entry entry(String name) {
+        ZipIndex.Entry e = index.get(name);
+        if (e == null) {
             throw new MzPeakException("mzPeak archive " + path + " has no member " + name);
         }
-        long size = entry.getSize();
-        if (size > MAX_MEMBER_BYTES) {
-            throw new MzPeakException("mzPeak member " + name + " is too large to read into memory ("
-                    + size + " bytes) in " + path);
+        return e;
+    }
+
+    private byte[] readBytes(String name) {
+        ZipIndex.Entry e = entry(name);
+        if (e.size() > MAX_MEMBER_BYTES || e.compressedSize() > MAX_MEMBER_BYTES) {
+            throw new MzPeakException("mzPeak member " + name + " is too large to read into memory in " + path);
         }
-        try (InputStream in = zip.getInputStream(entry)) {
-            return in.readAllBytes();
+        byte[] raw = readSlice(e.dataOffset(), (int) e.compressedSize(), name);
+        if (e.method() == ZipIndex.STORED) {
+            return raw;
+        }
+        byte[] out = new byte[(int) e.size()];
+        Inflater inflater = new Inflater(true);
+        try {
+            inflater.setInput(raw);
+            int total = 0;
+            while (total < out.length && !inflater.finished()) {
+                int n = inflater.inflate(out, total, out.length - total);
+                if (n == 0 && (inflater.finished() || inflater.needsInput())) {
+                    break;
+                }
+                total += n;
+            }
+            return out;
+        } catch (DataFormatException ex) {
+            throw new MzPeakException("Failed to inflate member " + name + " in " + path, ex);
+        } finally {
+            inflater.end();
+        }
+    }
+
+    private byte[] readSlice(long offset, int length, String name) {
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(length);
+            long pos = offset;
+            while (buf.hasRemaining()) {
+                int n = channel.read(buf, pos);
+                if (n < 0) {
+                    throw new MzPeakException("unexpected end of archive reading member " + name + " in " + path);
+                }
+                pos += n;
+            }
+            return buf.array();
         } catch (IOException e) {
             throw new MzPeakException("Failed to read member " + name + " from " + path, e);
         }
@@ -65,7 +116,7 @@ final class ZipSource implements MzPeakSource {
     @Override
     public void close() {
         try {
-            zip.close();
+            channel.close();
         } catch (IOException e) {
             throw new MzPeakException("Failed to close " + path, e);
         }

@@ -182,7 +182,9 @@ but no Hadoop install, native libs, or config is needed.
 - Random access by index, native id, vendor scan number (multi-vendor nativeID parsing), and nearest
   retention time; iteration.
 - **Streaming reader**: only the row group(s) covering a requested spectrum are decoded (bounded memory on
-  large multi-row-group files).
+  large multi-row-group files). STORED (uncompressed) members of a single-file `.mzpeak` ZIP are read
+  **in place** (seekable file slice, no whole-member buffering), so a single-file archive streams just like a
+  directory.
 - **Writing** mzPeak (ZSTD Parquet, point layout, + footer metadata) to a directory or STORED ZIP —
   round-trips through the reader.
 - A self-contained **shaded jar** (`mzpeakj-<v>-all.jar`) for running the CLI/examples with just `-cp`.
