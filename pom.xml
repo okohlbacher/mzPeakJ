@@ -70,6 +70,14 @@
       <version>${jackson.version}</version>
     </dependency>
 
+    <!-- No-op SLF4J binding: parquet-java logs via SLF4J; this binds it silently (no "StaticLoggerBinder"
+         warning, no log output). Matches the slf4j-api 1.7.x that parquet-java pulls in. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>1.7.33</version>
+    </dependency>
+
     <!-- Test -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
