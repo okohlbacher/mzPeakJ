@@ -68,18 +68,20 @@ final class PointArrayStore {
             if (si < 0) {
                 throw new MzPeakException("spectrum_index exceeds supported range (uint64 high bit set): " + si);
             }
-            Double mzVal = ParquetGroups.optDouble(point, "mz");
-            Double inVal = ParquetGroups.optDouble(point, "intensity");
-            // Null marking (deferred): treat null intensity as 0; skip points with null m/z for the prototype.
-            if (mzVal == null) {
-                return;
-            }
+            // Track the spectrum-index run BEFORE the null-marking skip, so a spectrum whose points are all
+            // null-marked still gets an entry (an empty array) and is not mistaken for "no profile data".
             if (!started) {
                 started = true;
                 current = si;
             } else if (si != current) {
                 flush();
                 current = si;
+            }
+            Double mzVal = ParquetGroups.optDouble(point, "mz");
+            Double inVal = ParquetGroups.optDouble(point, "intensity");
+            // Null marking (deferred): treat null intensity as 0; drop points with null m/z for the prototype.
+            if (mzVal == null) {
+                return;
             }
             mz.add(mzVal);
             intensity.add(inVal == null ? 0.0 : inVal);

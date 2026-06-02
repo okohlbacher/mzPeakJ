@@ -49,7 +49,10 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
 
         @Override
         public void decompress(ByteBuffer input, int compressedSize, ByteBuffer output, int decompressedSize) {
+            int originalLimit = input.limit();
+            input.limit(input.position() + compressedSize);
             output.put(input);
+            input.limit(originalLimit);
         }
 
         @Override
@@ -63,9 +66,7 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
             byte[] compressed = bytes.toByteArray();
             byte[] out = new byte[decompressedSize];
             long n = Zstd.decompressByteArray(out, 0, decompressedSize, compressed, 0, compressed.length);
-            if (Zstd.isError(n)) {
-                throw new IOException("ZSTD decompression failed: " + Zstd.getErrorName(n));
-            }
+            checkSize(n, decompressedSize);
             return BytesInput.from(out);
         }
 
@@ -76,9 +77,7 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
             input.get(compressed);
             byte[] out = new byte[decompressedSize];
             long n = Zstd.decompressByteArray(out, 0, decompressedSize, compressed, 0, compressed.length);
-            if (Zstd.isError(n)) {
-                throw new IOException("ZSTD decompression failed: " + Zstd.getErrorName(n));
-            }
+            checkSize(n, decompressedSize);
             output.put(out, 0, decompressedSize);
         }
 
@@ -86,4 +85,14 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
         public void release() {
         }
     };
+
+    private static void checkSize(long actual, int expected) throws IOException {
+        if (Zstd.isError(actual)) {
+            throw new IOException("ZSTD decompression failed: " + Zstd.getErrorName(actual));
+        }
+        if (actual != expected) {
+            throw new IOException("ZSTD decompressed size mismatch: got " + actual + ", expected " + expected);
+        }
+    }
 }
+

@@ -71,10 +71,14 @@ public final class MsftbxAdapter {
             info.setMzRangeStart(precursor.isolationWindow().lowerBound());
             info.setMzRangeEnd(precursor.isolationWindow().upperBound());
         }
-        // mzPeak precursor_index is a spectrum index, not a vendor scan number; best-effort mapping.
-        if (precursor.precursorIndex() != null && precursor.precursorIndex() >= 0
-                && precursor.precursorIndex() <= Integer.MAX_VALUE) {
-            info.setParentScanNum(precursor.precursorIndex().intValue());
+        // parentScanNum must be a vendor scan number. mzPeak's precursor_index is a *spectrum index*, not a
+        // scan number, so only set it from the precursor's nativeID (precursor_id). If absent, leave it null
+        // rather than miswiring the MS2->MS1 parent relationship.
+        if (precursor.precursorId() != null) {
+            Integer parent = tryScanNumber(precursor.precursorId());
+            if (parent != null) {
+                info.setParentScanNum(parent);
+            }
         }
         return info;
     }
@@ -89,12 +93,23 @@ public final class MsftbxAdapter {
 
     /** Prefer the vendor scan number parsed from the nativeID; fall back to the spectrum index. */
     private static int scanNumber(SpectrumDescription d) {
-        if (d.id() != null) {
-            Matcher m = SCAN_NUMBER.matcher(d.id());
-            if (m.find()) {
-                return Integer.parseInt(m.group(1));
-            }
+        Integer parsed = tryScanNumber(d.id());
+        return parsed != null ? parsed : Math.toIntExact(d.index());
+    }
+
+    /** Parse a vendor scan number ({@code scan=NNN}) from a nativeID, or null if absent/out of int range. */
+    private static Integer tryScanNumber(String nativeId) {
+        if (nativeId == null) {
+            return null;
         }
-        return Math.toIntExact(d.index());
+        Matcher m = SCAN_NUMBER.matcher(nativeId);
+        if (!m.find()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(m.group(1));
+        } catch (NumberFormatException e) {
+            return null; // scan number does not fit in an int
+        }
     }
 }
