@@ -177,8 +177,15 @@ but no Hadoop install, native libs, or config is needed.
   centroid peaks, and **profile reconstruction** of null-marked points (default on) so the materialized point
   count matches the declared `number_of_data_points` (e.g. 13589 for spectrum 0 — matching the Rust reference).
 - Chromatograms (TIC, DAD/absorption, ...) and wavelength (UV/DAD) spectra (`reader.wavelengthSpectra()`).
-- Random access by index, native id, vendor scan number, and nearest retention time; iteration.
-- **Writing** mzPeak (ZSTD Parquet, point layout) to a directory or STORED ZIP — round-trips through the reader.
+- **File/run metadata** from the Parquet footer (`reader.fileMetadata()`): instrument configuration,
+  software, run, source files (CV-param model).
+- Random access by index, native id, vendor scan number (multi-vendor nativeID parsing), and nearest
+  retention time; iteration.
+- **Streaming reader**: only the row group(s) covering a requested spectrum are decoded (bounded memory on
+  large multi-row-group files).
+- **Writing** mzPeak (ZSTD Parquet, point layout, + footer metadata) to a directory or STORED ZIP —
+  round-trips through the reader.
+- A self-contained **shaded jar** (`mzpeakj-<v>-all.jar`) for running the CLI/examples with just `-cp`.
 
 Cross-validated against the Rust `mzpeak_prototyping` reference test values across the unpacked / ZIP / chunked
 fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
@@ -187,12 +194,11 @@ fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
 
 - **MS-Numpress** linear (m/z) + SLOF (intensity) chunks are read (decoding is lossy, as the format intends).
   Numpress **PIC** and **writing** Numpress are not implemented.
-- **Profile/chunk reconstruction is approximate**: null-marked m/z are filled by linear interpolation between
-  real anchors (not the exact `mz_delta_model` polynomial). Point counts and total signal match the reference;
-  interpolated-point m/z are approximate.
-- **No predicate/row-group pushdown**: signal files are read fully once and cached (fine for example-scale
-  data; streaming for large files is future work).
-- **Writing** is point-layout only (no `chunk`/Numpress encoding, no wavelength spectra).
+- **Profile reconstruction** fills null-marked m/z by stepping with the stored `mz_delta_model` polynomial
+  (linear interpolation only as a fallback when no model is present).
+- **Writing** is point-layout only and does not encode `chunk`/Numpress layouts or wavelength spectra
+  (metadata footer *is* written).
+- **MS-Numpress PIC** (`MS:1002313`) is not decoded (linear + SLOF are).
 
 ## Development
 

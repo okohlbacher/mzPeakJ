@@ -86,11 +86,12 @@ Profile spectra drop flanking zero-intensity points by storing them as **null m/
 declared `MS_1003060_number_of_data_points` (e.g. 13589 for spectrum 0) exceeds the stored non-null points
 (11213). The canonical reader reconstructs the dropped points from a per-spectrum `mz_delta_model` polynomial.
 
-mzPeakJ reconstructs **by default** (`reconstructProfile=true`) but **approximately**: null m/z are filled by
-**linear interpolation** between real anchors (intensity 0). This yields the correct point count (13589,
-matching the reference) and exact total signal, but interpolated-point m/z are approximate and not positionally
-bit-exact vs. the polynomial model. Pass `reconstructProfile=false` to get only stored non-null points. Exact
-`mz_delta_model` reconstruction is the main remaining fidelity gap.
+mzPeakJ reconstructs **by default** (`reconstructProfile=true`): null m/z are filled by stepping with the
+per-spectrum **`mz_delta_model` polynomial** (`delta(mz) = beta[0] + beta[1]·mz + beta[2]·mz² + …`, read from
+the metadata `mz_delta_model` column) — each filled point advances from its neighbour by the predicted local
+spacing, intensity 0. This yields the correct point count (13589, matching the reference), exact total signal,
+exact anchor values, and a monotonic axis. Linear interpolation is the fallback when a spectrum has no model.
+Pass `reconstructProfile=false` to get only stored non-null points.
 
 ## 5. Hadoop-free Parquet (and the ZSTD problem)
 

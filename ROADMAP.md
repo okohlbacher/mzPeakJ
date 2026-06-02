@@ -1,5 +1,19 @@
 # mzPeakJ — Roadmap
 
+## Milestone 2 — delivered (v0.10.0)
+
+Shipped: **MS-Numpress** linear+SLOF decode · **metadata modeling** (footer read **and** write:
+instrument/software/run/source files) · **streaming** row-group-aware reader (bounded memory) ·
+**exact `mz_delta_model`** polynomial reconstruction · **vendor-agnostic** scan-number lookup ·
+self-contained **shaded jar**. 33 tests.
+
+Still open: Numpress **PIC** decode, Numpress/chunk/wavelength **writing**, predicate/page pushdown within a
+row group, instrument/activation params surfaced per-precursor (B3), detail-level loading, Maven Central
+publishing. (Track A/B detail below.)
+
+---
+
+
 Two tracks: **(A) MS-Numpress** (mostly landed) and **(B) Metadata modeling** (the next substantial feature).
 This is a demonstrator; phases are sized to be small, independently shippable, and test-driven against the
 vendored HUPO-PSI fixtures.
