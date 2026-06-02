@@ -15,6 +15,9 @@ import java.util.zip.ZipFile;
  */
 final class ZipSource implements MzPeakSource {
 
+    /** Guard against pathological archives reading unbounded heap (byte[] is also capped at ~2 GiB). */
+    private static final long MAX_MEMBER_BYTES = Integer.MAX_VALUE - 8;
+
     private final Path path;
     private final ZipFile zip;
 
@@ -46,6 +49,11 @@ final class ZipSource implements MzPeakSource {
         ZipEntry entry = zip.getEntry(name);
         if (entry == null) {
             throw new MzPeakException("mzPeak archive " + path + " has no member " + name);
+        }
+        long size = entry.getSize();
+        if (size > MAX_MEMBER_BYTES) {
+            throw new MzPeakException("mzPeak member " + name + " is too large to read into memory ("
+                    + size + " bytes) in " + path);
         }
         try (InputStream in = zip.getInputStream(entry)) {
             return in.readAllBytes();

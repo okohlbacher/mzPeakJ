@@ -57,6 +57,9 @@ public final class ByteArrayInputFile implements InputFile {
 
         @Override
         public int read(byte[] b, int off, int len) {
+            if (len == 0) {
+                return 0;
+            }
             if (pos >= data.length) {
                 return -1;
             }
@@ -82,6 +85,9 @@ public final class ByteArrayInputFile implements InputFile {
 
         @Override
         public int read(ByteBuffer buf) {
+            if (!buf.hasRemaining()) {
+                return 0;
+            }
             if (pos >= data.length) {
                 return -1;
             }

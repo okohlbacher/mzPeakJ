@@ -54,9 +54,9 @@ class MzPeakContainersTest {
     }
 
     @Test
-    void chunkedArraysMatchPointLayout() {
-        // A centroid spectrum has no null-marking, so chunk decode must reproduce the point-layout arrays
-        // exactly (m/z and intensity) — guards against a chunk-only silent mismatch.
+    void chunkedArraysMatchPointLayoutForCentroidSpectra() {
+        // Centroid spectra have no null-marking, so chunk delta-decode must reproduce the point-layout arrays
+        // exactly (m/z and intensity) — guards against a chunk-only silent mismatch / misalignment.
         try (MzPeakReader point = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"));
              MzPeakReader chunked = MzPeakReader.open(Path.of(BASE + "small.chunked.mzpeak"))) {
             for (long idx : new long[] {5, 25}) {
@@ -69,6 +69,27 @@ class MzPeakContainersTest {
                     assertThat(b.intensity()[i]).isCloseTo(a.intensity()[i], within(1e-3));
                 }
             }
+        }
+    }
+
+    @Test
+    void chunkedProfileMatchesPointLayoutCountAndSignal() {
+        // For a profile spectrum, null-marked m/z are reconstructed approximately, so individual array
+        // positions may differ; but the point count and the total ion signal (sum of intensities) must agree.
+        try (MzPeakReader point = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"));
+             MzPeakReader chunked = MzPeakReader.open(Path.of(BASE + "small.chunked.mzpeak"))) {
+            Spectrum a = point.getSpectrum(0).orElseThrow();
+            Spectrum b = chunked.getSpectrum(0).orElseThrow();
+            assertThat(b.pointCount()).isEqualTo(a.pointCount());
+            double sumA = 0;
+            double sumB = 0;
+            for (double v : a.intensity()) {
+                sumA += v;
+            }
+            for (double v : b.intensity()) {
+                sumB += v;
+            }
+            assertThat(sumB).isCloseTo(sumA, within(sumA * 1e-6));
         }
     }
 

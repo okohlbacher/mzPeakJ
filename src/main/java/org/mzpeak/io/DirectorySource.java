@@ -31,12 +31,22 @@ final class DirectorySource implements MzPeakSource {
 
     @Override
     public boolean has(String name) {
-        return Files.isRegularFile(directory.resolve(name));
+        return Files.isRegularFile(resolveSafe(name));
     }
 
     @Override
     public InputFile inputFile(String name) {
-        return new LocalInputFile(directory.resolve(name));
+        return new LocalInputFile(resolveSafe(name));
+    }
+
+    /** Resolve a manifest member name, rejecting names that escape the dataset directory (e.g. {@code ../x}). */
+    private Path resolveSafe(String name) {
+        Path base = directory.normalize();
+        Path resolved = base.resolve(name).normalize();
+        if (!resolved.startsWith(base)) {
+            throw new MzPeakException("manifest member escapes dataset directory: " + name);
+        }
+        return resolved;
     }
 
     @Override

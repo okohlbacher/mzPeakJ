@@ -34,14 +34,22 @@ FragPipe/MSFTBX adapter. All v1 requirements are hypotheses until shipped and va
 ### Tests (TEST)
 - [x] **TEST-01**: JUnit 5 tests run against the vendored `small.unpacked.mzpeak/` fixture and assert correct spectrum count, metadata (MS level, RT, precursor m/z), and m/z+intensity arrays for at least one MS1 and one MSn spectrum, plus an MSFTBX adapter round-trip
 
-## v2 / Deferred (tracked, not in this milestone)
-- Lookup by vendor scan number (parse nativeID) and by retention time (RT→index map)
-- Single-file STORED-ZIP `.mzpeak` random access (offset slicing into Parquet members)
-- `chunk` layout + MS-Numpress / delta-encoded array decoding
-- Chromatograms / wavelength (UV/DAD) spectra
-- Profile reconstruction (zero-run / null-marking fill via `mz_delta_model`)
-- Row-group caching + detail-level (metadata-only vs full) loading
-- Tolerance-based peak search on a spectrum
+## v2 / Deferred — status after the deferred-backlog push
+Delivered beyond milestone 1 (see git history + README):
+- [x] Lookup by vendor scan number (parse nativeID) and by retention time (nearest-RT) — `getSpectrumByScanNumber` / `getSpectrumByTime` / `getSpectrumById`
+- [x] Single-file STORED-ZIP `.mzpeak` reading (`MzPeakSource` / `ZipSource` / `ByteArrayInputFile`)
+- [x] `chunk` layout (delta) decoding — byte-identical to point layout for centroid spectra
+- [x] Chromatograms (TIC/BPC) — `Chromatogram` + `ChromatogramStore`
+- [x] Profile reconstruction (approximate: linear interpolation of null-marked m/z) — point count matches reference
+
+Still deferred:
+- [ ] MS-Numpress chunk decoding (`mz_numpress_linear_bytes` / `intensity_numpress_slof_bytes`) — detected + clear error
+- [ ] Exact `mz_delta_model` polynomial reconstruction (current fill is linear-interpolation approximate)
+- [ ] Wavelength (UV/DAD) spectra (`wavelength_spectra_*`)
+- [ ] Row-group / page predicate pushdown + streaming (signal files currently read fully + cached)
+- [ ] Detail-level (metadata-only vs full) loading
+- [ ] Tolerance-based peak search on a spectrum
+- [ ] Multi-precursor selected-ion partitioning (all precursor records kept; ions attached to first)
 
 ## Out of Scope (milestone 1, with reasoning)
 - **Writing mzPeak** — milestone 1 is reader-only; writing is a separate, larger effort

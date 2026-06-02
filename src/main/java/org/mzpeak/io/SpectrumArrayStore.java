@@ -97,16 +97,25 @@ final class SpectrumArrayStore {
             double[] rawMz = ParquetGroups.doubleListNullable(chunk, "mz_chunk_values");
             double[] chunkMz = decodeChunkMz(rawMz, start, encoding);
             double[] chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
-            // The spectrum's very first point is the first chunk's chunk_start (the stored deltas reconstruct
-            // the points after it); subsequent points are start + cumulative deltas within each chunk.
-            if (mz.size() == 0) {
+            // A chunk whose intensity list is one longer than its m/z values emits chunk_start as a real point
+            // (its intensity is intensity[0]); the delta-decoded values then pair with intensity[1..]. A chunk
+            // with equal lengths pairs its values one-to-one with intensities and has no separate start point.
+            int extra = chunkIntensity.length - chunkMz.length;
+            if (extra == 1) {
                 mz.add(start);
-                intensity.add(0.0);
-            }
-            for (int i = 0; i < chunkMz.length; i++) {
-                mz.add(chunkMz[i]);
-                double in = i < chunkIntensity.length ? chunkIntensity[i] : Double.NaN;
-                intensity.add(Double.isNaN(in) ? 0.0 : in);
+                intensity.add(nonNullIntensity(chunkIntensity[0]));
+                for (int i = 0; i < chunkMz.length; i++) {
+                    mz.add(chunkMz[i]);
+                    intensity.add(nonNullIntensity(chunkIntensity[i + 1]));
+                }
+            } else if (extra == 0) {
+                for (int i = 0; i < chunkMz.length; i++) {
+                    mz.add(chunkMz[i]);
+                    intensity.add(nonNullIntensity(chunkIntensity[i]));
+                }
+            } else {
+                throw new MzPeakException("chunk intensity length (" + chunkIntensity.length
+                        + ") must equal m/z values (" + chunkMz.length + ") or values+1, for spectrum_index " + si);
             }
         }
 
@@ -165,6 +174,10 @@ final class SpectrumArrayStore {
 
         private static double orZero(Double d) {
             return d == null ? 0.0 : d;
+        }
+
+        private static double nonNullIntensity(double v) {
+            return Double.isNaN(v) ? 0.0 : v;
         }
     }
 

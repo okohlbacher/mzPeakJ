@@ -73,18 +73,20 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
                 }
             }
         }
-        // RT lookup: (time, index) sorted by time
-        Integer[] order = new Integer[descriptions.size()];
-        for (int i = 0; i < order.length; i++) {
-            order[i] = i;
+        // RT lookup: (time, index) sorted by time, excluding spectra with non-finite retention times.
+        List<Integer> finite = new ArrayList<>();
+        for (int i = 0; i < descriptions.size(); i++) {
+            if (Double.isFinite(descriptions.get(i).retentionTime())) {
+                finite.add(i);
+            }
         }
-        java.util.Arrays.sort(order, (a, b) ->
+        finite.sort((a, b) ->
                 Double.compare(descriptions.get(a).retentionTime(), descriptions.get(b).retentionTime()));
-        this.sortedTimes = new double[order.length];
-        this.timeIndexOrder = new long[order.length];
-        for (int i = 0; i < order.length; i++) {
-            sortedTimes[i] = descriptions.get(order[i]).retentionTime();
-            timeIndexOrder[i] = descriptions.get(order[i]).index();
+        this.sortedTimes = new double[finite.size()];
+        this.timeIndexOrder = new long[finite.size()];
+        for (int i = 0; i < finite.size(); i++) {
+            sortedTimes[i] = descriptions.get(finite.get(i)).retentionTime();
+            timeIndexOrder[i] = descriptions.get(finite.get(i)).index();
         }
     }
 
@@ -155,7 +157,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /** The spectrum whose retention time is nearest {@code time}; empty only if there are no spectra. */
     public Optional<Spectrum> getSpectrumByTime(double time) {
-        if (sortedTimes.length == 0) {
+        if (sortedTimes.length == 0 || !Double.isFinite(time)) {
             return Optional.empty();
         }
         int pos = java.util.Arrays.binarySearch(sortedTimes, time);
