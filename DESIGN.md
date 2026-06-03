@@ -1,169 +1,316 @@
 # mzPeakJ — Design & Format Notes
 
-This document captures how the [mzPeak](https://www.psidev.info/mzpeak) format actually works (as observed in
-the HUPO-PSI example files) and the decisions behind this Java reader/writer. It's the map for anyone extending
-mzPeakJ or porting the format elsewhere.
+This document captures how the [mzPeak](https://www.psidev.info/mzpeak) format works (as observed in the
+HUPO-PSI example files and spec) and the decisions behind this Java reader/writer. It is the reference for
+anyone extending mzPeakJ or porting the format to a new language.
 
-mzPeakJ is a **demonstrator**, vibe-coded by following the existing mzPeak reference implementations (the Rust
-crates `mzpeaks` / `mzdata` / `mzpeak_prototyping` and the HUPO-PSI spec). Ground truth = the upstream
-`doc/index.md` **plus the actual example Parquet files** (the published paper has no schema detail). The
-format is an unstable prototype; this project is pinned to upstream commit `03ccdb7`
-(see `src/test/resources/mzpeak/.../UPSTREAM_COMMIT.txt`).
+> **Demonstrator.** mzPeakJ is vibe-coded by following the Rust reference implementation
+> [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping) and the HUPO-PSI spec. Ground
+> truth is the upstream `doc/index.md` **plus the actual example Parquet files** (the published paper
+> [doi:10.1021/acs.jproteome.5c00435](https://doi.org/10.1021/acs.jproteome.5c00435) does not include
+> schema detail). mzPeak is an unstable prototype; this project is pinned to upstream commit `03ccdb7`
+> (see `src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`).
+
+---
 
 ## 1. What an mzPeak dataset is
 
 A set of Apache Parquet files plus a `mzpeak_index.json` manifest, delivered as **either**:
 
 - an **unpacked directory** `run.mzpeak/`, or
-- a **single file** `run.mzpeak` = an **uncompressed (STORED) ZIP** of the same members.
+- a **single file** `run.mzpeak` — an **uncompressed (STORED) ZIP** of the same members.
+
+TAR was explicitly rejected by the spec because it requires linear traversal and lacks per-file encryption.
+ZIP was chosen because members can be accessed at arbitrary byte offsets.
 
 `mzPeakJ` reads both via the `MzPeakSource` abstraction (`DirectorySource` / `ZipSource`). Because the ZIP
-members are STORED, `ZipSource` parses the central directory (`ZipIndex`) and reads each Parquet member
-**in place** from its byte range via a seekable `FileSliceInputFile` over the archive's `FileChannel` — no
-copy into memory — so a single-file archive streams exactly like a directory. (The example archives use
-per-entry zip64 extra fields for sizes even with a non-zip64 EOCD, which `ZipIndex` handles.) The manifest
-maps each member to a role `(entity_type, data_kind)` — **resolve files by role, never by hardcoded filename**:
+members are STORED (no ZIP-level compression — Parquet files use their own ZSTD), `ZipSource` parses the
+central directory (`ZipIndex`) and reads each Parquet member **in place** from its byte range via a seekable
+`FileSliceInputFile` over the archive's shared `FileChannel` — no copy into memory. The example archives use
+per-entry zip64 extra fields for sizes even with a non-zip64 EOCD, which `ZipIndex` handles.
 
-| entity_type | data_kind | file (conventional) | mzPeakJ store |
+The manifest maps each member to a role `(entity_type, data_kind)`. **Resolve files by role, never by
+hardcoded filename.** Standard entity types (exact strings, including space where present):
+
+| `entity_type` | `data_kind` | Conventional file | mzPeakJ store |
 |---|---|---|---|
-| `spectrum` | `metadata` | `spectra_metadata.parquet` | `SpectrumMetadataDecoder` |
-| `spectrum` | `data arrays` | `spectra_data.parquet` (profile) | `SpectrumArrayStore` |
-| `spectrum` | `peaks` | `spectra_peaks.parquet` (centroids) | `SpectrumArrayStore` |
-| `chromatogram` | `metadata` / `data arrays` | `chromatograms_*.parquet` | `ChromatogramStore` |
-| `wavelength spectrum` | `metadata` / `data arrays` | `wavelength_spectra_*.parquet` | `WavelengthSpectrumStore` |
+| `"spectrum"` | `"metadata"` | `spectra_metadata.parquet` | `SpectrumMetadataDecoder` |
+| `"spectrum"` | `"data arrays"` | `spectra_data.parquet` (profile signal) | `SpectrumArrayStore` |
+| `"spectrum"` | `"peaks"` | `spectra_peaks.parquet` (centroid peaks) — **optional** | `SpectrumArrayStore` |
+| `"chromatogram"` | `"metadata"` / `"data arrays"` | `chromatograms_*.parquet` | `ChromatogramStore` |
+| `"wavelength spectrum"` | `"metadata"` / `"data arrays"` | `wavelength_spectra_*.parquet` | `WavelengthSpectrumStore` |
 
-## 2. The metadata "packed parallel tables" trap (most important)
+Note `"wavelength spectrum"` uses two words with a space — that is the exact `entity_type` string in the
+manifest JSON schema.
+
+---
+
+## 2. The metadata "packed parallel tables" trap — the most important correctness rule
 
 `spectra_metadata.parquet` has **four independent top-level struct columns** — `spectrum`, `scan`,
-`precursor`, `selected_ion` — that behave like relational tables joined by integer keys, **not** like fields
-of one row. They are **NOT row-aligned**:
+`precursor`, `selected_ion` — that act like relational tables joined by integer keys. They are
+**NOT row-aligned** with each other.
+
+### Join rule
 
 - `spectrum.index` (uint64) is the primary key.
-- `scan` / `precursor` / `selected_ion` each carry their own `source_index` foreign key pointing back to the
-  owning spectrum, and are **densely packed**: the facet at row *r* usually does **not** describe spectrum *r*.
-- Placeholder facet rows have a **null `source_index`** and must be skipped.
+- `scan`, `precursor`, and `selected_ion` each carry their own `source_index` foreign key. A row where
+  `source_index IS NULL` is a placeholder and must be skipped.
+- Join: for target spectrum at `index = N`, collect all facet rows where `source_index = N`.
 
-Concretely in `small.unpacked.mzpeak`: at metadata row 0 (spectrum index 0, an MS1), the `selected_ion`
-column holds an entry with `source_index = 2` — i.e. it belongs to spectrum **2**, not 0. Zipping facets by
-row position silently mis-assigns precursors.
+### Why this is dangerous
 
-**Rule (`SpectrumMetadataDecoder`):** build `Map<source_index → facet>` by iterating each facet column,
-skipping null `source_index`, then attach to the spectrum with the matching `index`. Never align by row.
+In `small.unpacked.mzpeak`: at metadata row 0 (spectrum index 0, an MS1), the `selected_ion` column holds a
+row with `source_index = 2` — it belongs to spectrum 2, not 0. Zipping by row position silently mis-assigns
+every precursor. Always join by `source_index`.
+
+### Implementation (`SpectrumMetadataDecoder`)
+
+Build `Map<Long, List<Group>>` for each facet by scanning all rows and grouping on `source_index`. Skip null
+`source_index`. Then attach the matching facet list to each spectrum by `index`.
+
+### Column-level metadata structures
+
+**`spectrum` group** key fields:
+- `index` — 0-based, incrementally increasing, sorted, primary key (uint64 stored as INT64)
+- `id` — native ID string (MS:1000767 pattern; e.g. `controllerType=0 controllerNumber=1 scan=1`)
+- `time` — acquisition start time
+- `MS_1000511_ms_level` — integer MS stage (1, 2, 3…)
+- `MS_1000525_spectrum_representation` — `"MS:1000127"` (centroid) or `"MS:1000128"` (profile)
+- `MS_1000465_scan_polarity` — +1 / -1 / null
+- `MS_1003060_number_of_data_points` — declared profile point count (may exceed stored count due to null-marking)
+- `MS_1003059_number_of_peaks` — declared centroid peak count
+- `parameters` — `large_list<item: struct<value-union, accession, name, unit>>` (CV/user params)
+- `mz_delta_model` — polynomial coefficients for null-mark reconstruction (see §4)
+- `auxiliary_arrays` — non-columnar binary arrays with encoding metadata
+
+**`scan` group** — `source_index` FK + scan start time, filter string, injection time, instrument_configuration_ref, scan_windows, parameters.
+
+**`precursor` group** — `source_index` FK + precursor_index, precursor_id, isolation_window struct
+(`MS_1000827_isolation_window_target_mz`, `MS_1000828_isolation_window_lower_offset`,
+`MS_1000829_isolation_window_upper_offset`), `activation` struct (parameters-only).
+
+**`selected_ion` group** — `source_index` FK + selected ion m/z (MS:1000744), charge state (MS:1000041),
+intensity (MS:1000042), ion mobility, parameters.
+
+---
 
 ## 3. Signal layouts: `point` vs `chunk`
 
-Each signal file's top-level struct is named `point` **or** `chunk`. `SpectrumArrayStore` detects which per
-record and groups rows by the (sorted, contiguous) `spectrum_index`.
+Each signal file's top-level struct is named `point` **or** `chunk`. `SpectrumArrayStore` dispatches per row.
 
-### point layout
-`point: struct<spectrum_index: uint64, mz: double, intensity: float>` — one row per peak/point. Profile data
-lives here; centroids in the parallel `spectra_peaks.parquet` with the identical schema.
+### 3a. Point layout
 
-### chunk layout (delta)
-`chunk: struct<spectrum_index, mz_chunk_start: double, mz_chunk_end: double, mz_chunk_values: list<double>,
-chunk_encoding: string, intensity: list<float>>` — one row per ~50-m/z chunk.
+```
+point: struct<spectrum_index: uint64, mz: double, intensity: float>
+```
 
-Decoding a chunk (`decodeChunkMz` + `acceptChunk`):
-- m/z values are **delta-encoded** within the chunk: `acc = chunk_start; for v: acc += v; emit acc`
-  (unless `chunk_encoding` is the "no compression" CURIE `MS:1003088`, where values are absolute).
-- **The chunk_start-as-a-point rule (subtle, learned from the data):** a chunk emits `chunk_start` itself as
-  a real point **iff its intensity list is one longer than its m/z values** (`intensity.length == values + 1`).
-  In that case `intensity[0]` is the start point's intensity and the decoded values pair with `intensity[1..]`.
-  When the lengths are equal, values pair 1:1 with intensity and there is no separate start point. This is
-  *not* "first chunk only" — e.g. spectrum 1 in `small.chunked.mzpeak` has a later chunk with the +1.
-- Validated: for centroid spectra (no null-marking) the chunk decode is **byte-identical** to the point layout;
-  for profile spectra the **total ion signal** matches within 1e-6.
+One row per data point. `spectrum_index` is sorted non-decreasing. Profile data lives here; centroids in the
+parallel `spectra_peaks.parquet` file (same schema). `spectra_peaks.parquet` is **optional** — it can store
+centroid peaks alongside the profile arrays for the same spectrum (e.g. the chunked fixture has 1612
+secondary centroid peaks for spectrum 0, which is a profile spectrum in `spectra_data.parquet`).
 
-### numpress (supported)
-A chunk may carry `mz_numpress_linear_bytes` (transform `MS:1002312`) and `intensity_numpress_slof_bytes`
-(`MS:1002314`) instead of plain values. mzPeakJ decodes these with the bundled Apache-2.0
-[MS-Numpress](https://github.com/ms-numpress/ms-numpress) Java decoders (`ms.numpress.MSNumpress`). Unlike the
-delta path, the Numpress buffers encode the **full absolute arrays directly — no `chunk_start`, no delta, no
-null-marking** (verified: the example file stores all 13589 points for spectrum 0), so decode-and-append 1:1
-gives the right result without the §4 reconstruction. Numpress is lossy by design (linear m/z is near-lossless
-fixed-point; SLOF intensity is log-scaled 16-bit), so values match the point layout only within tolerance.
-Numpress **PIC** and *writing* Numpress are not implemented.
+### 3b. Chunk layout (delta-encoded)
+
+```
+chunk: struct<spectrum_index: uint64, mz_chunk_start: double, mz_chunk_end: double,
+              mz_chunk_values: large_list<double>, chunk_encoding: string,
+              intensity: large_list<float>>
+```
+
+One row per fixed-width m/z chunk (typically ~50 Da wide). The `mz_chunk_start`/`mz_chunk_end` columns
+remain accessible to the Parquet page index. The encoded values inside `mz_chunk_values` are opaque to the
+index.
+
+**Encoding CV terms** (mzPeak-specific, not OBO PSI-MS):
+- No transform (absolute values): no `chunk_encoding` field value / `MS:1003088`
+- Delta encoding: `MS:1003089` (differences from previous value, the start being `mz_chunk_start`)
+- Numpress linear: `MS:1002312`
+- Numpress PIC: `MS:1002313`
+- Numpress SLOF: `MS:1002314`
+
+**The chunk_start-as-a-point rule** (critical, learned from real data):
+
+> A chunk whose `intensity.length == mz_chunk_values.length + 1` emits `mz_chunk_start` as its **first
+> real point** (`intensity[0]` = its intensity); the decoded m/z values then pair with `intensity[1..]`. A
+> chunk with equal lengths pairs values 1:1 with no separate start point.
+
+This rule applies per-chunk, not just to the first chunk of a spectrum. Validated: for centroid spectra
+(no null-marking) the chunk decode is byte-identical to the point layout.
+
+### 3c. MS-Numpress chunk layout
+
+When a chunk carries `mz_numpress_linear_bytes` (MS:1002312) and `intensity_numpress_slof_bytes`
+(MS:1002314) or `intensity_numpress_pic_bytes` (MS:1002313), the arrays are decoded with the bundled
+Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) Java decoders
+(`ms.numpress.MSNumpress`). Unlike the delta path, Numpress encodes the **full absolute arrays directly**
+with no chunk_start, no delta, no null-marking — decode-and-append 1:1. Numpress is lossy by design
+(linear m/z is near-lossless; SLOF intensity is log-scaled uint16; PIC is integer-only).
+
+**SLOF fixedPoint selection:** The SLOF encoder chooses `fixedPoint = floor(65535 / log(max_intensity + 1))`
+per chunk so the encoded values fit in uint16. This is computed at write time and transparent to the reader.
+
+---
 
 ## 4. Null-marking & profile reconstruction
 
-Profile spectra drop flanking zero-intensity points by storing them as **null m/z** (null-marking). So the
-declared `MS_1003060_number_of_data_points` (e.g. 13589 for spectrum 0) exceeds the stored non-null points
-(11213). The canonical reader reconstructs the dropped points from a per-spectrum `mz_delta_model` polynomial.
+Profile spectra drop flanking zero-intensity points. The stored point count (e.g. 11213 for spectrum 0)
+is less than the declared `MS_1003060_number_of_data_points` (13589). The null-marked points have null
+m/z values. The spec defines a reconstruction polynomial stored in the `mz_delta_model` column:
 
-mzPeakJ reconstructs **by default** (`reconstructProfile=true`): null m/z are filled by stepping with the
-per-spectrum **`mz_delta_model` polynomial** (`delta(mz) = beta[0] + beta[1]·mz + beta[2]·mz² + …`, read from
-the metadata `mz_delta_model` column) — each filled point advances from its neighbour by the predicted local
-spacing, intensity 0. This yields the correct point count (13589, matching the reference), exact total signal,
-exact anchor values, and a monotonic axis. Linear interpolation is the fallback when a spectrum has no model.
-Pass `reconstructProfile=false` to get only stored non-null points.
+```
+delta(mz) = β₀ + β₁·mz + β₂·mz²  (degree-2 least-squares polynomial on the non-null points)
+```
 
-## 5. Hadoop-free Parquet (and the ZSTD problem)
+**mzPeakJ reconstruction (default: `reconstructProfile=true`):**
 
-mzPeak columns are **ZSTD-compressed**. parquet-java's default codec factory builds a Hadoop `Configuration`
-(pulling the shaded Woodstox/Hadoop runtime) on every codec lookup. To avoid the Hadoop runtime entirely,
-mzPeakJ:
+1. Read the `mz_delta_model` coefficients from the `spectrum` group.
+2. Step through null-marked m/z placeholders, advancing each by `predict(prev_mz)` using the polynomial.
+3. Assign intensity 0 to all reconstructed points.
+4. Result: correct point count (13589), exact anchor values, monotonic axis.
 
-- reads/writes via `LocalInputFile` / `ByteArrayInputFile` / `LocalOutputFile` + `PlainParquetConfiguration` +
-  the parquet-column `Group` API (`ParquetGroups`), and
-- supplies a custom `ZstdCompressionCodecFactory` backed by the self-contained `zstd-jni` jar, so the Hadoop
-  `CodecFactory` (and `Configuration`) is **never** touched.
+When no `mz_delta_model` is present, linear interpolation between real anchors is the fallback.
+Pass `reconstructProfile=false` to get only the stored non-null points (e.g. 11213).
 
-The result never uses a Hadoop FileSystem, `Configuration`, native library, or cluster setup. parquet-java's
-classes do *statically reference* Hadoop types, however, so a single self-contained `hadoop-client-api` jar
-must be on the classpath (it ships as a normal dependency). "No Hadoop runtime" — not "no Hadoop jar".
+---
+
+## 5. Parquet without Hadoop — the ZSTD problem
+
+mzPeak Parquet files are ZSTD-compressed. parquet-java's default codec factory invokes a Hadoop
+`Configuration` on every codec lookup, which pulls the shaded Woodstox/Hadoop runtime. mzPeakJ avoids this:
+
+- **Reading/writing** use `LocalInputFile` / `ByteArrayInputFile` / `LocalOutputFile` +
+  `PlainParquetConfiguration` + the parquet-column Group API (`ParquetGroups`).
+- **Codec**: a custom `ZstdCompressionCodecFactory` backed by `zstd-jni` (self-contained native jar) is
+  supplied to both `ParquetReadOptions.builder().withCodecFactory(...)` (reads) and
+  `ParquetWriter.Builder.withCodecFactory(...)` (writes). The Hadoop `CodecFactory` and
+  `Configuration` are **never** invoked.
+
+**Caveat:** parquet-java's classes statically reference Hadoop types, so `hadoop-client-api` (a single
+shaded jar with the Hadoop API stubs) must be on the classpath at compile and runtime. It is never used;
+no Hadoop install, config, native library, or cluster setup is required.
+
+---
 
 ## 6. Type-variance discipline
 
-mzPeak writers MAY emit a numeric column as FLOAT or DOUBLE (m/z f32/f64, intensity f32/i32/f64) and lists as
-`list`/`large_list`, strings as `string`/`large_string`. **Never assume a physical type.** `ParquetGroups`
-reads every numeric leaf through `optDouble`/`optLong`/`doubleList(Nullable)`, dispatching on the actual
-`PrimitiveTypeName`, and navigates list structure by field *position* (so `element`/`item` naming is irrelevant).
-`spectrum_index` is uint64 but represented as a signed Java `long`; values with the high bit set are rejected.
+The spec allows physical-type variance:
+- m/z: FLOAT or DOUBLE
+- intensity: FLOAT, INT32, or DOUBLE
+- Lists: `list` or `large_list`
+- Strings: `string` or `large_string`
 
-## 7. Architecture
+**mzPeakJ rule:** never assume a physical type. `ParquetGroups` dispatches on the actual
+`PrimitiveTypeName` via `optDouble`/`optLong`/`doubleListNullable`, and navigates list structure by field
+*position* so element names (`element`/`item`/`list`) are irrelevant. `spectrum_index` (uint64) is read
+as signed Java `long`; values with the high bit set are rejected with a clear error.
+
+---
+
+## 7. Footer key-value metadata
+
+File/run-level metadata is stored as JSON documents in the Parquet footer key-value map
+(`getKeyValueMetaData()`) of `spectra_metadata.parquet`. Keys and their JSON shapes
+(from `schema/*.json` in the HUPO-PSI repo):
+
+| Footer key | JSON type | Key content |
+|---|---|---|
+| `file_description` | object | `contents: [Param]`, `source_files: [SourceFile]` |
+| `instrument_configuration_list` | array | `[{id:int, components:[{component_type,order,parameters:[Param]}], parameters:[Param], software_reference:str}]` |
+| `software_list` | array | `[{id:str, version:str, parameters:[Param]}]` |
+| `data_processing_method_list` | array | `[{id:str, methods:[{order:int, software_reference:str, parameters:[Param]}]}]` |
+| `sample_list` | array | `[{id:str, name:str, parameters:[Param]}]` |
+| `run` | object | `{id:str, default_instrument_id:int, default_data_processing_id:str, default_source_file_id:str, start_time:RFC3339?, parameters:[Param]}` |
+
+**Param record** (from `schema/param.json`):
+- `name` (required string) — CV term name or user label
+- `accession` (nullable string, format `\S+:\S+`) — e.g. `"MS:1000045"`; null = user param
+- `value` (number | string | boolean | null)
+- `unit` (nullable string, CURIE) — e.g. `"UO:0000266"` for electronvolt
+
+`FooterMetadataReader` deserializes these into `org.mzpeak.model.meta.FileMetadata`. The reader is lenient:
+missing keys yield empty/absent objects rather than errors.
+
+---
+
+## 8. Architecture
 
 ```
-org.mzpeak.model        pure data — no I/O deps
-  peaks:    CoordinateLike / IntensityMeasurement / Indexed / KnownCharge; CentroidPeak; DeconvolutedPeak
-  spectra:  Spectrum (double[] mz, double[] intensity, List<CentroidPeak> peaks) + SpectrumDescription
-            Precursor / SelectedIon / IsolationWindow / ScanEvent / ScanWindow; Polarity / SignalContinuity
-  other:    Chromatogram; WavelengthSpectrum; Tolerance(PPM|Da)
-org.mzpeak.io           reading
-  MzPeakReader          open(dir|zip) · size · getMetadata · getSpectrum · by index/id/scan#/RT · iterator
-                        chromatograms() · wavelengthSpectra()
-  MzPeakSource          DirectorySource | ZipSource
-  decoders/stores       MzPeakManifest · SpectrumMetadataDecoder · SpectrumArrayStore · ChromatogramStore
-                        · WavelengthSpectrumStore
-  MzPeakWriter          writeDirectory / writeArchive (ZSTD point-layout Parquet + manifest; STORED zip)
-  org.mzpeak.io.parquet ParquetGroups (Group API + typed/list accessors) · ZstdCompressionCodecFactory
-                        · ByteArrayInputFile
-org.mzpeak.cli          MzPeakInfo     (dataset summary)
-org.mzpeak.examples     ExtractSpectra · ConvertToDta · ExtractXic · MzPeakFileInfo
+org.mzpeak.model             pure data — no I/O deps
+  interfaces: CoordinateLike, IntensityMeasurement, Indexed, KnownCharge
+  peaks:      CentroidPeak(mz, intensity, index)
+  spectra:    Spectrum · SpectrumDescription · Precursor · SelectedIon
+              Activation · IsolationWindow · ScanEvent · ScanWindow
+              Polarity · SignalContinuity
+  other:      Chromatogram · WavelengthSpectrum
+  params:     Param · CvTerms · Tolerance(PPM|Da) · NativeId
+
+org.mzpeak.model.meta        file/run-level metadata records
+  FileMetadata · InstrumentConfiguration · Component · Software
+  DataProcessing · Sample · MsRun · FileDescription · SourceFile
+
+org.mzpeak.io                reading + writing
+  MzPeakReader                open(dir|zip) · size · getMetadata · getSpectrum
+                              by index/id/scan#/RT · iterator
+                              chromatograms() · wavelengthSpectra() · fileMetadata()
+  MzPeakSource                DirectorySource | ZipSource (in-place FileSliceInputFile)
+  SpectrumMetadataDecoder     packed-parallel-tables → SpectrumDescription
+  SpectrumArrayStore          streaming row-group-aware point+chunk+numpress decoder
+  ChromatogramStore           point + chunk time-axis layouts
+  WavelengthSpectrumStore     point layout
+  FooterMetadataReader/Writer JSON ↔ FileMetadata
+  MzPeakWriter                writeDirectory / writeArchive / writeDirectoryNumpress / writeArchiveNumpress
+
+org.mzpeak.io.parquet         Hadoop-free Parquet I/O
+  ParquetGroups               type-variance-safe accessors (optDouble, readParams, groupList, …)
+  ZstdCompressionCodecFactory custom ZSTD compressor + decompressor
+  ByteArrayInputFile          in-memory Parquet member (for ZIP fallback)
+  FileSliceInputFile          seekable byte-range slice of a FileChannel (STORED ZIP)
+
+org.mzpeak.cli                MzPeakInfo (dataset summary)
+org.mzpeak.examples           ExtractSpectra · ConvertToDta · ExtractXic · MzPeakFileInfo
+ms.numpress                   bundled MS-Numpress decoders (Apache-2.0, vendored)
 ```
 
-Intensity is `double[]` throughout (so consumers get arrays directly, no widening copy). Signal files are
-read fully and cached on first access — fine at example scale; row-group/page **predicate pushdown** for
-large files is future work.
+**Streaming:** `SpectrumArrayStore` reads per-row-group `spectrum_index` min/max stats at open time.
+`get(index)` decodes only the row group(s) that cover the requested index and caches the last block run.
+`ZipSource` reads STORED members in place via `FileSliceInputFile` (positional `FileChannel` reads),
+so a single-file archive streams identically to an unpacked directory.
 
-## 8. Testing approach
+---
 
-Tests run against vendored upstream fixtures (`small.unpacked` / `small` / `small.chunked` /
-`small.numpress` / `has_uv`). Golden values were extracted independently with **pyarrow**, and the reader is
-**cross-validated against the Rust `mzpeak_prototyping` reference test** (spectrum 0 → 13589 points; 5 → 650
-peaks; 25 → 789 peaks) across the unpacked / ZIP / chunked variants, plus byte-exact centroid array
-equivalence and profile total-signal equivalence across containers. 21 tests; `mvn verify` builds the jar.
+## 9. Testing approach
 
-## 9. Known limitations / deferred
+- 123 tests against vendored HUPO-PSI fixtures (`small.unpacked` / `small` / `small.chunked` /
+  `small.numpress` / `has_uv`).
+- **Golden values** extracted independently with pyarrow, then cross-checked against the Rust reference.
+- **Rust reference alignment**: `RustReferenceTest` ports the HUPO-PSI `reader.rs#[cfg(test)]` assertions
+  directly (spectrum 0 → 13589 pts, spectrum 5 → 650 peaks, spectrum 25 → 789 peaks, TIC 48 pts).
+- **Python reference alignment**: `CrossImplTest` + `EicAndCoverageTest` port `common_checks()` assertions
+  from `mobiusklein/mzpeak_prototyping python/test/test_reader.py` (34 selected ions, spectrum 4 → 837
+  peaks, EIC 96 centroid peaks, secondary peaks for chunked, native ID format, isolation window).
+- **Byte-exact verification**: centroid arrays are byte-identical across point/ZIP/chunked containers.
+- CI: JDK 17 + 21 via GitHub Actions.
 
-See README "Scope & limitations" and `.planning/REQUIREMENTS.md`. In short: exact `mz_delta_model`
-reconstruction, footer key-value **metadata modeling** (instrument/software/activation — see roadmap),
-predicate pushdown/streaming for large files, detail-level (metadata-only) loading, tolerance-based peak
-search, multi-precursor selected-ion partitioning, Numpress **PIC**, and writing of `chunk`/Numpress layouts
-and wavelength spectra (writing of point-layout spectra + chromatograms is supported).
+---
 
-## 10. Tooling notes
+## 10. Known limitations / deferred
 
-- Build/run needs a JDK; this project used Homebrew `openjdk@25` → `export JAVA_HOME=/opt/homebrew/opt/openjdk@25`.
-- `mvn verify` (tests + jar); `mvn javadoc:javadoc` (API docs under `target/reports/apidocs`).
-- Inspect a fixture: `java --enable-native-access=ALL-UNNAMED -cp "target/classes:<deps>" org.mzpeak.cli.MzPeakInfo <path>`.
-- Re-deriving golden values: `python3` + `pyarrow` on the unpacked Parquet files (see git history for the probes).
+- **Chromatogram chunk writing** — chunk time-axis decoding is implemented; writing is not.
+- **MS-Numpress PIC decoding** (`MS:1002313`) — written by the writer but not decoded by the reader.
+- **Writing** of `chunk`/delta layouts, wavelength spectra, and writing Numpress layout from profile arrays.
+- **Predicate/page-level pushdown within a row group** — row groups are skipped by min/max statistics, but
+  all pages within a selected group are decoded.
+- **Detail-level loading** (metadata-only vs. full spectrum in a single open).
+- **Full zip64 EOCD** — per-entry zip64 extra fields are handled; a true zip64 EOCD is rejected.
+- **Maven Central** publication.
+
+---
+
+## 11. Tooling notes
+
+- Build: `export JAVA_HOME=/opt/homebrew/opt/openjdk@25 && mvn verify`
+- Run an example: `./run-example.sh org.mzpeak.examples.MzPeakFileInfo <path>`
+- Inspect a fixture: `./run-example.sh org.mzpeak.cli.MzPeakInfo <path>`
+- Re-deriving golden values: `python3` + `pyarrow` on the unpacked Parquet files (see git log for probes)
+- Javadoc: `mvn javadoc:javadoc` → `target/reports/apidocs`
