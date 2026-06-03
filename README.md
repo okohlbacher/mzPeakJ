@@ -144,7 +144,7 @@ Hadoop-free Parquet path, type variance), see **[DESIGN.md](DESIGN.md)**.
 
 | Package | Responsibility |
 |---|---|
-| `org.mzpeak.model` | Pure data: peak primitives (`CentroidPeak`, `DeconvolutedPeak`), `Spectrum`, `SpectrumDescription`, `Precursor`, `Chromatogram`, `WavelengthSpectrum`, `Tolerance`, ... |
+| `org.mzpeak.model` | Pure data: peak primitives (`CentroidPeak`), `Spectrum`, `SpectrumDescription`, `Precursor`, `Activation`, `Chromatogram`, `WavelengthSpectrum`, `Param`, `Tolerance`, ... |
 | `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, source abstraction (dir/ZIP), metadata + array stores |
 | `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O (`LocalInputFile`/`LocalOutputFile` + `PlainParquetConfiguration` + a zstd-jni `CompressionCodecFactory`) |
 | `org.mzpeak.cli` / `org.mzpeak.examples` | Runnable demonstrator tools |
@@ -194,12 +194,14 @@ fixtures (spectrum 0 → 13589 points; 5 → 650 peaks; 25 → 789 peaks).
 
 **Deferred / known limitations:**
 
-- **MS-Numpress** linear (m/z) + SLOF (intensity) chunks are read (decoding is lossy, as the format intends).
-  Numpress **PIC** and **writing** Numpress are not implemented.
+- **MS-Numpress** linear (m/z) + SLOF (intensity) chunks are read and written (`writeDirectoryNumpress` /
+  `writeArchiveNumpress`). Numpress **PIC** is not decoded. Numpress write is lossy by design (SLOF is
+  log-scale 16-bit; total ion current is preserved to <1%).
 - **Profile reconstruction** fills null-marked m/z by stepping with the stored `mz_delta_model` polynomial
   (linear interpolation only as a fallback when no model is present).
-- **Writing** is point-layout only and does not encode `chunk`/Numpress layouts or wavelength spectra
-  (metadata footer *is* written).
+- **Writing** supports point layout and **MS-Numpress chunk layout** (`writeDirectoryNumpress` /
+  `writeArchiveNumpress`). Wavelength spectra and per-spectrum/scan CV param lists are not written.
+- MS-Numpress **PIC** (`MS:1002313`) is not decoded (linear + SLOF are).
 - **MS-Numpress PIC** (`MS:1002313`) is not decoded (linear + SLOF are).
 
 ## Development

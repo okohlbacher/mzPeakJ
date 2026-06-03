@@ -15,6 +15,7 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
+import ms.numpress.MSNumpress;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
@@ -35,13 +36,14 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Writes a minimal mzPeak dataset: ZSTD-compressed Parquet ({@code point} layout) + {@code mzpeak_index.json},
- * to an unpacked directory or a single-file (STORED) {@code .mzpeak} ZIP. Round-trips through {@link MzPeakReader}.
+ * Writes mzPeak datasets in either {@code point} layout (the default) or MS-Numpress {@code chunk} layout.
  *
- * <p>Scope (mirrors the reader's): spectra (MS1 + MSn, scalar metadata + precursor/selected-ion) and
- * chromatograms, point layout only. Profile spectra go to {@code spectra_data.parquet}, centroided spectra to
- * {@code spectra_peaks.parquet}. Parameter/auxiliary-array lists, chunk/Numpress encoding, and wavelength
- * spectra are not written.
+ * <p>Point layout: spectra (profile + centroid), chromatograms, and file/run metadata; round-trips through
+ * {@link MzPeakReader}. Numpress layout additionally encodes m/z with Numpress linear (MS:1002312) and
+ * intensity with Numpress SLOF (MS:1002314) per chunk. Wavelength spectra are not written.
+ *
+ * <p>Known limitation: per-spectrum/scan/selected-ion {@code parameters} CV/user param lists are decoded by
+ * the reader but not written back — write-round-trips will lose them.
  */
 public final class MzPeakWriter {
 
@@ -104,6 +106,70 @@ public final class MzPeakWriter {
             tmpZip = null;
         } catch (IOException e) {
             throw new MzPeakException("Failed to write mzPeak archive " + archive, e);
+        } finally {
+            deleteRecursively(tmpDir);
+            deleteRecursively(tmpZip);
+        }
+    }
+
+    // ---- Numpress-encoded chunk layout API --------------------------------------------------------
+
+    /**
+     * Write an unpacked {@code *.mzpeak/} directory using MS-Numpress chunk encoding.
+     * m/z is encoded with Numpress linear ({@code MS:1002312}); intensity with Numpress SLOF
+     * ({@code MS:1002314}). Chromatograms are written in standard point layout. Round-trips through
+     * {@link MzPeakReader} on any container and layout variant.
+     */
+    public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
+                                             List<Chromatogram> chromatograms) {
+        writeDirectoryNumpress(directory, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
+    }
+
+    public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
+                                             List<Chromatogram> chromatograms,
+                                             org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        validate(spectra, chromatograms);
+        boolean hasPeaks = spectra.stream().anyMatch(MzPeakWriter::isCentroid);
+        boolean hasChromatograms = !chromatograms.isEmpty();
+        java.util.Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
+        try {
+            Files.createDirectories(directory);
+            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra, footer);
+            writeNumpressChunks(directory.resolve("spectra_data.parquet"), spectra, false);
+            if (hasPeaks) {
+                writeNumpressChunks(directory.resolve("spectra_peaks.parquet"), spectra, true);
+            }
+            if (hasChromatograms) {
+                writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
+                writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
+            }
+            writeManifest(directory.resolve("mzpeak_index.json"), true, hasPeaks, hasChromatograms);
+        } catch (IOException e) {
+            throw new MzPeakException("Failed to write Numpress mzPeak dataset to " + directory, e);
+        }
+    }
+
+    /** Write a single-file STORED {@code .mzpeak} ZIP with Numpress encoding. */
+    public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
+                                           List<Chromatogram> chromatograms) {
+        writeArchiveNumpress(archive, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
+    }
+
+    public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
+                                           List<Chromatogram> chromatograms,
+                                           org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        Path parent = archive.toAbsolutePath().getParent();
+        Path tmpDir = null;
+        Path tmpZip = null;
+        try {
+            tmpDir = Files.createTempDirectory(parent, ".mzpeak-numpress-");
+            tmpZip = Files.createTempFile(parent, ".mzpeak-numpress-", ".zip");
+            writeDirectoryNumpress(tmpDir, spectra, chromatograms, fileMetadata);
+            packStored(tmpDir, tmpZip);
+            Files.move(tmpZip, archive, StandardCopyOption.REPLACE_EXISTING);
+            tmpZip = null;
+        } catch (IOException e) {
+            throw new MzPeakException("Failed to write Numpress mzPeak archive " + archive, e);
         } finally {
             deleteRecursively(tmpDir);
             deleteRecursively(tmpZip);
@@ -178,6 +244,37 @@ public final class MzPeakWriter {
                         .named("point"))
                 .named("data");
     }
+
+    /** Schema for Numpress-encoded chunk layout (compatible with SpectrumArrayStore.acceptNumpressChunk). */
+    private static final MessageType NUMPRESS_CHUNK_SCHEMA = Types.buildMessage()
+            .addField(Types.requiredGroup()
+                    .required(PrimitiveTypeName.INT64).named("spectrum_index")
+                    .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_start")
+                    .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_end")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("chunk_encoding")
+                    // large_list<uint8> columns — stored as repeated INT32 inside a LIST group
+                    .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                            .repeatedGroup()
+                            .required(PrimitiveTypeName.INT32).named("item")
+                            .named("list")
+                            .named("mz_numpress_linear_bytes"))
+                    .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                            .repeatedGroup()
+                            .required(PrimitiveTypeName.INT32).named("item")
+                            .named("list")
+                            .named("intensity_numpress_slof_bytes"))
+                    .named("chunk"))
+            .named("chunk_data");
+
+    /** Default number of m/z points per numpress chunk. */
+    private static final int NUMPRESS_CHUNK_SIZE = 500;
+    /** Numpress linear fixed-point scale (near-lossless for MS m/z up to ~6000 Da at 5 sig figs). */
+    private static final double NUMPRESS_LINEAR_FIXED_POINT = 100_000.0;
+    /**
+     * Max value for a uint16 SLOF symbol — SLOF encodes {@code log(x+1)*fixedPoint} into 2 bytes.
+     * The fixedPoint is chosen dynamically so the maximum log value maps to ≤65535.
+     */
+    private static final int SLOF_MAX_SYMBOL = 65535;
 
     private static final MessageType CHROM_META_SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
@@ -277,6 +374,84 @@ public final class MzPeakWriter {
                     for (int i = 0; i < mz.length; i++) {
                         writePoint(writer, factory, "spectrum_index", s.index(), "mz", mz[i], intensity[i]);
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * Write spectra as MS-Numpress chunk rows. Each spectrum is split into fixed-size chunks; m/z is encoded
+     * with Numpress linear and intensity with Numpress SLOF. Output is compatible with
+     * {@code SpectrumArrayStore.acceptNumpressChunk}.
+     */
+    private static void writeNumpressChunks(Path file, List<Spectrum> spectra, boolean centroidFile)
+            throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(NUMPRESS_CHUNK_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA)) {
+            for (Spectrum s : spectra) {
+                if (isCentroid(s) != centroidFile) {
+                    continue;
+                }
+                double[] mz;
+                double[] intensity;
+                if (centroidFile && !s.peaks().isEmpty()) {
+                    mz = new double[s.peaks().size()];
+                    intensity = new double[s.peaks().size()];
+                    for (int i = 0; i < mz.length; i++) {
+                        mz[i] = s.peaks().get(i).mz();
+                        intensity[i] = s.peaks().get(i).intensity();
+                    }
+                } else {
+                    mz = s.mz();
+                    intensity = s.intensity();
+                }
+                int n = mz.length;
+                if (n == 0) {
+                    continue;
+                }
+                int pos = 0;
+                while (pos < n) {
+                    int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
+                    int chunkLen = end - pos;
+                    double[] chunkMz = java.util.Arrays.copyOfRange(mz, pos, end);
+                    double[] chunkIn = java.util.Arrays.copyOfRange(intensity, pos, end);
+
+                    // Encode m/z with Numpress linear; max output = 8 (header) + 5 bytes/value
+                    byte[] mzBuf = new byte[8 + chunkLen * 5];
+                    int mzLen = MSNumpress.encodeLinear(chunkMz, chunkLen, mzBuf, NUMPRESS_LINEAR_FIXED_POINT);
+
+                    // Encode intensity with Numpress SLOF. The fixedPoint is chosen dynamically so that
+                    // log(max_intensity + 1) * fixedPoint fits in a uint16 (max 65535).
+                    double maxIn = 0;
+                    for (double v : chunkIn) {
+                        if (v > maxIn) maxIn = v;
+                    }
+                    double slofFixed = maxIn <= 0 ? 1.0
+                            : Math.floor(SLOF_MAX_SYMBOL / Math.log(maxIn + 1));
+                    byte[] inBuf = new byte[8 + chunkLen * 2];
+                    int inLen = MSNumpress.encodeSlof(chunkIn, chunkLen, inBuf, slofFixed);
+
+                    Group row = factory.newGroup();
+                    Group chunk = row.addGroup("chunk");
+                    chunk.add("spectrum_index", s.index());
+                    chunk.add("mz_chunk_start", chunkMz[0]);
+                    chunk.add("mz_chunk_end", chunkMz[chunkLen - 1]);
+                    chunk.add("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR);
+
+                    // Write mz_numpress_linear_bytes as repeated-group list (one "list" Group per byte)
+                    Group mzBytesWrapper = chunk.addGroup("mz_numpress_linear_bytes");
+                    for (int i = 0; i < mzLen; i++) {
+                        mzBytesWrapper.addGroup("list").add("item", mzBuf[i] & 0xFF);
+                    }
+
+                    // Write intensity_numpress_slof_bytes
+                    Group inBytesWrapper = chunk.addGroup("intensity_numpress_slof_bytes");
+                    for (int i = 0; i < inLen; i++) {
+                        inBytesWrapper.addGroup("list").add("item", inBuf[i] & 0xFF);
+                    }
+
+                    writer.write(row);
+                    pos = end;
                 }
             }
         }

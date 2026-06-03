@@ -23,15 +23,13 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) and groups its
- * rows by {@code spectrum_index} into parallel {@code double[]} m/z + intensity arrays. Supports the
- * {@code point} layout, the delta-encoded {@code chunk} layout, and MS-Numpress chunks.
+ * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) in a streaming,
+ * memory-bounded fashion. Supports the {@code point} layout, delta-encoded {@code chunk} layout, and
+ * MS-Numpress chunks (linear m/z + SLOF intensity).
  *
- * <p><b>Streaming:</b> the file is <em>not</em> read whole. On open we read per-row-group min/max statistics
- * for the {@code spectrum_index} column; {@link #get} decodes only the row group(s) covering the requested
- * index, caching the last-decoded contiguous block run. For a single-row-group file this is equivalent to
- * reading the file once; for a large multi-row-group file, memory is bounded to one block run rather than the
- * whole file.
+ * <p><b>Streaming:</b> per-row-group {@code spectrum_index} min/max statistics are read at open time;
+ * {@link #get} decodes only the row group(s) covering the requested index, caching the last decoded block run.
+ * Memory usage is bounded to one row-group run rather than the whole file.
  */
 final class SpectrumArrayStore implements AutoCloseable {
 

@@ -16,6 +16,7 @@ import java.util.List;
  * @param numberOfPeaks       declared centroid count (MS:1003059); 0 if absent
  * @param scans               acquisition events; never {@code null}
  * @param precursors          precursors (empty for MS1); never {@code null}
+ * @param parameters          additional CV/user params from the spectrum facet; never {@code null}, may be empty
  */
 public record SpectrumDescription(long index,
                                   String id,
@@ -26,11 +27,21 @@ public record SpectrumDescription(long index,
                                   long numberOfDataPoints,
                                   long numberOfPeaks,
                                   List<ScanEvent> scans,
-                                  List<Precursor> precursors) {
+                                  List<Precursor> precursors,
+                                  List<Param> parameters) {
 
     public SpectrumDescription {
         scans = scans == null ? List.of() : List.copyOf(scans);
         precursors = precursors == null ? List.of() : List.copyOf(precursors);
+        parameters = parameters == null ? List.of() : List.copyOf(parameters);
+    }
+
+    /** Backwards-compatible constructor without parameters (defaults to empty list). */
+    public SpectrumDescription(long index, String id, int msLevel, double retentionTime, Polarity polarity,
+                               SignalContinuity signalContinuity, long numberOfDataPoints, long numberOfPeaks,
+                               List<ScanEvent> scans, List<Precursor> precursors) {
+        this(index, id, msLevel, retentionTime, polarity, signalContinuity, numberOfDataPoints, numberOfPeaks,
+                scans, precursors, List.of());
     }
 
     public boolean isMsn() {

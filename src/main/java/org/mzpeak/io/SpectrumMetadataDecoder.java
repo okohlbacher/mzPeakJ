@@ -5,6 +5,7 @@ import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.IsolationWindow;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
@@ -97,7 +98,8 @@ final class SpectrumMetadataDecoder {
                     precursorsBySource.get(b.index), selectedIonsBySource.get(b.index));
             out.add(new SpectrumDescription(
                     b.index, b.id, b.msLevel, b.time, b.polarity, b.continuity,
-                    b.numberOfDataPoints, b.numberOfPeaks, scans, precursors));
+                    b.numberOfDataPoints, b.numberOfPeaks, scans, precursors,
+                    b.spectrumParams));
         }
         out.sort((a, b) -> Long.compare(a.index(), b.index()));
         return new Decoded(out, deltaModels);
@@ -127,7 +129,8 @@ final class SpectrumMetadataDecoder {
             Double injection = ParquetGroups.optDouble(scan, F_INJECTION);
             String filter = ParquetGroups.optString(scan, F_FILTER);
             // scan_windows (a nested LIST) is intentionally not decoded in the prototype.
-            out.add(new ScanEvent(start == null ? Double.NaN : start, injection, filter, List.of()));
+            List<Param> scanParams = ParquetGroups.readParams(scan, "parameters");
+            out.add(new ScanEvent(start == null ? Double.NaN : start, injection, filter, List.of(), scanParams));
         }
         return out;
     }
@@ -145,7 +148,8 @@ final class SpectrumMetadataDecoder {
                 }
                 ions.add(new SelectedIon(mz,
                         ParquetGroups.optInt(ion, F_CHARGE),
-                        ParquetGroups.optDouble(ion, F_SELECTED_INTENSITY)));
+                        ParquetGroups.optDouble(ion, F_SELECTED_INTENSITY),
+                        ParquetGroups.readParams(ion, "parameters")));
             }
         }
         if (precursorGroups == null || precursorGroups.isEmpty()) {
@@ -187,6 +191,7 @@ final class SpectrumMetadataDecoder {
         SignalContinuity continuity;
         long numberOfDataPoints;
         long numberOfPeaks;
+        List<Param> spectrumParams = List.of();
 
         static Builder from(Group spectrum, long idx) {
             Builder b = new Builder();
@@ -202,6 +207,7 @@ final class SpectrumMetadataDecoder {
             b.numberOfDataPoints = nPts == null ? 0 : nPts;
             Long nPeaks = ParquetGroups.optLong(spectrum, F_N_PEAKS);
             b.numberOfPeaks = nPeaks == null ? 0 : nPeaks;
+            b.spectrumParams = ParquetGroups.readParams(spectrum, "parameters");
             return b;
         }
     }
