@@ -22,8 +22,4 @@ public record ScanEvent(double startTime,
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
     }
 
-    /** Backwards-compatible constructor without parameters (defaults to empty list). */
-    public ScanEvent(double startTime, Double injectionTime, String filterString, List<ScanWindow> scanWindows) {
-        this(startTime, injectionTime, filterString, scanWindows, List.of());
-    }
 }

@@ -122,12 +122,25 @@ public final class MzPeakWriter {
      */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms) {
-        writeDirectoryNumpress(directory, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
+        writeDirectoryNumpress(directory, spectra, chromatograms,
+                org.mzpeak.model.meta.FileMetadata.EMPTY, NumpressIntensityEncoding.SLOF);
     }
 
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,
                                              org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        writeDirectoryNumpress(directory, spectra, chromatograms, fileMetadata, NumpressIntensityEncoding.SLOF);
+    }
+
+    /**
+     * Write an unpacked directory with Numpress encoding and a caller-chosen intensity encoding.
+     * Use {@link NumpressIntensityEncoding#SLOF} (default) for floating-point intensities and
+     * {@link NumpressIntensityEncoding#PIC} for non-negative integer ion-count arrays.
+     */
+    public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
+                                             List<Chromatogram> chromatograms,
+                                             org.mzpeak.model.meta.FileMetadata fileMetadata,
+                                             NumpressIntensityEncoding intensityEncoding) {
         validate(spectra, chromatograms);
         boolean hasPeaks = spectra.stream().anyMatch(MzPeakWriter::isCentroid);
         boolean hasChromatograms = !chromatograms.isEmpty();
@@ -135,9 +148,9 @@ public final class MzPeakWriter {
         try {
             Files.createDirectories(directory);
             writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra, footer);
-            writeNumpressChunks(directory.resolve("spectra_data.parquet"), spectra, false);
+            writeNumpressChunks(directory.resolve("spectra_data.parquet"), spectra, false, intensityEncoding);
             if (hasPeaks) {
-                writeNumpressChunks(directory.resolve("spectra_peaks.parquet"), spectra, true);
+                writeNumpressChunks(directory.resolve("spectra_peaks.parquet"), spectra, true, intensityEncoding);
             }
             if (hasChromatograms) {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
@@ -164,7 +177,7 @@ public final class MzPeakWriter {
         try {
             tmpDir = Files.createTempDirectory(parent, ".mzpeak-numpress-");
             tmpZip = Files.createTempFile(parent, ".mzpeak-numpress-", ".zip");
-            writeDirectoryNumpress(tmpDir, spectra, chromatograms, fileMetadata);
+            writeDirectoryNumpress(tmpDir, spectra, chromatograms, fileMetadata, NumpressIntensityEncoding.SLOF);
             packStored(tmpDir, tmpZip);
             Files.move(tmpZip, archive, StandardCopyOption.REPLACE_EXISTING);
             tmpZip = null;
@@ -198,6 +211,25 @@ public final class MzPeakWriter {
 
     // ---- schemas ----------------------------------------------------------------------------------
 
+    /** A reusable {@code parameters: large_list<item: struct<value-union, accession, name, unit>>} field schema. */
+    private static org.apache.parquet.schema.Type paramListField() {
+        org.apache.parquet.schema.GroupType itemType = Types.buildGroup(
+                        org.apache.parquet.schema.Type.Repetition.OPTIONAL)
+                .addField(Types.optionalGroup()
+                        .optional(PrimitiveTypeName.INT64).named("integer")
+                        .optional(PrimitiveTypeName.DOUBLE).named("float")
+                        .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("string")
+                        .optional(PrimitiveTypeName.BOOLEAN).named("boolean")
+                        .named("value"))
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("accession")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("name")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
+                .named("item");
+        return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .addField(Types.repeatedGroup().addField(itemType).named("list"))
+                .named("parameters");
+    }
+
     private static final MessageType METADATA_SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).named("index")
@@ -209,10 +241,12 @@ public final class MzPeakWriter {
                     .named("MS_1000525_spectrum_representation")
                     .optional(PrimitiveTypeName.INT64).named("MS_1003060_number_of_data_points")
                     .optional(PrimitiveTypeName.INT64).named("MS_1003059_number_of_peaks")
+                    .addField(paramListField())
                     .named("spectrum"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).named("source_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000016_scan_start_time_unit_UO_0000031")
+                    .addField(paramListField())
                     .named("scan"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).named("source_index")
@@ -229,6 +263,7 @@ public final class MzPeakWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000744_selected_ion_mz_unit_MS_1000040")
                     .optional(PrimitiveTypeName.INT32).named("MS_1000041_charge_state")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000042_intensity_unit_MS_1000131")
+                    .addField(paramListField())
                     .named("selected_ion"))
             .named("spectrum_metadata");
 
@@ -253,25 +288,31 @@ public final class MzPeakWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_end")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("chunk_encoding")
                     // large_list<uint8> columns — stored as repeated INT32 inside a LIST group
-                    .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
-                            .repeatedGroup()
-                            .required(PrimitiveTypeName.INT32).named("item")
-                            .named("list")
-                            .named("mz_numpress_linear_bytes"))
-                    .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
-                            .repeatedGroup()
-                            .required(PrimitiveTypeName.INT32).named("item")
-                            .named("list")
-                            .named("intensity_numpress_slof_bytes"))
+                    .addField(numpressByteListField("mz_numpress_linear_bytes"))
+                    .addField(numpressByteListField("intensity_numpress_slof_bytes"))
+                    .addField(numpressByteListField("intensity_numpress_pic_bytes"))
                     .named("chunk"))
             .named("chunk_data");
+
+    private static org.apache.parquet.schema.Type numpressByteListField(String name) {
+        return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .repeatedGroup()
+                .required(PrimitiveTypeName.INT32).named("item")
+                .named("list")
+                .named(name);
+    }
 
     /** Default number of m/z points per numpress chunk. */
     private static final int NUMPRESS_CHUNK_SIZE = 500;
     /** Numpress linear fixed-point scale (near-lossless for MS m/z up to ~6000 Da at 5 sig figs). */
     private static final double NUMPRESS_LINEAR_FIXED_POINT = 100_000.0;
     /**
-     * Max value for a uint16 SLOF symbol — SLOF encodes {@code log(x+1)*fixedPoint} into 2 bytes.
+     * Intensity encoding for Numpress chunks. {@link #SLOF} is the standard choice for floating-point
+     * intensities; {@link #PIC} is appropriate for integer ion-count arrays.
+     */
+    public enum NumpressIntensityEncoding { SLOF, PIC }
+
+    /** Max value for a uint16 SLOF symbol — SLOF encodes {@code log(x+1)*fixedPoint} into 2 bytes.
      * The fixedPoint is chosen dynamically so the maximum log value maps to ≤65535.
      */
     private static final int SLOF_MAX_SYMBOL = 65535;
@@ -312,11 +353,15 @@ public final class MzPeakWriter {
                 spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
                 spectrum.add(isCentroid(s) ? "MS_1003059_number_of_peaks" : "MS_1003060_number_of_data_points",
                         (long) payloadSize(s));
+                writeParams(spectrum, d.parameters());
 
                 Group scan = row.addGroup("scan");
                 scan.add("source_index", d.index());
                 if (Double.isFinite(d.retentionTime())) {
                     scan.add("MS_1000016_scan_start_time_unit_UO_0000031", d.retentionTime());
+                }
+                if (!d.scans().isEmpty()) {
+                    writeParams(scan, d.scans().get(0).parameters());
                 }
 
                 writePrecursor(row, d);
@@ -353,6 +398,7 @@ public final class MzPeakWriter {
                 si.add("MS_1000041_charge_state", ion.charge());
             }
             addIfPresent(si, "MS_1000042_intensity_unit_MS_1000131", ion.intensity());
+            writeParams(si, ion.parameters());
         }
     }
 
@@ -384,7 +430,8 @@ public final class MzPeakWriter {
      * with Numpress linear and intensity with Numpress SLOF. Output is compatible with
      * {@code SpectrumArrayStore.acceptNumpressChunk}.
      */
-    private static void writeNumpressChunks(Path file, List<Spectrum> spectra, boolean centroidFile)
+    private static void writeNumpressChunks(Path file, List<Spectrum> spectra, boolean centroidFile,
+                                            NumpressIntensityEncoding intensityEncoding)
             throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(NUMPRESS_CHUNK_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA)) {
@@ -420,16 +467,24 @@ public final class MzPeakWriter {
                     byte[] mzBuf = new byte[8 + chunkLen * 5];
                     int mzLen = MSNumpress.encodeLinear(chunkMz, chunkLen, mzBuf, NUMPRESS_LINEAR_FIXED_POINT);
 
-                    // Encode intensity with Numpress SLOF. The fixedPoint is chosen dynamically so that
-                    // log(max_intensity + 1) * fixedPoint fits in a uint16 (max 65535).
-                    double maxIn = 0;
-                    for (double v : chunkIn) {
-                        if (v > maxIn) maxIn = v;
+                    // Encode intensity with SLOF or PIC depending on the caller's choice.
+                    final byte[] inBuf;
+                    final int inLen;
+                    final String inColumn;
+                    if (intensityEncoding == NumpressIntensityEncoding.PIC) {
+                        // PIC: 8-byte header + variable bytes; max = 8 + 5*n (worst case)
+                        inBuf = new byte[8 + chunkLen * 5];
+                        inLen = MSNumpress.encodePic(chunkIn, chunkLen, inBuf);
+                        inColumn = "intensity_numpress_pic_bytes";
+                    } else {
+                        // SLOF: dynamic fixedPoint so log(max_in+1)*fp fits in uint16 (max 65535).
+                        double maxIn = 0;
+                        for (double v : chunkIn) { if (v > maxIn) maxIn = v; }
+                        double slofFixed = maxIn <= 0 ? 1.0 : Math.floor(SLOF_MAX_SYMBOL / Math.log(maxIn + 1));
+                        inBuf = new byte[8 + chunkLen * 2];
+                        inLen = MSNumpress.encodeSlof(chunkIn, chunkLen, inBuf, slofFixed);
+                        inColumn = "intensity_numpress_slof_bytes";
                     }
-                    double slofFixed = maxIn <= 0 ? 1.0
-                            : Math.floor(SLOF_MAX_SYMBOL / Math.log(maxIn + 1));
-                    byte[] inBuf = new byte[8 + chunkLen * 2];
-                    int inLen = MSNumpress.encodeSlof(chunkIn, chunkLen, inBuf, slofFixed);
 
                     Group row = factory.newGroup();
                     Group chunk = row.addGroup("chunk");
@@ -444,8 +499,8 @@ public final class MzPeakWriter {
                         mzBytesWrapper.addGroup("list").add("item", mzBuf[i] & 0xFF);
                     }
 
-                    // Write intensity_numpress_slof_bytes
-                    Group inBytesWrapper = chunk.addGroup("intensity_numpress_slof_bytes");
+                    // Write the chosen intensity column (SLOF or PIC)
+                    Group inBytesWrapper = chunk.addGroup(inColumn);
                     for (int i = 0; i < inLen; i++) {
                         inBytesWrapper.addGroup("list").add("item", inBuf[i] & 0xFF);
                     }
@@ -583,6 +638,31 @@ public final class MzPeakWriter {
     private static void addIfPresent(Group group, String field, Double value) {
         if (value != null) {
             group.add(field, value);
+        }
+    }
+
+    /**
+     * Write a {@code List<Param>} into a {@code parameters: large_list<item: struct<value-union,...>>} group.
+     * Symmetric to {@link org.mzpeak.io.parquet.ParquetGroups#readParams}.
+     */
+    private static void writeParams(Group owner, List<org.mzpeak.model.Param> params) {
+        if (params == null || params.isEmpty()) {
+            return;
+        }
+        Group wrapper = owner.addGroup("parameters");
+        for (org.mzpeak.model.Param p : params) {
+            Group slot = wrapper.addGroup("list");
+            Group item = slot.addGroup("item");
+            // value union
+            Group valueGroup = item.addGroup("value");
+            Object v = p.value();
+            if (v instanceof Long l)    { valueGroup.add("integer", l); }
+            else if (v instanceof Double d) { valueGroup.add("float", d); }
+            else if (v instanceof String s) { valueGroup.add("string", s); }
+            else if (v instanceof Boolean b) { valueGroup.add("boolean", b); }
+            if (p.accession() != null) { item.add("accession", p.accession()); }
+            if (p.name() != null)      { item.add("name", p.name()); }
+            if (p.unit() != null)      { item.add("unit", p.unit()); }
         }
     }
 

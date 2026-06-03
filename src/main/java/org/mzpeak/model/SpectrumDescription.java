@@ -36,13 +36,6 @@ public record SpectrumDescription(long index,
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
     }
 
-    /** Backwards-compatible constructor without parameters (defaults to empty list). */
-    public SpectrumDescription(long index, String id, int msLevel, double retentionTime, Polarity polarity,
-                               SignalContinuity signalContinuity, long numberOfDataPoints, long numberOfPeaks,
-                               List<ScanEvent> scans, List<Precursor> precursors) {
-        this(index, id, msLevel, retentionTime, polarity, signalContinuity, numberOfDataPoints, numberOfPeaks,
-                scans, precursors, List.of());
-    }
 
     public boolean isMsn() {
         return msLevel > 1;

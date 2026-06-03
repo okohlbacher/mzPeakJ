@@ -16,8 +16,4 @@ public record SelectedIon(double mz, Integer charge, Double intensity, List<Para
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
     }
 
-    /** Backwards-compatible constructor without parameters (defaults to empty list). */
-    public SelectedIon(double mz, Integer charge, Double intensity) {
-        this(mz, charge, intensity, List.of());
-    }
 }

@@ -154,7 +154,7 @@ final class SpectrumMetadataDecoder {
         }
         if (precursorGroups == null || precursorGroups.isEmpty()) {
             // selected ions but no precursor record: surface a precursor carrying the ions
-            return List.of(new Precursor(null, null, null, ions));
+            return List.of(new Precursor(null, null, null, ions, Activation.EMPTY));
         }
         // Build one Precursor per precursor record (no silent collapse). Selected ions for the spectrum are
         // attached to the first precursor; multi-precursor ion partitioning is future work (the example

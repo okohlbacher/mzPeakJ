@@ -6,7 +6,7 @@
 
   <groupId>org.mzpeak</groupId>
   <artifactId>mzpeakj</artifactId>
-  <version>0.10.1</version>
+  <version>0.10.2</version>
   <packaging>jar</packaging>
 
   <name>mzPeakJ</name>

@@ -22,11 +22,6 @@ public record Precursor(Long precursorIndex,
         activation = activation == null ? Activation.EMPTY : activation;
     }
 
-    /** Backwards-compatible constructor without activation (defaults to empty). */
-    public Precursor(Long precursorIndex, String precursorId, IsolationWindow isolationWindow,
-                     List<SelectedIon> selectedIons) {
-        this(precursorIndex, precursorId, isolationWindow, selectedIons, Activation.EMPTY);
-    }
 
     /** The first selected ion, or {@code null} if none. */
     public SelectedIon primaryIon() {
