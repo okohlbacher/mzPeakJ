@@ -68,14 +68,17 @@ class RustReferenceTest {
     // ---- Rust test_tic equivalent: TIC index=0, 48 time points, all containers ----
 
     @ParameterizedTest
-    @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak"})
+    @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak"})
     void ticChromatogram_index0_48Points(String fixture) {
-        // Note: small.chunked.mzpeak uses chunk layout for chromatogram data; ChromatogramStore currently
-        // handles point layout only, so chromatogram data is empty for that fixture (metadata is present).
         try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
             Chromatogram tic = r.getChromatogram(0).orElseThrow();
             assertThat(tic.index()).isEqualTo(0L);
             assertThat(tic.size()).isEqualTo(48);
+            // time axis is monotonic non-decreasing
+            double[] t = tic.time();
+            for (int i = 1; i < t.length; i++) {
+                assertThat(t[i]).isGreaterThanOrEqualTo(t[i - 1]);
+            }
         }
     }
 
