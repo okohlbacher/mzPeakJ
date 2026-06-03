@@ -125,10 +125,10 @@ Five HUPO-PSI example datasets are included under `src/test/resources/mzpeak/`:
 Current version: **0.10.2** (see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
-read+write; CV param write-back; Numpress linear+SLOF+PIC write; exact `mz_delta_model` reconstruction;
+read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact `mz_delta_model` reconstruction;
 tolerance-based centroid peak search; vendor-agnostic scan-number lookup; OpenMS-FileInfo-style summary tool.
 
-**Known deferred** — Numpress PIC read, chunk/delta write, wavelength spectra write, page-level pushdown,
+**Known deferred** — chunk/delta write, wavelength spectra write, page-level pushdown,
 detail-level loading, Maven Central publication.
 
 MIT-licensed. Bundles the Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders

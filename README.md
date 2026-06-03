@@ -237,7 +237,7 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - Activation methods and collision energy from `precursor.activation.parameters` (CID, HCD, ETD, …).
 - Random access by index, native id, vendor scan number (Thermo/Waters/Agilent/Bruker/SCIEX), or nearest RT.
 - Streaming reader — only the row groups covering a requested spectrum are decoded; bounded memory.
-- Writing: ZSTD Parquet (point layout + Numpress chunk layout), directory and STORED ZIP.
+- Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and STORED ZIP.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
 - **123 tests** (JDK 17 + 21 via GitHub Actions CI), cross-validated against Rust `mzpeak_prototyping`
   reference test suite and independently verified with pyarrow.
@@ -245,7 +245,6 @@ classes statically reference Hadoop types — but it is never actually invoked.
 **Deferred / known limitations:**
 
 - **Writing**: chunk/delta layout writing, wavelength spectra writing.
-- **MS-Numpress PIC** (`MS:1002313`) intensity decoding (linear + SLOF are decoded; PIC is written but not yet decoded by the reader).
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Full zip64 EOCD** (per-entry zip64 extra fields are handled; a true zip64 EOCD would be rejected).
 - **Predicate/page-level pushdown** within a row group (whole row groups are skipped by min/max stats, but all pages within a selected group are decoded).

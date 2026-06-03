@@ -297,7 +297,6 @@ so a single-file archive streams identically to an unpacked directory.
 ## 10. Known limitations / deferred
 
 - **Chromatogram chunk writing** — chunk time-axis decoding is implemented; writing is not.
-- **MS-Numpress PIC decoding** (`MS:1002313`) — written by the writer but not decoded by the reader.
 - **Writing** of `chunk`/delta layouts, wavelength spectra, and writing Numpress layout from profile arrays.
 - **Predicate/page-level pushdown within a row group** — row groups are skipped by min/max statistics, but
   all pages within a selected group are decoded.
