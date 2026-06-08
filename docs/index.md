@@ -45,9 +45,12 @@ Java demonstrator; an official Java implementation is planned by the HUPO-PSI.
 - **File/run-level metadata** from the Parquet footer: instrument configuration (analyzer types, resolution),
   software list, run, source files, data processing, sample.
 - **Writes** point and Numpress chunk layouts, with footer metadata and CV param lists.
+- **Ion mobility** (10 CV accessions: `MS:1002476`–`MS:1003156`) and **imaging position** (`IMS:1000050`/`IMS:1000051`)
+  decoded from dedicated typed scan columns and CV params; accessible via `ScanEvent` convenience methods.
 - **No Hadoop runtime** — custom `ZstdCompressionCodecFactory` means no Hadoop FileSystem, Configuration,
   or native libraries are ever touched.
-- **123 tests**, cross-validated against the Rust and Python reference test suites. CI on JDK 17 + 21.
+- **543 tests** (corpus gate over 207 HUPO-PSI example files), cross-validated against the Rust and Python
+  reference test suites. CI on JDK 17 + 21.
 
 ---
 
@@ -126,7 +129,8 @@ Current version: **0.10.2** (see [releases](https://github.com/okohlbacher/mzPea
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
 read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact `mz_delta_model` reconstruction;
-tolerance-based centroid peak search; vendor-agnostic scan-number lookup; OpenMS-FileInfo-style summary tool.
+tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion mobility + imaging position
+from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
 
 **Known deferred** — chunk/delta write, wavelength spectra write, page-level pushdown,
 detail-level loading, Maven Central publication.

@@ -2,12 +2,16 @@ package org.mzpeak.examples;
 
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
+import org.mzpeak.model.meta.FileMetadata;
+import org.mzpeak.model.meta.FileMetadata.ComponentType;
+import org.mzpeak.model.meta.FileMetadata.MsRun;
 
 import java.io.PrintStream;
 import java.nio.file.Files;
@@ -85,7 +89,7 @@ public final class MzPeakFileInfo {
                     String key = (ion != null && ion.charge() != null) ? ("charge " + ion.charge()) : "unknown";
                     chargeDist.merge(key, 1L, Long::sum);
                     if (p != null && !p.activation().isEmpty()) {
-                        for (org.mzpeak.model.Param m : p.activation().methods()) {
+                        for (Param m : p.activation().methods()) {
                             String mKey = m.name() != null ? m.name() : m.accession();
                             activationMethodCounts.merge(mKey, 1L, Long::sum);
                         }
@@ -170,8 +174,8 @@ public final class MzPeakFileInfo {
 
     private static final String MS_RESOLUTION = "MS:1000028";
 
-    private static void printFileMetadata(java.io.PrintStream out, org.mzpeak.model.meta.FileMetadata meta) {
-        org.mzpeak.model.meta.FileMetadata.MsRun run = meta.run();
+    private static void printFileMetadata(PrintStream out, FileMetadata meta) {
+        MsRun run = meta.run();
         if (run != null) {
             out.println("Run: " + nz(run.id())
                     + (run.startTime() != null ? "  (start " + run.startTime() + ")" : ""));
@@ -191,7 +195,7 @@ public final class MzPeakFileInfo {
                 for (var c : ic.components()) {
                     StringBuilder line = new StringBuilder("    " + componentLabel(c.componentType()) + ": "
                             + paramNames(c.parameters()));
-                    org.mzpeak.model.meta.FileMetadata.param(c.parameters(), MS_RESOLUTION)
+                    FileMetadata.param(c.parameters(), MS_RESOLUTION)
                             .ifPresent(p -> line.append("  (resolution ").append(p.value()).append(")"));
                     out.println(line);
                 }
@@ -205,8 +209,8 @@ public final class MzPeakFileInfo {
         }
     }
 
-    private static String paramNames(java.util.List<org.mzpeak.model.Param> params) {
-        java.util.List<String> names = new java.util.ArrayList<>();
+    private static String paramNames(List<Param> params) {
+        List<String> names = new ArrayList<>();
         for (var p : params) {
             if (p.name() != null && !p.name().isBlank()) {
                 names.add(p.name());
@@ -215,7 +219,7 @@ public final class MzPeakFileInfo {
         return names.isEmpty() ? "?" : String.join(", ", names);
     }
 
-    private static String componentLabel(org.mzpeak.model.meta.FileMetadata.ComponentType t) {
+    private static String componentLabel(ComponentType t) {
         return switch (t) {
             case ION_SOURCE -> "ion source";
             case ANALYZER -> "analyzer";

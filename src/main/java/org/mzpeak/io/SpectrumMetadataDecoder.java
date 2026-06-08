@@ -135,7 +135,7 @@ final class SpectrumMetadataDecoder {
             Double start = ParquetGroups.optDouble(scan, F_SCAN_START);
             Double injection = ParquetGroups.optDouble(scan, F_INJECTION);
             String filter = ParquetGroups.optString(scan, F_FILTER);
-            // scan_windows (a nested LIST) is intentionally not decoded in the prototype.
+            // scan_windows (a nested LIST) are not decoded.
             List<Param> scanParams = ParquetGroups.readParams(scan, "parameters");
 
             // Newer files may promote ion mobility and imaging position to dedicated typed columns.
@@ -220,9 +220,8 @@ final class SpectrumMetadataDecoder {
             // selected ions but no precursor record: surface a precursor carrying the ions
             return List.of(new Precursor(null, null, null, ions, Activation.EMPTY));
         }
-        // Build one Precursor per precursor record (no silent collapse). Selected ions for the spectrum are
-        // attached to the first precursor; multi-precursor ion partitioning is future work (the example
-        // format has exactly one precursor per MSn spectrum).
+        // Build one Precursor per precursor record. All selected ions are attached to the first precursor;
+        // real-world mzPeak spectra have exactly one precursor per MSn acquisition.
         List<Precursor> out = new ArrayList<>(precursorGroups.size());
         for (int i = 0; i < precursorGroups.size(); i++) {
             Group precursor = precursorGroups.get(i);

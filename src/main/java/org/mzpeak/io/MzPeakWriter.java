@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -42,8 +43,8 @@ import java.util.zip.ZipOutputStream;
  * {@link MzPeakReader}. Numpress layout additionally encodes m/z with Numpress linear (MS:1002312) and
  * intensity with Numpress SLOF (MS:1002314) per chunk. Wavelength spectra are not written.
  *
- * <p>Known limitation: per-spectrum/scan/selected-ion {@code parameters} CV/user param lists are decoded by
- * the reader but not written back — write-round-trips will lose them.
+ * <p>Per-spectrum, scan, and selected-ion CV/user {@code parameters} lists are round-tripped by both the
+ * writer and reader. Ion-mobility and imaging-position params are preserved; scan-window structs are not written.
  */
 public final class MzPeakWriter {
 
@@ -94,22 +95,7 @@ public final class MzPeakWriter {
     /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                     org.mzpeak.model.meta.FileMetadata fileMetadata) {
-        Path parent = archive.toAbsolutePath().getParent();
-        Path tmpDir = null;
-        Path tmpZip = null;
-        try {
-            tmpDir = Files.createTempDirectory(parent, ".mzpeak-write-");
-            tmpZip = Files.createTempFile(parent, ".mzpeak-write-", ".zip");
-            writeDirectory(tmpDir, spectra, chromatograms, fileMetadata);
-            packStored(tmpDir, tmpZip);
-            Files.move(tmpZip, archive, StandardCopyOption.REPLACE_EXISTING);
-            tmpZip = null;
-        } catch (IOException e) {
-            throw new MzPeakException("Failed to write mzPeak archive " + archive, e);
-        } finally {
-            deleteRecursively(tmpDir);
-            deleteRecursively(tmpZip);
-        }
+        packArchive(archive, dir -> writeDirectory(dir, spectra, chromatograms, fileMetadata));
     }
 
     // ---- Numpress-encoded chunk layout API --------------------------------------------------------
@@ -171,18 +157,27 @@ public final class MzPeakWriter {
     public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
                                            List<Chromatogram> chromatograms,
                                            org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        packArchive(archive, dir ->
+                writeDirectoryNumpress(dir, spectra, chromatograms, fileMetadata, NumpressIntensityEncoding.SLOF));
+    }
+
+    /**
+     * Shared archive helper: write to a temp directory, pack as STORED ZIP, and move atomically into place.
+     * Temp files are cleaned up in all cases.
+     */
+    private static void packArchive(Path archive, Consumer<Path> writer) {
         Path parent = archive.toAbsolutePath().getParent();
         Path tmpDir = null;
         Path tmpZip = null;
         try {
-            tmpDir = Files.createTempDirectory(parent, ".mzpeak-numpress-");
-            tmpZip = Files.createTempFile(parent, ".mzpeak-numpress-", ".zip");
-            writeDirectoryNumpress(tmpDir, spectra, chromatograms, fileMetadata, NumpressIntensityEncoding.SLOF);
+            tmpDir = Files.createTempDirectory(parent, ".mzpeak-write-");
+            tmpZip = Files.createTempFile(parent, ".mzpeak-write-", ".zip");
+            writer.accept(tmpDir);
             packStored(tmpDir, tmpZip);
             Files.move(tmpZip, archive, StandardCopyOption.REPLACE_EXISTING);
             tmpZip = null;
         } catch (IOException e) {
-            throw new MzPeakException("Failed to write Numpress mzPeak archive " + archive, e);
+            throw new MzPeakException("Failed to write mzPeak archive " + archive, e);
         } finally {
             deleteRecursively(tmpDir);
             deleteRecursively(tmpZip);
@@ -593,7 +588,7 @@ public final class MzPeakWriter {
         if (footerMetadata != null && !footerMetadata.isEmpty()) {
             builder = builder.withExtraMetaData(footerMetadata);
         }
-        // Test hook: force a small row-group size to exercise the streaming reader's multi-row-group path.
+        // Allow tests to force a small row-group size via -Dmzpeak.writer.rowGroupSize=N.
         String rowGroupSize = System.getProperty("mzpeak.writer.rowGroupSize");
         if (rowGroupSize != null) {
             builder = builder.withRowGroupSize(Long.parseLong(rowGroupSize));

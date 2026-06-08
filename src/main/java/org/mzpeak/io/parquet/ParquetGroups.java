@@ -186,24 +186,17 @@ public final class ParquetGroups {
             Object value = null;
             Group valueGroup = optGroup(item, "value");
             if (valueGroup != null) {
-                // The value union has four optional arms: integer, float, string, boolean.
-                // Collect all present arms; in valid data exactly one is non-null.
+                // The value union has four optional arms; pick the first non-null one.
+                // boolean is stored as INT32 (0/1) in the Parquet Group encoding.
                 Long iVal = optLong(valueGroup, "integer");
-                Double fVal = optDouble(valueGroup, "float");
-                String sVal = optString(valueGroup, "string");
-                // boolean is stored as INT32 (0/1) in parquet Group; check field name "boolean"
+                Double fVal = iVal == null ? optDouble(valueGroup, "float") : null;
+                String sVal = (iVal == null && fVal == null) ? optString(valueGroup, "string") : null;
                 Boolean bVal = null;
-                if (has(valueGroup, "boolean") && valueGroup.getType().getType("boolean").isPrimitive()) {
+                if (iVal == null && fVal == null && sVal == null
+                        && has(valueGroup, "boolean") && valueGroup.getType().getType("boolean").isPrimitive()) {
                     bVal = valueGroup.getInteger("boolean", 0) != 0;
                 }
-                int count = (iVal != null ? 1 : 0) + (fVal != null ? 1 : 0)
-                        + (sVal != null ? 1 : 0) + (bVal != null ? 1 : 0);
-                if (count == 1) {
-                    value = iVal != null ? iVal : fVal != null ? fVal : sVal != null ? sVal : bVal;
-                } else if (count == 0) {
-                    value = null; // all-null union = no value
-                }
-                // count > 1: malformed union — leave value null rather than guess
+                value = iVal != null ? iVal : fVal != null ? fVal : sVal != null ? sVal : bVal;
             }
             out.add(new org.mzpeak.model.Param(name, accession, value, unit));
         }

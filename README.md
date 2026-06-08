@@ -235,12 +235,17 @@ classes statically reference Hadoop types — but it is never actually invoked.
   processing (read + written).
 - Per-spectrum, per-scan, and per-selected-ion CV param lists (read + written).
 - Activation methods and collision energy from `precursor.activation.parameters` (CID, HCD, ETD, …).
+- Ion mobility (10 CV accessions: `MS:1002476`–`MS:1003156`) and imaging position (`IMS:1000050`/`IMS:1000051`)
+  decoded from dedicated typed scan columns and CV params; accessible via `ScanEvent.ionMobilityValue()` /
+  `ScanEvent.imagingPosition()`.
+- Scan settings list from the `mzpeak_index.json` manifest (`scanSettingsList`).
 - Random access by index, native id, vendor scan number (Thermo/Waters/Agilent/Bruker/SCIEX), or nearest RT.
 - Streaming reader — only the row groups covering a requested spectrum are decoded; bounded memory.
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and STORED ZIP.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
-- **123 tests** (JDK 17 + 21 via GitHub Actions CI), cross-validated against Rust `mzpeak_prototyping`
-  reference test suite and independently verified with pyarrow.
+- **543 tests** (JDK 17 + 21 via GitHub Actions CI), including a full corpus gate over 207 HUPO-PSI example
+  `.mzpeak` files; cross-validated against Rust `mzpeak_prototyping` reference test suite and independently
+  verified with pyarrow.
 
 **Deferred / known limitations:**
 
