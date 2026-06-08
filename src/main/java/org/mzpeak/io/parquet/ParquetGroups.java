@@ -105,7 +105,7 @@ public final class ParquetGroups {
         };
     }
 
-    /** Read an integer leaf as long (INT64 or INT32). */
+    /** Read an integer leaf as long (INT64, INT32, or numeric FLOAT/DOUBLE coerced to long). */
     public static Long optLong(Group g, String field) {
         if (!has(g, field)) {
             return null;
@@ -114,14 +114,26 @@ public final class ParquetGroups {
         return switch (p) {
             case INT64 -> g.getLong(field, 0);
             case INT32 -> (long) g.getInteger(field, 0);
+            // Some vendor writers store integer fields as FLOAT/DOUBLE — coerce safely.
+            case FLOAT -> {
+                float f = g.getFloat(field, 0);
+                yield Float.isFinite(f) ? (long) f : null;
+            }
+            case DOUBLE -> {
+                double d = g.getDouble(field, 0);
+                yield Double.isFinite(d) ? (long) d : null;
+            }
             default -> throw new IllegalStateException("Field " + field + " is not an integer: " + p);
         };
     }
 
-    /** Read an integer leaf as int (INT32 or INT64). */
+    /**
+     * Read an integer leaf as int. NaN/Infinite float/double values coerce to {@code null}
+     * rather than propagating — matches upstream fix for charge state fields.
+     */
     public static Integer optInt(Group g, String field) {
         Long v = optLong(g, field);
-        return v == null ? null : Math.toIntExact(v);
+        return v == null ? null : v.intValue();
     }
 
     /**

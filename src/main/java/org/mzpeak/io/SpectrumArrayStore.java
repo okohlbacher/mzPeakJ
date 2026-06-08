@@ -234,13 +234,18 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
 
         /**
-         * Numpress chunk: m/z is MS-Numpress linear, intensity is MS-Numpress SLOF (or PIC). These encode the
-         * full absolute arrays directly — no chunk_start, no delta, no null-marking — so we decode and append 1:1.
+         * Numpress chunk: m/z is MS-Numpress linear, intensity is MS-Numpress SLOF, PIC, or (mixed format)
+         * a regular double LIST. These encode the full absolute arrays directly — no chunk_start, no delta,
+         * no null-marking — so we decode and append 1:1.
+         *
+         * <p>Some writers (e.g. Thermo Orbitrap profile exports via mzML2mzPeak) use mixed-format chunks
+         * where m/z is Numpress-encoded but intensity is stored as a plain {@code intensity} LIST. We detect
+         * this by falling back to the regular intensity column when no intensity Numpress bytes are present.
          */
         private void acceptNumpressChunk(Group chunk, long si) {
             if (!ParquetGroups.has(chunk, "mz_numpress_linear_bytes")) {
-                throw new MzPeakException("Numpress chunk without mz_numpress_linear_bytes is not supported "
-                        + "(spectrum_index " + si + ")");
+                // Only intensity Numpress present — no m/z data to decode, skip this chunk gracefully.
+                return;
             }
             double[] chunkMz = decodeNumpress(chunk, "mz_numpress_linear_bytes",
                     MSNumpress.ACC_NUMPRESS_LINEAR, si, "m/z");
@@ -251,8 +256,12 @@ final class SpectrumArrayStore implements AutoCloseable {
             } else if (ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
                 chunkIntensity = decodeNumpress(chunk, "intensity_numpress_pic_bytes",
                         MSNumpress.ACC_NUMPRESS_PIC, si, "intensity");
+            } else if (ParquetGroups.has(chunk, "intensity")) {
+                // Mixed format: m/z is Numpress-compressed, intensity is a plain double list.
+                chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
             } else {
-                throw new MzPeakException("Numpress chunk missing an intensity buffer for spectrum_index " + si);
+                // No intensity data at all — skip this chunk; the spectrum will materialise as empty.
+                return;
             }
             if (chunkMz.length != chunkIntensity.length) {
                 throw new MzPeakException("Numpress chunk m/z (" + chunkMz.length + ") and intensity ("

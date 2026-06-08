@@ -121,6 +121,22 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return manifest;
     }
 
+    /**
+     * Scan settings from the manifest's {@code metadata.scan_settings_list} — non-empty for
+     * imaging (MSI / imzML) datasets, empty for conventional LC-MS files.
+     */
+    public java.util.List<org.mzpeak.model.meta.ScanSettings> scanSettings() {
+        return manifest.scanSettingsList();
+    }
+
+    /**
+     * {@code true} if this is a mass-spectrometry imaging dataset (manifest {@code metadata.imaging.is_imaging}
+     * flag set or {@link #scanSettings()} is non-empty).
+     */
+    public boolean isImaging() {
+        return manifest.isImaging() || !manifest.scanSettingsList().isEmpty();
+    }
+
     public int size() {
         return descriptions.size();
     }
