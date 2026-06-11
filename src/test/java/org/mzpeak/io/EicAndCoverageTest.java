@@ -197,17 +197,17 @@ class EicAndCoverageTest {
 
     @Test
     void isolationWindow_spectrum2_correctBounds() {
-        // pyarrow: target=810.789, lower_offset=809.789, upper_offset=811.789
-        // Verified from spectra_metadata.parquet
+        // target=810.789, lowerOffset=1.0, upperOffset=1.0 (true Da offsets per MS:1000828/29)
+        // Old fixtures stored absolute m/z bounds; the reference writer now correctly stores offsets.
         try (MzPeakReader r = MzPeakReader.open(UNPACKED)) {
             SpectrumDescription d = r.getMetadata(2).orElseThrow();
             var iso = d.primaryPrecursor().isolationWindow();
             assertThat(iso).isNotNull();
             assertThat(iso.targetMz()).isCloseTo(810.789, within(1e-3));
-            assertThat(iso.lowerOffset()).isCloseTo(809.789, within(1e-3));
-            assertThat(iso.upperOffset()).isCloseTo(811.789, within(1e-3));
-            // Window width: (upperOffset - lowerOffset) / 2 ≈ 1.0 Da half-width
-            assertThat(iso.upperOffset() - iso.lowerOffset()).isCloseTo(2.0, within(0.1));
+            assertThat(iso.lowerOffset()).isCloseTo(1.0, within(1e-3));
+            assertThat(iso.upperOffset()).isCloseTo(1.0, within(1e-3));
+            // Total window width = lowerOffset + upperOffset = 2.0 Da
+            assertThat(iso.lowerOffset() + iso.upperOffset()).isCloseTo(2.0, within(0.1));
         }
     }
 
