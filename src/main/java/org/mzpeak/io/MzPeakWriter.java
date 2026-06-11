@@ -20,6 +20,7 @@ import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -82,7 +83,7 @@ public final class MzPeakWriter {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
                 writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
             }
-            writeManifest(directory.resolve("mzpeak_index.json"), hasProfile, hasPeaks, hasChromatograms);
+            writeManifest(directory.resolve("mzpeak_index.json"), hasProfile, hasPeaks, hasChromatograms, fileMetadata);
         } catch (IOException e) {
             throw new MzPeakException("Failed to write mzPeak dataset to " + directory, e);
         }
@@ -142,7 +143,7 @@ public final class MzPeakWriter {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
                 writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
             }
-            writeManifest(directory.resolve("mzpeak_index.json"), true, hasPeaks, hasChromatograms);
+            writeManifest(directory.resolve("mzpeak_index.json"), true, hasPeaks, hasChromatograms, fileMetadata);
         } catch (IOException e) {
             throw new MzPeakException("Failed to write Numpress mzPeak dataset to " + directory, e);
         }
@@ -241,6 +242,11 @@ public final class MzPeakWriter {
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).named("source_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000016_scan_start_time_unit_UO_0000031")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000927_ion_injection_time_unit_UO_0000028")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("MS_1000512_filter_string")
+                    .optional(PrimitiveTypeName.INT32).named("MS_1000616_preset_scan_configuration")
+                    .optional(PrimitiveTypeName.INT32).named("instrument_configuration_ref")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("spectrum_reference")
                     .addField(paramListField())
                     .named("scan"))
             .addField(Types.optionalGroup()
@@ -356,7 +362,23 @@ public final class MzPeakWriter {
                     scan.add("MS_1000016_scan_start_time_unit_UO_0000031", d.retentionTime());
                 }
                 if (!d.scans().isEmpty()) {
-                    writeParams(scan, d.scans().get(0).parameters());
+                    ScanEvent se = d.scans().get(0);
+                    if (se.injectionTime() != null) {
+                        scan.add("MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
+                    }
+                    if (se.filterString() != null) {
+                        scan.add("MS_1000512_filter_string", se.filterString());
+                    }
+                    if (se.presetScanConfiguration() != null) {
+                        scan.add("MS_1000616_preset_scan_configuration", se.presetScanConfiguration());
+                    }
+                    if (se.instrumentConfigurationRef() != null) {
+                        scan.add("instrument_configuration_ref", se.instrumentConfigurationRef());
+                    }
+                    if (se.spectrumReference() != null) {
+                        scan.add("spectrum_reference", se.spectrumReference());
+                    }
+                    writeParams(scan, se.parameters());
                 }
 
                 writePrecursor(row, d);
@@ -550,7 +572,8 @@ public final class MzPeakWriter {
         writer.write(row);
     }
 
-    private static void writeManifest(Path file, boolean hasProfile, boolean hasPeaks, boolean hasChromatograms)
+    private static void writeManifest(Path file, boolean hasProfile, boolean hasPeaks, boolean hasChromatograms,
+                                       org.mzpeak.model.meta.FileMetadata fileMetadata)
             throws IOException {
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode root = mapper.createObjectNode();
@@ -566,7 +589,11 @@ public final class MzPeakWriter {
             addManifestEntry(files, "chromatograms_metadata.parquet", "chromatogram", "metadata");
             addManifestEntry(files, "chromatograms_data.parquet", "chromatogram", "data arrays");
         }
-        root.putObject("metadata");
+        ObjectNode meta = root.putObject("metadata");
+        meta.putArray("scan_settings_list");
+        for (var kv : FooterMetadataWriter.serialize(fileMetadata).entrySet()) {
+            meta.set(kv.getKey(), mapper.readTree(kv.getValue()));
+        }
         Files.write(file, mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
     }
 

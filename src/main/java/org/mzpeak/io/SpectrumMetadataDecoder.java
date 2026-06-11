@@ -9,6 +9,7 @@ import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.SpectrumDescription;
@@ -46,6 +47,12 @@ final class SpectrumMetadataDecoder {
     private static final String F_SCAN_START = "MS_1000016_scan_start_time_unit_UO_0000031";
     private static final String F_INJECTION = "MS_1000927_ion_injection_time_unit_UO_0000028";
     private static final String F_FILTER = "MS_1000512_filter_string";
+    private static final String F_PRESET_SCAN = "MS_1000616_preset_scan_configuration";
+    private static final String F_INSTRUMENT_CONFIG_REF = "instrument_configuration_ref";
+    private static final String F_SPECTRUM_REFERENCE = "spectrum_reference";
+    private static final String F_SCAN_WINDOWS = "scan_windows";
+    private static final String F_WINDOW_LOWER = "MS_1000501_scan_window_lower_limit_unit_MS_1000040";
+    private static final String F_WINDOW_UPPER = "MS_1000500_scan_window_upper_limit_unit_MS_1000040";
     // precursor facet
     private static final String F_PRECURSOR_INDEX = "precursor_index";
     private static final String F_PRECURSOR_ID = "precursor_id";
@@ -135,7 +142,11 @@ final class SpectrumMetadataDecoder {
             Double start = ParquetGroups.optDouble(scan, F_SCAN_START);
             Double injection = ParquetGroups.optDouble(scan, F_INJECTION);
             String filter = ParquetGroups.optString(scan, F_FILTER);
-            // scan_windows (a nested LIST) are not decoded.
+            Integer presetScan = ParquetGroups.optInt(scan, F_PRESET_SCAN);
+            Integer instrConfigRef = ParquetGroups.optInt(scan, F_INSTRUMENT_CONFIG_REF);
+            String specRef = ParquetGroups.optString(scan, F_SPECTRUM_REFERENCE);
+
+            List<ScanWindow> windows = buildScanWindows(scan);
             List<Param> scanParams = ParquetGroups.readParams(scan, "parameters");
 
             // Newer files may promote ion mobility and imaging position to dedicated typed columns.
@@ -143,7 +154,24 @@ final class SpectrumMetadataDecoder {
             // uniformly regardless of file generation.
             scanParams = normalizeScanParams(scan, scanParams);
 
-            out.add(new ScanEvent(start == null ? Double.NaN : start, injection, filter, List.of(), scanParams));
+            out.add(new ScanEvent(start == null ? Double.NaN : start, injection, filter,
+                    presetScan, instrConfigRef, specRef, windows, scanParams));
+        }
+        return out;
+    }
+
+    private static List<ScanWindow> buildScanWindows(Group scan) {
+        List<Group> windowGroups = ParquetGroups.groupList(scan, F_SCAN_WINDOWS);
+        if (windowGroups.isEmpty()) {
+            return List.of();
+        }
+        List<ScanWindow> out = new ArrayList<>(windowGroups.size());
+        for (Group w : windowGroups) {
+            Double lower = ParquetGroups.optDouble(w, F_WINDOW_LOWER);
+            Double upper = ParquetGroups.optDouble(w, F_WINDOW_UPPER);
+            if (lower != null && upper != null) {
+                out.add(new ScanWindow(lower, upper));
+            }
         }
         return out;
     }

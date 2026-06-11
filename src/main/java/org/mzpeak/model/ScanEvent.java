@@ -6,15 +6,21 @@ import java.util.OptionalDouble;
 /**
  * A single acquisition (scan) event within a spectrum.
  *
- * @param startTime     scan start time (MS:1000016), in the file's time unit (typically minutes)
- * @param injectionTime ion injection time (MS:1000927); may be {@code null}
- * @param filterString  vendor filter string (MS:1000512); may be {@code null}
- * @param scanWindows   acquisition windows; never {@code null}, may be empty
- * @param parameters    additional CV/user params from the scan facet; never {@code null}, may be empty
+ * @param startTime                  scan start time (MS:1000016), in the file's time unit (typically minutes)
+ * @param injectionTime              ion injection time (MS:1000927); may be {@code null}
+ * @param filterString               vendor filter string (MS:1000512); may be {@code null}
+ * @param presetScanConfiguration    preset scan configuration index (MS:1000616); may be {@code null}
+ * @param instrumentConfigurationRef index of the instrument configuration used for this scan; may be {@code null}
+ * @param spectrumReference          reference to another spectrum (used in some MS imaging workflows); may be {@code null}
+ * @param scanWindows                acquisition m/z windows; never {@code null}, may be empty
+ * @param parameters                 additional CV/user params from the scan facet; never {@code null}, may be empty
  */
 public record ScanEvent(double startTime,
                         Double injectionTime,
                         String filterString,
+                        Integer presetScanConfiguration,
+                        Integer instrumentConfigurationRef,
+                        String spectrumReference,
                         List<ScanWindow> scanWindows,
                         List<Param> parameters) {
 

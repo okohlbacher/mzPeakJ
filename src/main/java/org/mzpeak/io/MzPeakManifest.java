@@ -26,14 +26,23 @@ public final class MzPeakManifest {
     public record Entry(String name, String entityType, String dataKind) {
     }
 
+    /** A controlled-vocabulary ontology reference from {@code metadata.cv_list}. */
+    public record CvEntry(String id, String fullName, String uri, String version) {
+    }
+
     private final List<Entry> files;
     private final List<ScanSettings> scanSettingsList;
     private final boolean imaging;
+    private final String version;
+    private final List<CvEntry> cvList;
 
-    private MzPeakManifest(List<Entry> files, List<ScanSettings> scanSettingsList, boolean imaging) {
+    private MzPeakManifest(List<Entry> files, List<ScanSettings> scanSettingsList, boolean imaging,
+                            String version, List<CvEntry> cvList) {
         this.files = List.copyOf(files);
         this.scanSettingsList = List.copyOf(scanSettingsList);
         this.imaging = imaging;
+        this.version = version;
+        this.cvList = cvList == null ? List.of() : List.copyOf(cvList);
     }
 
     public List<Entry> files() {
@@ -54,6 +63,16 @@ public final class MzPeakManifest {
      */
     public boolean isImaging() {
         return imaging;
+    }
+
+    /** Format version string from {@code metadata.version} (e.g. {@code "0.9.0"}); {@code null} if absent. */
+    public String version() {
+        return version;
+    }
+
+    /** CV ontology references from {@code metadata.cv_list}; empty if absent. */
+    public List<CvEntry> cvList() {
+        return cvList;
     }
 
     /** Parse {@code mzpeak_index.json} from a source (directory or ZIP). */
@@ -77,8 +96,10 @@ public final class MzPeakManifest {
             JsonNode meta = root.get("metadata");
             List<ScanSettings> scanSettings = parseScanSettingsList(meta);
             boolean isImaging = isImagingFlag(meta);
+            String version = meta != null && meta.isObject() ? text(meta, "version") : null;
+            List<CvEntry> cvList = parseCvList(meta);
 
-            return new MzPeakManifest(entries, scanSettings, isImaging);
+            return new MzPeakManifest(entries, scanSettings, isImaging, version, cvList);
         } catch (IOException e) {
             throw new MzPeakException("Failed to parse mzpeak_index.json in " + source.describe(), e);
         }
@@ -129,6 +150,17 @@ public final class MzPeakManifest {
         try { return Long.parseLong(s); } catch (NumberFormatException ignored) {}
         try { return Double.parseDouble(s); } catch (NumberFormatException ignored) {}
         return s;
+    }
+
+    private static List<CvEntry> parseCvList(JsonNode meta) {
+        if (meta == null || !meta.isObject()) return List.of();
+        JsonNode arr = meta.get("cv_list");
+        if (arr == null || !arr.isArray()) return List.of();
+        List<CvEntry> out = new ArrayList<>();
+        for (JsonNode cv : arr) {
+            out.add(new CvEntry(text(cv, "id"), text(cv, "full_name"), text(cv, "uri"), text(cv, "version")));
+        }
+        return out;
     }
 
     private static boolean isImagingFlag(JsonNode meta) {
