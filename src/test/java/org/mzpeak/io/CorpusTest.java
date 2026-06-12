@@ -1,8 +1,10 @@
 package org.mzpeak.io;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.ImagingPosition;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -39,8 +41,13 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  */
 class CorpusTest {
 
-    private static final Path CORPUS_ROOT =
-            Path.of(System.getProperty("user.home"), "Claude/mzML2mzPeak/data");
+    static final Path CORPUS_ROOT = corpusRoot();
+
+    private static Path corpusRoot() {
+        String prop = System.getProperty("mzpeak.corpus.dir");
+        return prop != null ? Path.of(prop)
+                            : Path.of(System.getProperty("user.home"), "Claude/mzML2mzPeak/data");
+    }
 
     /**
      * Collect all {@code .mzpeak} files (ZIPs) and {@code .mzpeak} directories under the corpus root.
@@ -67,6 +74,7 @@ class CorpusTest {
 
     // ---- parameterized open + metadata test -----------------------------------------------
 
+    @Tag("corpus")
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void canOpenAndReadMetadata(Path file) {
@@ -87,6 +95,7 @@ class CorpusTest {
 
     // ---- parameterized array reading test -------------------------------------------------
 
+    @Tag("corpus")
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void canReadFirstSpectrum(Path file) {
@@ -100,6 +109,46 @@ class CorpusTest {
                         .isEqualTo(s.mz().length);
             }
         });
+    }
+
+    /**
+     * Iterates up to {@link #MAX_SPECTRA_PER_FILE} spectra in the file and verifies structural
+     * invariants: {@code mz.length == intensity.length}, all centroid m/z values are finite, and
+     * all intensities are non-negative.
+     *
+     * <p>The cap prevents multi-GB files (e.g. Thermo Orbitrap Astral, ~7 GB) from exhausting the
+     * Surefire JVM heap. Encoder-level invariants that hold for the first 2 000 spectra hold for
+     * all others — this is a property of the writer, not a data-specific choice.
+     */
+    static final int MAX_SPECTRA_PER_FILE = 2_000;
+
+    @Tag("corpus")
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("corpusFiles")
+    void sampledSpectra_haveConsistentArraysAndValidPeaks(Path file) throws Exception {
+        try (MzPeakReader r = MzPeakReader.open(file)) {
+            // Use an explicit iterator so next() is not called beyond the cap (enhanced-for would
+            // materialize one extra spectrum when i == MAX_SPECTRA_PER_FILE at the loop condition).
+            var it = r.iterator();
+            int i = 0;
+            while (it.hasNext() && i < MAX_SPECTRA_PER_FILE) {
+                Spectrum s = it.next();
+                double[] mz = s.mz();
+                double[] intensity = s.intensity();
+                assertThat(mz.length)
+                        .as("spectrum[%d] mz.length == intensity.length in %s", i, file.getFileName())
+                        .isEqualTo(intensity.length);
+                for (CentroidPeak peak : s.peaks()) {
+                    assertThat(Double.isFinite(peak.mz()))
+                            .as("peak mz finite in spectrum[%d] of %s", i, file.getFileName())
+                            .isTrue();
+                    assertThat(peak.intensity())
+                            .as("peak intensity non-negative in spectrum[%d] of %s", i, file.getFileName())
+                            .isGreaterThanOrEqualTo(0.0);
+                }
+                i++;
+            }
+        }
     }
 
     // ---- imaging-specific assertions ------------------------------------------------------

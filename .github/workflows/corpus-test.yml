@@ -1,0 +1,78 @@
+name: Corpus round-trip
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every Sunday at 03:00 UTC
+    - cron: '0 3 * * 0'
+
+jobs:
+  corpus-roundtrip:
+    runs-on: ubuntu-latest
+    name: corpus round-trip (JDK 21)
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: '3.11'
+
+      - name: Install mzPeakValidator
+        run: pip install --quiet git+https://github.com/okohlbacher/mzPeakValidator.git
+
+      - name: Download corpus from S3
+        run: |
+          set -euo pipefail
+          CORPUS_DIR="${RUNNER_TEMP}/mzpeak-corpus"
+          MANIFEST="src/test/resources/ci-corpus-manifest.txt"
+          SUBDIR=""
+
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            # Skip blank lines and comments
+            [[ -z "$line" || "$line" == \#* ]] && continue
+
+            if [[ "$line" == '> '* ]]; then
+              SUBDIR="${line#> }"
+              mkdir -p "${CORPUS_DIR}/${SUBDIR}"
+            elif [[ "$line" == https://* ]]; then
+              FILENAME="${line##*/}"
+              DEST="${CORPUS_DIR}/${SUBDIR}/${FILENAME}"
+              echo "Downloading ${FILENAME} → ${SUBDIR}/"
+              # mzpeak archives are ZIP files; the server doesn't serve partial ranges,
+              # so --continue-at - would silently corrupt partial files.  Download fresh.
+              curl --silent --show-error --fail --location \
+                   --max-time 120 \
+                   --output "${DEST}" \
+                   "${line}"
+            fi
+          done < "${MANIFEST}"
+
+          echo "CORPUS_DIR=${CORPUS_DIR}" >> "$GITHUB_ENV"
+          echo "Downloaded corpus to ${CORPUS_DIR}"
+          find "${CORPUS_DIR}" -name '*.mzpeak' | sort | sed 's|'"${CORPUS_DIR}/"'||'
+
+      - name: Run corpus + round-trip tests
+        run: |
+          mvn -B --no-transfer-progress test \
+            -Dmzpeak.roundtrip=true \
+            -Dmzpeak.corpus.dir="${CORPUS_DIR}" \
+            -Dmzpeak.validator.command=mzpeak-validate
+
+      - name: Upload validator reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: validator-reports
+          path: /tmp/junit*/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7

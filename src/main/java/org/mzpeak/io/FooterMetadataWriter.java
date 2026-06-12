@@ -40,7 +40,18 @@ final class FooterMetadataWriter {
             if (meta.run().defaultInstrumentId() != null) {
                 run.put("default_instrument_id", meta.run().defaultInstrumentId());
             }
-            putText(run, "default_data_processing_id", meta.run().defaultDataProcessingId());
+            // default_data_processing_id is required by the mzPeak spec; fall back to the
+            // first data processing method's id if the source file omitted it.
+            String dpId = meta.run().defaultDataProcessingId();
+            if (dpId == null && !meta.dataProcessingMethods().isEmpty()) {
+                dpId = meta.dataProcessingMethods().get(0).id();
+            }
+            // Last resort: if still null (no DP methods at all), use a writer-sentinel id so
+            // the schema constraint is satisfied; the corresponding DP entry is synthesised below.
+            if (dpId == null) {
+                dpId = "mzpeakj_export";
+            }
+            putText(run, "default_data_processing_id", dpId);
             putText(run, "default_source_file_id", meta.run().defaultSourceFileId());
             putText(run, "start_time", meta.run().startTime());
             putParams(run, meta.run().parameters());
@@ -73,20 +84,31 @@ final class FooterMetadataWriter {
             }
             kv.put("instrument_configuration_list", arr.toString());
         }
-        if (!meta.dataProcessingMethods().isEmpty()) {
+        // Always emit a data_processing_method_list; if none came from the source, synthesise
+        // a minimal sentinel entry so the run's default_data_processing_id is satisfiable.
+        {
             ArrayNode arr = MAPPER.createArrayNode();
-            for (DataProcessing dp : meta.dataProcessingMethods()) {
-                ObjectNode n = arr.addObject();
-                putText(n, "id", dp.id());
-                ArrayNode methods = n.putArray("methods");
-                for (ProcessingMethod m : dp.methods()) {
-                    ObjectNode mn = methods.addObject();
-                    mn.put("order", m.order());
-                    putText(mn, "software_reference", m.softwareReference());
-                    putParams(mn, m.parameters());
+            if (!meta.dataProcessingMethods().isEmpty()) {
+                for (DataProcessing dp : meta.dataProcessingMethods()) {
+                    ObjectNode n = arr.addObject();
+                    putText(n, "id", dp.id());
+                    ArrayNode methods = n.putArray("methods");
+                    for (ProcessingMethod m : dp.methods()) {
+                        ObjectNode mn = methods.addObject();
+                        mn.put("order", m.order());
+                        putText(mn, "software_reference", m.softwareReference());
+                        putParams(mn, m.parameters());
+                    }
                 }
+            } else if (meta.run() != null) {
+                // Sentinel: the run references "mzpeakj_export" so we must declare it.
+                ObjectNode n = arr.addObject();
+                n.put("id", "mzpeakj_export");
+                n.putArray("methods");
             }
-            kv.put("data_processing_method_list", arr.toString());
+            if (arr.size() > 0) {
+                kv.put("data_processing_method_list", arr.toString());
+            }
         }
         if (!meta.samples().isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();

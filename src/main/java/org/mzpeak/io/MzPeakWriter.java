@@ -226,21 +226,24 @@ public final class MzPeakWriter {
                 .named("parameters");
     }
 
+    /** uint64 logical type annotation (unsigned 64-bit int, matching mzPeak spec for index/count fields). */
+    private static final LogicalTypeAnnotation UINT64 = LogicalTypeAnnotation.intType(64, false);
+
     private static final MessageType METADATA_SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
-                    .required(PrimitiveTypeName.INT64).named("index")
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("index")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
                     .optional(PrimitiveTypeName.INT32).named("MS_1000511_ms_level")
                     .optional(PrimitiveTypeName.DOUBLE).named("time")
                     .optional(PrimitiveTypeName.INT32).named("MS_1000465_scan_polarity")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                     .named("MS_1000525_spectrum_representation")
-                    .optional(PrimitiveTypeName.INT64).named("MS_1003060_number_of_data_points")
-                    .optional(PrimitiveTypeName.INT64).named("MS_1003059_number_of_peaks")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003059_number_of_peaks")
                     .addField(paramListField())
                     .named("spectrum"))
             .addField(Types.optionalGroup()
-                    .required(PrimitiveTypeName.INT64).named("source_index")
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000016_scan_start_time_unit_UO_0000031")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000927_ion_injection_time_unit_UO_0000028")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("MS_1000512_filter_string")
@@ -250,8 +253,8 @@ public final class MzPeakWriter {
                     .addField(paramListField())
                     .named("scan"))
             .addField(Types.optionalGroup()
-                    .required(PrimitiveTypeName.INT64).named("source_index")
-                    .optional(PrimitiveTypeName.INT64).named("precursor_index")
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("precursor_index")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("precursor_id")
                     .optionalGroup()
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000827_isolation_window_target_mz")
@@ -260,7 +263,7 @@ public final class MzPeakWriter {
                     .named("isolation_window")
                     .named("precursor"))
             .addField(Types.optionalGroup()
-                    .required(PrimitiveTypeName.INT64).named("source_index")
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000744_selected_ion_mz_unit_MS_1000040")
                     .optional(PrimitiveTypeName.INT32).named("MS_1000041_charge_state")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000042_intensity_unit_MS_1000131")
@@ -274,7 +277,7 @@ public final class MzPeakWriter {
     private static MessageType pointSchema(String indexField, String xField) {
         return Types.buildMessage()
                 .addField(Types.requiredGroup()
-                        .required(PrimitiveTypeName.INT64).named(indexField)
+                        .required(PrimitiveTypeName.INT64).as(UINT64).named(indexField)
                         .optional(PrimitiveTypeName.DOUBLE).named(xField)
                         .optional(PrimitiveTypeName.DOUBLE).named("intensity")
                         .named("point"))
@@ -284,7 +287,7 @@ public final class MzPeakWriter {
     /** Schema for Numpress-encoded chunk layout (compatible with SpectrumArrayStore.acceptNumpressChunk). */
     private static final MessageType NUMPRESS_CHUNK_SCHEMA = Types.buildMessage()
             .addField(Types.requiredGroup()
-                    .required(PrimitiveTypeName.INT64).named("spectrum_index")
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("spectrum_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_start")
                     .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_end")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("chunk_encoding")
@@ -320,11 +323,11 @@ public final class MzPeakWriter {
 
     private static final MessageType CHROM_META_SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
-                    .required(PrimitiveTypeName.INT64).named("index")
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("index")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                     .named("MS_1000626_chromatogram_type")
-                    .optional(PrimitiveTypeName.INT64).named("MS_1003060_number_of_data_points")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
                     .named("chromatogram"))
             .named("chromatogram_metadata");
 
@@ -590,6 +593,18 @@ public final class MzPeakWriter {
             addManifestEntry(files, "chromatograms_data.parquet", "chromatogram", "data arrays");
         }
         ObjectNode meta = root.putObject("metadata");
+        // Always declare the format version; the writer always produces mzpeak-0.9 output.
+        meta.put("version", "mzpeak-0.9");
+        // Always declare the standard CV ontologies; every mzPeak file uses at minimum MS + UO.
+        // Including IMS is harmless for non-imaging files (extra declarations are not errors).
+        ArrayNode cvList = meta.putArray("cv_list");
+        addCvEntry(cvList, "MS", "PSI-MS controlled vocabulary",
+                "https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/master/psi-ms.obo", "4.1.x");
+        addCvEntry(cvList, "IMS", "Mass Spectrometry Imaging controlled vocabulary",
+                "https://raw.githubusercontent.com/imzML/imzML/master/imagingMS.obo", "1.1.x");
+        addCvEntry(cvList, "UO", "Unit Ontology",
+                "https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/master/unit.obo",
+                "2024-01-01");
         meta.putArray("scan_settings_list");
         for (var kv : FooterMetadataWriter.serialize(fileMetadata).entrySet()) {
             meta.set(kv.getKey(), mapper.readTree(kv.getValue()));
@@ -693,6 +708,14 @@ public final class MzPeakWriter {
         e.put("name", name);
         e.put("entity_type", entityType);
         e.put("data_kind", dataKind);
+    }
+
+    private static void addCvEntry(ArrayNode cvList, String id, String fullName, String uri, String version) {
+        ObjectNode cv = cvList.addObject();
+        cv.put("id", id);
+        cv.put("full_name", fullName);
+        cv.put("uri", uri);
+        cv.put("version", version);
     }
 
     private static Integer polarityCode(SpectrumDescription d) {

@@ -1,0 +1,49 @@
+# CI corpus: curated files from the public StackIT S3 bucket (s3://v09).
+# Public read — no credentials needed (curl -fsSL, no auth required).
+# Base URL: https://object.storage.eu01.onstackit.cloud/v09/
+#
+# Selection criteria:
+#   mzML-examples: 9 small files (< 50 MB each) spanning 7 instrument vendors
+#   pwiz-examples: 1-2 representative files per vendor (ABI, Agilent, Bruker, Shimadzu,
+#                  Thermo, Waters, Mobilion) — the pWiz vendor-reader corpus
+#
+# Format: one URL per line; '#' lines are comments, '> ' lines name the local subdirectory.
+# The download script creates <corpus_dir>/<subdir>/<filename> for each URL.
+
+> mzML-examples
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/agilent-6490-triplequad/REC-2349_P2_F1.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/agilent-6560-dtims-imqtof/CEMS_10ppm.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/agilent-8890-gc-ei/EFWS-1.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/agilent-qtof/MRM-standmix-5.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/sciex-qtrap-6500/Drug_substance_3_scheduled_MRM.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/shimadzu-lcms-9030-qtof/Blind_P1_pos_012.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/bruker-impact-ii-qtof/21P0055_Tissue_Georges_NEG_N_01_17471.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/sciex-zenotof-7600/20240826_RNAseB_Reduced_50ngul_1ul_MRM_03.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/mzML-examples/waters-xevo-g2s-qtof/QC01.mzpeak
+
+# ---- pWiz vendor corpus (ProteoWizard round-trip test data, also on S3) ----------------
+
+> pwiz-examples/ABI
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/ABI/Reader_ABI_Test.data/swath.api-sample-centroid.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/ABI/Reader_ABI_Test.data/Enolase_repeats_AQv1.4.2-20070918_en_01.mzpeak
+
+> pwiz-examples/Agilent
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Agilent/Reader_Agilent_Test.data/GFb_4Scan_TimeSegs_1530_100ng.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Agilent/Reader_Agilent_Test.data/RS080806_APCI_PIscan_CE35.mzpeak
+
+> pwiz-examples/Bruker
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Bruker/Reader_Bruker_Test.data/20percLaser_100fold_1_0_H6_MS.mzpeak
+
+> pwiz-examples/Shimadzu
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Shimadzu/Reader_Shimadzu_Test.data/10nmol_Negative_MS_ID_ON_055-centroid.mzpeak
+
+> pwiz-examples/Thermo
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Thermo/Reader_Thermo_Test.data/090701-LTQVelos-unittest-01.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Thermo/Reader_Thermo_Test.data/BSA-FT-HCD.mzpeak
+
+> pwiz-examples/Waters
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Waters/Reader_Waters_Test.data/ATEHLSTLSEK_profile.mzpeak
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Waters/Reader_Waters_Test.data/091204_NFDM_008.mzpeak
+
+> pwiz-examples/Mobilion
+https://object.storage.eu01.onstackit.cloud/v09/pwiz-examples/Mobilion/Reader_Mobilion_Test.data/ExampleTuneMix_binned5.mzpeak

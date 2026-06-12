@@ -28,11 +28,15 @@ public final class Spectrum {
             throw new IllegalArgumentException(
                     "mz/intensity length mismatch: " + this.mz.length + " vs " + this.intensity.length);
         }
-        // Sort peaks by m/z to guarantee binary search correctness regardless of Parquet row order.
+        // Sort peaks by m/z; filter non-finite m/z entries (e.g. SRM spectra where
+        // the converter writes NaN for transitions without a valid product-ion m/z).
         if (peaks == null || peaks.isEmpty()) {
             this.peaks = List.of();
         } else {
-            List<CentroidPeak> sorted = new ArrayList<>(peaks);
+            List<CentroidPeak> sorted = new ArrayList<>(peaks.size());
+            for (CentroidPeak p : peaks) {
+                if (Double.isFinite(p.mz())) sorted.add(p);
+            }
             sorted.sort(java.util.Comparator.comparingDouble(CentroidPeak::mz));
             this.peaks = Collections.unmodifiableList(sorted);
         }
