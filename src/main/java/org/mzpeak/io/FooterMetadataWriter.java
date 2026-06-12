@@ -34,25 +34,38 @@ final class FooterMetadataWriter {
         if (meta == null) {
             return kv;
         }
+        // Pre-compute effective required-field ids so run can reference them and the synthetic
+        // sentinel entries are added to the respective lists consistently.
+        // default_data_processing_id: required by mzPeak spec
+        String effectiveDpId = null;
+        // default_source_file_id: required by mzPeak spec
+        String effectiveSfId = null;
+        if (meta.run() != null) {
+            effectiveDpId = meta.run().defaultDataProcessingId();
+            if (effectiveDpId == null && !meta.dataProcessingMethods().isEmpty()) {
+                effectiveDpId = meta.dataProcessingMethods().get(0).id();
+            }
+            if (effectiveDpId == null) {
+                effectiveDpId = "mzpeakj_export"; // sentinel; corresponding DP entry synthesised below
+            }
+            effectiveSfId = meta.run().defaultSourceFileId();
+            boolean hasSources = meta.fileDescription() != null
+                    && !meta.fileDescription().sourceFiles().isEmpty();
+            if (effectiveSfId == null && hasSources) {
+                effectiveSfId = meta.fileDescription().sourceFiles().get(0).id();
+            }
+            if (effectiveSfId == null) {
+                effectiveSfId = "mzpeakj_source"; // sentinel; corresponding source entry synthesised below
+            }
+        }
         if (meta.run() != null) {
             ObjectNode run = MAPPER.createObjectNode();
             putText(run, "id", meta.run().id());
             if (meta.run().defaultInstrumentId() != null) {
                 run.put("default_instrument_id", meta.run().defaultInstrumentId());
             }
-            // default_data_processing_id is required by the mzPeak spec; fall back to the
-            // first data processing method's id if the source file omitted it.
-            String dpId = meta.run().defaultDataProcessingId();
-            if (dpId == null && !meta.dataProcessingMethods().isEmpty()) {
-                dpId = meta.dataProcessingMethods().get(0).id();
-            }
-            // Last resort: if still null (no DP methods at all), use a writer-sentinel id so
-            // the schema constraint is satisfied; the corresponding DP entry is synthesised below.
-            if (dpId == null) {
-                dpId = "mzpeakj_export";
-            }
-            putText(run, "default_data_processing_id", dpId);
-            putText(run, "default_source_file_id", meta.run().defaultSourceFileId());
+            putText(run, "default_data_processing_id", effectiveDpId);
+            putText(run, "default_source_file_id", effectiveSfId);
             putText(run, "start_time", meta.run().startTime());
             putParams(run, meta.run().parameters());
             kv.put("run", run.toString());
@@ -130,6 +143,15 @@ final class FooterMetadataWriter {
                 putText(sn, "name", sf.name());
                 putText(sn, "location", sf.location());
                 putParams(sn, sf.parameters());
+            }
+            // If the sentinel source was used (no real source files), add a minimal stub so the
+            // run's default_source_file_id reference is satisfiable by the validator.
+            if ("mzpeakj_source".equals(effectiveSfId) && meta.fileDescription().sourceFiles().isEmpty()) {
+                ObjectNode sn = sources.addObject();
+                sn.put("id", "mzpeakj_source");
+                sn.put("name", "unknown");
+                sn.put("location", "file:///unknown");
+                sn.putArray("parameters");
             }
             kv.put("file_description", fd.toString());
         }
