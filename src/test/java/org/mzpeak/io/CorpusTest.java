@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Corpus smoke-test: opens every {@code .mzpeak} file found under
@@ -51,11 +52,14 @@ class CorpusTest {
 
     /**
      * Collect all {@code .mzpeak} files (ZIPs) and {@code .mzpeak} directories under the corpus root.
-     * Returns an empty stream (→ tests skip gracefully) when the root is absent.
+     * Returns a sentinel stream containing only {@link #CORPUS_ROOT} when the root is absent so that
+     * JUnit 5.11 (which rejects empty {@code @MethodSource} streams) does not throw
+     * {@code PreconditionViolationException}; each parameterized test calls {@code assumeTrue} on
+     * the first line and skips gracefully when the sentinel is received.
      */
     static Stream<Path> corpusFiles() throws IOException {
         if (!Files.isDirectory(CORPUS_ROOT)) {
-            return Stream.empty();
+            return Stream.of(CORPUS_ROOT); // sentinel — tests skip via assumeTrue
         }
         List<Path> found = new ArrayList<>();
         try (var walk = Files.walk(CORPUS_ROOT)) {
@@ -78,6 +82,7 @@ class CorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void canOpenAndReadMetadata(Path file) {
+        assumeThat(Files.isDirectory(CORPUS_ROOT)).as("corpus absent — skip").isTrue();
         assertThatNoException().isThrownBy(() -> {
             try (MzPeakReader r = MzPeakReader.open(file)) {
                 assertThat(r.size()).as("spectrum count must be >= 0").isGreaterThanOrEqualTo(0);
@@ -99,6 +104,7 @@ class CorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void canReadFirstSpectrum(Path file) {
+        assumeThat(Files.isDirectory(CORPUS_ROOT)).as("corpus absent — skip").isTrue();
         assertThatNoException().isThrownBy(() -> {
             try (MzPeakReader r = MzPeakReader.open(file)) {
                 if (r.size() == 0) return; // nothing to read
@@ -126,6 +132,7 @@ class CorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void sampledSpectra_haveConsistentArraysAndValidPeaks(Path file) throws Exception {
+        assumeThat(Files.isDirectory(CORPUS_ROOT)).as("corpus absent — skip").isTrue();
         try (MzPeakReader r = MzPeakReader.open(file)) {
             // Use an explicit iterator so next() is not called beyond the cap (enhanced-for would
             // materialize one extra spectrum when i == MAX_SPECTRA_PER_FILE at the loop condition).
