@@ -4,11 +4,11 @@ This document captures how the [mzPeak](https://www.psidev.info/mzpeak) format w
 HUPO-PSI example files and spec) and the decisions behind this Java reader/writer. It is the reference for
 anyone extending mzPeakJ or porting the format to a new language.
 
-> **Demonstrator.** mzPeakJ is vibe-coded by following the Rust reference implementation
+> **Demonstrator.** mzPeakJ tracks the Rust reference implementation
 > [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping) and the HUPO-PSI spec. Ground
 > truth is the upstream `doc/index.md` **plus the actual example Parquet files** (the published paper
 > [doi:10.1021/acs.jproteome.5c00435](https://doi.org/10.1021/acs.jproteome.5c00435) does not include
-> schema detail). mzPeak is an unstable prototype; this project is pinned to upstream commit `03ccdb7`
+> schema detail). mzPeak is an unstable prototype; this project is pinned to upstream commit `29e59b2`
 > (see `src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`).
 
 ---
@@ -122,9 +122,13 @@ One row per fixed-width m/z chunk (typically ~50 Da wide). The `mz_chunk_start`/
 remain accessible to the Parquet page index. The encoded values inside `mz_chunk_values` are opaque to the
 index.
 
-**Encoding CV terms** (mzPeak-specific, not OBO PSI-MS):
-- No transform (absolute values): no `chunk_encoding` field value / `MS:1003088`
-- Delta encoding: `MS:1003089` (differences from previous value, the start being `mz_chunk_start`)
+**Encoding CV terms** (PSI-MS controlled vocabulary):
+- No transform / absolute values: `MS:1000576` ("no compression") or `MS:1003088` ("truncation and zlib
+  compression") — chunk values are absolute coordinates.
+- Delta encoding: `MS:1003089` ("truncation, delta prediction and zlib compression") — differences from a
+  predictor seeded at `mz_chunk_start`. **Null-aware** (per the spec's `null_delta_decode`): a `null` (NaN)
+  breaks the prediction chain, and the next non-null value is read as an **absolute re-anchor**, not a delta.
+  Treating a post-null value as a delta double-counts the re-anchor and yields non-monotonic, out-of-range m/z.
 - Numpress linear: `MS:1002312`
 - Numpress PIC: `MS:1002313`
 - Numpress SLOF: `MS:1002314`

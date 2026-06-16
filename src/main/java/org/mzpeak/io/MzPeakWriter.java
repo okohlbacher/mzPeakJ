@@ -21,10 +21,13 @@ import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
+import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -32,6 +35,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
+import java.util.OptionalDouble;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -40,12 +44,15 @@ import java.util.zip.ZipOutputStream;
 /**
  * Writes mzPeak datasets in either {@code point} layout (the default) or MS-Numpress {@code chunk} layout.
  *
- * <p>Point layout: spectra (profile + centroid), chromatograms, and file/run metadata; round-trips through
- * {@link MzPeakReader}. Numpress layout additionally encodes m/z with Numpress linear (MS:1002312) and
- * intensity with Numpress SLOF (MS:1002314) per chunk. Wavelength spectra are not written.
+ * <p>Point layout: spectra (profile + centroid), chromatograms, wavelength (UV/DAD) spectra, and file/run
+ * metadata; round-trips through {@link MzPeakReader}. Numpress layout additionally encodes m/z with Numpress
+ * linear (MS:1002312) and intensity with Numpress SLOF (MS:1002314) per chunk.
  *
- * <p>Per-spectrum, scan, and selected-ion CV/user {@code parameters} lists are round-tripped by both the
- * writer and reader. Ion-mobility and imaging-position params are preserved; scan-window structs are not written.
+ * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
+ * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
+ * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
+ * imaging-position columns, scan settings, and wavelength facets — so a read &rarr; write cycle preserves
+ * everything {@link MzPeakReader} surfaces.
  */
 public final class MzPeakWriter {
 
@@ -62,13 +69,23 @@ public final class MzPeakWriter {
         writeDirectory(directory, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
     }
 
-    /** Write an unpacked {@code *.mzpeak/} directory, including file/run metadata in the footer. */
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                       org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata);
+    }
+
+    /**
+     * Write an unpacked {@code *.mzpeak/} directory, including wavelength spectra, scan settings, and
+     * file/run metadata. This is the full round-trip form consumed by the forward-backward test.
+     */
+    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                      List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
+                                      org.mzpeak.model.meta.FileMetadata fileMetadata) {
         validate(spectra, chromatograms);
-        boolean hasProfile = spectra.stream().anyMatch(s -> !isCentroid(s));
-        boolean hasPeaks = spectra.stream().anyMatch(MzPeakWriter::isCentroid);
+        boolean hasProfile = spectra.stream().anyMatch(s -> profileRows(s) > 0);
+        boolean hasPeaks = spectra.stream().anyMatch(s -> peakRows(s) > 0);
         boolean hasChromatograms = !chromatograms.isEmpty();
+        boolean hasWavelength = !wavelengthSpectra.isEmpty();
         java.util.Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
         try {
             Files.createDirectories(directory);
@@ -83,7 +100,12 @@ public final class MzPeakWriter {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
                 writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
             }
-            writeManifest(directory.resolve("mzpeak_index.json"), hasProfile, hasPeaks, hasChromatograms, fileMetadata);
+            if (hasWavelength) {
+                writeWavelengthMetadata(directory.resolve("wavelength_spectra_metadata.parquet"), wavelengthSpectra);
+                writeWavelengthData(directory.resolve("wavelength_spectra_data.parquet"), wavelengthSpectra);
+            }
+            writeManifest(directory.resolve("mzpeak_index.json"), hasProfile, hasPeaks, hasChromatograms,
+                    hasWavelength, scanSettings, fileMetadata);
         } catch (IOException e) {
             throw new MzPeakException("Failed to write mzPeak dataset to " + directory, e);
         }
@@ -93,10 +115,17 @@ public final class MzPeakWriter {
         writeArchive(archive, spectra, chromatograms, org.mzpeak.model.meta.FileMetadata.EMPTY);
     }
 
-    /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                     org.mzpeak.model.meta.FileMetadata fileMetadata) {
-        packArchive(archive, dir -> writeDirectory(dir, spectra, chromatograms, fileMetadata));
+        writeArchive(archive, spectra, chromatograms, List.of(), List.of(), fileMetadata);
+    }
+
+    /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
+    public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                    List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
+                                    org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        packArchive(archive, dir ->
+                writeDirectory(dir, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata));
     }
 
     // ---- Numpress-encoded chunk layout API --------------------------------------------------------
@@ -116,7 +145,8 @@ public final class MzPeakWriter {
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,
                                              org.mzpeak.model.meta.FileMetadata fileMetadata) {
-        writeDirectoryNumpress(directory, spectra, chromatograms, fileMetadata, NumpressIntensityEncoding.SLOF);
+        writeDirectoryNumpress(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata,
+                NumpressIntensityEncoding.SLOF);
     }
 
     /**
@@ -128,9 +158,20 @@ public final class MzPeakWriter {
                                              List<Chromatogram> chromatograms,
                                              org.mzpeak.model.meta.FileMetadata fileMetadata,
                                              NumpressIntensityEncoding intensityEncoding) {
+        writeDirectoryNumpress(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata, intensityEncoding);
+    }
+
+    /** Full Numpress directory form including wavelength spectra and scan settings. */
+    public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
+                                             List<Chromatogram> chromatograms,
+                                             List<WavelengthSpectrum> wavelengthSpectra,
+                                             List<ScanSettings> scanSettings,
+                                             org.mzpeak.model.meta.FileMetadata fileMetadata,
+                                             NumpressIntensityEncoding intensityEncoding) {
         validate(spectra, chromatograms);
-        boolean hasPeaks = spectra.stream().anyMatch(MzPeakWriter::isCentroid);
+        boolean hasPeaks = spectra.stream().anyMatch(s -> peakRows(s) > 0);
         boolean hasChromatograms = !chromatograms.isEmpty();
+        boolean hasWavelength = !wavelengthSpectra.isEmpty();
         java.util.Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
         try {
             Files.createDirectories(directory);
@@ -143,7 +184,12 @@ public final class MzPeakWriter {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
                 writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
             }
-            writeManifest(directory.resolve("mzpeak_index.json"), true, hasPeaks, hasChromatograms, fileMetadata);
+            if (hasWavelength) {
+                writeWavelengthMetadata(directory.resolve("wavelength_spectra_metadata.parquet"), wavelengthSpectra);
+                writeWavelengthData(directory.resolve("wavelength_spectra_data.parquet"), wavelengthSpectra);
+            }
+            writeManifest(directory.resolve("mzpeak_index.json"), true, hasPeaks, hasChromatograms,
+                    hasWavelength, scanSettings, fileMetadata);
         } catch (IOException e) {
             throw new MzPeakException("Failed to write Numpress mzPeak dataset to " + directory, e);
         }
@@ -158,8 +204,18 @@ public final class MzPeakWriter {
     public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
                                            List<Chromatogram> chromatograms,
                                            org.mzpeak.model.meta.FileMetadata fileMetadata) {
+        writeArchiveNumpress(archive, spectra, chromatograms, List.of(), List.of(), fileMetadata);
+    }
+
+    /** Full Numpress archive form including wavelength spectra and scan settings. */
+    public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
+                                           List<Chromatogram> chromatograms,
+                                           List<WavelengthSpectrum> wavelengthSpectra,
+                                           List<ScanSettings> scanSettings,
+                                           org.mzpeak.model.meta.FileMetadata fileMetadata) {
         packArchive(archive, dir ->
-                writeDirectoryNumpress(dir, spectra, chromatograms, fileMetadata, NumpressIntensityEncoding.SLOF));
+                writeDirectoryNumpress(dir, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                        NumpressIntensityEncoding.SLOF));
     }
 
     /**
@@ -226,6 +282,18 @@ public final class MzPeakWriter {
                 .named("parameters");
     }
 
+    /** {@code scan_windows: large_list<item: struct<lower, upper>>} field schema (matches the reference fixtures). */
+    private static org.apache.parquet.schema.Type scanWindowListField() {
+        org.apache.parquet.schema.GroupType itemType = Types.buildGroup(
+                        org.apache.parquet.schema.Type.Repetition.OPTIONAL)
+                .optional(PrimitiveTypeName.DOUBLE).named("MS_1000501_scan_window_lower_limit_unit_MS_1000040")
+                .optional(PrimitiveTypeName.DOUBLE).named("MS_1000500_scan_window_upper_limit_unit_MS_1000040")
+                .named("item");
+        return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .addField(Types.repeatedGroup().addField(itemType).named("list"))
+                .named("scan_windows");
+    }
+
     /** uint64 logical type annotation (unsigned 64-bit int, matching mzPeak spec for index/count fields). */
     private static final LogicalTypeAnnotation UINT64 = LogicalTypeAnnotation.intType(64, false);
 
@@ -238,18 +306,31 @@ public final class MzPeakWriter {
                     .optional(PrimitiveTypeName.INT32).named("MS_1000465_scan_polarity")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                     .named("MS_1000525_spectrum_representation")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named("MS_1000559_spectrum_type")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000528_lowest_observed_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000527_highest_observed_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000504_base_peak_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000505_base_peak_intensity_unit_MS_1000131")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000285_total_ion_current_unit_MS_1000131")
                     .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
                     .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003059_number_of_peaks")
                     .addField(paramListField())
                     .named("spectrum"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("scan_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000016_scan_start_time_unit_UO_0000031")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000927_ion_injection_time_unit_UO_0000028")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("MS_1000512_filter_string")
                     .optional(PrimitiveTypeName.INT32).named("MS_1000616_preset_scan_configuration")
                     .optional(PrimitiveTypeName.INT32).named("instrument_configuration_ref")
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("spectrum_reference")
+                    .optional(PrimitiveTypeName.DOUBLE).named("ion_mobility_value")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("ion_mobility_type")
+                    .optional(PrimitiveTypeName.INT32).named("IMS_1000050_position_x")
+                    .optional(PrimitiveTypeName.INT32).named("IMS_1000051_position_y")
+                    .addField(scanWindowListField())
                     .addField(paramListField())
                     .named("scan"))
             .addField(Types.optionalGroup()
@@ -261,6 +342,7 @@ public final class MzPeakWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000828_isolation_window_lower_offset")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000829_isolation_window_upper_offset")
                     .named("isolation_window")
+                    .addField(Types.optionalGroup().addField(paramListField()).named("activation"))
                     .named("precursor"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
@@ -273,6 +355,7 @@ public final class MzPeakWriter {
 
     private static final MessageType SPECTRUM_DATA_SCHEMA = pointSchema("spectrum_index", "mz");
     private static final MessageType CHROM_DATA_SCHEMA = pointSchema("chromatogram_index", "time");
+    private static final MessageType WAVELENGTH_DATA_SCHEMA = pointSchema("wavelength_spectrum_index", "wavelength");
 
     private static MessageType pointSchema(String indexField, String xField) {
         return Types.buildMessage()
@@ -283,6 +366,17 @@ public final class MzPeakWriter {
                         .named("point"))
                 .named("data");
     }
+
+    /** Wavelength (UV/DAD) metadata schema — minimal spectrum facet read by {@link WavelengthSpectrumStore}. */
+    private static final MessageType WAVELENGTH_META_SCHEMA = Types.buildMessage()
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("index")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
+                    .optional(PrimitiveTypeName.DOUBLE).named("time")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1003812_lambda_max_unit_UO:0000018")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
+                    .named("spectrum"))
+            .named("wavelength_spectra_metadata");
 
     /** Schema for Numpress-encoded chunk layout (compatible with SpectrumArrayStore.acceptNumpressChunk). */
     private static final MessageType NUMPRESS_CHUNK_SCHEMA = Types.buildMessage()
@@ -336,6 +430,7 @@ public final class MzPeakWriter {
     private static void writeSpectrumMetadata(Path file, List<Spectrum> spectra,
                                               java.util.Map<String, String> footer) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
+        long scanIndexCounter = 0;
         try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, footer)) {
             for (Spectrum s : spectra) {
                 SpectrumDescription d = s.description();
@@ -355,38 +450,127 @@ public final class MzPeakWriter {
                     spectrum.add("MS_1000465_scan_polarity", polarity);
                 }
                 spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
-                spectrum.add(isCentroid(s) ? "MS_1003059_number_of_peaks" : "MS_1003060_number_of_data_points",
-                        (long) payloadSize(s));
+                spectrum.add("MS_1000559_spectrum_type", d.msLevel() > 1 ? "MS:1000580" : "MS:1000579");
+                writeDerivedColumns(spectrum, s);
+                // Declare each facet's count independently; a spectrum may carry profile points AND a
+                // centroid peak list (both facets), so both counts can be present.
+                int profileRows = profileRows(s);
+                int peakRows = peakRows(s);
+                if (profileRows > 0) {
+                    spectrum.add("MS_1003060_number_of_data_points", (long) profileRows);
+                }
+                if (peakRows > 0) {
+                    spectrum.add("MS_1003059_number_of_peaks", (long) peakRows);
+                }
                 writeParams(spectrum, d.parameters());
 
-                Group scan = row.addGroup("scan");
-                scan.add("source_index", d.index());
-                if (Double.isFinite(d.retentionTime())) {
-                    scan.add("MS_1000016_scan_start_time_unit_UO_0000031", d.retentionTime());
-                }
-                if (!d.scans().isEmpty()) {
-                    ScanEvent se = d.scans().get(0);
-                    if (se.injectionTime() != null) {
-                        scan.add("MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
-                    }
-                    if (se.filterString() != null) {
-                        scan.add("MS_1000512_filter_string", se.filterString());
-                    }
-                    if (se.presetScanConfiguration() != null) {
-                        scan.add("MS_1000616_preset_scan_configuration", se.presetScanConfiguration());
-                    }
-                    if (se.instrumentConfigurationRef() != null) {
-                        scan.add("instrument_configuration_ref", se.instrumentConfigurationRef());
-                    }
-                    if (se.spectrumReference() != null) {
-                        scan.add("spectrum_reference", se.spectrumReference());
-                    }
-                    writeParams(scan, se.parameters());
-                }
+                ScanEvent firstScan = d.scans().isEmpty() ? null : d.scans().get(0);
+                populateScan(row.addGroup("scan"), d.index(), scanIndexCounter++, d.retentionTime(), firstScan);
 
                 writePrecursor(row, d);
                 writer.write(row);
+                // NOTE: multiple scans / selected ions per spectrum (e.g. Bruker PASEF combineIMS frames carry
+                // ~25 mobility scans) are NOT yet written as additional packed-facet rows — only the primary
+                // scan and selected ion are emitted. The m/z + intensity payload is preserved in full; the
+                // forward-backward test surfaces the dropped secondary records via its scans/precursors/ion
+                // count checks. Packed multi-facet writing is a deferred enhancement.
             }
+        }
+    }
+
+    /** Populate a {@code scan} facet group. {@code se} may be {@code null} for a spectrum with no scan events. */
+    private static void populateScan(Group scan, long sourceIndex, long scanIndex, double rtFallback, ScanEvent se) {
+        scan.add("source_index", sourceIndex);
+        scan.add("scan_index", scanIndex);
+        double rt = (se != null && Double.isFinite(se.startTime())) ? se.startTime() : rtFallback;
+        if (Double.isFinite(rt)) {
+            scan.add("MS_1000016_scan_start_time_unit_UO_0000031", rt);
+        }
+        if (se == null) {
+            return;
+        }
+        if (se.injectionTime() != null) {
+            scan.add("MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
+        }
+        if (se.filterString() != null) {
+            scan.add("MS_1000512_filter_string", se.filterString());
+        }
+        if (se.presetScanConfiguration() != null) {
+            scan.add("MS_1000616_preset_scan_configuration", se.presetScanConfiguration());
+        }
+        if (se.instrumentConfigurationRef() != null) {
+            scan.add("instrument_configuration_ref", se.instrumentConfigurationRef());
+        }
+        if (se.spectrumReference() != null) {
+            scan.add("spectrum_reference", se.spectrumReference());
+        }
+        // Typed ion-mobility columns (also kept in params; the reader prefers params on read, so there is
+        // no duplication — the typed columns satisfy reference/validator parity).
+        OptionalDouble im = se.ionMobilityValue();
+        if (im.isPresent()) {
+            scan.add("ion_mobility_value", im.getAsDouble());
+            String imType = se.ionMobilityType();
+            if (imType != null) {
+                scan.add("ion_mobility_type", imType);
+            }
+        }
+        // Typed imaging-position columns (required by the validator for imaging archives, which also checks
+        // they are 1-based). Value preserved in params for round-trip.
+        var pos = se.imagingPosition();
+        if (pos != null) {
+            scan.add("IMS_1000050_position_x", pos.x());
+            scan.add("IMS_1000051_position_y", pos.y());
+        }
+        writeScanWindows(scan, se.scanWindows());
+        writeParams(scan, se.parameters());
+    }
+
+    /** Append the derived spectrum columns (observed m/z range, base peak, TIC) when the spectrum has payload. */
+    private static void writeDerivedColumns(Group spectrum, Spectrum s) {
+        boolean centroid = isCentroid(s) && !s.peaks().isEmpty();
+        int n = centroid ? s.peaks().size() : s.mz().length;
+        if (n == 0) {
+            return; // empty spectrum: omit (null), do not fabricate zeros
+        }
+        double loMz = Double.POSITIVE_INFINITY, hiMz = Double.NEGATIVE_INFINITY;
+        double basePeakMz = Double.NaN, basePeakIntensity = Double.NEGATIVE_INFINITY;
+        double tic = 0.0;
+        if (centroid) {
+            for (CentroidPeak p : s.peaks()) {
+                double mz = p.mz(), in = p.intensity();
+                if (mz < loMz) loMz = mz;
+                if (mz > hiMz) hiMz = mz;
+                tic += in;
+                if (in > basePeakIntensity) { basePeakIntensity = in; basePeakMz = mz; }
+            }
+        } else {
+            double[] mz = s.mz();
+            double[] in = s.intensity();
+            for (int i = 0; i < mz.length; i++) {
+                if (mz[i] < loMz) loMz = mz[i];
+                if (mz[i] > hiMz) hiMz = mz[i];
+                tic += in[i];
+                if (in[i] > basePeakIntensity) { basePeakIntensity = in[i]; basePeakMz = mz[i]; }
+            }
+        }
+        if (Double.isFinite(loMz)) spectrum.add("MS_1000528_lowest_observed_mz_unit_MS_1000040", loMz);
+        if (Double.isFinite(hiMz)) spectrum.add("MS_1000527_highest_observed_mz_unit_MS_1000040", hiMz);
+        if (Double.isFinite(basePeakMz)) spectrum.add("MS_1000504_base_peak_mz_unit_MS_1000040", basePeakMz);
+        if (Double.isFinite(basePeakIntensity)) {
+            spectrum.add("MS_1000505_base_peak_intensity_unit_MS_1000131", basePeakIntensity);
+        }
+        spectrum.add("MS_1000285_total_ion_current_unit_MS_1000131", tic);
+    }
+
+    private static void writeScanWindows(Group scan, List<ScanWindow> windows) {
+        if (windows == null || windows.isEmpty()) {
+            return;
+        }
+        Group wrapper = scan.addGroup("scan_windows");
+        for (ScanWindow w : windows) {
+            Group item = wrapper.addGroup("list").addGroup("item");
+            item.add("MS_1000501_scan_window_lower_limit_unit_MS_1000040", w.lowerLimit());
+            item.add("MS_1000500_scan_window_upper_limit_unit_MS_1000040", w.upperLimit());
         }
     }
 
@@ -409,17 +593,27 @@ public final class MzPeakWriter {
             addIfPresent(iso, "MS_1000828_isolation_window_lower_offset", precursor.isolationWindow().lowerOffset());
             addIfPresent(iso, "MS_1000829_isolation_window_upper_offset", precursor.isolationWindow().upperOffset());
         }
+        // Precursor activation (dissociation method + collision energy). Round-trips via the reader's
+        // Precursor.activation(); previously dropped entirely on write.
+        if (precursor.activation() != null && !precursor.activation().isEmpty()) {
+            Group activation = p.addGroup("activation");
+            writeParams(activation, precursor.activation().parameters());
+        }
         SelectedIon ion = precursor.primaryIon();
         if (ion != null) {
-            Group si = row.addGroup("selected_ion");
-            si.add("source_index", d.index());
-            si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
-            if (ion.charge() != null) {
-                si.add("MS_1000041_charge_state", ion.charge());
-            }
-            addIfPresent(si, "MS_1000042_intensity_unit_MS_1000131", ion.intensity());
-            writeParams(si, ion.parameters());
+            writeSelectedIon(row.addGroup("selected_ion"), d.index(), ion);
         }
+    }
+
+    /** Populate a {@code selected_ion} facet group. */
+    private static void writeSelectedIon(Group si, long sourceIndex, SelectedIon ion) {
+        si.add("source_index", sourceIndex);
+        si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
+        if (ion.charge() != null) {
+            si.add("MS_1000041_charge_state", ion.charge());
+        }
+        addIfPresent(si, "MS_1000042_intensity_unit_MS_1000131", ion.intensity());
+        writeParams(si, ion.parameters());
     }
 
     private static void writeSpectrumPoints(Path file, List<Spectrum> spectra, boolean centroidFile)
@@ -427,14 +621,26 @@ public final class MzPeakWriter {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_DATA_SCHEMA)) {
             for (Spectrum s : spectra) {
-                if (isCentroid(s) != centroidFile) {
-                    continue;
-                }
-                if (centroidFile && !s.peaks().isEmpty()) {
-                    for (CentroidPeak peak : s.peaks()) {
-                        writePoint(writer, factory, "spectrum_index", s.index(), "mz", peak.mz(), peak.intensity());
+                if (centroidFile) {
+                    if (peakRows(s) == 0) {
+                        continue;
+                    }
+                    if (!s.peaks().isEmpty()) {
+                        for (CentroidPeak peak : s.peaks()) {
+                            writePoint(writer, factory, "spectrum_index", s.index(), "mz", peak.mz(), peak.intensity());
+                        }
+                    } else {
+                        // centroid spectrum whose centroids are carried in the mz/intensity arrays
+                        double[] mz = s.mz();
+                        double[] intensity = s.intensity();
+                        for (int i = 0; i < mz.length; i++) {
+                            writePoint(writer, factory, "spectrum_index", s.index(), "mz", mz[i], intensity[i]);
+                        }
                     }
                 } else {
+                    if (profileRows(s) == 0) {
+                        continue;
+                    }
                     double[] mz = s.mz();
                     double[] intensity = s.intensity();
                     for (int i = 0; i < mz.length; i++) {
@@ -456,19 +662,27 @@ public final class MzPeakWriter {
         SimpleGroupFactory factory = new SimpleGroupFactory(NUMPRESS_CHUNK_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA)) {
             for (Spectrum s : spectra) {
-                if (isCentroid(s) != centroidFile) {
-                    continue;
-                }
                 double[] mz;
                 double[] intensity;
-                if (centroidFile && !s.peaks().isEmpty()) {
-                    mz = new double[s.peaks().size()];
-                    intensity = new double[s.peaks().size()];
-                    for (int i = 0; i < mz.length; i++) {
-                        mz[i] = s.peaks().get(i).mz();
-                        intensity[i] = s.peaks().get(i).intensity();
+                if (centroidFile) {
+                    if (peakRows(s) == 0) {
+                        continue;
+                    }
+                    if (!s.peaks().isEmpty()) {
+                        mz = new double[s.peaks().size()];
+                        intensity = new double[s.peaks().size()];
+                        for (int i = 0; i < mz.length; i++) {
+                            mz[i] = s.peaks().get(i).mz();
+                            intensity[i] = s.peaks().get(i).intensity();
+                        }
+                    } else {
+                        mz = s.mz();
+                        intensity = s.intensity();
                     }
                 } else {
+                    if (profileRows(s) == 0) {
+                        continue;
+                    }
                     mz = s.mz();
                     intensity = s.intensity();
                 }
@@ -564,6 +778,42 @@ public final class MzPeakWriter {
         }
     }
 
+    private static void writeWavelengthMetadata(Path file, List<WavelengthSpectrum> spectra) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_META_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_META_SCHEMA)) {
+            for (WavelengthSpectrum w : spectra) {
+                Group row = factory.newGroup();
+                Group s = row.addGroup("spectrum");
+                s.add("index", w.index());
+                if (w.id() != null) {
+                    s.add("id", w.id());
+                }
+                if (Double.isFinite(w.time())) {
+                    s.add("time", w.time());
+                }
+                if (w.lambdaMax() != null) {
+                    s.add("MS_1003812_lambda_max_unit_UO:0000018", w.lambdaMax());
+                }
+                s.add("MS_1003060_number_of_data_points", (long) w.size());
+                writer.write(row);
+            }
+        }
+    }
+
+    private static void writeWavelengthData(Path file, List<WavelengthSpectrum> spectra) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_DATA_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_DATA_SCHEMA)) {
+            for (WavelengthSpectrum w : spectra) {
+                double[] wl = w.wavelength();
+                double[] intensity = w.intensity();
+                for (int i = 0; i < wl.length; i++) {
+                    writePoint(writer, factory, "wavelength_spectrum_index", w.index(), "wavelength",
+                            wl[i], intensity[i]);
+                }
+            }
+        }
+    }
+
     private static void writePoint(ParquetWriter<Group> writer, SimpleGroupFactory factory,
                                    String indexField, long index, String xField, double x, double intensity)
             throws IOException {
@@ -576,6 +826,7 @@ public final class MzPeakWriter {
     }
 
     private static void writeManifest(Path file, boolean hasProfile, boolean hasPeaks, boolean hasChromatograms,
+                                       boolean hasWavelength, List<ScanSettings> scanSettings,
                                        org.mzpeak.model.meta.FileMetadata fileMetadata)
             throws IOException {
         ObjectMapper mapper = new ObjectMapper();
@@ -592,9 +843,13 @@ public final class MzPeakWriter {
             addManifestEntry(files, "chromatograms_metadata.parquet", "chromatogram", "metadata");
             addManifestEntry(files, "chromatograms_data.parquet", "chromatogram", "data arrays");
         }
+        if (hasWavelength) {
+            addManifestEntry(files, "wavelength_spectra_metadata.parquet", "wavelength spectrum", "metadata");
+            addManifestEntry(files, "wavelength_spectra_data.parquet", "wavelength spectrum", "data arrays");
+        }
         ObjectNode meta = root.putObject("metadata");
-        // Always declare the format version; the writer always produces mzpeak-0.9 output.
-        meta.put("version", "mzpeak-0.9");
+        // Match the reference writer: the spec example declares version 0.9.0.
+        meta.put("version", "0.9.0");
         // Always declare the standard CV ontologies; every mzPeak file uses at minimum MS + UO.
         // Including IMS is harmless for non-imaging files (extra declarations are not errors).
         ArrayNode cvList = meta.putArray("cv_list");
@@ -605,11 +860,37 @@ public final class MzPeakWriter {
         addCvEntry(cvList, "UO", "Unit Ontology",
                 "https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/master/unit.obo",
                 "2024-01-01");
-        meta.putArray("scan_settings_list");
+        writeScanSettingsList(meta.putArray("scan_settings_list"), scanSettings);
         for (var kv : FooterMetadataWriter.serialize(fileMetadata).entrySet()) {
             meta.set(kv.getKey(), mapper.readTree(kv.getValue()));
         }
         Files.write(file, mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
+    }
+
+    /** Serialize imaging scan settings into the manifest, matching {@code MzPeakManifest.parseParamArray}. */
+    private static void writeScanSettingsList(ArrayNode arr, List<ScanSettings> scanSettings) {
+        if (scanSettings == null) {
+            return;
+        }
+        for (ScanSettings ss : scanSettings) {
+            ObjectNode n = arr.addObject();
+            if (ss.id() != null) {
+                n.put("id", ss.id());
+            }
+            ArrayNode params = n.putArray("parameters");
+            for (org.mzpeak.model.Param p : ss.parameters()) {
+                ObjectNode pn = params.addObject();
+                if (p.name() != null) pn.put("name", p.name());
+                if (p.accession() != null) pn.put("accession", p.accession());
+                Object v = p.value();
+                if (v instanceof Long l) pn.put("value", l);
+                else if (v instanceof Integer i) pn.put("value", i.longValue());
+                else if (v instanceof Double dd) pn.put("value", dd);
+                else if (v instanceof Boolean b) pn.put("value", b);
+                else if (v != null) pn.put("value", v.toString());
+                if (p.unit() != null) pn.put("unit_accession", p.unit());
+            }
+        }
     }
 
     // ---- helpers ----------------------------------------------------------------------------------
@@ -661,9 +942,20 @@ public final class MzPeakWriter {
         return s.description().signalContinuity() == SignalContinuity.CENTROID;
     }
 
-    /** Number of points/peaks that will actually be written for this spectrum. */
-    private static int payloadSize(Spectrum s) {
-        return isCentroid(s) && !s.peaks().isEmpty() ? s.peaks().size() : s.mz().length;
+    // Facet routing is by *container*, not by signal continuity: the mz/intensity point arrays go to
+    // spectra_data and the explicit centroid peak list goes to spectra_peaks. This preserves the source
+    // layout exactly — including centroid spectra whose centroids are stored in spectra_data (e.g. SRM/MRM
+    // transitions, which the reference also stores there), which a continuity-based rule would wrongly
+    // flip into spectra_peaks on write.
+
+    /** Rows this spectrum contributes to {@code spectra_data} (the point/profile arrays). */
+    private static int profileRows(Spectrum s) {
+        return s.mz().length;
+    }
+
+    /** Rows this spectrum contributes to {@code spectra_peaks} (the explicit centroid peak list). */
+    private static int peakRows(Spectrum s) {
+        return s.peaks().size();
     }
 
     private static boolean hasAnyWindowValue(Precursor p) {

@@ -7,17 +7,20 @@ A pure-JVM **Java reader and writer** for [mzPeak](https://www.psidev.info/mzpea
 mass-spectrometry data format built on Apache Parquet, under development by the
 [HUPO-PSI](https://www.psidev.info/).
 
-> **⚠️ Demonstrator / proof-of-concept.** mzPeakJ is a vibe-coded demonstrator, built by following the
-> mzPeak reference implementations (primarily the Rust crate
+> **⚠️ Demonstrator / proof-of-concept.** mzPeakJ is an independent demonstrator that tracks the mzPeak
+> reference implementations — primarily the Rust crate
 > [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping) by Joshua Klein, plus the
-> HUPO-PSI [spec](https://github.com/HUPO-PSI/mzPeak) and example files). It shows that a clean,
+> HUPO-PSI [spec](https://github.com/HUPO-PSI/mzPeak) and example files. It shows that a clean,
 > dependency-light JVM reader/writer is feasible — it is **not** a hardened production library.
-> mzPeak itself is explicitly an unstable prototype; no stability is guaranteed upstream.
+> mzPeak itself is an unstable pre-1.0 prototype; no on-disk stability is guaranteed upstream.
 > Expect rough edges and pin to a specific commit before depending on any behaviour.
 
 It reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` (STORED ZIP); the `point`,
 delta-`chunk`, and MS-Numpress `chunk` layouts; spectra (MS1 + MSn), chromatograms, and UV/DAD wavelength
-spectra; and it writes mzPeak back out. See [Scope & limitations](#scope--limitations) for what's deferred.
+spectra. It also **writes** mzPeak back out — point and Numpress layouts, with precursor activation, scan
+windows, ion-mobility and imaging-position columns, derived spectrum columns, wavelength facets, and scan
+settings — and is verified against the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator)
+validator. See [Scope & limitations](#scope--limitations) for what's deferred.
 
 ## About the mzPeak format
 
@@ -109,11 +112,39 @@ MzPeakWriter.writeDirectoryNumpress(dir, spectra, chroms,
         fileMetadata, MzPeakWriter.NumpressIntensityEncoding.PIC);
 ```
 
+The six-argument overloads additionally carry **wavelength (UV/DAD) spectra** and **imaging scan
+settings** through the write, so a read → write cycle is lossless for those facets too:
+
+```java
+MzPeakWriter.writeArchive(out, spectra, chromatograms,
+        wavelengthSpectra, scanSettings, fileMetadata);          // point layout
+MzPeakWriter.writeArchiveNumpress(out, spectra, chromatograms,
+        wavelengthSpectra, scanSettings, fileMetadata);          // Numpress layout
+```
+
+#### Round-trip example (read → write)
+
+```java
+try (MzPeakReader r = MzPeakReader.open(Path.of("in.mzpeak"))) {
+    List<Spectrum> spectra = new ArrayList<>();
+    for (int i = 0; i < r.size(); i++) spectra.add(r.getSpectrumAt(i));
+    MzPeakWriter.writeArchive(Path.of("out.mzpeak"),
+            spectra, r.chromatograms(),
+            r.wavelengthSpectra(), r.scanSettings(), r.fileMetadata());
+}
+```
+
 Writer notes:
-- ZSTD-compressed Parquet, fully Hadoop-free.
-- Writes spectra (profile + centroid), chromatograms, and file/run footer metadata.
-- Writes per-spectrum/scan/selected-ion CV param lists (read back by the reader).
-- Wavelength spectra and writing of chunk/Numpress layouts from profile arrays are not supported.
+- ZSTD-compressed Parquet, fully Hadoop-free; writes format version `0.9.0` and the standard CV list.
+- Emits the reference metadata schema: derived spectrum columns (observed m/z range, base peak, TIC,
+  spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
+  typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
+- Facet routing is by container, not signal continuity: m/z point arrays go to `spectra_data`, explicit
+  centroid peak lists to `spectra_peaks` (a spectrum may carry both).
+- Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The point layout
+  requires finite m/z, so transition data with no product-ion m/z (SRM/MRM) must use the Numpress layout.
+- Not yet written: the delta-`chunk` layout, `auxiliary_arrays`, and multiple scans/precursors per spectrum
+  (only the primary is emitted; the m/z + intensity payload is preserved in full).
 
 ## Running the CLI & examples
 
@@ -207,8 +238,10 @@ classes statically reference Hadoop types — but it is never actually invoked.
   position silently mis-assigns precursors.
 - Signal layouts: **point** (one row per peak, `spectrum_index + mz + intensity`) and **chunk** (one row per
   m/z chunk: `spectrum_index + mz_chunk_start + mz_chunk_end + mz_chunk_values + chunk_encoding + intensity`).
-  Delta encoding uses CV terms `MS:1003088`/`MS:1003089` (mzPeak-specific, not OBO PSI-MS); Numpress uses
-  `MS:1002312` (linear), `MS:1002313` (PIC), `MS:1002314` (SLOF).
+  Chunk encoding uses PSI-MS CV terms `MS:1000576` / `MS:1003088` (absolute, no delta) and `MS:1003089`
+  ("truncation, delta prediction and zlib compression"). Delta decoding is **null-aware**: a value following
+  a null breaks the prediction chain and is read as an absolute re-anchor, per the spec's `null_delta_decode`.
+  Numpress uses `MS:1002312` (linear), `MS:1002313` (PIC), `MS:1002314` (SLOF).
 - `spectra_peaks.parquet` is **optional** — it stores centroid peaks separate from profile arrays, allowing
   both to coexist for the same spectrum. The chunked fixture includes secondary centroid peaks for all spectra
   (e.g. spectrum 0 has 1612 centroid peaks alongside its 13589-point profile array).
@@ -241,26 +274,38 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - Scan settings list from the `mzpeak_index.json` manifest (`scanSettingsList`).
 - Random access by index, native id, vendor scan number (Thermo/Waters/Agilent/Bruker/SCIEX), or nearest RT.
 - Streaming reader — only the row groups covering a requested spectrum are decoded; bounded memory.
-- Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and STORED ZIP.
+- Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
+  STORED ZIP, format version `0.9.0`. Round-trips the full metadata schema — derived spectrum columns,
+  precursor activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD)
+  facets, and the imaging `scan_settings_list` — and is gated by the independent `mzpeak-validate` validator.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
-- **543 tests** (JDK 17 + 21 via GitHub Actions CI), including a full corpus gate over 207 HUPO-PSI example
-  `.mzpeak` files; cross-validated against Rust `mzpeak_prototyping` reference test suite and independently
-  verified with pyarrow.
+- **95 test methods across 24 classes** (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
+  (`CorpusTest`, `ValidatedRoundTripTest`, `ForwardBackwardCorpusTest`, enabled with
+  `-Dmzpeak.roundtrip=true`) expand to hundreds of cases over the local HUPO-PSI + vendor corpus
+  (539 `.mzpeak` files); cross-validated against the Rust `mzpeak_prototyping` reference fixtures and
+  independently verified with pyarrow. The forward-backward test reads each corpus file, re-writes it, runs
+  `mzpeak-validate`, and re-reads to assert field-by-field fidelity.
 
 **Deferred / known limitations:**
 
-- **Writing**: chunk/delta layout writing, wavelength spectra writing.
+- **Writing**: the delta-`chunk` layout, `auxiliary_arrays` (overflow non-primary arrays), and multiple
+  scans / precursors / selected ions per spectrum (only the primary is written — the m/z + intensity payload
+  is preserved in full; combineIMS frames lose their secondary mobility-scan metadata).
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
+- **`mz_delta_model` re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
+  the resulting arrays, not the original sparse layout).
 - **Full zip64 EOCD** (per-entry zip64 extra fields are handled; a true zip64 EOCD would be rejected).
 - **Predicate/page-level pushdown** within a row group (whole row groups are skipped by min/max stats, but all pages within a selected group are decoded).
-- **Detail-level loading** (metadata-only vs. full spectrum).
 - No **Maven Central** publication yet.
 
 ## Development
 
-Scaffolded with the GSD workflow harness (`.planning/`). `codex` CLI adversarial reviews were run at each
-phase boundary; findings drove hardening of the zip parser, ZSTD codec, chunk-intensity alignment, param
-union decoding, and facet-join correctness.
+External adversarial reviews (the `codex` and `vibe` CLIs) were run at each phase boundary; findings drove
+hardening of the zip parser, ZSTD codec, the null-aware delta-chunk decoder, boolean param decoding, the
+facet-join, and write↔read fidelity. The `ForwardBackwardCorpusTest` closes the loop end-to-end: it reads
+every corpus file, re-writes it in each layout, validates the output with the independent
+[`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) tool, and re-reads to assert
+field-by-field fidelity, aggregating all findings into `target/forward-backward-report.jsonl`.
 
 Project site: <https://okohlbacher.github.io/mzPeakJ/>
 

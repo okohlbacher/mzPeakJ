@@ -4,8 +4,8 @@ A pure-JVM **Java reader and writer** for [mzPeak](https://www.psidev.info/mzpea
 mass-spectrometry data format built on Apache Parquet, under development by the
 [HUPO-PSI](https://www.psidev.info/).
 
-> **Demonstrator / proof-of-concept.** mzPeakJ is vibe-coded by following the mzPeak reference
-> implementations (primarily the Rust crate
+> **Demonstrator / proof-of-concept.** mzPeakJ is an independent demonstrator that tracks the mzPeak
+> reference implementations (primarily the Rust crate
 > [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping) and the HUPO-PSI
 > [spec + example files](https://github.com/HUPO-PSI/mzPeak)). It is meant for exploration and to show
 > that a clean, dependency-light JVM reader/writer is feasible. mzPeak itself is explicitly an unstable

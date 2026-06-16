@@ -4,8 +4,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
-import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.Polarity;
 import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
@@ -84,17 +85,55 @@ class ParamsRoundTripTest {
                     .findFirst().orElse(null);
         }
 
-        // Write via point layout — activation params are not in the written schema (known gap)
-        // but spectrum-level params ARE now written.  Just verify the round-trip doesn't crash
-        // and the count of items is stable.
         Path out = tmp.resolve("full.mzpeak");
         MzPeakWriter.writeDirectory(out, spectra, chromatograms);
 
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.size()).isEqualTo(48);
-            // activation params live in the activation sub-struct, not yet written back;
-            // just check the activation field doesn't blow up on round-trip read
-            assertThat(r.getMetadata(2).orElseThrow().primaryPrecursor().activation()).isNotNull();
+            // Activation params (dissociation method + collision energy) are now written to the
+            // precursor.activation facet, so the collision energy must round-trip.
+            var activation = r.getMetadata(2).orElseThrow().primaryPrecursor().activation();
+            assertThat(activation).isNotNull();
+            if (originalCollisionEnergy != null) {
+                assertThat(activation.parameters())
+                        .as("collision energy (MS:1000045) round-trips via activation")
+                        .anyMatch(p -> "MS:1000045".equals(p.accession()));
+            }
         }
+    }
+
+    @Test
+    void booleanAndTypedParamsRoundTrip(@TempDir Path tmp) {
+        // A synthetic centroid spectrum carrying params of every value-union arm, including booleans,
+        // which previously decoded through the INT32 path and could not survive a BOOLEAN column.
+        List<Param> params = List.of(
+                new Param("flag on", "MS:9999990", Boolean.TRUE, null),
+                new Param("flag off", "MS:9999991", Boolean.FALSE, null),
+                new Param("count", "MS:9999992", 42L, null),
+                new Param("ratio", "MS:9999993", 1.5, null),
+                new Param("label", "MS:9999994", "abc", null));
+        SpectrumDescription d = new SpectrumDescription(0L, "scan=1", 1, 1.0,
+                Polarity.POSITIVE, SignalContinuity.CENTROID, 1, 0,
+                List.of(), List.of(), params);
+        Spectrum s = new Spectrum(d, new double[] {100.0}, new double[] {5.0}, List.of());
+
+        Path out = tmp.resolve("bool.mzpeak");
+        MzPeakWriter.writeDirectory(out, List.of(s), List.of());
+
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            List<Param> got = r.getMetadata(0).orElseThrow().parameters();
+            assertThat(value(got, "MS:9999990")).isEqualTo(Boolean.TRUE);
+            assertThat(value(got, "MS:9999991")).isEqualTo(Boolean.FALSE);
+            assertThat(value(got, "MS:9999992")).isEqualTo(42L);
+            assertThat(value(got, "MS:9999993")).isEqualTo(1.5);
+            assertThat(value(got, "MS:9999994")).isEqualTo("abc");
+        }
+    }
+
+    private static Object value(List<Param> params, String accession) {
+        return params.stream()
+                .filter(p -> accession.equals(p.accession()))
+                .map(Param::value)
+                .findFirst().orElse(null);
     }
 }

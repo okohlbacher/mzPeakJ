@@ -121,6 +121,12 @@ final class SpectrumMetadataDecoder {
         if (facet != null) {
             Long src = ParquetGroups.optLong(facet, F_SOURCE_INDEX);
             if (src != null) {
+                if (src < 0) {
+                    // uint64 with the high bit set — out of the supported range; a negative key would be
+                    // silently bucketed and never joined to a spectrum. Fail loudly, as for spectrum.index.
+                    throw new MzPeakException(
+                            facetName + ".source_index exceeds supported range (uint64 high bit set): " + src);
+                }
                 target.computeIfAbsent(src, k -> new ArrayList<>()).add(facet);
             }
         }

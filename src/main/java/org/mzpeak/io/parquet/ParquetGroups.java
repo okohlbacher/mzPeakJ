@@ -187,14 +187,18 @@ public final class ParquetGroups {
             Group valueGroup = optGroup(item, "value");
             if (valueGroup != null) {
                 // The value union has four optional arms; pick the first non-null one.
-                // boolean is stored as INT32 (0/1) in the Parquet Group encoding.
                 Long iVal = optLong(valueGroup, "integer");
                 Double fVal = iVal == null ? optDouble(valueGroup, "float") : null;
                 String sVal = (iVal == null && fVal == null) ? optString(valueGroup, "string") : null;
                 Boolean bVal = null;
                 if (iVal == null && fVal == null && sVal == null
                         && has(valueGroup, "boolean") && valueGroup.getType().getType("boolean").isPrimitive()) {
-                    bVal = valueGroup.getInteger("boolean", 0) != 0;
+                    // The reference schema (and this writer) store the boolean arm as a Parquet BOOLEAN; some
+                    // older files used INT32 (0/1). Decode by the column's actual primitive type.
+                    var pt = valueGroup.getType().getType("boolean").asPrimitiveType().getPrimitiveTypeName();
+                    bVal = pt == org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BOOLEAN
+                            ? valueGroup.getBoolean("boolean", 0)
+                            : valueGroup.getInteger("boolean", 0) != 0;
                 }
                 value = iVal != null ? iVal : fVal != null ? fVal : sVal != null ? sVal : bVal;
             }

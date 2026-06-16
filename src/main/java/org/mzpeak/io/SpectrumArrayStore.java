@@ -285,20 +285,41 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
         }
 
-        /** Delta-decode chunk m/z values (NaN preserved as gaps); "no compression" values are absolute. */
+        /**
+         * Decode chunk m/z values parallel to {@code values} (NaN preserved as gaps).
+         *
+         * <p>"No compression" encodings ({@code MS:1000576}) and "truncation + zlib" ({@code MS:1003088})
+         * store absolute coordinates — emitted as-is. Delta-prediction ({@code MS:1003089}) stores deltas
+         * relative to a running predictor seeded at {@code chunk_start}, but a {@code null} (NaN) breaks the
+         * prediction chain: the next non-null value is then <em>absolute</em>, not a delta. This mirrors the
+         * spec's {@code null_delta_decode} reference algorithm (chunked-layout, "Delta encoding"). Treating a
+         * post-null value as a delta (the previous behaviour) double-counted absolute re-anchors and produced
+         * non-monotonic, out-of-range m/z.
+         */
         private static double[] decodeChunkMz(double[] values, double start, String encoding) {
-            boolean noCompression = encoding != null && encoding.contains("1003088");
+            boolean noDelta = encoding != null
+                    && (encoding.contains("1003088") || encoding.contains("1000576"));
             double[] out = new double[values.length];
-            double acc = start;
+            if (noDelta) {
+                System.arraycopy(values, 0, out, 0, values.length); // absolute; NaN stays NaN
+                return out;
+            }
+            // Null-aware delta decode: `last` is the previous emitted m/z; `lastValid` is false right after a
+            // null, which forces the next value to be read as an absolute re-anchor (predictor reset).
+            double last = start;
+            boolean lastValid = true;
             for (int i = 0; i < values.length; i++) {
                 double v = values[i];
                 if (Double.isNaN(v)) {
-                    out[i] = Double.NaN; // gap; accumulator unchanged
-                } else if (noCompression) {
-                    out[i] = v;
+                    out[i] = Double.NaN;   // gap; breaks the delta chain
+                    lastValid = false;
+                } else if (lastValid) {
+                    last += v;             // delta from the running predictor
+                    out[i] = last;
                 } else {
-                    acc += v;
-                    out[i] = acc;
+                    last = v;              // absolute re-anchor after a null
+                    out[i] = last;
+                    lastValid = true;
                 }
             }
             return out;
