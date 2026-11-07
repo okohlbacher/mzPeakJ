@@ -21,6 +21,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Corpus smoke-test: opens every {@code .mzpeak} file found under the corpus root (and its
@@ -41,7 +42,9 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  *
  * <p>For a quick check without the external corpus, point the property at a symlink to the vendored legacy set,
  * {@link Fixtures#LEGACY} ({@code src/test/resources/mzpeak-legacy}). The current upstream set in
- * {@link Fixtures#CURRENT} is no substitute: the reader lists no spectra from it yet, so the tests pass vacuously.
+ * {@link Fixtures#CURRENT} now yields spectra (RD-5) and chromatograms (RD-8), so a run on it is no longer vacuous;
+ * its wavelength-spectrum metadata waits for RD-9, and diaPASEF.grid, whose signal is grid-encoded, fails until RD-20
+ * lands. The named cases below need their hard-coded corpus files and are skipped (not passed) when those are absent.
  *
  * <p>Coverage of this corpus:
  * <ul>
@@ -210,9 +213,9 @@ class CorpusTest {
 
     @Test
     void imagingFile_hasPixelCoordinates() {
-        if (!Files.isDirectory(CORPUS_ROOT)) return;
+        assumeTrue(Files.isDirectory(CORPUS_ROOT), "corpus root " + CORPUS_ROOT + " is not a directory");
         Path imaging = CORPUS_ROOT.resolve("mzpeak/example1-processed_Example_Processed.mzpeak");
-        if (!Files.exists(imaging)) return;
+        assumeTrue(Files.exists(imaging), imaging + " not in corpus");
 
         try (MzPeakReader r = MzPeakReader.open(imaging)) {
             assertThat(r.isImaging()).as("is_imaging flag").isTrue();
@@ -237,9 +240,9 @@ class CorpusTest {
 
     @Test
     void desiFIle_hasScanSettings() {
-        if (!Files.isDirectory(CORPUS_ROOT)) return;
+        assumeTrue(Files.isDirectory(CORPUS_ROOT), "corpus root " + CORPUS_ROOT + " is not a directory");
         Path desi = CORPUS_ROOT.resolve("mzpeak/zenodo-DESI_40TopL_10TopR_30BottomL_20BottomR.mzpeak");
-        if (!Files.exists(desi)) return;
+        assumeTrue(Files.exists(desi), desi + " not in corpus");
 
         try (MzPeakReader r = MzPeakReader.open(desi)) {
             assertThat(r.isImaging()).as("DESI is imaging").isTrue();
@@ -256,9 +259,9 @@ class CorpusTest {
 
     @Test
     void desiImaging_allSpectraHavePixelCoordinates() {
-        if (!Files.isDirectory(CORPUS_ROOT)) return;
+        assumeTrue(Files.isDirectory(CORPUS_ROOT), "corpus root " + CORPUS_ROOT + " is not a directory");
         Path desi = CORPUS_ROOT.resolve("mzpeak/zenodo-DESI_40TopL_10TopR_30BottomL_20BottomR.mzpeak");
-        if (!Files.exists(desi)) return;
+        assumeTrue(Files.exists(desi), desi + " not in corpus");
 
         try (MzPeakReader r = MzPeakReader.open(desi)) {
             long total = r.size();
@@ -275,9 +278,9 @@ class CorpusTest {
 
     @Test
     void timstof_hasIonMobility() {
-        if (!Files.isDirectory(CORPUS_ROOT)) return;
+        assumeTrue(Files.isDirectory(CORPUS_ROOT), "corpus root " + CORPUS_ROOT + " is not a directory");
         Path tof = CORPUS_ROOT.resolve("mzpeak/bruker-timstof-pro_SBA415.mzpeak");
-        if (!Files.exists(tof)) return;
+        assumeTrue(Files.exists(tof), tof + " not in corpus");
 
         try (MzPeakReader r = MzPeakReader.open(tof)) {
             assertThat(r.size()).isGreaterThan(0);
@@ -297,9 +300,9 @@ class CorpusTest {
 
     @Test
     void dtims_hasIonMobilityValues() {
-        if (!Files.isDirectory(CORPUS_ROOT)) return;
+        assumeTrue(Files.isDirectory(CORPUS_ROOT), "corpus root " + CORPUS_ROOT + " is not a directory");
         Path dtims = CORPUS_ROOT.resolve("mzpeak/agilent-6560-dtims-imqtof_CEMS_10ppm.mzpeak");
-        if (!Files.exists(dtims)) return;
+        assumeTrue(Files.exists(dtims), dtims + " not in corpus");
 
         try (MzPeakReader r = MzPeakReader.open(dtims)) {
             long withIM = r.metadata().stream()
@@ -319,9 +322,9 @@ class CorpusTest {
 
     @Test
     void scanSettings_pixelSizeAccessors() {
-        if (!Files.isDirectory(CORPUS_ROOT)) return;
+        assumeTrue(Files.isDirectory(CORPUS_ROOT), "corpus root " + CORPUS_ROOT + " is not a directory");
         Path desi = CORPUS_ROOT.resolve("mzpeak/zenodo-DESI_40TopL_10TopR_30BottomL_20BottomR.mzpeak");
-        if (!Files.exists(desi)) return;
+        assumeTrue(Files.exists(desi), desi + " not in corpus");
 
         try (MzPeakReader r = MzPeakReader.open(desi)) {
             List<ScanSettings> ss = r.scanSettings();
