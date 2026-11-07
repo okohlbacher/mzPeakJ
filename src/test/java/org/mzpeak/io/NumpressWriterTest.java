@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.within;
  */
 class NumpressWriterTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
 
     @Test
     void numpressDirectoryRoundTrip(@TempDir Path tmp) {

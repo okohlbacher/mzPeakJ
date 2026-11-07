@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.within;
  */
 class NumpressPicTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
 
     @Test
     void roundTripWithPicEncoding(@TempDir Path tmp) {

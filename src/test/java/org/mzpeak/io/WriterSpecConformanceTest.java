@@ -39,9 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class WriterSpecConformanceTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-    private static final Path UNPACKED = Path.of(BASE + "small.unpacked.mzpeak");
-    private static final Path HAS_UV = Path.of(BASE + "has_uv.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path HAS_UV = Fixtures.legacy("has_uv.mzpeak");
 
     private static final LogicalTypeAnnotation UINT64 = LogicalTypeAnnotation.intType(64, false);
     private static final ObjectMapper MAPPER = new ObjectMapper();

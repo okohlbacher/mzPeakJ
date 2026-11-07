@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.within;
  */
 class ActivationParamsTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
 
     @Test
     void decodesActivationMethodAndEnergy() {
@@ -58,7 +58,7 @@ class ActivationParamsTest {
     @Test
     void activationReadFromPackedZip() {
         try (MzPeakReader reader = MzPeakReader.open(
-                Path.of("src/test/resources/mzpeak/small.mzpeak"))) {
+                Fixtures.legacy("small.mzpeak"))) {
             Activation act = reader.getMetadata(2).orElseThrow()
                     .primaryPrecursor().activation();
             assertThat(act.collisionEnergy().getAsDouble()).isCloseTo(35.0, within(1e-3));

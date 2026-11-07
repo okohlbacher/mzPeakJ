@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.within;
 /** Round-trips the vendored fixture through the writer: read -> write -> read back, to a dir and a ZIP. */
 class MzPeakWriterTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
 
     private record Loaded(List<Spectrum> spectra, List<Chromatogram> chromatograms) {
     }

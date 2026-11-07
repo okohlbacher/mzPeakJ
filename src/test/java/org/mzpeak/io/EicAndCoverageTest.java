@@ -25,10 +25,9 @@ import static org.assertj.core.api.Assertions.within;
  */
 class EicAndCoverageTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-    private static final Path UNPACKED = Path.of(BASE + "small.unpacked.mzpeak");
-    private static final Path PACKED   = Path.of(BASE + "small.mzpeak");
-    private static final Path CHUNKED  = Path.of(BASE + "small.chunked.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path PACKED   = Fixtures.legacy("small.mzpeak");
+    private static final Path CHUNKED  = Fixtures.legacy("small.chunked.mzpeak");
 
     // ---- Rust test_eic: MSn centroid peaks in m/z 800..820, RT 0.3..0.4 = 96 ----------
 
@@ -37,7 +36,7 @@ class EicAndCoverageTest {
     void eic_msnCentroidPeaksInRange_96(String fixture) {
         // Rust: query_peaks(RT 0.3..0.4, m/z 800..820, ms_level 2..10) → k == 96
         // All MSn spectra in this RT range are centroided, so centroid peaks serve as the EIC.
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             int total = 0;
             for (Spectrum s : r) {
                 double rt = s.description().retentionTime();
@@ -55,7 +54,7 @@ class EicAndCoverageTest {
     void eic_profileRawPointsInRange_562(String fixture) {
         // Rust: extract_signal(RT 0.3..0.4, m/z 800..820) → k == 563 (drops null points)
         // With reconstructProfile=false, only stored non-null points are returned → 562.
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture), false)) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture), false)) {
             int total = 0;
             for (Spectrum s : r) {
                 double rt = s.description().retentionTime();
@@ -104,7 +103,7 @@ class EicAndCoverageTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak"})
     void manifest_hasSpectrumPeaksEntry(String fixture) {
         // Rust: index.iter().find(|e| e.archive_type() == SpectrumPeakDataArrays).is_some()
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             Optional<MzPeakManifest.Entry> peaksEntry = r.manifest().find("spectrum", "peaks");
             assertThat(peaksEntry).isPresent();
         }
@@ -129,7 +128,7 @@ class EicAndCoverageTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void iterator_producesSpectraInAscendingIndexOrder(String fixture) {
         // Python: for i in range(n): spec = next(it); assert spec['index'] == i
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             int expected = 0;
             for (Spectrum s : r) {
                 assertThat(s.description().index()).isEqualTo((long) expected);
@@ -146,7 +145,7 @@ class EicAndCoverageTest {
     void rtRangeSlice_0_3to0_4_returns9Spectra(String fixture) {
         // Python: idx_slc = reader.time.resolve(slice(0.3, 0.4)); len(chunks) == (stop - start)
         // Verified: indices 30..38 inclusive, 9 spectra
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             List<Spectrum> inRange = new ArrayList<>();
             for (Spectrum s : r) {
                 double rt = s.description().retentionTime();

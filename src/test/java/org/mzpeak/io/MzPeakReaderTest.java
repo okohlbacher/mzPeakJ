@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.within;
 class MzPeakReaderTest {
 
     private static final Path FIXTURE =
-            Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+            Fixtures.legacy("small.unpacked.mzpeak");
 
     @Test
     void listsAllSpectraWithCorrectMsLevels() {

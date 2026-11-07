@@ -20,9 +20,8 @@ import static org.assertj.core.api.Assertions.within;
  */
 class ProfileReconstructionGroundTruthTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-    private static final Path UNPACKED = Path.of(BASE + "small.unpacked.mzpeak");
-    private static final Path NUMPRESS = Path.of(BASE + "small.numpress.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path NUMPRESS = Fixtures.legacy("small.numpress.mzpeak");
 
     /** Spectrum index to number of null-marked points, from small.unpacked with and without reconstruction. */
     private static final Map<Long, Integer> NULL_MARKED = new TreeMap<>();
@@ -51,7 +50,7 @@ class ProfileReconstructionGroundTruthTest {
         int offBy1e3 = 0;
         double maxDeviation = 0;
         String firstOff = null;
-        try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + fixture), true);
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy(fixture), true);
              MzPeakReader truth = MzPeakReader.open(NUMPRESS)) {
             for (long index : NULL_MARKED.keySet()) {
                 double[] mz = reader.getSpectrum(index).orElseThrow().mz();

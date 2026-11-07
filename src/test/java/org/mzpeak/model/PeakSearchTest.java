@@ -2,9 +2,9 @@ package org.mzpeak.model;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakReader;
 
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,7 +22,7 @@ class PeakSearchTest {
     @BeforeAll
     static void load() {
         try (MzPeakReader reader = MzPeakReader.open(
-                Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak"))) {
+                Fixtures.legacy("small.unpacked.mzpeak"))) {
             centroidSpectrum = reader.getSpectrum(5).orElseThrow();  // MS2 centroid, 650 peaks
             profileSpectrum = reader.getSpectrum(0).orElseThrow();   // MS1 profile, no centroid peaks
         }

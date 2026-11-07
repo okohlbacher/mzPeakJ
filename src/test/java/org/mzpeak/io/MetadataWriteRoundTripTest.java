@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Reads the fixture's footer metadata, writes it back out, and verifies it round-trips. */
 class MetadataWriteRoundTripTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.mzpeak");
 
     @Test
     void footerMetadataRoundTrips(@TempDir Path tmp) {
