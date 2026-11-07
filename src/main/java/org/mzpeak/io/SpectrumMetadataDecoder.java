@@ -66,10 +66,20 @@ final class SpectrumMetadataDecoder {
     private static final String F_CHARGE = "MS_1000041_charge_state";
     private static final String F_SELECTED_INTENSITY = "MS_1000042_intensity_unit_MS_1000131";
 
+    /** Names the member in error messages, by its manifest role. */
+    private static final String MEMBER = "spectrum metadata member";
+
     private SpectrumMetadataDecoder() {
     }
 
     static Decoded decode(InputFile metadataFile) {
+        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "spectrum", F_INDEX, MEMBER);
+        if (shape == MetadataShape.SPLIT) {
+            throw new MzPeakException(MEMBER + ": split metadata layout not supported yet");
+        }
+        if (shape == MetadataShape.EMPTY) {
+            return new Decoded(new ArrayList<>(), new HashMap<>());
+        }
         Map<Long, Builder> builders = new LinkedHashMap<>();
         Map<Long, List<Group>> scansBySource = new HashMap<>();
         Map<Long, List<Group>> precursorsBySource = new HashMap<>();

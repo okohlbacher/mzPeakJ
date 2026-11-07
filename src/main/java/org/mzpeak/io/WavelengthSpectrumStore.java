@@ -24,6 +24,9 @@ final class WavelengthSpectrumStore {
     private static final String F_WL_INDEX = "wavelength_spectrum_index";
     private static final String F_WAVELENGTH = "wavelength";
 
+    /** Names the member in error messages, by its manifest role. */
+    private static final String MEMBER = "wavelength spectrum metadata member";
+
     private final List<WavelengthSpectrum> all;
     private final Map<Long, WavelengthSpectrum> byIndex;
 
@@ -44,6 +47,13 @@ final class WavelengthSpectrumStore {
     }
 
     static WavelengthSpectrumStore load(InputFile metadataFile, InputFile dataFile) {
+        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "spectrum", F_INDEX, MEMBER);
+        if (shape == MetadataShape.SPLIT) {
+            throw new MzPeakException(MEMBER + ": split metadata layout not supported yet");
+        }
+        if (shape == MetadataShape.EMPTY) {
+            return new WavelengthSpectrumStore(List.of());
+        }
         // metadata: index -> (id, time, lambdaMax), in encounter order
         Map<Long, Object[]> meta = new LinkedHashMap<>();
         List<Long> order = new ArrayList<>();
