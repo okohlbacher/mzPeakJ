@@ -90,7 +90,8 @@ class CorpusTest {
      * <p>The walk starts at the root's real path, so a symlinked root is followed; links below the
      * root are listed but not descended into. Each hit is mapped back onto {@link #CORPUS_ROOT}, so
      * display names keep the configured path, and a root that is itself a {@code .mzpeak} dataset is
-     * returned as {@link #CORPUS_ROOT}.
+     * returned as {@link #CORPUS_ROOT}. A symlinked root counts as a dataset when either the link
+     * name or its target name ends in {@code .mzpeak}.
      */
     static Stream<Path> corpusFiles() throws IOException {
         if (!Files.isDirectory(CORPUS_ROOT)) {
@@ -100,16 +101,23 @@ class CorpusTest {
         List<Path> found = new ArrayList<>();
         try (var walk = Files.walk(real)) {
             walk.forEach(p -> {
-                String name = p.getFileName().toString();
-                if (name.endsWith(".mzpeak")) {
+                Path mapped = CORPUS_ROOT.resolve(real.relativize(p));
+                // Below the root both names agree; at the root either the link or its target may
+                // carry the .mzpeak suffix.
+                if (hasMzPeakName(p) || hasMzPeakName(mapped)) {
                     boolean isDir = Files.isDirectory(p);
                     boolean isFile = Files.isRegularFile(p);
-                    if (isDir || isFile) found.add(CORPUS_ROOT.resolve(real.relativize(p)));
+                    if (isDir || isFile) found.add(mapped);
                 }
             });
         }
         found.sort(null);
         return orSentinel(found);
+    }
+
+    private static boolean hasMzPeakName(Path p) {
+        Path name = p.getFileName();
+        return name != null && name.toString().endsWith(".mzpeak");
     }
 
     // ---- parameterized open + metadata test -----------------------------------------------
