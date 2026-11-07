@@ -1,0 +1,341 @@
+package org.mzpeak.io;
+
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.SimpleGroupFactory;
+import org.apache.parquet.hadoop.ParquetWriter;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.apache.parquet.schema.Types;
+import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
+import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.SignalContinuity;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+import java.util.OptionalDouble;
+
+import static org.mzpeak.io.ParquetOutput.UINT64;
+import static org.mzpeak.io.ParquetOutput.openWriter;
+import static org.mzpeak.io.ParquetOutput.paramListField;
+import static org.mzpeak.io.ParquetOutput.scanWindowListField;
+import static org.mzpeak.io.ParquetOutput.writeParams;
+import static org.mzpeak.io.SpectrumSummary.peakRows;
+import static org.mzpeak.io.SpectrumSummary.profileRows;
+import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
+
+/**
+ * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
+ * spectrum, primary scan, primary precursor and primary selected-ion facets, and one chromatograms_metadata and
+ * wavelength_spectra_metadata row per chromatogram and wavelength spectrum.
+ */
+final class PackedMetadataWriter {
+
+    private static final MessageType METADATA_SCHEMA = Types.buildMessage()
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("index")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
+                    .optional(PrimitiveTypeName.INT32).named("MS_1000511_ms_level")
+                    .optional(PrimitiveTypeName.DOUBLE).named("time")
+                    .optional(PrimitiveTypeName.INT32).named("MS_1000465_scan_polarity")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named("MS_1000525_spectrum_representation")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named("MS_1000559_spectrum_type")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000528_lowest_observed_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000527_highest_observed_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000504_base_peak_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000505_base_peak_intensity_unit_MS_1000131")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000285_total_ion_current_unit_MS_1000131")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003059_number_of_peaks")
+                    .addField(paramListField())
+                    .named("spectrum"))
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("scan_index")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000016_scan_start_time_unit_UO_0000031")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000927_ion_injection_time_unit_UO_0000028")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("MS_1000512_filter_string")
+                    .optional(PrimitiveTypeName.INT32).named("MS_1000616_preset_scan_configuration")
+                    .optional(PrimitiveTypeName.INT32).named("instrument_configuration_ref")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("spectrum_reference")
+                    .optional(PrimitiveTypeName.DOUBLE).named("ion_mobility_value")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("ion_mobility_type")
+                    .optional(PrimitiveTypeName.INT32).named("IMS_1000050_position_x")
+                    .optional(PrimitiveTypeName.INT32).named("IMS_1000051_position_y")
+                    .addField(scanWindowListField())
+                    .addField(paramListField())
+                    .named("scan"))
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("precursor_index")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("precursor_id")
+                    .optionalGroup()
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000827_isolation_window_target_mz")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000828_isolation_window_lower_offset")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000829_isolation_window_upper_offset")
+                    .named("isolation_window")
+                    .addField(Types.optionalGroup().addField(paramListField()).named("activation"))
+                    .named("precursor"))
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000744_selected_ion_mz_unit_MS_1000040")
+                    .optional(PrimitiveTypeName.INT32).named("MS_1000041_charge_state")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1000042_intensity_unit_MS_1000131")
+                    .addField(paramListField())
+                    .named("selected_ion"))
+            .named("spectrum_metadata");
+
+    /** Wavelength (UV/DAD) metadata schema — minimal spectrum facet read by {@link WavelengthSpectrumStore}. */
+    private static final MessageType WAVELENGTH_META_SCHEMA = Types.buildMessage()
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("index")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
+                    .optional(PrimitiveTypeName.DOUBLE).named("time")
+                    .optional(PrimitiveTypeName.DOUBLE).named("MS_1003812_lambda_max_unit_UO:0000018")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
+                    .named("spectrum"))
+            .named("wavelength_spectra_metadata");
+
+    private static final MessageType CHROM_META_SCHEMA = Types.buildMessage()
+            .addField(Types.optionalGroup()
+                    .required(PrimitiveTypeName.INT64).as(UINT64).named("index")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named("MS_1000626_chromatogram_type")
+                    .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
+                    .named("chromatogram"))
+            .named("chromatogram_metadata");
+
+    private PackedMetadataWriter() {
+    }
+
+    static void writeSpectrumMetadata(Path file, List<Spectrum> spectra,
+                                      Map<String, String> footer) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
+        long scanIndexCounter = 0;
+        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, footer)) {
+            for (Spectrum s : spectra) {
+                SpectrumDescription d = s.description();
+                Group row = factory.newGroup();
+
+                Group spectrum = row.addGroup("spectrum");
+                spectrum.add("index", d.index());
+                if (d.id() != null) {
+                    spectrum.add("id", d.id());
+                }
+                spectrum.add("MS_1000511_ms_level", d.msLevel());
+                if (Double.isFinite(d.retentionTime())) {
+                    spectrum.add("time", d.retentionTime());
+                }
+                Integer polarity = polarityCode(d);
+                if (polarity != null) {
+                    spectrum.add("MS_1000465_scan_polarity", polarity);
+                }
+                spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
+                spectrum.add("MS_1000559_spectrum_type", d.msLevel() > 1 ? "MS:1000580" : "MS:1000579");
+                writeDerivedColumns(spectrum, s);
+                // Declare each facet's count independently; a spectrum may carry profile points AND a
+                // centroid peak list (both facets), so both counts can be present.
+                int profileRows = profileRows(s);
+                int peakRows = peakRows(s);
+                if (profileRows > 0) {
+                    spectrum.add("MS_1003060_number_of_data_points", (long) profileRows);
+                }
+                if (peakRows > 0) {
+                    spectrum.add("MS_1003059_number_of_peaks", (long) peakRows);
+                }
+                writeParams(spectrum, d.parameters());
+
+                ScanEvent firstScan = d.scans().isEmpty() ? null : d.scans().get(0);
+                populateScan(row.addGroup("scan"), d.index(), scanIndexCounter++, d.retentionTime(), firstScan);
+
+                writePrecursor(row, d);
+                writer.write(row);
+                // NOTE: multiple scans / selected ions per spectrum (e.g. Bruker PASEF combineIMS frames carry
+                // ~25 mobility scans) are NOT yet written as additional packed-facet rows — only the primary
+                // scan and selected ion are emitted. The m/z + intensity payload is preserved in full; the
+                // forward-backward test surfaces the dropped secondary records via its scans/precursors/ion
+                // count checks. Packed multi-facet writing is a deferred enhancement.
+            }
+        }
+    }
+
+    /** Populate a {@code scan} facet group. {@code se} may be {@code null} for a spectrum with no scan events. */
+    private static void populateScan(Group scan, long sourceIndex, long scanIndex, double rtFallback, ScanEvent se) {
+        scan.add("source_index", sourceIndex);
+        scan.add("scan_index", scanIndex);
+        double rt = (se != null && Double.isFinite(se.startTime())) ? se.startTime() : rtFallback;
+        if (Double.isFinite(rt)) {
+            scan.add("MS_1000016_scan_start_time_unit_UO_0000031", rt);
+        }
+        if (se == null) {
+            return;
+        }
+        if (se.injectionTime() != null) {
+            scan.add("MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
+        }
+        if (se.filterString() != null) {
+            scan.add("MS_1000512_filter_string", se.filterString());
+        }
+        if (se.presetScanConfiguration() != null) {
+            scan.add("MS_1000616_preset_scan_configuration", se.presetScanConfiguration());
+        }
+        if (se.instrumentConfigurationRef() != null) {
+            scan.add("instrument_configuration_ref", se.instrumentConfigurationRef());
+        }
+        if (se.spectrumReference() != null) {
+            scan.add("spectrum_reference", se.spectrumReference());
+        }
+        // Typed ion-mobility columns (also kept in params; the reader prefers params on read, so there is
+        // no duplication — the typed columns satisfy reference/validator parity).
+        OptionalDouble im = se.ionMobilityValue();
+        if (im.isPresent()) {
+            scan.add("ion_mobility_value", im.getAsDouble());
+            String imType = se.ionMobilityType();
+            if (imType != null) {
+                scan.add("ion_mobility_type", imType);
+            }
+        }
+        // Typed imaging-position columns (required by the validator for imaging archives, which also checks
+        // they are 1-based). Value preserved in params for round-trip.
+        var pos = se.imagingPosition();
+        if (pos != null) {
+            scan.add("IMS_1000050_position_x", pos.x());
+            scan.add("IMS_1000051_position_y", pos.y());
+        }
+        writeScanWindows(scan, se.scanWindows());
+        writeParams(scan, se.parameters());
+    }
+
+    private static void writeScanWindows(Group scan, List<ScanWindow> windows) {
+        if (windows == null || windows.isEmpty()) {
+            return;
+        }
+        Group wrapper = scan.addGroup("scan_windows");
+        for (ScanWindow w : windows) {
+            Group item = wrapper.addGroup("list").addGroup("item");
+            item.add("MS_1000501_scan_window_lower_limit_unit_MS_1000040", w.lowerLimit());
+            item.add("MS_1000500_scan_window_upper_limit_unit_MS_1000040", w.upperLimit());
+        }
+    }
+
+    private static void writePrecursor(Group row, SpectrumDescription d) {
+        Precursor precursor = d.primaryPrecursor();
+        if (precursor == null) {
+            return;
+        }
+        Group p = row.addGroup("precursor");
+        p.add("source_index", d.index());
+        if (precursor.precursorIndex() != null) {
+            p.add("precursor_index", precursor.precursorIndex());
+        }
+        if (precursor.precursorId() != null) {
+            p.add("precursor_id", precursor.precursorId());
+        }
+        if (precursor.isolationWindow() != null && hasAnyWindowValue(precursor)) {
+            Group iso = p.addGroup("isolation_window");
+            addIfPresent(iso, "MS_1000827_isolation_window_target_mz", precursor.isolationWindow().targetMz());
+            addIfPresent(iso, "MS_1000828_isolation_window_lower_offset", precursor.isolationWindow().lowerOffset());
+            addIfPresent(iso, "MS_1000829_isolation_window_upper_offset", precursor.isolationWindow().upperOffset());
+        }
+        // Precursor activation (dissociation method + collision energy). Round-trips via the reader's
+        // Precursor.activation(); previously dropped entirely on write.
+        if (precursor.activation() != null && !precursor.activation().isEmpty()) {
+            Group activation = p.addGroup("activation");
+            writeParams(activation, precursor.activation().parameters());
+        }
+        SelectedIon ion = precursor.primaryIon();
+        if (ion != null) {
+            writeSelectedIon(row.addGroup("selected_ion"), d.index(), ion);
+        }
+    }
+
+    /** Populate a {@code selected_ion} facet group. */
+    private static void writeSelectedIon(Group si, long sourceIndex, SelectedIon ion) {
+        si.add("source_index", sourceIndex);
+        si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
+        if (ion.charge() != null) {
+            si.add("MS_1000041_charge_state", ion.charge());
+        }
+        addIfPresent(si, "MS_1000042_intensity_unit_MS_1000131", ion.intensity());
+        writeParams(si, ion.parameters());
+    }
+
+    static void writeChromatogramMetadata(Path file, List<Chromatogram> chromatograms) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_META_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, CHROM_META_SCHEMA)) {
+            for (Chromatogram c : chromatograms) {
+                Group row = factory.newGroup();
+                Group chrom = row.addGroup("chromatogram");
+                chrom.add("index", c.index());
+                if (c.id() != null) {
+                    chrom.add("id", c.id());
+                }
+                if (c.typeCurie() != null) {
+                    chrom.add("MS_1000626_chromatogram_type", c.typeCurie());
+                }
+                chrom.add("MS_1003060_number_of_data_points", (long) c.size());
+                writer.write(row);
+            }
+        }
+    }
+
+    static void writeWavelengthMetadata(Path file, List<WavelengthSpectrum> spectra) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_META_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_META_SCHEMA)) {
+            for (WavelengthSpectrum w : spectra) {
+                Group row = factory.newGroup();
+                Group s = row.addGroup("spectrum");
+                s.add("index", w.index());
+                if (w.id() != null) {
+                    s.add("id", w.id());
+                }
+                if (Double.isFinite(w.time())) {
+                    s.add("time", w.time());
+                }
+                if (w.lambdaMax() != null) {
+                    s.add("MS_1003812_lambda_max_unit_UO:0000018", w.lambdaMax());
+                }
+                s.add("MS_1003060_number_of_data_points", (long) w.size());
+                writer.write(row);
+            }
+        }
+    }
+
+    private static boolean hasAnyWindowValue(Precursor p) {
+        return p.isolationWindow().targetMz() != null
+                || p.isolationWindow().lowerOffset() != null
+                || p.isolationWindow().upperOffset() != null;
+    }
+
+    private static void addIfPresent(Group group, String field, Double value) {
+        if (value != null) {
+            group.add(field, value);
+        }
+    }
+
+    private static Integer polarityCode(SpectrumDescription d) {
+        if (d.polarity() == null) {
+            return null;
+        }
+        return switch (d.polarity()) {
+            case POSITIVE -> 1;
+            case NEGATIVE -> -1;
+            case UNKNOWN -> null;
+        };
+    }
+
+    private static String continuityCurie(SpectrumDescription d) {
+        return d.signalContinuity() == SignalContinuity.CENTROID ? "MS:1000127" : "MS:1000128";
+    }
+}
