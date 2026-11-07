@@ -280,7 +280,9 @@ class SplitSpectrumMetadataTest {
 
     /**
      * Current and legacy small.unpacked hold the same 48 spectra. The legacy scan start time is a float32 column,
-     * so it equals the current double rounded to float. Activation is not compared; RD-7 decodes it.
+     * so it equals the current double rounded to float. Activation is not compared; RD-7 decodes it. The current
+     * spectrum Params continue the legacy ones with the split leftovers (RD-6, pinned by SplitLeftoversTest), which
+     * the packed layout does not have.
      */
     @Test
     void currentSmallUnpackedDescribesItsSpectraLikeTheLegacyPackedOne() {
@@ -294,7 +296,15 @@ class SplitSpectrumMetadataTest {
                 Spectrum l = legacy.getSpectrumAt(i);
                 SpectrumDescription cd = c.description();
                 SpectrumDescription ld = l.description();
-                assertThat(header(cd)).as("spectrum %d", ld.index()).isEqualTo(header(ld));
+                List<Object> currentHeader = header(cd);
+                List<Object> legacyHeader = header(ld);
+                int params = currentHeader.size() - 1;
+                assertThat(currentHeader.subList(0, params)).as("spectrum %d", ld.index())
+                        .isEqualTo(legacyHeader.subList(0, params));
+                assertThat(cd.parameters()).as("spectrum %d parameters", ld.index())
+                        .hasSizeGreaterThan(ld.parameters().size());
+                assertThat(cd.parameters().subList(0, ld.parameters().size())).as("spectrum %d parameters", ld.index())
+                        .isEqualTo(ld.parameters());
 
                 assertThat(cd.scans()).hasSameSizeAs(ld.scans()).isNotEmpty();
                 for (int k = 0; k < ld.scans().size(); k++) {

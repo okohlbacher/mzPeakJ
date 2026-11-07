@@ -6,7 +6,9 @@ import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** Decodes one scan row of the spectrum metadata into a {@link ScanEvent}; columns are resolved by accession. */
 final class ScanRowDecoder {
@@ -22,6 +24,9 @@ final class ScanRowDecoder {
     private static final String F_SCAN_WINDOWS = "scan_windows";
     private static final String WINDOW_LOWER = "MS:1000501";
     private static final String WINDOW_UPPER = "MS:1000500";
+    /** The typed ion mobility columns, which {@link IonMobilityParams} reads. */
+    private static final String F_ION_MOBILITY_VALUE = "ion_mobility_value";
+    private static final String F_ION_MOBILITY_TYPE = "ion_mobility_type";
 
     // MSI imaging position (newer files promote these from the params to typed columns)
     private static final String POSITION_X = "IMS:1000050";
@@ -30,17 +35,23 @@ final class ScanRowDecoder {
     private ScanRowDecoder() {
     }
 
-    /** Decodes one scan row. */
+    /**
+     * Decodes one scan row. Its Params are the {@code parameters} list, then the typed ion mobility
+     * ({@link IonMobilityParams}), then the imaging positions the list lacks, then the scope's leftovers
+     * ({@link ColumnResolver#leftovers}, split layout only). The typed ion mobility and position columns count as
+     * consumed whether or not they were added, so none of them appears twice.
+     */
     static ScanEvent decode(FacetRow scan) {
         ColumnResolver columns = scan.columns();
         Group g = scan.group();
-        Double start = columns.doubleValue(g, columns.resolve(SCAN_START_TIME));
-        Double injection = columns.doubleValue(g, columns.resolve(ION_INJECTION_TIME));
-        String filter = columns.stringValue(g, columns.resolve(FILTER_STRING));
-        Integer presetScan = columns.intValue(g, columns.resolve(PRESET_SCAN_CONFIGURATION));
-        Integer instrConfigRef = columns.intValue(g,
-                columns.resolveName(F_INSTRUMENT_CONFIGURATION_ID, F_INSTRUMENT_CONFIG_REF));
-        String specRef = columns.stringValue(g, columns.resolveName(F_SPECTRUM_REFERENCE));
+        Set<String> consumed = new HashSet<>();
+        Double start = columns.doubleValue(g, consume(consumed, columns.resolve(SCAN_START_TIME)));
+        Double injection = columns.doubleValue(g, consume(consumed, columns.resolve(ION_INJECTION_TIME)));
+        String filter = columns.stringValue(g, consume(consumed, columns.resolve(FILTER_STRING)));
+        Integer presetScan = columns.intValue(g, consume(consumed, columns.resolve(PRESET_SCAN_CONFIGURATION)));
+        Integer instrConfigRef = columns.intValue(g, consume(consumed,
+                columns.resolveName(F_INSTRUMENT_CONFIGURATION_ID, F_INSTRUMENT_CONFIG_REF)));
+        String specRef = columns.stringValue(g, consume(consumed, columns.resolveName(F_SPECTRUM_REFERENCE)));
 
         List<ScanWindow> windows = buildScanWindows(scan);
         List<Param> declared = columns.params(g);
@@ -50,6 +61,16 @@ final class ScanRowDecoder {
         // uniformly regardless of file generation.
         List<Param> scanParams = IonMobilityParams.withTypedIonMobility(scan, declared);
         scanParams = withPositions(scan, declared, scanParams);
+
+        consumed.add(F_ION_MOBILITY_VALUE);
+        consumed.add(F_ION_MOBILITY_TYPE);
+        consume(consumed, columns.resolve(POSITION_X));
+        consume(consumed, columns.resolve(POSITION_Y));
+        List<Param> leftovers = columns.leftovers(g, consumed);
+        if (!leftovers.isEmpty()) {
+            scanParams = new ArrayList<>(scanParams);
+            scanParams.addAll(leftovers);
+        }
 
         return new ScanEvent(start == null ? Double.NaN : start, injection, filter,
                 presetScan, instrConfigRef, specRef, windows, scanParams);
@@ -99,5 +120,13 @@ final class ScanRowDecoder {
             }
         }
         return extra != null ? extra : params;
+    }
+
+    /** Adds the resolved {@code field}, unless {@code null}, to {@code consumed}, and returns it. */
+    private static String consume(Set<String> consumed, String field) {
+        if (field != null) {
+            consumed.add(field);
+        }
+        return field;
     }
 }
