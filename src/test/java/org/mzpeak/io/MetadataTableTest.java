@@ -168,6 +168,24 @@ class MetadataTableTest {
         }
     }
 
+    /** A signed key below zero is out of range like an unsigned one with the high bit set. */
+    @Test
+    void aNegativeSignedKeyThrows() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).named("source_index")
+                .optional(PrimitiveTypeName.DOUBLE).named("scan_start_time")
+                .named("arrow_schema");
+        write("negative_key_scans.parquet", schema, new SimpleGroupFactory(schema).newGroup()
+                .append("source_index", -1L).append("scan_start_time", 1.5));
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+                    new Entry("negative_key_scans.parquet", "spectrum", "scans"), Facet.SPECTRUM_SCAN, r -> { }))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("negative_key_scans.parquet: ")
+                    .hasMessageContaining("key source_index is -1, beyond the supported range");
+        }
+    }
+
     @Test
     void aMemberWithNeitherShapeAndNoRowsYieldsNothing() {
         MessageType schema = Types.buildMessage()
