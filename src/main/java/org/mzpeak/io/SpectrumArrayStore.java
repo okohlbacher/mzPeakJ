@@ -13,6 +13,7 @@ import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.Type;
 import org.mzpeak.io.parquet.ParquetGroups;
 
 import java.io.IOException;
@@ -20,12 +21,15 @@ import java.io.UncheckedIOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
  * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) in a streaming,
  * memory-bounded fashion. Supports the {@code point} layout, delta-encoded {@code chunk} layout, and
- * MS-Numpress chunks (linear m/z + SLOF intensity).
+ * MS-Numpress chunks (linear m/z + SLOF intensity). A chunk it cannot decode (a coordinate grid, an unknown
+ * {@code chunk_encoding}, Numpress intensity without Numpress m/z, or an unknown Numpress column with a value)
+ * throws an {@link MzPeakException} instead of being dropped or misdecoded.
  *
  * <p><b>Streaming:</b> per-row-group {@code spectrum_index} min/max statistics are read at open time;
  * {@link #get} decodes only the row group(s) covering the requested index, caching the last decoded block run.
@@ -158,6 +162,14 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     /** Buffers one spectrum's points/chunks and flushes when the sorted {@code spectrum_index} changes. */
     private static final class Accumulator implements Consumer<Group> {
+        private static final String DELTA_ENCODING = "MS:1003089";
+        private static final String NO_COMPRESSION = "MS:1000576";
+        private static final String TRUNCATION_ZLIB = "MS:1003088";
+        private static final String GRID_ENCODING = "MS:1003826";
+        /** The Numpress columns decoded here; any other column whose name contains "numpress" is not understood. */
+        private static final Set<String> NUMPRESS_COLUMNS = Set.of(
+                "mz_numpress_linear_bytes", "intensity_numpress_slof_bytes", "intensity_numpress_pic_bytes");
+
         private final Map<Long, Arrays> result;
         private final boolean reconstructProfile;
         private final Map<Long, double[]> deltaModels;
@@ -200,6 +212,7 @@ final class SpectrumArrayStore implements AutoCloseable {
         private void acceptChunk(Group chunk) {
             long si = requireIndex(chunk);
             transition(si);
+            rejectUnknownNumpressColumns(chunk, si);
             if (ParquetGroups.has(chunk, "mz_numpress_linear_bytes")
                     || ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")
                     || ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
@@ -209,8 +222,9 @@ final class SpectrumArrayStore implements AutoCloseable {
             double start = orZero(ParquetGroups.optDouble(chunk, "mz_chunk_start"));
             String encoding = ParquetGroups.optString(chunk, "chunk_encoding");
             double[] rawMz = ParquetGroups.doubleListNullable(chunk, "mz_chunk_values");
-            double[] chunkMz = decodeChunkMz(rawMz, start, encoding);
             double[] chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
+            rejectGrid(chunk, encoding, rawMz, chunkIntensity, si);
+            double[] chunkMz = decodeChunkMz(rawMz, start, isAbsolute(encoding, si));
             // A chunk whose intensity list is one longer than its m/z values emits chunk_start as a real point
             // (its intensity is intensity[0]); the delta-decoded values then pair with intensity[1..]. A chunk
             // with equal lengths pairs its values one-to-one with intensities and has no separate start point.
@@ -241,10 +255,16 @@ final class SpectrumArrayStore implements AutoCloseable {
          * <p>Some writers (e.g. Thermo Orbitrap profile exports via mzML2mzPeak) use mixed-format chunks
          * where m/z is Numpress-encoded but intensity is stored as a plain {@code intensity} LIST. We detect
          * this by falling back to the regular intensity column when no intensity Numpress bytes are present.
+         *
+         * <p>Numpress intensity without Numpress m/z has no m/z to pair with: an empty payload is skipped, and
+         * one that decodes to values throws rather than dropping them.
          */
         private void acceptNumpressChunk(Group chunk, long si) {
             if (!ParquetGroups.has(chunk, "mz_numpress_linear_bytes")) {
-                // Only intensity Numpress present — no m/z data to decode, skip this chunk gracefully.
+                rejectUnpairedNumpressIntensity(chunk, "intensity_numpress_slof_bytes",
+                        MSNumpress.ACC_NUMPRESS_SLOF, "SLOF", si);
+                rejectUnpairedNumpressIntensity(chunk, "intensity_numpress_pic_bytes",
+                        MSNumpress.ACC_NUMPRESS_PIC, "PIC", si);
                 return;
             }
             double[] chunkMz = decodeNumpress(chunk, "mz_numpress_linear_bytes",
@@ -285,6 +305,82 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
         }
 
+        /** Throws if Numpress intensity in {@code field} decodes to values that have no Numpress m/z to pair with. */
+        private static void rejectUnpairedNumpressIntensity(Group chunk, String field, String cvAccession,
+                                                            String kind, long si) {
+            if (ParquetGroups.has(chunk, field)
+                    && decodeNumpress(chunk, field, cvAccession, si, "intensity").length > 0) {
+                throw new MzPeakException("unsupported chunk: Numpress " + kind + " intensity (" + field
+                        + ") without Numpress linear m/z (chunk_encoding "
+                        + ParquetGroups.optString(chunk, "chunk_encoding") + ") for spectrum_index " + si);
+            }
+        }
+
+        /**
+         * Throws for a {@code *numpress*} column other than the three decoded ones when it carries a value in this
+         * row: its data would otherwise be dropped (or, in place of the SLOF column, the whole chunk skipped).
+         */
+        private static void rejectUnknownNumpressColumns(Group chunk, long si) {
+            for (Type field : chunk.getType().getFields()) {
+                String name = field.getName();
+                if (name.contains("numpress") && !NUMPRESS_COLUMNS.contains(name) && carriesValue(chunk, name)) {
+                    throw new MzPeakException("unsupported Numpress column " + name + " for spectrum_index " + si
+                            + "; only mz_numpress_linear_bytes, intensity_numpress_slof_bytes and"
+                            + " intensity_numpress_pic_bytes are decoded");
+                }
+            }
+        }
+
+        /** True if {@code field} is non-null in this row and, if it is a group (such as a LIST), not empty. */
+        private static boolean carriesValue(Group g, String field) {
+            if (!ParquetGroups.has(g, field)) {
+                return false;
+            }
+            if (g.getType().getType(field).isPrimitive()) {
+                return true;
+            }
+            Group value = g.getGroup(field, 0);
+            for (int i = 0; i < value.getType().getFieldCount(); i++) {
+                if (value.getFieldRepetitionCount(i) > 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Throws for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding not decoded yet): one whose
+         * {@code chunk_encoding} names the grid, or one with an {@code mz_grid} struct and intensities but no chunk
+         * values. Without this check the intensities fail the length check with a misleading message.
+         */
+        private static void rejectGrid(Group chunk, String encoding, double[] values, double[] intensity, long si) {
+            Group grid = ParquetGroups.optGroup(chunk, "mz_grid");
+            boolean gridEncoding = encoding != null && encoding.contains("1003826");
+            if (gridEncoding || (grid != null && values.length == 0 && intensity.length > 0)) {
+                String gridType = grid == null ? null : ParquetGroups.optString(grid, "grid_type");
+                throw new MzPeakException("unsupported chunk encoding " + GRID_ENCODING
+                        + " (coordinate grid, draft) with grid_type " + (gridType == null ? "(none)" : gridType)
+                        + " for spectrum_index " + si + "; grid decoding is not implemented");
+            }
+        }
+
+        /**
+         * Whether a non-Numpress chunk with {@code encoding} stores absolute m/z ({@code MS:1000576},
+         * {@code MS:1003088}) rather than deltas from {@code chunk_start} ({@code null}, {@code MS:1003089}).
+         * Numpress ({@code MS:1002312}) is chosen by column presence; a row that names it without carrying a Numpress
+         * column decodes as delta, as before. Any other encoding throws instead of being decoded as delta.
+         */
+        private static boolean isAbsolute(String encoding, long si) {
+            if (encoding == null || encoding.equals(DELTA_ENCODING)
+                    || encoding.equals(MSNumpress.ACC_NUMPRESS_LINEAR)) {
+                return false;
+            }
+            if (encoding.equals(NO_COMPRESSION) || encoding.equals(TRUNCATION_ZLIB)) {
+                return true;
+            }
+            throw new MzPeakException("unsupported chunk encoding " + encoding + " for spectrum_index " + si);
+        }
+
         /**
          * Decode chunk m/z values parallel to {@code values} (NaN preserved as gaps).
          *
@@ -296,9 +392,7 @@ final class SpectrumArrayStore implements AutoCloseable {
          * post-null value as a delta (the previous behaviour) double-counted absolute re-anchors and produced
          * non-monotonic, out-of-range m/z.
          */
-        private static double[] decodeChunkMz(double[] values, double start, String encoding) {
-            boolean noDelta = encoding != null
-                    && (encoding.contains("1003088") || encoding.contains("1000576"));
+        private static double[] decodeChunkMz(double[] values, double start, boolean noDelta) {
             double[] out = new double[values.length];
             if (noDelta) {
                 System.arraycopy(values, 0, out, 0, values.length); // absolute; NaN stays NaN
