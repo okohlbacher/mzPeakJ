@@ -1,33 +1,18 @@
 package org.mzpeak.io;
 
 import org.mzpeak.model.Chromatogram;
-import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
-import java.io.IOException;
-import java.nio.file.Files;
+import java.lang.System.Logger.Level;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
+import java.util.OptionalLong;
 
 import static org.mzpeak.io.ArchivePacker.packArchive;
-import static org.mzpeak.io.ManifestWriter.writeManifest;
-import static org.mzpeak.io.NumpressSignalWriter.writeNumpressChunks;
-import static org.mzpeak.io.PackedMetadataWriter.writeChromatogramMetadata;
-import static org.mzpeak.io.PackedMetadataWriter.writeSpectrumMetadata;
-import static org.mzpeak.io.PackedMetadataWriter.writeWavelengthMetadata;
-import static org.mzpeak.io.PointSignalWriter.writeChromatogramData;
-import static org.mzpeak.io.PointSignalWriter.writeSpectrumPoints;
-import static org.mzpeak.io.PointSignalWriter.writeWavelengthData;
-import static org.mzpeak.io.SpectrumSummary.peakRows;
-import static org.mzpeak.io.SpectrumSummary.profileRows;
 
 /**
  * Writes mzPeak datasets in either {@code point} layout (the default) or MS-Numpress {@code chunk} layout.
@@ -43,6 +28,8 @@ import static org.mzpeak.io.SpectrumSummary.profileRows;
  * everything {@link MzPeakReader} surfaces.
  */
 public final class MzPeakWriter {
+
+    private static final System.Logger LOG = System.getLogger(MzPeakWriter.class.getName());
 
     private MzPeakWriter() {
     }
@@ -72,34 +59,8 @@ public final class MzPeakWriter {
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                       List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                                       FileMetadata fileMetadata) {
-        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra);
-        boolean hasProfile = ordered.stream().anyMatch(s -> profileRows(s) > 0);
-        boolean hasPeaks = ordered.stream().anyMatch(s -> peakRows(s) > 0);
-        boolean hasChromatograms = !chromatograms.isEmpty();
-        boolean hasWavelength = !wavelengthSpectra.isEmpty();
-        Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
-        try {
-            Files.createDirectories(directory);
-            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), ordered, footer);
-            if (hasProfile) {
-                writeSpectrumPoints(directory.resolve("spectra_data.parquet"), ordered, false);
-            }
-            if (hasPeaks) {
-                writeSpectrumPoints(directory.resolve("spectra_peaks.parquet"), ordered, true);
-            }
-            if (hasChromatograms) {
-                writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
-                writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
-            }
-            if (hasWavelength) {
-                writeWavelengthMetadata(directory.resolve("wavelength_spectra_metadata.parquet"), wavelengthSpectra);
-                writeWavelengthData(directory.resolve("wavelength_spectra_data.parquet"), wavelengthSpectra);
-            }
-            writeManifest(directory.resolve("mzpeak_index.json"), hasProfile, hasPeaks, hasChromatograms,
-                    hasWavelength, scanSettings, fileMetadata);
-        } catch (IOException e) {
-            throw new MzPeakException("Failed to write mzPeak dataset to " + directory, e);
-        }
+        write(directory, false, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                Options.defaults());
     }
 
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
@@ -115,8 +76,8 @@ public final class MzPeakWriter {
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                     List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                                     FileMetadata fileMetadata) {
-        packArchive(archive, dir ->
-                writeDirectory(dir, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata));
+        write(archive, true, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                Options.defaults());
     }
 
     // ---- Numpress-encoded chunk layout API --------------------------------------------------------
@@ -166,31 +127,8 @@ public final class MzPeakWriter {
                                              List<ScanSettings> scanSettings,
                                              FileMetadata fileMetadata,
                                              NumpressIntensityEncoding intensityEncoding) {
-        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra);
-        boolean hasPeaks = ordered.stream().anyMatch(s -> peakRows(s) > 0);
-        boolean hasChromatograms = !chromatograms.isEmpty();
-        boolean hasWavelength = !wavelengthSpectra.isEmpty();
-        Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
-        try {
-            Files.createDirectories(directory);
-            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), ordered, footer);
-            writeNumpressChunks(directory.resolve("spectra_data.parquet"), ordered, false, intensityEncoding);
-            if (hasPeaks) {
-                writeNumpressChunks(directory.resolve("spectra_peaks.parquet"), ordered, true, intensityEncoding);
-            }
-            if (hasChromatograms) {
-                writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
-                writeChromatogramData(directory.resolve("chromatograms_data.parquet"), chromatograms);
-            }
-            if (hasWavelength) {
-                writeWavelengthMetadata(directory.resolve("wavelength_spectra_metadata.parquet"), wavelengthSpectra);
-                writeWavelengthData(directory.resolve("wavelength_spectra_data.parquet"), wavelengthSpectra);
-            }
-            writeManifest(directory.resolve("mzpeak_index.json"), true, hasPeaks, hasChromatograms,
-                    hasWavelength, scanSettings, fileMetadata);
-        } catch (IOException e) {
-            throw new MzPeakException("Failed to write Numpress mzPeak dataset to " + directory, e);
-        }
+        write(directory, false, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                numpress(intensityEncoding));
     }
 
     /** Write a single-file STORED {@code .mzpeak} ZIP with Numpress encoding. */
@@ -211,9 +149,8 @@ public final class MzPeakWriter {
                                            List<WavelengthSpectrum> wavelengthSpectra,
                                            List<ScanSettings> scanSettings,
                                            FileMetadata fileMetadata) {
-        packArchive(archive, dir ->
-                writeDirectoryNumpress(dir, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
-                        NumpressIntensityEncoding.SLOF));
+        write(archive, true, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                numpress(NumpressIntensityEncoding.SLOF));
     }
 
     /**
@@ -222,62 +159,98 @@ public final class MzPeakWriter {
      */
     public enum NumpressIntensityEncoding { SLOF, PIC }
 
+    /** How spectra_data and spectra_peaks are encoded; chromatograms and wavelength spectra are always points. */
+    enum SignalEncoding {
+        /** One row per point: index, m/z and intensity. */
+        POINT,
+        /** MS-Numpress chunks: Numpress linear m/z and Numpress SLOF or PIC intensity. */
+        NUMPRESS
+    }
+
+    /**
+     * The settings of one write, immutable: {@link #defaults()} plus with-methods. The plain overloads use the
+     * defaults (point layout), the Numpress overloads {@link SignalEncoding#NUMPRESS} with their intensity encoding.
+     *
+     * <p>{@link #rowGroupSize()} is not applied yet: every member still takes its row-group size from the
+     * {@code mzpeak.writer.rowGroupSize} system property, or else the Parquet default.
+     */
+    static final class Options {
+
+        private static final Options DEFAULTS =
+                new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF, OptionalLong.empty());
+
+        private final SignalEncoding signalEncoding;
+        private final NumpressIntensityEncoding numpressIntensity;
+        private final OptionalLong rowGroupSize;
+
+        private Options(SignalEncoding signalEncoding, NumpressIntensityEncoding numpressIntensity,
+                        OptionalLong rowGroupSize) {
+            this.signalEncoding = signalEncoding;
+            this.numpressIntensity = numpressIntensity;
+            this.rowGroupSize = rowGroupSize;
+        }
+
+        /** Point layout, SLOF Numpress intensity, no row-group size. */
+        static Options defaults() {
+            return DEFAULTS;
+        }
+
+        SignalEncoding signalEncoding() {
+            return signalEncoding;
+        }
+
+        /** The Numpress intensity encoding; ignored unless {@link #signalEncoding()} is NUMPRESS. */
+        NumpressIntensityEncoding numpressIntensity() {
+            return numpressIntensity;
+        }
+
+        OptionalLong rowGroupSize() {
+            return rowGroupSize;
+        }
+
+        Options withSignalEncoding(SignalEncoding encoding) {
+            return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize);
+        }
+
+        Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
+            return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize);
+        }
+
+        /** @throws IllegalArgumentException if {@code bytes} is not positive */
+        Options withRowGroupSize(long bytes) {
+            if (bytes <= 0) {
+                throw new IllegalArgumentException("row-group size must be positive: " + bytes);
+            }
+            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes));
+        }
+    }
+
     // ---- helpers ----------------------------------------------------------------------------------
 
     /**
-     * Enforce the reader's index contract before anything is written. Spectrum, precursor_index, chromatogram
-     * and wavelength-spectrum indices must be non-negative (they are stored as uint64), and spectrum, chromatogram
-     * and wavelength-spectrum indices must be unique. The reader finds a spectrum's data rows through the index
-     * range of each row group, so spectra are written in index order: this returns the caller's list when it is
-     * already in index order, and otherwise a stable-sorted copy. The caller's list is never modified.
+     * The one path behind every public overload: plan without any I/O (a contract violation throws here, before
+     * any file or temp directory exists), then write the plan into {@code target}, as a directory or, for
+     * {@code archive}, as a STORED ZIP built in a temp directory and moved into place. The report's warnings are
+     * logged once the dataset is written.
      */
-    private static List<Spectrum> validateAndOrder(List<Spectrum> spectra, List<Chromatogram> chromatograms,
-                                                   List<WavelengthSpectrum> wavelengthSpectra) {
-        boolean inIndexOrder = true;
-        long previous = -1;
-        for (Spectrum s : spectra) {
-            requireNonNegative(s.index(), "spectrum index");
-            Precursor p = s.description().primaryPrecursor();
-            if (p != null && p.precursorIndex() != null) {
-                requireNonNegative(p.precursorIndex(), "precursor_index");
-            }
-            inIndexOrder &= s.index() >= previous;
-            previous = s.index();
+    private static void write(Path target, boolean archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                              List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
+                              FileMetadata fileMetadata, Options options) {
+        WritePlan plan = WritePlanner.plan(spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                options);
+        if (archive) {
+            packArchive(target, dir -> DatasetWriter.write(dir, plan));
+        } else {
+            DatasetWriter.write(target, plan);
         }
-        Set<Long> seen = new HashSet<>();
-        for (Chromatogram c : chromatograms) {
-            requireNonNegative(c.index(), "chromatogram index");
-            requireUnique(seen, c.index(), "chromatogram index");
-        }
-        seen.clear();
-        for (WavelengthSpectrum w : wavelengthSpectra) {
-            requireNonNegative(w.index(), "wavelength spectrum index");
-            requireUnique(seen, w.index(), "wavelength spectrum index");
-        }
-        List<Spectrum> ordered = spectra;
-        if (!inIndexOrder) {
-            ordered = new ArrayList<>(spectra);
-            ordered.sort(Comparator.comparingLong(Spectrum::index)); // List.sort is stable
-        }
-        previous = -1;
-        for (Spectrum s : ordered) {
-            if (s.index() == previous) {
-                throw new MzPeakException("duplicate spectrum index: " + s.index() + " (mzPeak indices are unique)");
-            }
-            previous = s.index();
-        }
-        return ordered;
-    }
-
-    private static void requireNonNegative(long value, String what) {
-        if (value < 0) {
-            throw new MzPeakException(what + " must be non-negative (mzPeak indices are uint64): " + value);
+        for (String warning : plan.report().warnings()) {
+            LOG.log(Level.WARNING, warning);
         }
     }
 
-    private static void requireUnique(Set<Long> seen, long value, String what) {
-        if (!seen.add(value)) {
-            throw new MzPeakException("duplicate " + what + ": " + value + " (mzPeak indices are unique)");
-        }
+    /** The options of a legacy Numpress overload; a {@code null} intensity encoding has always meant SLOF. */
+    private static Options numpress(NumpressIntensityEncoding intensityEncoding) {
+        return Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS).withNumpressIntensity(
+                intensityEncoding == null ? NumpressIntensityEncoding.SLOF : intensityEncoding);
     }
 }

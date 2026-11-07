@@ -7,6 +7,8 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
+import org.mzpeak.io.WritePlan.Entry;
+import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
@@ -20,7 +22,6 @@ import org.mzpeak.model.WavelengthSpectrum;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.OptionalDouble;
 
 import static org.mzpeak.io.ParquetOutput.UINT64;
@@ -28,9 +29,9 @@ import static org.mzpeak.io.ParquetOutput.openWriter;
 import static org.mzpeak.io.ParquetOutput.paramListField;
 import static org.mzpeak.io.ParquetOutput.scanWindowListField;
 import static org.mzpeak.io.ParquetOutput.writeParams;
-import static org.mzpeak.io.SpectrumSummary.peakRows;
-import static org.mzpeak.io.SpectrumSummary.profileRows;
 import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
+import static org.mzpeak.io.WritePlanner.peakRows;
+import static org.mzpeak.io.WritePlanner.profileRows;
 
 /**
  * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
@@ -119,17 +120,17 @@ final class PackedMetadataWriter {
     private PackedMetadataWriter() {
     }
 
-    static void writeSpectrumMetadata(Path file, List<Spectrum> spectra,
-                                      Map<String, String> footer) throws IOException {
+    static void writeSpectrumMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
         long scanIndexCounter = 0;
-        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, footer)) {
-            for (Spectrum s : spectra) {
+        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, plan.footer())) {
+            for (SpectrumEntry entry : plan.spectra()) {
+                Spectrum s = entry.source();
                 SpectrumDescription d = s.description();
                 Group row = factory.newGroup();
 
                 Group spectrum = row.addGroup("spectrum");
-                spectrum.add("index", d.index());
+                spectrum.add("index", entry.sourceIndex());
                 if (d.id() != null) {
                     spectrum.add("id", d.id());
                 }
@@ -146,20 +147,19 @@ final class PackedMetadataWriter {
                 writeDerivedColumns(spectrum, s);
                 // Declare each facet's count independently; a spectrum may carry profile points AND a
                 // centroid peak list (both facets), so both counts can be present.
-                int profileRows = profileRows(s);
-                int peakRows = peakRows(s);
-                if (profileRows > 0) {
-                    spectrum.add("MS_1003060_number_of_data_points", (long) profileRows);
+                if (entry.data()) {
+                    spectrum.add("MS_1003060_number_of_data_points", (long) profileRows(s));
                 }
-                if (peakRows > 0) {
-                    spectrum.add("MS_1003059_number_of_peaks", (long) peakRows);
+                if (entry.peaks()) {
+                    spectrum.add("MS_1003059_number_of_peaks", (long) peakRows(s));
                 }
                 writeParams(spectrum, d.parameters());
 
                 ScanEvent firstScan = d.scans().isEmpty() ? null : d.scans().get(0);
-                populateScan(row.addGroup("scan"), d.index(), scanIndexCounter++, d.retentionTime(), firstScan);
+                populateScan(row.addGroup("scan"), entry.sourceIndex(), scanIndexCounter++, d.retentionTime(),
+                        firstScan);
 
-                writePrecursor(row, d);
+                writePrecursor(row, entry.sourceIndex(), d);
                 writer.write(row);
                 // NOTE: multiple scans / selected ions per spectrum (e.g. Bruker PASEF combineIMS frames carry
                 // ~25 mobility scans) are NOT yet written as additional packed-facet rows — only the primary
@@ -229,13 +229,13 @@ final class PackedMetadataWriter {
         }
     }
 
-    private static void writePrecursor(Group row, SpectrumDescription d) {
+    private static void writePrecursor(Group row, long sourceIndex, SpectrumDescription d) {
         Precursor precursor = d.primaryPrecursor();
         if (precursor == null) {
             return;
         }
         Group p = row.addGroup("precursor");
-        p.add("source_index", d.index());
+        p.add("source_index", sourceIndex);
         if (precursor.precursorIndex() != null) {
             p.add("precursor_index", precursor.precursorIndex());
         }
@@ -256,7 +256,7 @@ final class PackedMetadataWriter {
         }
         SelectedIon ion = precursor.primaryIon();
         if (ion != null) {
-            writeSelectedIon(row.addGroup("selected_ion"), d.index(), ion);
+            writeSelectedIon(row.addGroup("selected_ion"), sourceIndex, ion);
         }
     }
 
@@ -271,13 +271,14 @@ final class PackedMetadataWriter {
         writeParams(si, ion.parameters());
     }
 
-    static void writeChromatogramMetadata(Path file, List<Chromatogram> chromatograms) throws IOException {
+    static void writeChromatogramMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_META_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, CHROM_META_SCHEMA)) {
-            for (Chromatogram c : chromatograms) {
+            for (Entry<Chromatogram> entry : plan.chromatograms()) {
+                Chromatogram c = entry.source();
                 Group row = factory.newGroup();
                 Group chrom = row.addGroup("chromatogram");
-                chrom.add("index", c.index());
+                chrom.add("index", entry.sourceIndex());
                 if (c.id() != null) {
                     chrom.add("id", c.id());
                 }
@@ -290,13 +291,14 @@ final class PackedMetadataWriter {
         }
     }
 
-    static void writeWavelengthMetadata(Path file, List<WavelengthSpectrum> spectra) throws IOException {
+    static void writeWavelengthMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_META_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_META_SCHEMA)) {
-            for (WavelengthSpectrum w : spectra) {
+            for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
+                WavelengthSpectrum w = entry.source();
                 Group row = factory.newGroup();
                 Group s = row.addGroup("spectrum");
-                s.add("index", w.index());
+                s.add("index", entry.sourceIndex());
                 if (w.id() != null) {
                     s.add("id", w.id());
                 }

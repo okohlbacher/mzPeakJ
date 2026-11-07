@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mzpeak.model.Param;
-import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
@@ -21,25 +20,23 @@ final class ManifestWriter {
     private ManifestWriter() {
     }
 
-    static void writeManifest(Path file, boolean hasProfile, boolean hasPeaks, boolean hasChromatograms,
-                               boolean hasWavelength, List<ScanSettings> scanSettings,
-                               FileMetadata fileMetadata)
-            throws IOException {
+    /** Write the manifest of the plan's members, its scan settings and its file metadata (the footer key-values). */
+    static void writeManifest(Path file, WritePlan plan) throws IOException {
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode root = mapper.createObjectNode();
         ArrayNode files = root.putArray("files");
         addManifestEntry(files, "spectra_metadata.parquet", "spectrum", "metadata");
-        if (hasProfile) {
+        if (plan.writesSpectraData()) {
             addManifestEntry(files, "spectra_data.parquet", "spectrum", "data arrays");
         }
-        if (hasPeaks) {
+        if (plan.writesSpectraPeaks()) {
             addManifestEntry(files, "spectra_peaks.parquet", "spectrum", "peaks");
         }
-        if (hasChromatograms) {
+        if (plan.writesChromatograms()) {
             addManifestEntry(files, "chromatograms_metadata.parquet", "chromatogram", "metadata");
             addManifestEntry(files, "chromatograms_data.parquet", "chromatogram", "data arrays");
         }
-        if (hasWavelength) {
+        if (plan.writesWavelengthSpectra()) {
             addManifestEntry(files, "wavelength_spectra_metadata.parquet", "wavelength spectrum", "metadata");
             addManifestEntry(files, "wavelength_spectra_data.parquet", "wavelength spectrum", "data arrays");
         }
@@ -56,8 +53,8 @@ final class ManifestWriter {
         addCvEntry(cvList, "UO", "Unit Ontology",
                 "https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/master/unit.obo",
                 "2024-01-01");
-        writeScanSettingsList(meta.putArray("scan_settings_list"), scanSettings);
-        for (var kv : FooterMetadataWriter.serialize(fileMetadata).entrySet()) {
+        writeScanSettingsList(meta.putArray("scan_settings_list"), plan.scanSettings());
+        for (var kv : plan.footer().entrySet()) {
             meta.set(kv.getKey(), mapper.readTree(kv.getValue()));
         }
         Files.write(file, mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));

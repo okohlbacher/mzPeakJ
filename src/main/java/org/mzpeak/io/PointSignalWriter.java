@@ -6,6 +6,8 @@ import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
+import org.mzpeak.io.WritePlan.Entry;
+import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
@@ -13,12 +15,9 @@ import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.mzpeak.io.ParquetOutput.UINT64;
 import static org.mzpeak.io.ParquetOutput.openWriter;
-import static org.mzpeak.io.SpectrumSummary.peakRows;
-import static org.mzpeak.io.SpectrumSummary.profileRows;
 
 /**
  * Writes the point layout of {@link MzPeakWriter}: one row per point, carrying the entity index, the axis value
@@ -43,62 +42,61 @@ final class PointSignalWriter {
                 .named("data");
     }
 
-    static void writeSpectrumPoints(Path file, List<Spectrum> spectra, boolean centroidFile)
-            throws IOException {
+    /**
+     * Write the plan's spectra_data rows ({@code mz()}/{@code intensity()} of every entry routed there) or, for
+     * {@code centroidFile}, its spectra_peaks rows ({@code peaks()} of every entry routed there).
+     */
+    static void writeSpectrumPoints(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_DATA_SCHEMA)) {
-            for (Spectrum s : spectra) {
+            for (SpectrumEntry entry : plan.spectra()) {
+                Spectrum s = entry.source();
                 if (centroidFile) {
-                    if (peakRows(s) == 0) {
+                    if (!entry.peaks()) {
                         continue;
                     }
-                    if (!s.peaks().isEmpty()) {
-                        for (CentroidPeak peak : s.peaks()) {
-                            writePoint(writer, factory, "spectrum_index", s.index(), "mz", peak.mz(), peak.intensity());
-                        }
-                    } else {
-                        // centroid spectrum whose centroids are carried in the mz/intensity arrays
-                        double[] mz = s.mz();
-                        double[] intensity = s.intensity();
-                        for (int i = 0; i < mz.length; i++) {
-                            writePoint(writer, factory, "spectrum_index", s.index(), "mz", mz[i], intensity[i]);
-                        }
+                    for (CentroidPeak peak : s.peaks()) {
+                        writePoint(writer, factory, "spectrum_index", entry.sourceIndex(), "mz", peak.mz(),
+                                peak.intensity());
                     }
                 } else {
-                    if (profileRows(s) == 0) {
+                    if (!entry.data()) {
                         continue;
                     }
                     double[] mz = s.mz();
                     double[] intensity = s.intensity();
                     for (int i = 0; i < mz.length; i++) {
-                        writePoint(writer, factory, "spectrum_index", s.index(), "mz", mz[i], intensity[i]);
+                        writePoint(writer, factory, "spectrum_index", entry.sourceIndex(), "mz", mz[i], intensity[i]);
                     }
                 }
             }
         }
     }
 
-    static void writeChromatogramData(Path file, List<Chromatogram> chromatograms) throws IOException {
+    static void writeChromatogramData(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, CHROM_DATA_SCHEMA)) {
-            for (Chromatogram c : chromatograms) {
+            for (Entry<Chromatogram> entry : plan.chromatograms()) {
+                Chromatogram c = entry.source();
                 double[] time = c.time();
                 double[] intensity = c.intensity();
                 for (int i = 0; i < time.length; i++) {
-                    writePoint(writer, factory, "chromatogram_index", c.index(), "time", time[i], intensity[i]);
+                    writePoint(writer, factory, "chromatogram_index", entry.sourceIndex(), "time", time[i],
+                            intensity[i]);
                 }
             }
         }
     }
 
-    static void writeWavelengthData(Path file, List<WavelengthSpectrum> spectra) throws IOException {
+    static void writeWavelengthData(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_DATA_SCHEMA)) {
-            for (WavelengthSpectrum w : spectra) {
+            for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
+                WavelengthSpectrum w = entry.source();
                 double[] wl = w.wavelength();
                 double[] intensity = w.intensity();
                 for (int i = 0; i < wl.length; i++) {
-                    writePoint(writer, factory, "wavelength_spectrum_index", w.index(), "wavelength",
+                    writePoint(writer, factory, "wavelength_spectrum_index", entry.sourceIndex(), "wavelength",
                             wl[i], intensity[i]);
                 }
             }

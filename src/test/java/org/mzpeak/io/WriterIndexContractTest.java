@@ -18,6 +18,7 @@ import org.mzpeak.model.WavelengthSpectrum;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * index: the reader refuses to open a file with a duplicate spectrum.index and merges chromatogram and wavelength
  * rows that share an index. The reader finds a spectrum's data rows through the index range of each row group,
  * so spectra may be passed in any order but are written in index order; the caller's list is never modified.
- * A rejected archive write leaves neither the archive nor a {@code .mzpeak-write-*} temp entry behind.
+ * An archive write is checked before its temp directory is created, and a rejected one leaves neither the archive
+ * nor a {@code .mzpeak-write-*} temp entry behind.
  */
 class WriterIndexContractTest {
 
@@ -195,6 +197,32 @@ class WriterIndexContractTest {
 
         assertRejectedBeforeWriting(layout, tmp, "negative-wavelength", s.spectra, s.chromatograms, waves, s,
                 "wavelength spectrum index must be non-negative (mzPeak indices are uint64): -1");
+    }
+
+    // ---- validation before any I/O ----------------------------------------------------------------
+
+    /**
+     * The contract is checked before any I/O, the archive's temp directory included: into a directory that does
+     * not exist, valid input fails on the temp directory, while a contract violation is still reported as such and
+     * nothing is created.
+     */
+    @ParameterizedTest
+    @EnumSource(Layout.class)
+    void anArchiveWriteIsCheckedBeforeItsTempDirectoryIsCreated(Layout layout, @TempDir Path tmp) {
+        Source s = ForwardBackwardCorpusTest.readSource(UNPACKED);
+        List<Spectrum> duplicate = new ArrayList<>(s.spectra);
+        duplicate.add(duplicate.get(17));
+        Path missing = tmp.resolve("missing");
+        Path archive = missing.resolve("out.mzpeak");
+
+        assertThatThrownBy(() -> writeArchive(layout, archive, s.spectra, s.chromatograms, s.wavelengthSpectra, s))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("Failed to write mzPeak archive " + archive)
+                .hasCauseInstanceOf(NoSuchFileException.class);
+        assertThatThrownBy(() -> writeArchive(layout, archive, duplicate, s.chromatograms, s.wavelengthSpectra, s))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("duplicate spectrum index: 17 (mzPeak indices are unique)");
+        assertThat(missing).as("parent of the archive").doesNotExist();
     }
 
     // ---- helpers ----------------------------------------------------------------------------------
