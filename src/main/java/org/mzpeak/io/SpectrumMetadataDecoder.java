@@ -11,9 +11,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Decodes the spectrum metadata member into {@link SpectrumDescription}s. The member's own schema selects the
- * layout ({@link MetadataShape}): the packed layout is read by {@link PackedMetadataReader}; the split layout is
- * not supported yet.
+ * Decodes the spectrum metadata into {@link SpectrumDescription}s. The spectrum metadata member's own schema selects
+ * the layout ({@link MetadataShape}): the packed layout is read by {@link PackedMetadataReader}, the split layout,
+ * whose facets are members of their own, by {@link SplitMetadataReader}.
  */
 final class SpectrumMetadataDecoder {
 
@@ -27,35 +27,47 @@ final class SpectrumMetadataDecoder {
     }
 
     /**
-     * Decodes the member that {@code manifest} lists under the role (spectrum, metadata); error messages name it by
-     * its file name.
+     * Decodes the member that {@code manifest} lists under the role (spectrum, metadata) and, in the split layout,
+     * the scans, precursors and selected-ions members it lists; error messages name a member by its file name.
      *
-     * @throws MzPeakException when the manifest lists no such member
+     * @throws MzPeakException when the manifest lists no spectrum metadata member
      */
     static Decoded decode(MzPeakSource source, MzPeakManifest manifest) {
         MzPeakManifest.Entry entry = manifest.find(EntityType.SPECTRUM, DataKind.METADATA)
                 .orElseThrow(() -> new MzPeakException("Manifest has no spectrum metadata file"));
-        return decode(source.inputFile(entry.name()), entry.name());
-    }
-
-    /** Decodes a spectrum metadata member given directly; error messages name it by its role. */
-    static Decoded decode(InputFile metadataFile) {
-        return decode(metadataFile, MEMBER);
-    }
-
-    private static Decoded decode(InputFile metadataFile, String member) {
+        InputFile metadataFile = source.inputFile(entry.name());
         ParquetFooter footer = ParquetFooter.read(metadataFile);
-        MetadataShape shape = MetadataShape.detect(footer, "spectrum", F_INDEX, member);
-        if (shape == MetadataShape.SPLIT) {
-            throw new MzPeakException(member + ": split metadata layout not supported yet");
-        }
-        if (shape == MetadataShape.EMPTY) {
-            return new Decoded(new ArrayList<>(), new HashMap<>());
-        }
-        return PackedMetadataReader.read(metadataFile, footer.schema());
+        return switch (MetadataShape.detect(footer, "spectrum", F_INDEX, entry.name())) {
+            case PACKED -> PackedMetadataReader.read(metadataFile, footer.schema());
+            case SPLIT -> {
+                SpectrumFacetAssembler assembler = new SpectrumFacetAssembler();
+                SplitMetadataReader.read(source, manifest, assembler);
+                yield assembler.build();
+            }
+            case EMPTY -> empty();
+        };
     }
 
-    /** Decoded spectrum metadata plus the per-spectrum {@code mz_delta_model} polynomial coefficients. */
+    /**
+     * Decodes a packed spectrum metadata member given directly; error messages name it by its role.
+     *
+     * @throws MzPeakException when the member has the split layout, whose facet members only the manifest names
+     */
+    static Decoded decode(InputFile metadataFile) {
+        ParquetFooter footer = ParquetFooter.read(metadataFile);
+        return switch (MetadataShape.detect(footer, "spectrum", F_INDEX, MEMBER)) {
+            case PACKED -> PackedMetadataReader.read(metadataFile, footer.schema());
+            case SPLIT -> throw new MzPeakException(MEMBER + ": the split metadata layout keeps its scans,"
+                    + " precursors and selected ions in members of their own; decode it through the manifest");
+            case EMPTY -> empty();
+        };
+    }
+
+    private static Decoded empty() {
+        return new Decoded(new ArrayList<>(), new HashMap<>());
+    }
+
+    /** Decoded spectrum metadata plus the per-spectrum m/z delta model polynomial coefficients. */
     record Decoded(List<SpectrumDescription> descriptions, Map<Long, double[]> deltaModels) {
     }
 }
