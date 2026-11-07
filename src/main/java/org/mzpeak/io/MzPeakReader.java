@@ -1,6 +1,8 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.io.InputFile;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -103,18 +105,22 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         MzPeakSource source = MzPeakSource.open(path);
         try {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
-            MzPeakManifest.Entry metaEntry = manifest.find("spectrum", "metadata")
-                    .orElseThrow(() -> new MzPeakException("Manifest has no spectrum metadata file"));
-            SpectrumMetadataDecoder.Decoded decoded =
-                    SpectrumMetadataDecoder.decode(source.inputFile(metaEntry.name()));
-            String dataFile = manifest.find("spectrum", "data arrays").map(MzPeakManifest.Entry::name).orElse(null);
-            String peaksFile = manifest.find("spectrum", "peaks").map(MzPeakManifest.Entry::name).orElse(null);
+            SpectrumMetadataDecoder.Decoded decoded = SpectrumMetadataDecoder.decode(source, manifest);
+            // present: decode() throws when the manifest lists no spectrum metadata member
+            String metadataFile = member(manifest, EntityType.SPECTRUM, DataKind.METADATA);
+            String dataFile = member(manifest, EntityType.SPECTRUM, DataKind.DATA_ARRAYS);
+            String peaksFile = member(manifest, EntityType.SPECTRUM, DataKind.PEAKS);
             return new MzPeakReader(source, manifest, reconstructProfile, decoded,
-                    metaEntry.name(), dataFile, peaksFile);
+                    metadataFile, dataFile, peaksFile);
         } catch (RuntimeException e) {
             source.close();
             throw e;
         }
+    }
+
+    /** The name of the member with role {@code (entity, kind)}, or {@code null} if the manifest lists none. */
+    private static String member(MzPeakManifest manifest, EntityType entity, DataKind kind) {
+        return manifest.find(entity, kind).map(MzPeakManifest.Entry::name).orElse(null);
     }
 
     public MzPeakManifest manifest() {
@@ -284,10 +290,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     private synchronized ChromatogramStore chromatograms0() {
         if (!chromatogramsLoaded) {
-            String metaName = manifest.find("chromatogram", "metadata").map(MzPeakManifest.Entry::name).orElse(null);
-            String dataName = manifest.find("chromatogram", "data arrays").map(MzPeakManifest.Entry::name).orElse(null);
-            chromatogramStore = (metaName == null || dataName == null) ? null
-                    : ChromatogramStore.load(source.inputFile(metaName), source.inputFile(dataName));
+            chromatogramStore = ChromatogramStore.load(source, manifest);
             chromatogramsLoaded = true;
         }
         return chromatogramStore;
@@ -295,12 +298,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     private synchronized WavelengthSpectrumStore wavelength0() {
         if (!wavelengthLoaded) {
-            String metaName = manifest.find("wavelength spectrum", "metadata")
-                    .map(MzPeakManifest.Entry::name).orElse(null);
-            String dataName = manifest.find("wavelength spectrum", "data arrays")
-                    .map(MzPeakManifest.Entry::name).orElse(null);
-            wavelengthStore = (metaName == null || dataName == null) ? null
-                    : WavelengthSpectrumStore.load(source.inputFile(metaName), source.inputFile(dataName));
+            wavelengthStore = WavelengthSpectrumStore.load(source, manifest);
             wavelengthLoaded = true;
         }
         return wavelengthStore;
