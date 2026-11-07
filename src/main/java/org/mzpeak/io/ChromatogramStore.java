@@ -15,10 +15,10 @@ import java.util.Optional;
 /**
  * Reads {@code chromatograms_metadata.parquet} + {@code chromatograms_data.parquet} into {@link Chromatogram}s.
  * The metadata member, packed or split, is decoded by {@link ChromatogramMetadataDecoder}; chromatograms keep its
- * order, and an index without data rows reads as empty arrays.
+ * order, and an index without data rows reads as empty arrays, without intensity unit or extra arrays.
  * The data member, in {@code point} or {@code chunk} layout, is decoded by {@link ChromatogramDataDecoder} through
  * its {@link SignalPlan}: from the member's {@code chromatogram_array_index} footer, else inferred from its column
- * names.
+ * names. The decoder also gives each chromatogram's intensity unit and extra arrays.
  */
 final class ChromatogramStore {
 
@@ -82,15 +82,18 @@ final class ChromatogramStore {
         }
         // ---- data: point or chunk layout, as the plan says -------------------------
         SignalPlan plan = plan(dataFile);
-        Map<Long, PointArrays.XY> data = ChromatogramDataDecoder.decode(dataFile, plan);
+        Map<Long, ChromatogramDataDecoder.Decoded> data = ChromatogramDataDecoder.decode(dataFile, plan);
 
         // ---- assemble --------------------------------------------------------------
         List<Chromatogram> all = new ArrayList<>(headers.size());
         for (ChromatogramMetadataDecoder.Header h : headers) {
-            PointArrays.XY xy = data.get(h.index());
-            double[] time      = xy == null ? new double[0] : xy.x();
-            double[] intensity = xy == null ? new double[0] : xy.intensity();
-            all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), time, intensity));
+            ChromatogramDataDecoder.Decoded d = data.get(h.index());
+            if (d == null) {
+                all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), new double[0], new double[0]));
+            } else {
+                all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), d.time(), d.intensity(),
+                        d.intensityUnit(), d.arrays()));
+            }
         }
         return new ChromatogramStore(all, plan);
     }
