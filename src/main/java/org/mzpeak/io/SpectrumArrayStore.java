@@ -288,7 +288,11 @@ final class SpectrumArrayStore implements AutoCloseable {
                 // Mixed format: m/z is Numpress-compressed, intensity is a plain double list.
                 chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
             } else {
-                // No intensity data at all — skip this chunk; the spectrum will materialise as empty.
+                // No intensity column: only an empty m/z payload is skipped; decoded m/z is never dropped.
+                if (chunkMz.length > 0) {
+                    throw new MzPeakException("unsupported chunk: Numpress linear m/z without an intensity column"
+                            + " (SLOF, PIC or intensity) for spectrum_index " + si);
+                }
                 return;
             }
             if (chunkMz.length != chunkIntensity.length) {
