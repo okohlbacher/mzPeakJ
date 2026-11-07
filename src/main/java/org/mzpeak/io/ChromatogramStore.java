@@ -6,6 +6,7 @@ import org.apache.parquet.io.InputFile;
 import org.apache.parquet.schema.Type;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
 
@@ -17,8 +18,10 @@ import java.util.Optional;
 
 /**
  * Reads {@code chromatograms_metadata.parquet} + {@code chromatograms_data.parquet} into {@link Chromatogram}s.
- * Handles both {@code point} layout (one row per time point) and {@code chunk} layout (delta-encoded time
- * values with one chunk row per chromatogram, as used in the chunked mzPeak variant).
+ * The metadata member, packed or split, is decoded by {@link ChromatogramMetadataDecoder}; chromatograms keep its
+ * order, and an index without data rows reads as empty arrays.
+ * The data member is read in both {@code point} layout (one row per time point) and {@code chunk} layout
+ * (delta-encoded time values with one chunk row per chromatogram, as used in the chunked mzPeak variant).
  * Intensities come from the literal {@code intensity} column; a point row falls back to a numeric
  * {@code intensity_*} column (e.g. UV absorbance), a chunk row to MS-Numpress SLOF bytes.
  */
@@ -54,56 +57,65 @@ final class ChromatogramStore {
      * @return the store, or {@code null} when the manifest lacks either member or lists it without a name
      */
     static ChromatogramStore load(MzPeakSource source, MzPeakManifest manifest) {
-        String metadataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.METADATA)
-                .map(MzPeakManifest.Entry::name).orElse(null);
+        Entry metadata = manifest.find(EntityType.CHROMATOGRAM, DataKind.METADATA).orElse(null);
         String dataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS)
-                .map(MzPeakManifest.Entry::name).orElse(null);
-        if (metadataName == null || dataName == null) {
+                .map(Entry::name).orElse(null);
+        if (metadata == null || metadata.name() == null || dataName == null) {
             return null;
         }
-        return load(source.inputFile(metadataName), metadataName, source.inputFile(dataName));
+        return load(ChromatogramMetadataDecoder.decode(source, metadata), source.inputFile(dataName));
     }
 
-    /** Loads a metadata and a data member given directly; error messages name the metadata member by its role. */
+    /**
+     * Loads a metadata member of either layout and a data member given directly; error messages name the metadata
+     * member by its role.
+     */
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
-        return load(metadataFile, MEMBER, dataFile);
+        Entry metadata = new Entry(MEMBER, EntityType.CHROMATOGRAM.canonical(), DataKind.METADATA.canonical());
+        return load(ChromatogramMetadataDecoder.decode(singleMember(metadataFile), metadata), dataFile);
     }
 
-    private static ChromatogramStore load(InputFile metadataFile, String member, InputFile dataFile) {
-        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "chromatogram", "index", member);
-        if (shape == MetadataShape.SPLIT) {
-            throw new MzPeakException(member + ": split metadata layout not supported yet");
-        }
-        if (shape == MetadataShape.EMPTY) {
+    /** Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. */
+    private static ChromatogramStore load(List<ChromatogramMetadataDecoder.Header> headers, InputFile dataFile) {
+        if (headers.isEmpty()) {
             return new ChromatogramStore(List.of());
         }
-        // ---- metadata ----------------------------------------------------------------
-        Map<Long, String[]> meta = new LinkedHashMap<>(); // {id, typeCurie}
-        List<Long> order = new ArrayList<>();
-        ParquetGroups.forEach(metadataFile, row -> {
-            Group c = ParquetGroups.optGroup(row, "chromatogram");
-            if (c == null) return;
-            Long idx = ParquetGroups.optLong(c, "index");
-            if (idx == null) return;
-            if (!meta.containsKey(idx)) order.add(idx);
-            meta.put(idx, new String[] {
-                    ParquetGroups.optString(c, "id"),
-                    ParquetGroups.optString(c, "MS_1000626_chromatogram_type")});
-        });
-
         // ---- data: point or chunk layout -------------------------------------------
         Map<Long, PointArrays.XY> data = loadData(dataFile);
 
         // ---- assemble --------------------------------------------------------------
-        List<Chromatogram> all = new ArrayList<>(order.size());
-        for (Long idx : order) {
-            String[] m = meta.get(idx);
-            PointArrays.XY xy = data.get(idx);
+        List<Chromatogram> all = new ArrayList<>(headers.size());
+        for (ChromatogramMetadataDecoder.Header h : headers) {
+            PointArrays.XY xy = data.get(h.index());
             double[] time      = xy == null ? new double[0] : xy.x();
             double[] intensity = xy == null ? new double[0] : xy.intensity();
-            all.add(new Chromatogram(idx, m[0], m[1], time, intensity));
+            all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), time, intensity));
         }
         return new ChromatogramStore(all);
+    }
+
+    /** A source whose every member is {@code file}; it has no manifest. */
+    private static MzPeakSource singleMember(InputFile file) {
+        return new MzPeakSource() {
+            @Override
+            public byte[] readManifestBytes() {
+                throw new UnsupportedOperationException(MEMBER + " given directly has no manifest");
+            }
+
+            @Override
+            public InputFile inputFile(String name) {
+                return file;
+            }
+
+            @Override
+            public String describe() {
+                return MEMBER;
+            }
+
+            @Override
+            public void close() {
+            }
+        };
     }
 
     /**
