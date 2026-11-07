@@ -39,6 +39,10 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * ({@link ValidatedRoundTripTest}, {@link ForwardBackwardCorpusTest}) reuse {@link #corpusFiles()}
  * and fall back to {@code ~/Claude/mzML2mzPeak/data} when the property is unset.
  *
+ * <p>For a quick check without the external corpus, point the property at a symlink to the vendored legacy set,
+ * {@link Fixtures#LEGACY} ({@code src/test/resources/mzpeak-legacy}). The current upstream set in
+ * {@link Fixtures#CURRENT} is no substitute: the reader lists no spectra from it yet, so the tests pass vacuously.
+ *
  * <p>Coverage of this corpus:
  * <ul>
  *   <li>34 instrument types: Thermo, Bruker timsTOF/microTOF/IMPACT, Agilent QTOF/TripleQuad/DTIMS,

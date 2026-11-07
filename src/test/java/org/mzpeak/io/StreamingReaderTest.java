@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class StreamingReaderTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
     private static final String ROW_GROUP_SIZE = "mzpeak.writer.rowGroupSize";
 
     @Test

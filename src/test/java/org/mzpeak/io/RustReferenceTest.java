@@ -7,8 +7,6 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 
-import java.nio.file.Path;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
@@ -27,14 +25,12 @@ import static org.assertj.core.api.Assertions.within;
  */
 class RustReferenceTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-
     // ---- Rust test_read / test_chunked_read equivalents ---------------------
 
     @ParameterizedTest
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void spectrumZero_profileWith13589Points(String fixture) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             Spectrum s = r.getSpectrum(0).orElseThrow();
             assertThat(s.description().signalContinuity()).isEqualTo(SignalContinuity.PROFILE);
             assertThat(s.pointCount()).isEqualTo(13589);
@@ -46,7 +42,7 @@ class RustReferenceTest {
     @ParameterizedTest
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void spectrumFive_650CentroidPeaks(String fixture) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             Spectrum s = r.getSpectrum(5).orElseThrow();
             assertThat(s.peaks()).hasSize(650);
             assertThat(s.description().precursors()).hasSize(1);
@@ -57,7 +53,7 @@ class RustReferenceTest {
     @ParameterizedTest
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void spectrumTwentyFive_789CentroidPeaks(String fixture) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             Spectrum s = r.getSpectrum(25).orElseThrow();
             assertThat(s.peaks()).hasSize(789);
             assertThat(s.description().precursors()).hasSize(1);
@@ -70,7 +66,7 @@ class RustReferenceTest {
     @ParameterizedTest
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak"})
     void ticChromatogram_index0_48Points(String fixture) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             Chromatogram tic = r.getChromatogram(0).orElseThrow();
             assertThat(tic.index()).isEqualTo(0L);
             assertThat(tic.size()).isEqualTo(48);
@@ -86,7 +82,7 @@ class RustReferenceTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak"})
     void ticChromatogramById(String fixture) {
         // The TIC chromatogram id is "TIC" in the point-layout fixtures; chunked may differ.
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             assertThat(r.getChromatogramById("TIC").orElseThrow().size()).isEqualTo(48);
         }
     }
@@ -95,7 +91,7 @@ class RustReferenceTest {
 
     @Test
     void spectrumByIndex_idRoundTrip() {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy("small.unpacked.mzpeak"))) {
             Spectrum s1 = r.getSpectrumAt(10);
             Spectrum s2 = r.getSpectrum(s1.index()).orElseThrow();
             assertThat(s2.description().id()).isEqualTo(s1.description().id());
@@ -105,7 +101,7 @@ class RustReferenceTest {
 
     @Test
     void metadataAndFullSpectrumAgreOnIndexAndId() {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + "small.mzpeak"))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy("small.mzpeak"))) {
             var meta = r.getMetadata(10).orElseThrow();
             var full = r.getSpectrum(10).orElseThrow();
             assertThat(full.description().id()).isEqualTo(meta.id());

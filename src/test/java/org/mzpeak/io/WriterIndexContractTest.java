@@ -36,9 +36,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class WriterIndexContractTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-    private static final Path UNPACKED = Path.of(BASE + "small.unpacked.mzpeak");
-    private static final Path HAS_UV = Path.of(BASE + "has_uv.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path HAS_UV = Fixtures.legacy("has_uv.mzpeak");
     private static final String ROW_GROUP_SIZE = "mzpeak.writer.rowGroupSize";
 
     // ---- non-negative indices ---------------------------------------------------------------------

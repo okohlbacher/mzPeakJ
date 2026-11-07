@@ -31,12 +31,11 @@ import static org.assertj.core.api.Assertions.within;
  */
 class CrossImplTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-    private static final Path UNPACKED = Path.of(BASE + "small.unpacked.mzpeak");
-    private static final Path PACKED   = Path.of(BASE + "small.mzpeak");
-    private static final Path CHUNKED  = Path.of(BASE + "small.chunked.mzpeak");
-    private static final Path NUMPRESS = Path.of(BASE + "small.numpress.mzpeak");
-    private static final Path UV       = Path.of(BASE + "has_uv.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path PACKED   = Fixtures.legacy("small.mzpeak");
+    private static final Path CHUNKED  = Fixtures.legacy("small.chunked.mzpeak");
+    private static final Path NUMPRESS = Fixtures.legacy("small.numpress.mzpeak");
+    private static final Path UV       = Fixtures.legacy("has_uv.mzpeak");
 
     // ---- Python common_checks: file-level counts ----------------------------------------
 
@@ -44,7 +43,7 @@ class CrossImplTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void fileLevelCounts_48spectra_34msn(String fixture) {
         // Python: len(reader) == 48; len(selected_ions) == 34; len(precursors) == 34
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             assertThat(r.size()).isEqualTo(48);
             long msnCount = r.metadata().stream().filter(d -> d.msLevel() > 1).count();
             assertThat(msnCount).isEqualTo(34);
@@ -63,7 +62,7 @@ class CrossImplTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void spectrum4_837CentroidPoints(String fixture) {
         // Python: spec[4] → len(m/z array) == 837, spectrum_representation == MS:1000127 (centroid)
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             Spectrum s = r.getSpectrum(4).orElseThrow();
             assertThat(s.description().index()).isEqualTo(4L);
             assertThat(s.mz()).hasSize(837);
@@ -97,7 +96,7 @@ class CrossImplTest {
     void chromatogram_count1_tic48Points(String fixture) {
         // Python: len(reader.chromatograms) == 1; read_chromatogram(0) time len == 48
         // Rust test_load_all_chromatogram_metadata: count == 1 for all three containers
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             List<Chromatogram> chroms = r.chromatograms();
             assertThat(chroms).hasSize(1);
             assertThat(chroms.get(0).size()).isEqualTo(48);
@@ -110,7 +109,7 @@ class CrossImplTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak"})
     void loadAllMetadata_48spectra_someHavePrecursors(String fixture) {
         // Rust: out.len() == 48; out.iter().any(|p| !p.precursor.is_empty())
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             List<SpectrumDescription> all = r.metadata();
             assertThat(all).hasSize(48);
             assertThat(all).anyMatch(d -> !d.precursors().isEmpty() && d.primaryPrecursor() != null);
@@ -206,7 +205,7 @@ class CrossImplTest {
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak"})
     void precursorMzAgreesAcrossContainers(String fixture) {
         // Use spectrum 2 (source_index=2) with known precursor mz=810.789 as the anchor.
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             SpectrumDescription d = r.getMetadata(2).orElseThrow();
             assertThat(d.primaryPrecursor()).isNotNull();
             assertThat(d.primaryPrecursor().primaryIon()).isNotNull();
@@ -220,7 +219,7 @@ class CrossImplTest {
     void allMsnSpectraHaveOneSelectedIon(String fixture) {
         // Python: len(selected_ions) == 34 (one per MSn spectrum)
         // Rust: precursor().unwrap().ions.len() == 1 for spectra 5 and 25
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             long msnWithIon = r.metadata().stream()
                     .filter(d -> d.msLevel() > 1)
                     .filter(d -> d.primaryPrecursor() != null

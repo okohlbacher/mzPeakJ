@@ -152,7 +152,17 @@ Writer notes:
 ./run-example.sh <fully.qualified.MainClass> [args...]
 ```
 
-The repository ships HUPO-PSI example datasets under `src/test/resources/mzpeak/`:
+The repository ships two sets of HUPO-PSI example datasets:
+
+- `src/test/resources/mzpeak-legacy/`: the 5 examples of upstream commit `29e59b2`, in the packed metadata
+  layout that mzPeakJ reads and writes. The commands below and the existing tests use this set.
+- `src/test/resources/mzpeak/` (not yet supported): the 8 current examples of upstream commit `2ee2589`
+  (split metadata tables, array index, SHA-512 checksums). mzPeakJ opens these files but lists no spectra
+  yet. They are `small`, `small.chunked`, `small.numpress` and `small.unpacked` (the same run as the legacy
+  set), `has_uv`, `diaPASEF.ref` and `diaPASEF.grid` (a Bruker diaPASEF run, the second with grid-encoded
+  peaks) and `Example_Processed.img` (an imzML imaging run).
+
+Each directory records its upstream commit in `UPSTREAM_COMMIT.txt`. The legacy set:
 
 | Fixture | Form | Contents |
 |---|---|---|
@@ -173,21 +183,21 @@ distribution, activation methods, instrument configuration, and software. `-s` a
 summary.
 
 ```bash
-./mzpeak-fileinfo.sh src/test/resources/mzpeak/small.mzpeak -s
-./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/has_uv.mzpeak
+./mzpeak-fileinfo.sh src/test/resources/mzpeak-legacy/small.mzpeak -s
+./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak-legacy/has_uv.mzpeak
 ```
 
 #### `MzPeakInfo` — quick per-spectrum dump
 
 ```bash
-./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/small.mzpeak 6
+./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak-legacy/small.mzpeak 6
 ```
 
 #### `ExtractSpectra` — filter into a new mzPeak file (reads + writes)
 
 ```bash
 ./run-example.sh org.mzpeak.examples.ExtractSpectra \
-    src/test/resources/mzpeak/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
+    src/test/resources/mzpeak-legacy/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
 ```
 Produces an unpacked directory or STORED ZIP depending on the output name.
 
@@ -195,7 +205,7 @@ Produces an unpacked directory or STORED ZIP depending on the output name.
 
 ```bash
 ./run-example.sh org.mzpeak.examples.ConvertToDta \
-    src/test/resources/mzpeak/small.mzpeak /tmp/dta --ms-level 2 --default-charge 2
+    src/test/resources/mzpeak-legacy/small.mzpeak /tmp/dta --ms-level 2 --default-charge 2
 ```
 One `.dta` per spectrum (`<base>.<scan>.<scan>.<charge>.dta`); first line `<MH+> <charge>`.
 
@@ -203,7 +213,7 @@ One `.dta` per spectrum (`<base>.<scan>.<scan>.<charge>.dta`); first line `<MH+>
 
 ```bash
 ./run-example.sh org.mzpeak.examples.ExtractXic \
-    src/test/resources/mzpeak/small.mzpeak /tmp/xic.csv --mz 810.79 --tol-ppm 20
+    src/test/resources/mzpeak-legacy/small.mzpeak /tmp/xic.csv --mz 810.79 --tol-ppm 20
 ```
 Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--tol-ppm` or `--tol-da`.
 
@@ -248,8 +258,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - File/run-level metadata is stored as JSON in the Parquet footer key-value map under six keys:
   `file_description`, `instrument_configuration_list`, `software_list`, `data_processing_method_list`,
   `sample_list`, and `run`.
-- Tested against vendored HUPO-PSI example files (upstream commit pinned in
-  `src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`).
+- Tested against vendored HUPO-PSI example files: the legacy set from upstream commit `29e59b2`
+  (`src/test/resources/mzpeak-legacy/UPSTREAM_COMMIT.txt`). Only the checksums of the current set, which is
+  not yet supported, are tested (`src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`, upstream `2ee2589`).
 
 ## Scope & limitations
 

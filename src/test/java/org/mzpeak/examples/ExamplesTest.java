@@ -2,6 +2,7 @@ package org.mzpeak.examples;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Spectrum;
 
@@ -18,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Exercises the example tools end-to-end against the vendored fixture. */
 class ExamplesTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
 
     private static SpectrumFilter filter(String... args) {
         return SpectrumFilter.from(new ExampleArgs(args));

@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PolynomialFillCharacterizationTest {
 
-    private static final Path UNPACKED = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
     private static final int FROM = 50;
     private static final int LENGTH = 8;
 

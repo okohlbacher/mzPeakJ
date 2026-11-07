@@ -4,7 +4,6 @@ import org.junit.jupiter.api.Test;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.WavelengthSpectrum;
 
-import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -13,11 +12,9 @@ import static org.assertj.core.api.Assertions.within;
 /** Wavelength (UV/DAD) spectra + multi-chromatogram coverage, against the has_uv fixture. */
 class WavelengthAndChromatogramTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-
     @Test
     void readsWavelengthSpectra() {
-        try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + "has_uv.mzpeak"))) {
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
             List<WavelengthSpectrum> ws = reader.wavelengthSpectra();
             assertThat(ws).hasSize(520);
 
@@ -33,7 +30,7 @@ class WavelengthAndChromatogramTest {
 
     @Test
     void readsMultipleChromatograms() {
-        try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + "has_uv.mzpeak"))) {
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
             assertThat(reader.chromatograms()).hasSize(2);
 
             Chromatogram tic = reader.getChromatogram(0).orElseThrow();
@@ -51,7 +48,7 @@ class WavelengthAndChromatogramTest {
 
     @Test
     void datasetsWithoutWavelengthReturnEmpty() {
-        try (MzPeakReader reader = MzPeakReader.open(Path.of(BASE + "small.unpacked.mzpeak"))) {
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("small.unpacked.mzpeak"))) {
             assertThat(reader.wavelengthSpectra()).isEmpty();
             assertThat(reader.getWavelengthSpectrum(0)).isEmpty();
         }

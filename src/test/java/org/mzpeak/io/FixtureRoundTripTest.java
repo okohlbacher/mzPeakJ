@@ -39,8 +39,6 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  */
 class FixtureRoundTripTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-
     /** Numpress linear m/z tolerance for peaks, the comparator's tolerance for the m/z arrays. */
     private static final double NUMPRESS_PEAK_MZ_ABS_TOL = 1e-4;
     /** Numpress SLOF intensity tolerance, relative to {@code max(|x|, 1)} of the source value. */
@@ -61,7 +59,7 @@ class FixtureRoundTripTest {
     @ParameterizedTest(name = "{0} as {1}")
     @MethodSource("fixturesAndLayouts")
     void writeThenReadMatchesSource(String fixture, Layout layout, @TempDir Path tmp) {
-        Path src = Path.of(BASE + fixture);
+        Path src = Fixtures.legacy(fixture);
         Source source = ForwardBackwardCorpusTest.readSource(src);
         assertThat(source.spectra).as("spectra read from %s", fixture).isNotEmpty();
 

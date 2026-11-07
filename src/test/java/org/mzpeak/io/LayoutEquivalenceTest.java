@@ -25,10 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class LayoutEquivalenceTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-    private static final Path UNPACKED = Path.of(BASE + "small.unpacked.mzpeak");
-    private static final Path PACKED = Path.of(BASE + "small.mzpeak");
-    private static final Path CHUNKED = Path.of(BASE + "small.chunked.mzpeak");
+    private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path PACKED = Fixtures.legacy("small.mzpeak");
+    private static final Path CHUNKED = Fixtures.legacy("small.chunked.mzpeak");
 
     @ParameterizedTest(name = "reconstructProfile={0}")
     @ValueSource(booleans = {true, false})
@@ -79,7 +78,7 @@ class LayoutEquivalenceTest {
             "has_uv.mzpeak,          0, 212"
     })
     void declaredCountsHold(String fixture, int spectraDeclaringPoints, int spectraDeclaringPeaks) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture), true)) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture), true)) {
             int pointChecks = 0;
             int peakChecks = 0;
             for (Spectrum s : r) {

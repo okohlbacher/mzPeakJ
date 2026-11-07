@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class FileMetadataTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.mzpeak");
 
     @Test
     void readsFooterMetadata() {

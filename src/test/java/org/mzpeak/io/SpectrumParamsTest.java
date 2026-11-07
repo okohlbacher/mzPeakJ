@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SpectrumParamsTest {
 
-    private static final Path FIXTURE = Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak");
+    private static final Path FIXTURE = Fixtures.legacy("small.unpacked.mzpeak");
 
     @Test
     void spectrumDescriptionExposesParams() {
@@ -56,7 +56,7 @@ class SpectrumParamsTest {
     @Test
     void paramsLoadFromPackedZip() {
         try (MzPeakReader reader = MzPeakReader.open(
-                Path.of("src/test/resources/mzpeak/small.mzpeak"))) {
+                Fixtures.legacy("small.mzpeak"))) {
             // Basic smoke: loading from ZIP doesn't throw, params not null
             List<Param> params = reader.getMetadata(0).orElseThrow().parameters();
             assertThat(params).isNotNull();

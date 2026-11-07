@@ -25,8 +25,6 @@ import static org.assertj.core.api.Assertions.within;
  */
 class ChromatogramValuesTest {
 
-    private static final String BASE = "src/test/resources/mzpeak/";
-
     // Bit-exact checksums of the reader output, captured on the code before chromatogram intensity fallbacks
     // (SLOF chunk bytes, intensity_* point columns) were added.
     private static final String SMALL_TIC_TIME_SHA256 =
@@ -41,13 +39,13 @@ class ChromatogramValuesTest {
             "7fdfc101e43534357a5fc5db61a2da40771d8846ce8619a70f2845f0cfd2735d";
 
     private static Chromatogram tic(String fixture) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             return r.getChromatogram(0).orElseThrow();
         }
     }
 
     private static List<Chromatogram> chromatograms(String fixture) {
-        try (MzPeakReader r = MzPeakReader.open(Path.of(BASE + fixture))) {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.legacy(fixture))) {
             return r.chromatograms();
         }
     }
@@ -164,7 +162,7 @@ class ChromatogramValuesTest {
     void hasUvDad1IntensityEqualsStoredAbsorbanceColumn() {
         // Independent oracle: the DAD1 rows' intensity_f32_au values, read straight from the data file in row
         // order, widened from FLOAT to double.
-        Path fixture = Path.of(BASE + "has_uv.mzpeak");
+        Path fixture = Fixtures.legacy("has_uv.mzpeak");
         DoubleArrayBuilder stored = new DoubleArrayBuilder();
         try (MzPeakSource src = MzPeakSource.open(fixture)) {
             String dataName = MzPeakManifest.fromSource(src).find("chromatogram", "data arrays").orElseThrow().name();

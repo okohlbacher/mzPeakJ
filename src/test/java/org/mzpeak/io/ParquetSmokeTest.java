@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ParquetSmokeTest {
 
     private static final Path DATA =
-            Path.of("src/test/resources/mzpeak/small.unpacked.mzpeak/spectra_data.parquet");
+            Fixtures.legacy("small.unpacked.mzpeak").resolve("spectra_data.parquet");
 
     @Test
     void readsPointDataHadoopFree() throws Exception {
