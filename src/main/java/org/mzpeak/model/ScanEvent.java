@@ -6,7 +6,7 @@ import java.util.OptionalDouble;
 /**
  * A single acquisition (scan) event within a spectrum.
  *
- * @param startTime                  scan start time (MS:1000016), in the file's time unit (typically minutes)
+ * @param startTime                  scan start time (MS:1000016) in minutes, converted from its column's unit
  * @param injectionTime              ion injection time (MS:1000927); may be {@code null}
  * @param filterString               vendor filter string (MS:1000512); may be {@code null}
  * @param presetScanConfiguration    preset scan configuration index (MS:1000616); may be {@code null}

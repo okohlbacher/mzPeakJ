@@ -9,7 +9,7 @@ import java.util.List;
  *                            requires {@code 0 <= index <= Long.MAX_VALUE})
  * @param id                  native id string (vendor scan number is embedded here)
  * @param msLevel             MS level (1, 2, ...)
- * @param retentionTime       scan start time (MS:1000016 / spectrum.time), in the file's unit (typically minutes)
+ * @param retentionTime       retention time in minutes: spectrum.time, else the earliest scan start time (MS:1000016)
  * @param polarity            scan polarity
  * @param signalContinuity    profile vs centroid
  * @param numberOfDataPoints  declared profile point count (MS:1003060); 0 if absent
