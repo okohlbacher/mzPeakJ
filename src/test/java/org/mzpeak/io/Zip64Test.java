@@ -51,6 +51,18 @@ class Zip64Test {
     }
 
     @Test
+    void zip64WithOnlyTheEntryCountSentinel(@TempDir Path tmp) throws IOException {
+        // The shape of an archive with more than 65535 members, as Python zipfile and the Rust zip crate write it:
+        // only the classic count fields hold 0xFFFF, the size and offset are real, and a zip64 locator precedes.
+        Archive zip = Archive.build(0, Trailer.ZIP64_COUNT_SENTINEL);
+        assertThat(zip.getShort(zip.eocd + 8)).isEqualTo(0xFFFF);
+        assertThat(zip.getShort(zip.eocd + 10)).isEqualTo(0xFFFF);
+        assertThat(zip.getInt(zip.eocd + 12)).isEqualTo(zip.cdSize);
+        assertThat(zip.getInt(zip.eocd + 16)).isEqualTo(zip.cdOffset);
+        assertReadsLikeTheDirectory(zip.save(tmp.resolve("zip64-count.mzpeak")));
+    }
+
+    @Test
     void entryCountSentinelWithoutLocatorIsAClassicArchive(@TempDir Path tmp) throws IOException {
         // Exactly 65535 entries: the classic count field holds 0xFFFF, the size and offset are in range.
         Archive zip = Archive.build(0xFFFF - Archive.memberCount(), Trailer.CLASSIC);
@@ -161,21 +173,25 @@ class Zip64Test {
         /** zip64 record, locator, and a classic record whose count, size and offset fields are all sentinels. */
         ZIP64_ALL_SENTINELS,
         /** zip64 record, locator, and a classic record whose central-directory offset alone is the sentinel. */
-        ZIP64_OFFSET_SENTINEL
+        ZIP64_OFFSET_SENTINEL,
+        /** zip64 record, locator, and a classic record whose entry counts alone are the sentinel. */
+        ZIP64_COUNT_SENTINEL
     }
 
     /** A STORED archive held in memory for editing, with the offsets of its directory and trailing records. */
     private static final class Archive {
 
         final byte[] bytes;
+        final int cdOffset;
         final int cdSize;
         final int zip64Record;
         final int locator;
         final int eocd;
         private final ByteBuffer le;
 
-        private Archive(byte[] bytes, int cdSize, int zip64Record, int locator, int eocd) {
+        private Archive(byte[] bytes, int cdOffset, int cdSize, int zip64Record, int locator, int eocd) {
             this.bytes = bytes;
+            this.cdOffset = cdOffset;
             this.cdSize = cdSize;
             this.zip64Record = zip64Record;
             this.locator = locator;
@@ -244,14 +260,19 @@ class Zip64Test {
             }
             int eocd = out.size();
             boolean all = trailer == Trailer.ZIP64_ALL_SENTINELS;
-            int count = all ? 0xFFFF : entries;
+            int count = all || trailer == Trailer.ZIP64_COUNT_SENTINEL ? 0xFFFF : entries;
+            boolean realOffset = trailer == Trailer.CLASSIC || trailer == Trailer.ZIP64_COUNT_SENTINEL;
             out.i32(0x06054b50).i16(0).i16(0).i16(count).i16(count).i32(all ? -1 : cdSize)
-                    .i32(trailer == Trailer.CLASSIC ? cdOffset : -1).i16(0);
-            return new Archive(out.toByteArray(), cdSize, zip64Record, locator, eocd);
+                    .i32(realOffset ? cdOffset : -1).i16(0);
+            return new Archive(out.toByteArray(), cdOffset, cdSize, zip64Record, locator, eocd);
         }
 
         int getShort(int at) {
             return le.getShort(at) & 0xFFFF;
+        }
+
+        int getInt(int at) {
+            return le.getInt(at);
         }
 
         void putInt(int at, int value) {
