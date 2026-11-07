@@ -43,7 +43,9 @@ class WavelengthAndChromatogramTest {
             Chromatogram dad = reader.getChromatogram(1).orElseThrow();
             assertThat(dad.id()).startsWith("DAD1");
             assertThat(dad.typeCurie()).isEqualTo("MS:1000812"); // absorption chromatogram
-            assertThat(dad.size()).isGreaterThan(0);
+            assertThat(dad.size()).isEqualTo(526);
+            // absorbance is stored in point.intensity_f32_au, not point.intensity; it can be negative
+            assertThat(dad.intensity()[0]).isCloseTo(-0.0248, within(1e-3));
         }
     }
 

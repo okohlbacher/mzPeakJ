@@ -1,18 +1,22 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.example.data.Group;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
 
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Chromatogram time and intensity values, checked against the vendored fixtures. The point-layout
@@ -127,5 +131,50 @@ class ChromatogramValuesTest {
         Chromatogram tic = tic("has_uv.mzpeak");
         assertThat(tic.intensity()[0]).isEqualTo(168514.375);
         assertThat(bitsSha256(tic.intensity())).isEqualTo(UV_TIC_INTENSITY_SHA256);
+    }
+
+    // ---- intensities stored outside the literal 'intensity' column -------------------------------
+
+    @Test
+    void numpressTicDecodesSlofIntensities() {
+        // small.numpress stores the TIC intensity only as chunk.intensity_numpress_slof_bytes (lossy SLOF;
+        // the hand-decoded values are within 1.25e-4 relative error of the point-layout TIC).
+        Chromatogram expected = tic("small.unpacked.mzpeak");
+        Chromatogram actual = tic("small.numpress.mzpeak");
+        assertThat(actual.time()).isEqualTo(expected.time());
+        assertThat(actual.intensity()).hasSize(48);
+        for (int i = 0; i < expected.size(); i++) {
+            double want = expected.intensity()[i];
+            assertThat(actual.intensity()[i]).as("TIC intensity[%d]", i)
+                    .isCloseTo(want, within(1e-3 * Math.abs(want)));
+        }
+    }
+
+    @Test
+    void hasUvDad1ReadsAbsorbanceColumn() {
+        // has_uv stores the DAD1 absorbance in point.intensity_f32_au; point.intensity is null on all 526 rows.
+        Chromatogram dad = chromatograms("has_uv.mzpeak").get(1);
+        assertThat(dad.size()).isEqualTo(526);
+        assertThat(dad.intensity()[0]).isCloseTo(-0.0248, within(1e-3));
+        assertThat(dad.intensity()[525]).isCloseTo(-0.021457672119140625, within(1e-9));
+        assertThat(Arrays.stream(dad.intensity()).anyMatch(v -> v != 0.0)).as("not all zeros").isTrue();
+    }
+
+    @Test
+    void hasUvDad1IntensityEqualsStoredAbsorbanceColumn() {
+        // Independent oracle: the DAD1 rows' intensity_f32_au values, read straight from the data file in row
+        // order, widened from FLOAT to double.
+        Path fixture = Path.of(BASE + "has_uv.mzpeak");
+        DoubleArrayBuilder stored = new DoubleArrayBuilder();
+        try (MzPeakSource src = MzPeakSource.open(fixture)) {
+            String dataName = MzPeakManifest.fromSource(src).find("chromatogram", "data arrays").orElseThrow().name();
+            ParquetGroups.forEach(src.inputFile(dataName), row -> {
+                Group point = ParquetGroups.optGroup(row, "point");
+                if (point != null && Long.valueOf(1L).equals(ParquetGroups.optLong(point, "chromatogram_index"))) {
+                    stored.add(ParquetGroups.optDouble(point, "intensity_f32_au"));
+                }
+            });
+        }
+        assertThat(chromatograms("has_uv.mzpeak").get(1).intensity()).isEqualTo(stored.toArray());
     }
 }
