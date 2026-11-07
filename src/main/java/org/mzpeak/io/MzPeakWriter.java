@@ -33,9 +33,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -77,24 +80,28 @@ public final class MzPeakWriter {
     /**
      * Write an unpacked {@code *.mzpeak/} directory, including wavelength spectra, scan settings, and
      * file/run metadata. This is the full round-trip form consumed by the forward-backward test.
+     *
+     * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
+     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, as must every
+     * precursor_index; otherwise an {@link MzPeakException} is thrown before anything is written.
      */
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                       List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                                       org.mzpeak.model.meta.FileMetadata fileMetadata) {
-        validate(spectra, chromatograms);
-        boolean hasProfile = spectra.stream().anyMatch(s -> profileRows(s) > 0);
-        boolean hasPeaks = spectra.stream().anyMatch(s -> peakRows(s) > 0);
+        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra);
+        boolean hasProfile = ordered.stream().anyMatch(s -> profileRows(s) > 0);
+        boolean hasPeaks = ordered.stream().anyMatch(s -> peakRows(s) > 0);
         boolean hasChromatograms = !chromatograms.isEmpty();
         boolean hasWavelength = !wavelengthSpectra.isEmpty();
         java.util.Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
         try {
             Files.createDirectories(directory);
-            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra, footer);
+            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), ordered, footer);
             if (hasProfile) {
-                writeSpectrumPoints(directory.resolve("spectra_data.parquet"), spectra, false);
+                writeSpectrumPoints(directory.resolve("spectra_data.parquet"), ordered, false);
             }
             if (hasPeaks) {
-                writeSpectrumPoints(directory.resolve("spectra_peaks.parquet"), spectra, true);
+                writeSpectrumPoints(directory.resolve("spectra_peaks.parquet"), ordered, true);
             }
             if (hasChromatograms) {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
@@ -161,24 +168,30 @@ public final class MzPeakWriter {
         writeDirectoryNumpress(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata, intensityEncoding);
     }
 
-    /** Full Numpress directory form including wavelength spectra and scan settings. */
+    /**
+     * Full Numpress directory form including wavelength spectra and scan settings.
+     *
+     * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
+     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, as must every
+     * precursor_index; otherwise an {@link MzPeakException} is thrown before anything is written.
+     */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,
                                              List<WavelengthSpectrum> wavelengthSpectra,
                                              List<ScanSettings> scanSettings,
                                              org.mzpeak.model.meta.FileMetadata fileMetadata,
                                              NumpressIntensityEncoding intensityEncoding) {
-        validate(spectra, chromatograms);
-        boolean hasPeaks = spectra.stream().anyMatch(s -> peakRows(s) > 0);
+        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra);
+        boolean hasPeaks = ordered.stream().anyMatch(s -> peakRows(s) > 0);
         boolean hasChromatograms = !chromatograms.isEmpty();
         boolean hasWavelength = !wavelengthSpectra.isEmpty();
         java.util.Map<String, String> footer = FooterMetadataWriter.serialize(fileMetadata);
         try {
             Files.createDirectories(directory);
-            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), spectra, footer);
-            writeNumpressChunks(directory.resolve("spectra_data.parquet"), spectra, false, intensityEncoding);
+            writeSpectrumMetadata(directory.resolve("spectra_metadata.parquet"), ordered, footer);
+            writeNumpressChunks(directory.resolve("spectra_data.parquet"), ordered, false, intensityEncoding);
             if (hasPeaks) {
-                writeNumpressChunks(directory.resolve("spectra_peaks.parquet"), spectra, true, intensityEncoding);
+                writeNumpressChunks(directory.resolve("spectra_peaks.parquet"), ordered, true, intensityEncoding);
             }
             if (hasChromatograms) {
                 writeChromatogramMetadata(directory.resolve("chromatograms_metadata.parquet"), chromatograms);
@@ -919,22 +932,60 @@ public final class MzPeakWriter {
         return builder.build();
     }
 
-    private static void validate(List<Spectrum> spectra, List<Chromatogram> chromatograms) {
+    /**
+     * Enforce the reader's index contract before anything is written. Spectrum, precursor_index, chromatogram
+     * and wavelength-spectrum indices must be non-negative (they are stored as uint64), and spectrum, chromatogram
+     * and wavelength-spectrum indices must be unique. The reader finds a spectrum's data rows through the index
+     * range of each row group, so spectra are written in index order: this returns the caller's list when it is
+     * already in index order, and otherwise a stable-sorted copy. The caller's list is never modified.
+     */
+    private static List<Spectrum> validateAndOrder(List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                                   List<WavelengthSpectrum> wavelengthSpectra) {
+        boolean inIndexOrder = true;
+        long previous = -1;
         for (Spectrum s : spectra) {
             requireNonNegative(s.index(), "spectrum index");
             Precursor p = s.description().primaryPrecursor();
             if (p != null && p.precursorIndex() != null) {
                 requireNonNegative(p.precursorIndex(), "precursor_index");
             }
+            inIndexOrder &= s.index() >= previous;
+            previous = s.index();
         }
+        Set<Long> seen = new HashSet<>();
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
+            requireUnique(seen, c.index(), "chromatogram index");
         }
+        seen.clear();
+        for (WavelengthSpectrum w : wavelengthSpectra) {
+            requireNonNegative(w.index(), "wavelength spectrum index");
+            requireUnique(seen, w.index(), "wavelength spectrum index");
+        }
+        List<Spectrum> ordered = spectra;
+        if (!inIndexOrder) {
+            ordered = new ArrayList<>(spectra);
+            ordered.sort(Comparator.comparingLong(Spectrum::index)); // List.sort is stable
+        }
+        previous = -1;
+        for (Spectrum s : ordered) {
+            if (s.index() == previous) {
+                throw new MzPeakException("duplicate spectrum index: " + s.index() + " (mzPeak indices are unique)");
+            }
+            previous = s.index();
+        }
+        return ordered;
     }
 
     private static void requireNonNegative(long value, String what) {
         if (value < 0) {
             throw new MzPeakException(what + " must be non-negative (mzPeak indices are uint64): " + value);
+        }
+    }
+
+    private static void requireUnique(Set<Long> seen, long value, String what) {
+        if (!seen.add(value)) {
+            throw new MzPeakException("duplicate " + what + ": " + value + " (mzPeak indices are unique)");
         }
     }
 
