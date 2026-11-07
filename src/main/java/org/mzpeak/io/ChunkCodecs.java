@@ -5,11 +5,11 @@ import org.apache.parquet.example.data.Group;
 import org.apache.parquet.schema.Type;
 import org.mzpeak.io.parquet.ParquetGroups;
 
-import java.util.Set;
+import java.util.List;
 
 /**
  * Decodes the payloads of a spectrum signal chunk row (the main-axis values and MS-Numpress byte lists) and builds the
- * errors for chunks the reader cannot decode.
+ * errors for chunks the reader cannot decode. The caller names the columns, from the member's {@link SignalPlan}.
  */
 final class ChunkCodecs {
 
@@ -17,9 +17,6 @@ final class ChunkCodecs {
     private static final String NO_COMPRESSION = "MS:1000576";
     private static final String TRUNCATION_ZLIB = "MS:1003088";
     private static final String GRID_ENCODING = "MS:1003826";
-    /** The Numpress columns decoded here; any other column whose name contains "numpress" is not understood. */
-    private static final Set<String> NUMPRESS_COLUMNS = Set.of(
-            "mz_numpress_linear_bytes", "intensity_numpress_slof_bytes", "intensity_numpress_pic_bytes");
 
     private ChunkCodecs() {
     }
@@ -36,30 +33,46 @@ final class ChunkCodecs {
         }
     }
 
-    /** Throws if Numpress intensity in {@code field} decodes to values that have no Numpress m/z to pair with. */
+    /**
+     * Throws if Numpress intensity in {@code field} (null when the member has none) decodes to values that have no
+     * Numpress m/z to pair with; the message names {@code encoding}, the row's chunk_encoding.
+     */
     static void rejectUnpairedNumpressIntensity(Group chunk, String field, String cvAccession,
-                                                String kind, long si) {
-        if (ParquetGroups.has(chunk, field)
+                                                String kind, String encoding, long si) {
+        if (field != null && ParquetGroups.has(chunk, field)
                 && decodeNumpress(chunk, field, cvAccession, si, "intensity").length > 0) {
             throw new MzPeakException("unsupported chunk: Numpress " + kind + " intensity (" + field
-                    + ") without Numpress linear m/z (chunk_encoding "
-                    + ParquetGroups.optString(chunk, "chunk_encoding") + ") for spectrum_index " + si);
+                    + ") without Numpress linear m/z (chunk_encoding " + encoding + ") for spectrum_index " + si);
         }
     }
 
     /**
-     * Throws for a {@code *numpress*} column other than the three decoded ones when it carries a value in this
+     * Throws for a {@code *numpress*} column other than the {@code decoded} ones when it carries a value in this
      * row: its data would otherwise be dropped (or, in place of the SLOF column, the whole chunk skipped).
+     *
+     * @param decoded the Numpress columns the decoder reads, in the order the message names them
      */
-    static void rejectUnknownNumpressColumns(Group chunk, long si) {
+    static void rejectUnknownNumpressColumns(Group chunk, List<String> decoded, long si) {
         for (Type field : chunk.getType().getFields()) {
             String name = field.getName();
-            if (name.contains("numpress") && !NUMPRESS_COLUMNS.contains(name) && carriesValue(chunk, name)) {
+            if (name.contains("numpress") && !decoded.contains(name) && carriesValue(chunk, name)) {
                 throw new MzPeakException("unsupported Numpress column " + name + " for spectrum_index " + si
-                        + "; only mz_numpress_linear_bytes, intensity_numpress_slof_bytes and"
-                        + " intensity_numpress_pic_bytes are decoded");
+                        + "; " + decodedColumns(decoded));
             }
         }
+    }
+
+    /** {@code only a, b and c are decoded}, or the singular and empty forms. */
+    private static String decodedColumns(List<String> decoded) {
+        int n = decoded.size();
+        if (n == 0) {
+            return "no Numpress column is decoded";
+        }
+        if (n == 1) {
+            return "only " + decoded.get(0) + " is decoded";
+        }
+        return "only " + String.join(", ", decoded.subList(0, n - 1)) + " and " + decoded.get(n - 1)
+                + " are decoded";
     }
 
     /** True if {@code field} is non-null in this row and, if it is a group (such as a LIST), not empty. */
@@ -81,11 +94,14 @@ final class ChunkCodecs {
 
     /**
      * The error for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding not decoded yet): one whose
-     * {@code chunk_encoding} names the grid, or one with an {@code mz_grid} struct and intensities but no chunk
-     * values. Without this check the intensities fail the length check with a misleading message.
+     * {@code chunk_encoding} names the grid, or one with a main-axis grid struct (such as {@code mz_grid}) and
+     * intensities but no chunk values. Without this check the intensities fail the length check with a misleading
+     * message.
+     *
+     * @param gridField the main-axis grid struct, or null when the member has none
      */
-    static MzPeakException unsupportedGrid(Group chunk, long si) {
-        Group grid = ParquetGroups.optGroup(chunk, "mz_grid");
+    static MzPeakException unsupportedGrid(Group chunk, String gridField, long si) {
+        Group grid = gridField == null ? null : ParquetGroups.optGroup(chunk, gridField);
         String gridType = grid == null ? null : ParquetGroups.optString(grid, "grid_type");
         return new MzPeakException("unsupported chunk encoding " + GRID_ENCODING
                 + " (coordinate grid, draft) with grid_type " + (gridType == null ? "(none)" : gridType)

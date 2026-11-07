@@ -1,6 +1,5 @@
 package org.mzpeak.io;
 
-import ms.numpress.MSNumpress;
 import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.example.data.Group;
@@ -8,11 +7,13 @@ import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+import org.apache.parquet.hadoop.metadata.FileMetaData;
 import org.apache.parquet.io.ColumnIOFactory;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.schema.MessageType;
+import org.mzpeak.io.SignalPlan.Column;
 import org.mzpeak.io.parquet.ParquetGroups;
 
 import java.io.IOException;
@@ -24,15 +25,17 @@ import java.util.function.Consumer;
 
 /**
  * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) in a streaming,
- * memory-bounded fashion. Supports the {@code point} layout, delta-encoded {@code chunk} layout, and
- * MS-Numpress chunks (linear m/z + SLOF intensity). A chunk it cannot decode (a coordinate grid, an unknown
- * {@code chunk_encoding}, Numpress intensity without Numpress m/z, or an unknown Numpress column with a value)
- * throws an {@link MzPeakException} instead of being dropped or misdecoded. The chunk payloads are decoded by
- * {@link ChunkCodecs}, and null-marked m/z is resolved by {@link NullFill}.
+ * memory-bounded fashion. The columns are the ones the member's {@link SignalPlan} names: from its
+ * {@code spectrum_array_index} footer, or inferred from the column names when it has none (as in mzPeakJ output).
+ * Supports the {@code point} layout, delta-encoded {@code chunk} layout, and MS-Numpress chunks (linear m/z +
+ * SLOF intensity); chunk rows are decoded by {@link ChunkRowDecoder}. A chunk it cannot decode (a coordinate grid,
+ * an unknown {@code chunk_encoding}, Numpress intensity without Numpress m/z, or an unknown Numpress column with a
+ * value) throws an {@link MzPeakException} instead of being dropped or misdecoded. Null-marked m/z is resolved by
+ * {@link NullFill}.
  *
- * <p><b>Streaming:</b> per-row-group {@code spectrum_index} min/max statistics are read at open time;
- * {@link #get} decodes only the row group(s) covering the requested index, caching the last decoded block run.
- * Memory usage is bounded to one row-group run rather than the whole file.
+ * <p><b>Streaming:</b> per-row-group min/max statistics of the plan's index column ({@code spectrum_index}) are
+ * read at open time; {@link #get} decodes only the row group(s) covering the requested index, caching the last
+ * decoded block run. Memory usage is bounded to one row-group run rather than the whole file.
  */
 final class SpectrumArrayStore implements AutoCloseable {
 
@@ -41,6 +44,8 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private final ParquetFileReader reader;
     private final MessageType schema;
+    private final SignalPlan plan;
+    private final ChunkRowDecoder chunks;
     private final boolean reconstructProfile;
     private final Map<Long, double[]> deltaModels;
     private final long[] rgMin;
@@ -52,38 +57,66 @@ final class SpectrumArrayStore implements AutoCloseable {
     private int cachedLast = -2;
     private Map<Long, Arrays> cache = Map.of();
 
-    private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, boolean reconstructProfile,
-                               Map<Long, double[]> deltaModels, long[] rgMin, long[] rgMax) {
+    private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, SignalPlan plan,
+                               boolean reconstructProfile, Map<Long, double[]> deltaModels, long[] rgMin,
+                               long[] rgMax) {
         this.reader = reader;
         this.schema = schema;
+        this.plan = plan;
+        this.chunks = plan.layout() == SignalPlan.Layout.CHUNK ? new ChunkRowDecoder(plan) : null;
         this.reconstructProfile = reconstructProfile;
         this.deltaModels = deltaModels;
         this.rgMin = rgMin;
         this.rgMax = rgMax;
     }
 
+    /**
+     * Opens a spectrum signal member and builds its {@link SignalPlan} from the footer.
+     *
+     * @throws MzPeakException when the plan cannot be built: the array index names another main axis than m/z, or
+     *                         two m/z value columns
+     */
     static SpectrumArrayStore load(InputFile file, boolean reconstructProfile, Map<Long, double[]> deltaModels) {
         try {
             ParquetFileReader reader = ParquetFileReader.open(file, ParquetGroups.readOptions());
-            MessageType schema = reader.getFooter().getFileMetaData().getSchema();
-            List<BlockMetaData> blocks = reader.getRowGroups();
-            long[] rgMin = new long[blocks.size()];
-            long[] rgMax = new long[blocks.size()];
-            for (int b = 0; b < blocks.size(); b++) {
-                long[] range = indexRange(blocks.get(b));
-                rgMin[b] = range[0];
-                rgMax[b] = range[1];
+            try {
+                FileMetaData footer = reader.getFooter().getFileMetaData();
+                MessageType schema = footer.getSchema();
+                SignalPlan plan = SignalPlan.of(
+                        ArrayIndex.of(footer.getKeyValueMetaData(), schema, SignalEntity.SPECTRUM), schema,
+                        SignalEntity.SPECTRUM);
+                String indexPath = plan.prefix() + "." + plan.indexField();
+                List<BlockMetaData> blocks = reader.getRowGroups();
+                long[] rgMin = new long[blocks.size()];
+                long[] rgMax = new long[blocks.size()];
+                for (int b = 0; b < blocks.size(); b++) {
+                    long[] range = indexRange(blocks.get(b), indexPath);
+                    rgMin[b] = range[0];
+                    rgMax[b] = range[1];
+                }
+                return new SpectrumArrayStore(reader, schema, plan, reconstructProfile, deltaModels, rgMin, rgMax);
+            } catch (RuntimeException e) {
+                try {
+                    reader.close();
+                } catch (IOException closing) {
+                    e.addSuppressed(closing);
+                }
+                throw e;
             }
-            return new SpectrumArrayStore(reader, schema, reconstructProfile, deltaModels, rgMin, rgMax);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed opening spectrum signal file", e);
         }
     }
 
-    /** min/max of the {@code *.spectrum_index} column for a block; full range if stats are missing. */
-    private static long[] indexRange(BlockMetaData block) {
+    /** The plan the member's columns are resolved with. */
+    SignalPlan plan() {
+        return plan;
+    }
+
+    /** min/max of the index column at {@code indexPath} for a block; full range if stats are missing. */
+    private static long[] indexRange(BlockMetaData block, String indexPath) {
         for (ColumnChunkMetaData col : block.getColumns()) {
-            if (col.getPath().toDotString().endsWith("spectrum_index")) {
+            if (col.getPath().toDotString().equals(indexPath)) {
                 Statistics<?> stats = col.getStatistics();
                 if (stats != null && stats.hasNonNullValue()
                         && stats.genericGetMin() instanceof Long min && stats.genericGetMax() instanceof Long max) {
@@ -132,7 +165,7 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private Map<Long, Arrays> decodeBlocks(int first, int last) {
         Map<Long, Arrays> result = new HashMap<>();
-        Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels);
+        Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels, plan, chunks);
         try {
             for (int b = first; b <= last; b++) {
                 PageReadStore pages = reader.readRowGroup(b);
@@ -164,136 +197,62 @@ final class SpectrumArrayStore implements AutoCloseable {
         private final Map<Long, Arrays> result;
         private final boolean reconstructProfile;
         private final Map<Long, double[]> deltaModels;
+        private final String prefix;
+        private final String indexField;
+        /** Point layout: the m/z values column, or null when the plan names none. */
+        private final String mzField;
+        /** Point layout: the plain intensity column, or null when the plan names none. */
+        private final String intensityField;
+        /** Chunk layout: the row decoder; null for the point layout. */
+        private final ChunkRowDecoder chunks;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
         private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
 
-        Accumulator(Map<Long, Arrays> result, boolean reconstructProfile, Map<Long, double[]> deltaModels) {
+        Accumulator(Map<Long, Arrays> result, boolean reconstructProfile, Map<Long, double[]> deltaModels,
+                    SignalPlan plan, ChunkRowDecoder chunks) {
             this.result = result;
             this.reconstructProfile = reconstructProfile;
             this.deltaModels = deltaModels;
+            this.prefix = plan.prefix();
+            this.indexField = plan.indexField();
+            this.mzField = plan.axis().values() == null ? null : plan.axis().values().field();
+            this.intensityField = plan.plainIntensity().map(Column::field).orElse(null);
+            this.chunks = chunks;
         }
 
         @Override
         public void accept(Group record) {
-            Group point = ParquetGroups.optGroup(record, "point");
-            if (point != null) {
-                acceptPoint(point);
+            Group row = ParquetGroups.optGroup(record, prefix);
+            if (row == null) {
+                throw new MzPeakException("spectrum signal row has neither 'point' nor 'chunk' struct");
+            }
+            long si = requireIndex(row);
+            transition(si);
+            if (chunks == null) {
+                acceptPoint(row);
                 return;
             }
-            Group chunk = ParquetGroups.optGroup(record, "chunk");
-            if (chunk != null) {
-                acceptChunk(chunk);
-                return;
+            ChunkRowDecoder.Row decoded = chunks.decode(row, si);
+            double[] axis = decoded.axis();
+            double[] values = decoded.intensity();
+            for (int i = 0; i < axis.length; i++) {
+                mz.add(axis[i]);
+                intensity.add(values[i]);
             }
-            throw new MzPeakException("spectrum signal row has neither 'point' nor 'chunk' struct");
         }
 
         private void acceptPoint(Group point) {
-            long si = requireIndex(point);
-            transition(si);
-            Double mzVal = ParquetGroups.optDouble(point, "mz");
-            Double inVal = ParquetGroups.optDouble(point, "intensity");
+            Double mzVal = mzField == null ? null : ParquetGroups.optDouble(point, mzField);
+            Double inVal = intensityField == null ? null : ParquetGroups.optDouble(point, intensityField);
             // Null-marked point: NaN m/z + 0 intensity placeholder, resolved on flush.
             mz.add(mzVal == null ? Double.NaN : mzVal);
             intensity.add(inVal == null ? 0.0 : inVal);
         }
 
-        private void acceptChunk(Group chunk) {
-            long si = requireIndex(chunk);
-            transition(si);
-            ChunkCodecs.rejectUnknownNumpressColumns(chunk, si);
-            String encoding = ParquetGroups.optString(chunk, "chunk_encoding");
-            if (encoding != null && encoding.contains("1003826")) {
-                throw ChunkCodecs.unsupportedGrid(chunk, si);
-            }
-            // Checked for every row: Numpress column presence picks the decoder, but never admits an unknown CURIE.
-            boolean absolute = ChunkCodecs.isAbsolute(encoding, si);
-            if (ParquetGroups.has(chunk, "mz_numpress_linear_bytes")
-                    || ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")
-                    || ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
-                acceptNumpressChunk(chunk, si);
-                return;
-            }
-            double start = orZero(ParquetGroups.optDouble(chunk, "mz_chunk_start"));
-            double[] rawMz = ParquetGroups.doubleListNullable(chunk, "mz_chunk_values");
-            double[] chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
-            if (ParquetGroups.has(chunk, "mz_grid") && rawMz.length == 0 && chunkIntensity.length > 0) {
-                // A grid chunk without the grid chunk_encoding: the intensities pair with grid indices, not values.
-                throw ChunkCodecs.unsupportedGrid(chunk, si);
-            }
-            double[] chunkMz = ChunkCodecs.decodeAxisValues(rawMz, start, absolute);
-            // A chunk whose intensity list is one longer than its m/z values emits chunk_start as a real point
-            // (its intensity is intensity[0]); the delta-decoded values then pair with intensity[1..]. A chunk
-            // with equal lengths pairs its values one-to-one with intensities and has no separate start point.
-            int extra = chunkIntensity.length - chunkMz.length;
-            if (extra == 1) {
-                mz.add(start);
-                intensity.add(nonNullIntensity(chunkIntensity[0]));
-                for (int i = 0; i < chunkMz.length; i++) {
-                    mz.add(chunkMz[i]);
-                    intensity.add(nonNullIntensity(chunkIntensity[i + 1]));
-                }
-            } else if (extra == 0) {
-                for (int i = 0; i < chunkMz.length; i++) {
-                    mz.add(chunkMz[i]);
-                    intensity.add(nonNullIntensity(chunkIntensity[i]));
-                }
-            } else {
-                throw new MzPeakException("chunk intensity length (" + chunkIntensity.length
-                        + ") must equal m/z values (" + chunkMz.length + ") or values+1, for spectrum_index " + si);
-            }
-        }
-
-        /**
-         * Numpress chunk: m/z is MS-Numpress linear, intensity is MS-Numpress SLOF, PIC, or (mixed format)
-         * a regular double LIST. These encode the full absolute arrays directly — no chunk_start, no delta,
-         * no null-marking — so we decode and append 1:1.
-         *
-         * <p>Some writers (e.g. Thermo Orbitrap profile exports via mzML2mzPeak) use mixed-format chunks
-         * where m/z is Numpress-encoded but intensity is stored as a plain {@code intensity} LIST. We detect
-         * this by falling back to the regular intensity column when no intensity Numpress bytes are present.
-         *
-         * <p>Numpress intensity without Numpress m/z has no m/z to pair with: an empty payload is skipped, and
-         * one that decodes to values throws rather than dropping them.
-         */
-        private void acceptNumpressChunk(Group chunk, long si) {
-            if (!ParquetGroups.has(chunk, "mz_numpress_linear_bytes")) {
-                ChunkCodecs.rejectUnpairedNumpressIntensity(chunk, "intensity_numpress_slof_bytes",
-                        MSNumpress.ACC_NUMPRESS_SLOF, "SLOF", si);
-                ChunkCodecs.rejectUnpairedNumpressIntensity(chunk, "intensity_numpress_pic_bytes",
-                        MSNumpress.ACC_NUMPRESS_PIC, "PIC", si);
-                return;
-            }
-            double[] chunkMz = ChunkCodecs.decodeNumpress(chunk, "mz_numpress_linear_bytes",
-                    MSNumpress.ACC_NUMPRESS_LINEAR, si, "m/z");
-            double[] chunkIntensity;
-            if (ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")) {
-                chunkIntensity = ChunkCodecs.decodeNumpress(chunk, "intensity_numpress_slof_bytes",
-                        MSNumpress.ACC_NUMPRESS_SLOF, si, "intensity");
-            } else if (ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
-                chunkIntensity = ChunkCodecs.decodeNumpress(chunk, "intensity_numpress_pic_bytes",
-                        MSNumpress.ACC_NUMPRESS_PIC, si, "intensity");
-            } else if (ParquetGroups.has(chunk, "intensity")) {
-                // Mixed format: m/z is Numpress-compressed, intensity is a plain double list.
-                chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
-            } else {
-                // No intensity data at all — skip this chunk; the spectrum will materialise as empty.
-                return;
-            }
-            if (chunkMz.length != chunkIntensity.length) {
-                throw new MzPeakException("Numpress chunk m/z (" + chunkMz.length + ") and intensity ("
-                        + chunkIntensity.length + ") lengths differ for spectrum_index " + si);
-            }
-            for (int i = 0; i < chunkMz.length; i++) {
-                mz.add(chunkMz[i]);
-                intensity.add(chunkIntensity[i]);
-            }
-        }
-
         private long requireIndex(Group g) {
-            Long si = ParquetGroups.optLong(g, "spectrum_index");
+            Long si = ParquetGroups.optLong(g, indexField);
             if (si == null) {
                 throw new MzPeakException("signal row missing spectrum_index");
             }
@@ -334,14 +293,6 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
             mz = new DoubleArrayBuilder();
             intensity = new DoubleArrayBuilder();
-        }
-
-        private static double orZero(Double d) {
-            return d == null ? 0.0 : d;
-        }
-
-        private static double nonNullIntensity(double v) {
-            return Double.isNaN(v) ? 0.0 : v;
         }
     }
 }
