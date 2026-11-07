@@ -22,6 +22,9 @@ import java.util.Optional;
  */
 final class ChromatogramStore {
 
+    /** Names the member in error messages, by its manifest role. */
+    private static final String MEMBER = "chromatogram metadata member";
+
     private final List<Chromatogram> all;
     private final Map<Long, Chromatogram> byIndex;
     private final Map<String, Chromatogram> byId;
@@ -43,6 +46,13 @@ final class ChromatogramStore {
     Optional<Chromatogram> byId(String id)      { return Optional.ofNullable(byId.get(id)); }
 
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
+        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "chromatogram", "index", MEMBER);
+        if (shape == MetadataShape.SPLIT) {
+            throw new MzPeakException(MEMBER + ": split metadata layout not supported yet");
+        }
+        if (shape == MetadataShape.EMPTY) {
+            return new ChromatogramStore(List.of());
+        }
         // ---- metadata ----------------------------------------------------------------
         Map<Long, String[]> meta = new LinkedHashMap<>(); // {id, typeCurie}
         List<Long> order = new ArrayList<>();
