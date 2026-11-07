@@ -144,7 +144,12 @@ class WriterSpecConformanceTest {
         FileMetadata fixture = fixtureMetadata();
         assertThat(fixture.fileDescription()).as("fixture file description").isNotNull();
         assertThat(fixture.fileDescription().sourceFiles()).as("fixture source files").isNotEmpty();
-        FileMetadata meta = withRun(fixture, runWith(fixture.run(), fixture.run().defaultDataProcessingId(), null));
+        // A second source file, so that falling back to the last one instead of the first would fail.
+        List<FileMetadata.SourceFile> sources = new ArrayList<>(fixture.fileDescription().sourceFiles());
+        sources.add(new FileMetadata.SourceFile("second_source", "second.raw", "file:///second", List.of()));
+        FileMetadata meta = new FileMetadata(new FileDescription(fixture.fileDescription().contents(), sources),
+                fixture.instrumentConfigurations(), fixture.dataProcessingMethods(), fixture.samples(),
+                fixture.software(), runWith(fixture.run(), fixture.run().defaultDataProcessingId(), null));
 
         JsonNode run = json(FooterMetadataWriter.serialize(meta), "run");
 
