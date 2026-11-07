@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.Param;
 
 import java.util.ArrayList;
@@ -16,7 +17,7 @@ final class IonMobilityParams {
     private static final String F_ION_MOBILITY_VALUE = "ion_mobility_value";
     private static final String F_ION_MOBILITY_TYPE = "ion_mobility_type";
 
-    /** The type of a value whose row names none: mean inverse reduced ion mobility (1/K0). */
+    /** The type of a value whose row names none: MS:1002476 'ion mobility drift time'. */
     private static final String DEFAULT_TYPE = "MS:1002476";
 
     private IonMobilityParams() {
@@ -24,11 +25,11 @@ final class IonMobilityParams {
 
     /**
      * {@code params} plus the row's typed ion mobility as {@code Param("ion mobility value", type, value)}, appended
-     * when {@code params} hold no ion mobility term and the row has a finite value. A null or blank type is
-     * {@code MS:1002476}. Returns {@code params} itself when nothing is appended.
+     * when {@code params} hold no ion mobility type ({@link CvTerms#ION_MOBILITY_TYPES}) and the row has a finite
+     * value. A null or blank type is {@code MS:1002476}. Returns {@code params} itself when nothing is appended.
      */
     static List<Param> withTypedIonMobility(FacetRow row, List<Param> params) {
-        if (params.stream().anyMatch(p -> isIonMobilityAccession(p.accession()))) {
+        if (params.stream().anyMatch(p -> CvTerms.ION_MOBILITY_TYPES.contains(p.accession()))) {
             return params;
         }
         ColumnResolver columns = row.columns();
@@ -42,13 +43,5 @@ final class IonMobilityParams {
         List<Param> out = new ArrayList<>(params);
         out.add(new Param("ion mobility value", accession, value, null));
         return out;
-    }
-
-    private static boolean isIonMobilityAccession(String acc) {
-        if (acc == null) return false;
-        return acc.equals("MS:1002476") || acc.equals("MS:1002477") || acc.equals("MS:1002478")
-            || acc.equals("MS:1002814") || acc.equals("MS:1002816")
-            || acc.equals("MS:1003006") || acc.equals("MS:1003007")
-            || acc.equals("MS:1003153") || acc.equals("MS:1003155") || acc.equals("MS:1003156");
     }
 }

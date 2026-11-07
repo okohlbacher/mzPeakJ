@@ -18,6 +18,7 @@ import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -43,9 +44,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ul>
  *   <li>Activation Params come, in this order, from the dissociation_method term marker (MS:1000044) as
- *       {@code Param(null, cell)}, the collision_energy column (MS:1000045) as 'collision energy' with the mapping's
- *       unit, the activation-scope leftovers, and the activation {@code parameters} list, whose entries yield to a
- *       column with the same accession.
+ *       {@code Param(name, cell)}, named from {@link CvTerms#DISSOCIATION_METHODS} since RD-11, the
+ *       collision_energy column (MS:1000045) as 'collision energy' with the mapping's unit, the activation-scope
+ *       leftovers, and the activation {@code parameters} list, whose entries yield to a column with the same
+ *       accession.
  *   <li>Selected ions carry their typed ion mobility (both layouts) and their leftovers (split).
  *   <li>Precursor-scope and isolation-window leftovers have no place in the model: they are logged at DEBUG and
  *       dropped.
@@ -62,6 +64,8 @@ class SplitPrecursorsTest {
     private static final String SMALL_UNPACKED = "small.unpacked.mzpeak";
 
     private static final String CID = "MS:1000133";
+    /** The dissociation_method term-marker Param of a CID cell. */
+    private static final Param CID_MARKER = new Param("collision-induced dissociation", CID, null, null);
     private static final String COLLISION_ENERGY = "MS:1000045";
     private static final String ELECTRONVOLT = "UO:0000266";
     private static final String DEFAULT_ION_MOBILITY_TYPE = "MS:1002476";
@@ -73,10 +77,9 @@ class SplitPrecursorsTest {
     // ---- (a), (b) current small against legacy ------------------------------------------------------------------
 
     /**
-     * The 34 MS2 spectra of current small have one precursor with one selected ion, equal to legacy apart from the
-     * activation, whose Params now come from the term-marker and collision-energy columns. The legacy activation
-     * names the method from its parameters list; the current one has only the CURIE, so the method accessions and
-     * the energy are compared.
+     * The 34 MS2 spectra of current small have one precursor with one selected ion, equal to legacy. The current
+     * activation Params come from the term-marker and collision-energy columns; the marker is named from
+     * {@link CvTerms#DISSOCIATION_METHODS} (RD-11), so they equal the legacy parameters list.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("smallFixtures")
@@ -114,8 +117,9 @@ class SplitPrecursorsTest {
 
                 Activation a = cp.activation();
                 assertThat(a.parameters()).as(where + " activation").containsExactly(
-                        new Param(null, CID, null, null),
-                        new Param("collision energy", COLLISION_ENERGY, 35.0, ELECTRONVOLT));
+                        CID_MARKER,
+                        new Param("collision energy", COLLISION_ENERGY, 35.0, ELECTRONVOLT))
+                        .isEqualTo(lp.activation().parameters());
                 assertThat(a.methods()).extracting(Param::accession).as(where + " methods")
                         .containsExactly(CID)
                         .isEqualTo(lp.activation().methods().stream().map(Param::accession).toList());
@@ -137,7 +141,7 @@ class SplitPrecursorsTest {
             assertThat(p.precursorId()).isEqualTo("merged=0 frame=1 startScan=1 endScan=927");
             assertThat(p.isolationWindow()).isEqualTo(new IsolationWindow(813.0, 13.0, 13.0));
             assertThat(p.activation().parameters()).containsExactly(
-                    new Param(null, CID, null, null),
+                    CID_MARKER,
                     new Param("collision energy", COLLISION_ENERGY, 41.572227478027344, ELECTRONVOLT));
             assertThat(p.activation().collisionEnergy()).hasValue(41.572227478027344);
 
@@ -257,7 +261,7 @@ class SplitPrecursorsTest {
         addParam(activation, "free text", null, "kept", null);
 
         assertThat(PrecursorRowDecoder.decode(row).activation().parameters()).containsExactly(
-                new Param(null, CID, null, null),
+                CID_MARKER,
                 new Param("collision energy", COLLISION_ENERGY, 35.0, ELECTRONVOLT),
                 new Param("supplemental collision-induced dissociation", "MS:1002679", null, null),
                 new Param("supplemental collision energy", "MS:1002680", 12.5, ELECTRONVOLT),
@@ -278,6 +282,29 @@ class SplitPrecursorsTest {
         List<Param> params = PrecursorRowDecoder.decode(row).activation().parameters();
         assertThat(params).containsExactly(new Param("collision energy", COLLISION_ENERGY, 99.0, ELECTRONVOLT));
         assertThat(PrecursorRowDecoder.decode(row).activation().collisionEnergy()).hasValue(99.0);
+    }
+
+    /**
+     * RD-11: the term-marker Param takes its name from {@link CvTerms#DISSOCIATION_METHODS}. A CURIE the table does
+     * not list, such as EThcD (MS:1002631, not a descendant of MS:1000044), keeps a null name and is no method.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "MS:1000598, electron transfer dissociation",
+            "MS:1003246, ultraviolet photodissociation",
+            "MS:1002631,",
+            "XX:0000001,"
+    })
+    void theDissociationMethodMarkerIsNamedFromTheTable(String curie, String name) {
+        ExtendedPrecursors ext = ExtendedPrecursors.load();
+        FacetRow row = ext.precursor(5, "dissociation_method");
+        row.group().getGroup("activation", 0).add("dissociation_method", curie);
+
+        Activation a = PrecursorRowDecoder.decode(row).activation();
+        Param marker = new Param(name, curie, null, null);
+        assertThat(a.parameters()).containsExactly(marker,
+                new Param("collision energy", COLLISION_ENERGY, 35.0, ELECTRONVOLT));
+        assertThat(a.methods()).isEqualTo(name == null ? List.of() : List.of(marker));
     }
 
     /**
@@ -404,8 +431,8 @@ class SplitPrecursorsTest {
                     List<Param> act = p.activation().parameters();
                     Object method = cells.get(path(precursors, "MS:1000044"));
                     if (method != null) {
-                        assertThat(act).as(where + " dissociation method").contains(new Param(null, (String) method,
-                                null, null));
+                        assertThat(act).as(where + " dissociation method").contains(new Param(
+                                CvTerms.DISSOCIATION_METHODS.get((String) method), (String) method, null, null));
                         seen[0]++;
                     }
                     Object energy = cells.get(path(precursors, COLLISION_ENERGY));

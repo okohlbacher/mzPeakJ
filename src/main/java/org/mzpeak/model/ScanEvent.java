@@ -24,21 +24,6 @@ public record ScanEvent(double startTime,
                         List<ScanWindow> scanWindows,
                         List<Param> parameters) {
 
-    // ---- known ion-mobility CV accessions (children of MS:1002892) -------------------------
-    // These are the accessions used to store scalar ion mobility measurements.
-    private static final String[] ION_MOBILITY_ACCESSIONS = {
-        "MS:1002476",   // mean inverse reduced ion mobility (1/K0, FAIMS)
-        "MS:1002477",   // mean ion mobility drift time
-        "MS:1002478",   // scan start drift time (Bruker)
-        "MS:1002814",   // FAIMS compensation voltage
-        "MS:1002816",   // mean ion mobility
-        "MS:1003006",   // mean inverse reduced ion mobility (1/K0, timsTOF)
-        "MS:1003007",   // raw inverse reduced ion mobility
-        "MS:1003153",   // raw ion mobility drift time
-        "MS:1003155",   // deconvoluted inverse reduced ion mobility
-        "MS:1003156",   // deconvoluted ion mobility drift time
-    };
-
     public ScanEvent {
         scanWindows = scanWindows == null ? List.of() : List.copyOf(scanWindows);
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
@@ -71,14 +56,15 @@ public record ScanEvent(double startTime,
     // ---- ion mobility ----------------------------------------------------------------------
 
     /**
-     * Scalar ion mobility value from the scan parameters (first recognised ion-mobility CV param
-     * whose value is a finite number), or {@link OptionalDouble#empty()} if absent or NaN.
+     * Scalar ion mobility value from the scan parameters (first param whose accession is one of
+     * {@link CvTerms#ION_MOBILITY_TYPES}, taken in that table's order, and whose value is a finite
+     * number), or {@link OptionalDouble#empty()} if absent or NaN.
      *
      * <p>The ion mobility type (which physical quantity this is: drift time, 1/K0, FAIMS CV, …)
      * is given by {@link #ionMobilityType()}.
      */
     public OptionalDouble ionMobilityValue() {
-        for (String acc : ION_MOBILITY_ACCESSIONS) {
+        for (String acc : CvTerms.ION_MOBILITY_TYPES) {
             for (Param p : parameters) {
                 if (acc.equals(p.accession()) && p.value() instanceof Number n) {
                     double v = n.doubleValue();
@@ -92,11 +78,11 @@ public record ScanEvent(double startTime,
     }
 
     /**
-     * CV accession of the ion mobility type (the accession of the recognised ion-mobility param),
-     * or {@code null} if no ion mobility param is present.
+     * CV accession of the ion mobility type (the first of {@link CvTerms#ION_MOBILITY_TYPES} that a
+     * param carries), or {@code null} if no ion mobility param is present.
      */
     public String ionMobilityType() {
-        for (String acc : ION_MOBILITY_ACCESSIONS) {
+        for (String acc : CvTerms.ION_MOBILITY_TYPES) {
             for (Param p : parameters) {
                 if (acc.equals(p.accession())) {
                     return acc;

@@ -9,6 +9,7 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.Param;
 
 import java.util.ArrayList;
@@ -18,7 +19,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * RD-11: the no-duplicate path of {@link IonMobilityParams#withTypedIonMobility}. A row's typed ion mobility is
- * appended to its Params only when they hold no ion mobility term, on a constructed packed scan struct.
+ * appended to its Params only when they hold no ion mobility type ({@link CvTerms#ION_MOBILITY_TYPES}), on a
+ * constructed packed scan struct.
+ *
+ * <p>Documented changes against the hand-written list: the array terms, the charge array MS:1002478 and the unit
+ * MS:1002814 no longer keep the typed cells out, and the real children of MS:1002892 now do.
  */
 class IonMobilityParamsTest {
 
@@ -35,25 +40,25 @@ class IonMobilityParamsTest {
      */
     @ParameterizedTest(name = "{0}")
     @CsvSource({
-            // the hand-written list
+            // the former hand-written list: only MS:1002476 is an ion mobility type (documented change)
             "MS:1002476, true",
-            "MS:1002477, true",
-            "MS:1002478, true",
-            "MS:1002814, true",
-            "MS:1002816, true",
-            "MS:1003006, true",
-            "MS:1003007, true",
-            "MS:1003153, true",
-            "MS:1003155, true",
-            "MS:1003156, true",
-            // children of MS:1002892 the list misses
-            "MS:1001581, false",
-            "MS:1002815, false",
-            "MS:1003371, false",
-            "MS:1003394, false",
-            "MS:1003450, false",
-            "MS:1003451, false",
-            // ion mobility arrays the list misses
+            "MS:1002477, false",
+            "MS:1002478, false",
+            "MS:1002814, false",
+            "MS:1002816, false",
+            "MS:1003006, false",
+            "MS:1003007, false",
+            "MS:1003153, false",
+            "MS:1003155, false",
+            "MS:1003156, false",
+            // the children of MS:1002892 the list missed (documented change)
+            "MS:1001581, true",
+            "MS:1002815, true",
+            "MS:1003371, true",
+            "MS:1003394, true",
+            "MS:1003450, true",
+            "MS:1003451, true",
+            // ion mobility arrays the list missed
             "MS:1002893, false",
             "MS:1003008, false",
             "MS:1003154, false"
