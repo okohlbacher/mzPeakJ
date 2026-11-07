@@ -1,0 +1,2 @@
+2ee2589facddea6de6c1e7c6cfa77e56895420ec
+https://github.com/HUPO-PSI/mzPeak @ 2ee2589 (2026-10-31; example files last regenerated in 02f49d9, 2026-10-26; spec snapshot HUPO-PSI/mzPeak-specification 0220201)
