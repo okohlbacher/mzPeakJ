@@ -2,6 +2,9 @@ package org.mzpeak.io;
 
 import org.mzpeak.io.SpectrumArrayStore.Arrays;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * Resolves the NaN m/z placeholders that null marking leaves in a decoded profile spectrum: drops them with their
  * intensities, interpolates them linearly, or steps them with the spectrum's stored {@code mz_delta_model}.
@@ -16,9 +19,20 @@ final class NullFill {
      * declared {@code number_of_data_points}; otherwise drop them (and their intensities).
      */
     static Arrays finalizeArrays(double[] mz, double[] intensity, boolean reconstructProfile) {
+        return finalizeArrays(mz, intensity, Map.of(), reconstructProfile);
+    }
+
+    /**
+     * {@link #finalizeArrays(double[], double[], boolean)} for a spectrum with extra arrays, each parallel to
+     * {@code mz}. With reconstruction on the extras are kept as read: a filled point keeps the value of its
+     * null-marked row, NaN for a null cell. Otherwise the points dropped from {@code mz} are dropped from every extra
+     * too, so the extras stay parallel to the m/z either way.
+     */
+    static Arrays finalizeArrays(double[] mz, double[] intensity, Map<String, double[]> extras,
+                                 boolean reconstructProfile) {
         if (reconstructProfile) {
             interpolateGaps(mz);
-            return new Arrays(mz, intensity);
+            return new Arrays(mz, intensity, extras);
         }
         int kept = 0;
         for (double v : mz) {
@@ -27,7 +41,7 @@ final class NullFill {
             }
         }
         if (kept == mz.length) {
-            return new Arrays(mz, intensity);
+            return new Arrays(mz, intensity, extras);
         }
         double[] cm = new double[kept];
         double[] ci = new double[kept];
@@ -39,7 +53,23 @@ final class NullFill {
                 j++;
             }
         }
-        return new Arrays(cm, ci);
+        Map<String, double[]> ce = new LinkedHashMap<>();
+        for (Map.Entry<String, double[]> extra : extras.entrySet()) {
+            ce.put(extra.getKey(), keepStored(mz, extra.getValue(), kept));
+        }
+        return new Arrays(cm, ci, ce.isEmpty() ? Map.of() : ce);
+    }
+
+    /** The {@code kept} values of {@code values} at the positions where {@code mz} is not NaN. */
+    private static double[] keepStored(double[] mz, double[] values, int kept) {
+        double[] out = new double[kept];
+        int j = 0;
+        for (int i = 0; i < mz.length; i++) {
+            if (!Double.isNaN(mz[i])) {
+                out[j++] = values[i];
+            }
+        }
+        return out;
     }
 
     /** Fill NaN m/z by linear interpolation between bracketing values; flatten leading/trailing runs. */

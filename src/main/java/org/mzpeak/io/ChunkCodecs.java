@@ -5,6 +5,7 @@ import org.apache.parquet.example.data.Group;
 import org.apache.parquet.schema.Type;
 import org.mzpeak.io.parquet.ParquetGroups;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -53,9 +54,19 @@ final class ChunkCodecs {
      * @param decoded the Numpress columns the decoder reads, in the order the message names them
      */
     static void rejectUnknownNumpressColumns(Group chunk, List<String> decoded, long si) {
+        rejectUnknownNumpressColumns(chunk, decoded, List.of(), si);
+    }
+
+    /**
+     * {@link #rejectUnknownNumpressColumns(Group, List, long)}, except that the {@code handled} columns do not throw:
+     * the extra-array transform columns of the plan, whose arrays are dropped with a warning instead.
+     */
+    static void rejectUnknownNumpressColumns(Group chunk, List<String> decoded, Collection<String> handled,
+                                             long si) {
         for (Type field : chunk.getType().getFields()) {
             String name = field.getName();
-            if (name.contains("numpress") && !decoded.contains(name) && carriesValue(chunk, name)) {
+            if (name.contains("numpress") && !decoded.contains(name) && !handled.contains(name)
+                    && carriesValue(chunk, name)) {
                 throw new MzPeakException("unsupported Numpress column " + name + " for spectrum_index " + si
                         + "; " + decodedColumns(decoded));
             }
@@ -76,7 +87,7 @@ final class ChunkCodecs {
     }
 
     /** True if {@code field} is non-null in this row and, if it is a group (such as a LIST), not empty. */
-    private static boolean carriesValue(Group g, String field) {
+    static boolean carriesValue(Group g, String field) {
         if (!ParquetGroups.has(g, field)) {
             return false;
         }

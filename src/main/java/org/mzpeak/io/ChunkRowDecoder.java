@@ -7,11 +7,14 @@ import org.mzpeak.io.SignalPlan.Column;
 import org.mzpeak.io.parquet.ParquetGroups;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Decodes one chunk row of a spectrum signal member into paired m/z and intensity values, reading the columns the
- * member's {@link SignalPlan} names (design §8.2). Per row:
+ * Decodes one chunk row of a spectrum signal member into paired m/z and intensity values, and the plan's extra arrays,
+ * reading the columns the member's {@link SignalPlan} names (design §8.2, §8.5). Per row:
  * <ul>
  *   <li>A value in a Numpress column (the axis's MS:1002312 transform, or a SLOF or PIC intensity transform) selects
  *       the Numpress decoder: column presence wins over a known chunk_encoding. The intensity is SLOF, then PIC, then
@@ -20,13 +23,32 @@ import java.util.List;
  *   <li>Otherwise the axis values are decoded from the chunk start with a null-aware delta (chunk_encoding null or
  *       MS:1003089) or kept absolute (MS:1000576, MS:1003088), and paired with the plain intensity list.
  *   <li>A grid chunk (MS:1003826) and any other chunk_encoding throw, also on a Numpress row, as does a value in a
- *       {@code *numpress*} column the plan does not decode.
+ *       {@code *numpress*} column the plan does not decode (an extra array's transform column excepted).
+ *   <li>Each extra array pairs one-to-one with the decoded m/z of the row, chunk start point included; a null list
+ *       reads as NaN, as does a null element. An extra whose list has another length, whose transform column (a
+ *       Numpress or grid transform, none of which is decoded for extras) carries a value, or whose list cannot be
+ *       read as numbers is not decoded: the row reports it as dropped and the m/z and intensity are unaffected.
  * </ul>
  */
 final class ChunkRowDecoder {
 
-    /** The values of one chunk row in stored order; both arrays have the same length. */
-    record Row(double[] axis, double[] intensity) {
+    /**
+     * The values of one chunk row in stored order; {@code axis}, {@code intensity} and each array of {@code extras}
+     * have the same length.
+     *
+     * @param extras  the plan's extra arrays decoded from this row, keyed as in {@link SignalPlan#extras()}, in plan
+     *                order
+     * @param dropped the plan's extra arrays this row cannot be decoded for, with the reason; not in {@code extras}
+     */
+    record Row(double[] axis, double[] intensity, Map<String, double[]> extras, Map<String, String> dropped) {
+
+        Row(double[] axis, double[] intensity) {
+            this(axis, intensity, Map.of(), Map.of());
+        }
+    }
+
+    /** The columns of one extra array: its values list (null when only a transform stores it) and transforms. */
+    private record ExtraColumns(String key, String values, Map<String, String> transformFields) {
     }
 
     private static final Row EMPTY = new Row(new double[0], new double[0]);
@@ -41,6 +63,9 @@ final class ChunkRowDecoder {
     private final String pic;
     /** The Numpress columns decoded here (linear m/z, SLOF, PIC); any other {@code *numpress*} column is not. */
     private final List<String> numpressColumns;
+    private final List<ExtraColumns> extras;
+    /** The transform columns of the extras: a value there drops the extra instead of failing the row. */
+    private final List<String> extraTransformColumns;
 
     ChunkRowDecoder(SignalPlan plan) {
         if (plan.entity() != SignalEntity.SPECTRUM) {
@@ -62,6 +87,14 @@ final class ChunkRowDecoder {
             }
         }
         numpressColumns = List.copyOf(numpress);
+        List<ExtraColumns> extraColumns = new ArrayList<>();
+        List<String> transformColumns = new ArrayList<>();
+        for (SignalPlan.Extra extra : plan.extras().values()) {
+            extraColumns.add(new ExtraColumns(extra.key(), field(extra.values()), extra.transformFields()));
+            transformColumns.addAll(extra.transformFields().values());
+        }
+        extras = List.copyOf(extraColumns);
+        extraTransformColumns = List.copyOf(transformColumns);
     }
 
     private static String field(Column column) {
@@ -79,7 +112,13 @@ final class ChunkRowDecoder {
 
     /** Decodes {@code chunk}, a row of spectrum {@code si}. */
     Row decode(Group chunk, long si) {
-        ChunkCodecs.rejectUnknownNumpressColumns(chunk, numpressColumns, si);
+        Row row = decodeSignal(chunk, si);
+        return extras.isEmpty() ? row : withExtras(row, chunk);
+    }
+
+    /** The m/z and intensity of {@code chunk}. */
+    private Row decodeSignal(Group chunk, long si) {
+        ChunkCodecs.rejectUnknownNumpressColumns(chunk, numpressColumns, extraTransformColumns, si);
         String chunkEncoding = encoding == null ? null : ParquetGroups.optString(chunk, encoding);
         if (chunkEncoding != null && chunkEncoding.contains("1003826")) {
             throw ChunkCodecs.unsupportedGrid(chunk, grid, si);
@@ -159,6 +198,48 @@ final class ChunkRowDecoder {
                     + chunkIntensity.length + ") lengths differ for spectrum_index " + si);
         }
         return new Row(axis, chunkIntensity);
+    }
+
+    /** {@code row} with the extra arrays of {@code chunk}, each paired one-to-one with the row's m/z. */
+    private Row withExtras(Row row, Group chunk) {
+        int n = row.axis().length;
+        Map<String, double[]> values = new LinkedHashMap<>();
+        Map<String, String> dropped = new LinkedHashMap<>();
+        for (ExtraColumns extra : extras) {
+            String transform = carriedTransform(chunk, extra);
+            if (transform != null) {
+                dropped.put(extra.key(), "is stored with the transform " + transform + ", which is not decoded");
+                continue;
+            }
+            double[] v;
+            if (has(chunk, extra.values())) {
+                try {
+                    v = ParquetGroups.doubleListNullable(chunk, extra.values());
+                } catch (RuntimeException e) {
+                    dropped.put(extra.key(), "cannot be read as a list of numbers (" + e.getMessage() + ")");
+                    continue;
+                }
+                if (v.length != n) {
+                    dropped.put(extra.key(), "has " + v.length + " values in a chunk of " + n + " points");
+                    continue;
+                }
+            } else {
+                v = new double[n];
+                Arrays.fill(v, Double.NaN);
+            }
+            values.put(extra.key(), v);
+        }
+        return new Row(row.axis(), row.intensity(), values, dropped);
+    }
+
+    /** The first transform of {@code extra} whose column carries a value in this row, as text, or null. */
+    private static String carriedTransform(Group chunk, ExtraColumns extra) {
+        for (Map.Entry<String, String> t : extra.transformFields().entrySet()) {
+            if (ChunkCodecs.carriesValue(chunk, t.getValue())) {
+                return t.getKey() + " (column " + t.getValue() + ")";
+            }
+        }
+        return null;
     }
 
     /** True if the plan names {@code field} and it is non-null in this row. */
