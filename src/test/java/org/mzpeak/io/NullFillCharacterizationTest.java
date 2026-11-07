@@ -9,8 +9,8 @@ import java.util.Arrays;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Characterizes the null fill without a delta model: {@link SpectrumArrayStore#interpolateGaps} and
- * {@link SpectrumArrayStore#finalizeArrays} for both {@code reconstructProfile} values. The fill with a delta model,
+ * Characterizes the null fill without a delta model: {@link NullFill#interpolateGaps} and
+ * {@link NullFill#finalizeArrays} for both {@code reconstructProfile} values. The fill with a delta model,
  * {@code polynomialFill}, is pinned by {@link PolynomialFillCharacterizationTest}.
  *
  * <p>The input is the window that test uses: eight consecutive stored m/z values of small.unpacked spectrum 0
@@ -129,7 +129,7 @@ class NullFillCharacterizationTest {
     void withoutReconstructionAndWithoutNullsTheInputArraysAreReturned() {
         double[] mz = storedMz.clone();
         double[] intensity = storedIntensity.clone();
-        SpectrumArrayStore.Arrays arrays = SpectrumArrayStore.finalizeArrays(mz, intensity, false);
+        SpectrumArrayStore.Arrays arrays = NullFill.finalizeArrays(mz, intensity, false);
         assertThat(arrays.mz()).isSameAs(mz);
         assertThat(arrays.intensity()).isSameAs(intensity);
         assertExact("m/z", STORED_MZ, arrays.mz());
@@ -140,7 +140,7 @@ class NullFillCharacterizationTest {
     void withReconstructionNullMzIsInterpolatedInPlace() {
         double[] mz = withNulls(storedMz, 0, 3, 4, 7);
         double[] intensity = storedIntensity.clone();
-        SpectrumArrayStore.Arrays arrays = SpectrumArrayStore.finalizeArrays(mz, intensity, true);
+        SpectrumArrayStore.Arrays arrays = NullFill.finalizeArrays(mz, intensity, true);
         assertThat(arrays.mz()).isSameAs(mz);
         assertThat(arrays.intensity()).isSameAs(intensity);
         assertExact("m/z", interpolate(0, 3, 4, 7), arrays.mz());
@@ -150,13 +150,13 @@ class NullFillCharacterizationTest {
     /** Copy the stored m/z, set {@code nullPositions} to NaN, and run the interpolation on the copy. */
     private static double[] interpolate(int... nullPositions) {
         double[] m = withNulls(storedMz, nullPositions);
-        SpectrumArrayStore.interpolateGaps(m);
+        NullFill.interpolateGaps(m);
         return m;
     }
 
-    /** {@link SpectrumArrayStore#finalizeArrays} on copies of the stored window, NaN m/z at {@code nullPositions}. */
+    /** {@link NullFill#finalizeArrays} on copies of the stored window, NaN m/z at {@code nullPositions}. */
     private static SpectrumArrayStore.Arrays finalizeWithNulls(boolean reconstructProfile, int... nullPositions) {
-        return SpectrumArrayStore.finalizeArrays(
+        return NullFill.finalizeArrays(
                 withNulls(storedMz, nullPositions), storedIntensity.clone(), reconstructProfile);
     }
 

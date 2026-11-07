@@ -33,9 +33,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Characterizes the chunk codecs of the spectrum signal reader through {@link SpectrumArrayStore#load}: the decoding
- * of {@code mz_chunk_values} (null-aware delta from {@code chunk_start}, or absolute) and of Numpress payloads (an
- * empty payload decodes to no values, a corrupt one fails naming what was decoded). The rejections RD-12 added are
- * pinned by {@link UnsupportedEncodingTest}.
+ * of {@code mz_chunk_values} by {@link ChunkCodecs#decodeAxisValues} (null-aware delta from {@code chunk_start}, or
+ * absolute) and of Numpress payloads by {@link ChunkCodecs#decodeNumpress} (an empty payload decodes to no values, a
+ * corrupt one fails naming what was decoded). The rejections RD-12 added are pinned by
+ * {@link UnsupportedEncodingTest}.
  *
  * <p>Each case writes one constructed chunk row of spectrum 0 and reads it back. The delta rows are prefixes of rows
  * 0 and 1 of the current small.chunked data member (spectrum 0, chunk_encoding {@code MS:1003089}): row 0 carries one

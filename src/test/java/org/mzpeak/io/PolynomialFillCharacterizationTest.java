@@ -10,7 +10,7 @@ import java.util.Arrays;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Characterizes {@link SpectrumArrayStore#polynomialFill} for every shape of null run. Every null run in the vendored
+ * Characterizes {@link NullFill#polynomialFill} for every shape of null run. Every null run in the vendored
  * fixtures is an interior pair, so the other shapes are built from fixture data: eight consecutive stored m/z values
  * of small.unpacked spectrum 0 (stored ordinals 50..57, which sit on consecutive grid points) and that spectrum's
  * stored {@code mz_delta_model}, with NaN injected where a null run should be.
@@ -115,7 +115,7 @@ class PolynomialFillCharacterizationTest {
         for (int k : nullPositions) {
             m[k] = Double.NaN;
         }
-        SpectrumArrayStore.polynomialFill(m, beta);
+        NullFill.polynomialFill(m, beta);
         return m;
     }
 
