@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
+import org.mzpeak.io.SignalPlan.Column;
 import org.mzpeak.io.parquet.ParquetGroups;
 
 import java.util.LinkedHashMap;
@@ -18,13 +19,22 @@ final class PointArrays {
     }
 
     /**
-     * Read a {@code point}-layout file and group its rows by {@code indexField} into parallel
-     * {@code xField} + {@code intensity} arrays. Null x is kept as {@code NaN}; null intensity as 0.
+     * Read the point rows of a data file and group them by the plan's index field into parallel arrays of the
+     * main-axis values column and the plan's plain intensity column ({@link SignalPlan#plainIntensity()}). Null x is
+     * kept as {@code NaN}; null intensity as 0. A plan in chunk layout has no point rows and gives an empty map.
      */
-    static Map<Long, XY> groupByIndex(InputFile dataFile, String indexField, String xField) {
+    static Map<Long, XY> groupByIndex(InputFile dataFile, SignalPlan plan) {
+        Map<Long, XY> out = new LinkedHashMap<>();
+        if (plan.layout() != SignalPlan.Layout.POINT) {
+            return out;
+        }
+        String prefix = plan.prefix();
+        String indexField = plan.indexField();
+        String xField = plan.axis().values() == null ? null : plan.axis().values().field();
+        String intensityField = plan.plainIntensity().map(Column::field).orElse(null);
         Map<Long, DoubleArrayBuilder[]> acc = new LinkedHashMap<>();
         ParquetGroups.forEach(dataFile, row -> {
-            Group p = ParquetGroups.optGroup(row, "point");
+            Group p = ParquetGroups.optGroup(row, prefix);
             if (p == null) {
                 return;
             }
@@ -32,14 +42,13 @@ final class PointArrays {
             if (idx == null) {
                 return;
             }
-            Double x = ParquetGroups.optDouble(p, xField);
-            Double intensity = ParquetGroups.optDouble(p, "intensity");
+            Double x = xField == null ? null : ParquetGroups.optDouble(p, xField);
+            Double intensity = intensityField == null ? null : ParquetGroups.optDouble(p, intensityField);
             DoubleArrayBuilder[] b = acc.computeIfAbsent(idx,
                     k -> new DoubleArrayBuilder[] {new DoubleArrayBuilder(), new DoubleArrayBuilder()});
             b[0].add(x == null ? Double.NaN : x);
             b[1].add(intensity == null ? 0.0 : intensity);
         });
-        Map<Long, XY> out = new LinkedHashMap<>();
         acc.forEach((idx, b) -> out.put(idx, new XY(b[0].toArray(), b[1].toArray())));
         return out;
     }

@@ -17,6 +17,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mzpeak.io.ArrayIndex.Source;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.SignalPlan.Column;
+import org.mzpeak.io.SignalPlan.Layout;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
@@ -28,17 +34,26 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.assertj.core.api.Assertions.within;
 
 /**
  * RD-22: chromatogram and wavelength-spectrum signal columns, resolved through the {@link SignalPlan} of the data
  * member.
+ *
+ * <p>Wiring: {@link ChromatogramStore} and {@link WavelengthSpectrumStore} decode every such member of both fixture
+ * sets with its FOOTER plan, and mzPeakJ output with an INFERRED one; has_uv's 'DAD1 A' values come from the
+ * {@code intensity_f32_au} entry; constructed members whose array index names other columns than the literal ones
+ * are read from the columns the index names.
  *
  * <p>Characterization, pinned on the code before RD-22 (agent-team/upstream-p1 5736e6d):
  * <ul>
@@ -101,6 +116,262 @@ class SignalPlanWiringTest {
 
     static Stream<String> currentFixtures() {
         return Fixtures.CURRENT_NAMES.stream();
+    }
+
+    // ---- wiring: fixtures and mzPeakJ output -------------------------------------------------------------------
+
+    /** Both stores decode every chromatogram and wavelength-spectrum data member of both sets with its footer plan. */
+    @Test
+    void everyChromatogramAndWavelengthMemberOfBothSetsIsDecodedWithItsFooterPlan() {
+        Map<String, Source> sources = new LinkedHashMap<>();
+        for (String name : Fixtures.CURRENT_NAMES) {
+            planSources("current " + name, Fixtures.current(name), sources);
+        }
+        for (String name : Fixtures.LEGACY_NAMES) {
+            planSources("legacy " + name, Fixtures.legacy(name), sources);
+        }
+        // every fixture but Example_Processed.img has chromatograms; only has_uv has wavelength spectra
+        assertThat(sources).hasSize((Fixtures.CURRENT_NAMES.size() - 1) + Fixtures.LEGACY_NAMES.size() + 2)
+                .containsKeys("current has_uv.mzpeak wavelength_spectra", "legacy has_uv.mzpeak wavelength_spectra",
+                        "current small.numpress.mzpeak chromatograms", "legacy small.chunked.mzpeak chromatograms");
+        assertThat(sources.values()).containsOnly(Source.FOOTER);
+    }
+
+    /** The plan source of each store {@code dataset} has a data member for, keyed by {@code label} and entity. */
+    private static void planSources(String label, Path dataset, Map<String, Source> out) {
+        try (MzPeakSource source = MzPeakSource.open(dataset)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+            if (manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS).isPresent()) {
+                ChromatogramStore store = ChromatogramStore.load(source, manifest);
+                assertThat(store.all()).as(label).isNotEmpty();
+                out.put(label + " chromatograms", store.plan().source());
+            }
+            if (manifest.find(EntityType.WAVELENGTH_SPECTRUM, DataKind.DATA_ARRAYS).isPresent()) {
+                WavelengthSpectrumStore store = WavelengthSpectrumStore.load(source, manifest);
+                assertThat(store.all()).as(label).isNotEmpty();
+                out.put(label + " wavelength_spectra", store.plan().source());
+                assertThat(store.plan().axis().values().path()).isEqualTo("point.wavelength");
+                assertThat(store.plan().plainIntensity()).map(Column::path).contains("point.intensity");
+            }
+        }
+    }
+
+    static Stream<Path> hasUvInBothSets() {
+        return Stream.of(Fixtures.current("has_uv.mzpeak"), Fixtures.legacy("has_uv.mzpeak"));
+    }
+
+    /**
+     * The 'DAD1 A' trace has no value in the plan's first intensity entry (point.intensity, MS:1000131), so its
+     * values are the cells of the second, point.intensity_f32_au in absorbance (UO:0000269); the TIC's are the
+     * cells of the first.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("hasUvInBothSets")
+    void hasUvDad1ValuesComeFromTheAbsorbanceEntry(Path dataset) {
+        try (MzPeakSource source = MzPeakSource.open(dataset)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+            ChromatogramStore store = ChromatogramStore.load(source, manifest);
+            SignalPlan plan = store.plan();
+            assertThat(plan.source()).isEqualTo(Source.FOOTER);
+            assertThat(plan.intensities()).extracting(Column::path, Column::unit).containsExactly(
+                    tuple("point.intensity", "MS:1000131"), tuple("point.intensity_f32_au", "UO:0000269"));
+
+            Column counts = plan.intensities().get(0);
+            Column absorbance = plan.intensities().get(1);
+            DoubleArrayBuilder tic = new DoubleArrayBuilder();
+            DoubleArrayBuilder dad = new DoubleArrayBuilder();
+            String data = manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS).orElseThrow().name();
+            ParquetGroups.forEach(source.inputFile(data), row -> {
+                Group point = ParquetGroups.optGroup(row, plan.prefix());
+                Long index = ParquetGroups.optLong(point, plan.indexField());
+                if (Long.valueOf(0L).equals(index)) {
+                    tic.add(ParquetGroups.optDouble(point, counts.field()));
+                } else if (Long.valueOf(1L).equals(index)) {
+                    assertThat(ParquetGroups.optDouble(point, counts.field())).isNull();
+                    dad.add(ParquetGroups.optDouble(point, absorbance.field()));
+                }
+            });
+            assertThat(store.byIndex(0).orElseThrow().intensity()).hasSize(212).isEqualTo(tic.toArray());
+            Chromatogram dad1 = store.byIndex(1).orElseThrow();
+            assertThat(dad1.id()).startsWith("DAD1 A");
+            assertThat(dad1.intensity()).hasSize(526).isEqualTo(dad.toArray());
+        }
+    }
+
+    /** Members mzPeakJ writes have no array index footer and are decoded with INFERRED plans. */
+    @Test
+    void mzPeakJOutputIsDecodedWithInferredPlans() {
+        Path written = tmp.resolve("written.mzpeak");
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
+            List<Spectrum> spectra = new ArrayList<>();
+            reader.iterator().forEachRemaining(spectra::add);
+            MzPeakWriter.writeDirectory(written, spectra, reader.chromatograms(), reader.wavelengthSpectra(),
+                    List.of(), FileMetadata.EMPTY);
+        }
+        try (MzPeakSource source = MzPeakSource.open(written)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+            ChromatogramStore chromatograms = ChromatogramStore.load(source, manifest);
+            WavelengthSpectrumStore wavelength = WavelengthSpectrumStore.load(source, manifest);
+            assertThat(chromatograms.all()).hasSize(2);
+            assertThat(wavelength.all()).hasSize(520);
+
+            assertThat(chromatograms.plan().source()).isEqualTo(Source.INFERRED);
+            assertThat(chromatograms.plan().layout()).isEqualTo(Layout.POINT);
+            assertThat(chromatograms.plan().axis().values().path()).isEqualTo("point.time");
+            assertThat(chromatograms.plan().intensities()).extracting(Column::path).containsExactly("point.intensity");
+            assertThat(wavelength.plan().source()).isEqualTo(Source.INFERRED);
+            assertThat(wavelength.plan().axis().values().path()).isEqualTo("point.wavelength");
+            assertThat(wavelength.plan().intensities()).extracting(Column::path).containsExactly("point.intensity");
+        }
+    }
+
+    // ---- wiring: constructed members whose array index names other columns ------------------------------------
+
+    /**
+     * A point member is read from the columns its index names (index {@code trace}, time {@code rt}, intensities
+     * {@code counts} then {@code absorbance}); the literal {@code time} and {@code intensity} columns it also has are
+     * not part of the index and are not read.
+     */
+    @Test
+    void pointRowsAreReadFromTheColumnsTheArrayIndexNames() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 trace (INTEGER(64,false));
+                    optional double time;
+                    optional float intensity;
+                    optional double rt;
+                    optional float counts;
+                    optional float absorbance;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.trace", "index", "MS:1003870", 0, null, null),
+                indexEntry("point.rt", "point", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("point.counts", "point", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("point.absorbance", "point", "MS:1000515", null, null, "UO:0000269"));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                point(rows).append("trace", 0L).append("time", 98.0).append("intensity", 99f).append("rt", 1.0)
+                        .append("counts", 5f).append("absorbance", 7f).parent,
+                point(rows).append("trace", 0L).append("time", 97.0).append("intensity", 96f).append("rt", 2.0)
+                        .append("absorbance", 0.5f).parent,
+                point(rows).append("trace", 1L).append("time", 95.0).append("intensity", 94f).parent,
+                point(rows).append("time", 93.0).append("rt", 3.0).append("counts", 1f).parent);
+
+        ChromatogramStore store = chromatogramStore(data, 0, 1);
+
+        assertThat(store.plan().source()).isEqualTo(Source.FOOTER);
+        assertThat(store.plan().indexField()).isEqualTo("trace");
+        assertArrays(store.all().get(0), new double[] {1.0, 2.0}, new double[] {5.0, 0.5});
+        assertArrays(store.all().get(1), new double[] {Double.NaN}, new double[] {0.0});
+    }
+
+    /**
+     * A chunk member is read from the columns its index names: the start {@code rt_start}, the deltas
+     * {@code rt_deltas}, the intensity list {@code counts} and the SLOF bytes {@code counts_slof}; the literal
+     * {@code time_chunk_start} and {@code intensity} columns are not read.
+     */
+    @Test
+    void chunkRowsAreReadFromTheColumnsTheArrayIndexNames() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 trace (INTEGER(64,false));
+                    optional double time_chunk_start;
+                    optional group intensity (LIST) { repeated group list { optional float item; } }
+                    optional double rt_start;
+                    optional group rt_deltas (LIST) { repeated group list { optional double item; } }
+                    optional group counts (LIST) { repeated group list { optional float item; } }
+                    optional group counts_slof (LIST) {
+                      repeated group list { required int32 item (INTEGER(8,false)); }
+                    }
+                  }
+                }""");
+        String index = arrayIndex("chunk",
+                indexEntry("chunk.trace", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.rt_start", "chunk_start", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("chunk.rt_deltas", "chunk_values", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("chunk.counts", "chunk_secondary", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("chunk.counts_slof", "chunk_transform", "MS:1000515", null, MSNumpress.ACC_NUMPRESS_SLOF,
+                        "MS:1000131"));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        byte[] slof = slof(100.0, 200.0);
+        Group first = rows.newGroup();
+        new Row(first, first.addGroup("chunk")).append("trace", 0L).append("time_chunk_start", 50.0)
+                .list("intensity", 9.0, 9.0, 9.0).append("rt_start", 1.0).list("rt_deltas", 1.0, 1.0)
+                .list("counts", 1.0, 2.0, 3.0);
+        Group second = rows.newGroup();
+        new Row(second, second.addGroup("chunk")).append("trace", 1L).append("time_chunk_start", 60.0)
+                .list("intensity", 8.0, 8.0).append("rt_start", 5.0).list("rt_deltas", 0.5)
+                .bytes("counts_slof", slof);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index), first, second);
+
+        ChromatogramStore store = chromatogramStore(data, 0, 1);
+
+        assertThat(store.plan().layout()).isEqualTo(Layout.CHUNK);
+        assertArrays(store.all().get(0), new double[] {1.0, 2.0, 3.0}, new double[] {1.0, 2.0, 3.0});
+        assertArrays(store.all().get(1), new double[] {5.0, 5.5},
+                MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, slof, slof.length));
+    }
+
+    /** A wavelength member is read from the columns its index names, not the literal ones. */
+    @Test
+    void wavelengthRowsAreReadFromTheColumnsTheArrayIndexNames() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 spectrum (INTEGER(64,false));
+                    optional float wavelength;
+                    optional float intensity;
+                    optional float nm;
+                    optional float au;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.spectrum", "index", "MS:1003870", 0, null, null),
+                indexEntry("point.nm", "point", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("point.au", "point", "MS:1000515", null, null, "UO:0000269"));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("wavelength_spectra_data.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index),
+                point(rows).append("spectrum", 0L).append("wavelength", 1f).append("intensity", 2f)
+                        .append("nm", 200f).append("au", 0.25f).parent,
+                point(rows).append("spectrum", 0L).append("wavelength", 3f).append("intensity", 4f)
+                        .append("nm", 210f).parent);
+
+        List<WavelengthSpectrum> all = wavelengthSpectra(data, 0);
+
+        assertThat(all.get(0).wavelength()).containsExactly(200.0, 210.0);
+        assertThat(all.get(0).intensity()).containsExactly(0.25, 0.0);
+    }
+
+    /** A malformed array index is ignored with a WARNING; the member is read by the column-name rules. */
+    @Test
+    void aMalformedArrayIndexFallsBackToTheColumnNames() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), "{\"entries\": []}"),
+                point(rows).append("chromatogram_index", 0L).append("time", 1.0).append("intensity", 2f).parent);
+
+        List<ChromatogramStore> store = new ArrayList<>();
+        List<LogRecord> records = ArrayIndexTest.captureLog(ArrayIndex.class,
+                () -> store.add(chromatogramStore(data, 0)));
+
+        assertThat(records).filteredOn(r -> r.getLevel() == Level.WARNING).singleElement()
+                .satisfies(r -> assertThat(r.getMessage()).contains("chromatogram_array_index"));
+        assertThat(store.get(0).plan().source()).isEqualTo(Source.INFERRED);
+        assertArrays(store.get(0).all().get(0), new double[] {1.0}, new double[] {2.0});
     }
 
     // ---- characterization: fixtures and mzPeakJ output ---------------------------------------------------------
@@ -334,10 +605,15 @@ class SignalPlanWiringTest {
 
     /** The chromatograms of {@code data}, with one header {@code c<index>} per index, in the given order. */
     private List<Chromatogram> chromatograms(Path data, long... indices) {
+        return chromatogramStore(data, indices).all();
+    }
+
+    /** The store of {@code data}, with one chromatogram header {@code c<index>} per index, in the given order. */
+    private ChromatogramStore chromatogramStore(Path data, long... indices) {
         SimpleGroupFactory rows = new SimpleGroupFactory(CHROMATOGRAM_METADATA);
         Path metadata = write("chromatograms_metadata.parquet", CHROMATOGRAM_METADATA, Arrays.stream(indices)
                 .mapToObj(i -> rows.newGroup().append("index", i).append("id", "c" + i)).toArray(Group[]::new));
-        return ChromatogramStore.load(new LocalInputFile(metadata), new LocalInputFile(data)).all();
+        return ChromatogramStore.load(new LocalInputFile(metadata), new LocalInputFile(data));
     }
 
     /** The wavelength spectra of {@code data}, with one header {@code w<index>} per index, in the given order. */
@@ -468,8 +744,30 @@ class SignalPlanWiringTest {
         return Arrays.copyOf(buffer, n);
     }
 
+    /** One array index entry; null components are written as JSON null. */
+    private static String indexEntry(String path, String format, String arrayType, Integer rank, String transform,
+                                     String unit) {
+        return "{\"path\": \"" + path + "\", \"buffer_format\": \"" + format + "\", \"array_type\": \"" + arrayType
+                + "\", \"sorting_rank\": " + rank + ", \"transform\": " + quoted(transform) + ", \"unit\": "
+                + quoted(unit) + "}";
+    }
+
+    private static String quoted(String s) {
+        return s == null ? "null" : "\"" + s + "\"";
+    }
+
+    /** An array index footer value with {@code prefix} and {@code entries}. */
+    private static String arrayIndex(String prefix, String... entries) {
+        return "{\"prefix\": \"" + prefix + "\", \"entries\": [" + String.join(", ", entries) + "]}";
+    }
+
     /** Writes {@code rows} as the Parquet file {@code name} of the temporary directory. */
     private Path write(String name, MessageType schema, Group... rows) {
+        return write(name, schema, Map.of(), rows);
+    }
+
+    /** Writes {@code rows} as the Parquet file {@code name} of the temporary directory, with footer key-values. */
+    private Path write(String name, MessageType schema, Map<String, String> footer, Group... rows) {
         Path file = tmp.resolve(name);
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
@@ -477,6 +775,7 @@ class SignalPlanWiringTest {
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
+                .withExtraMetaData(footer)
                 .build()) {
             for (Group row : rows) {
                 writer.write(row);

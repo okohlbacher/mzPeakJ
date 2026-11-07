@@ -16,25 +16,26 @@ import java.util.Optional;
  * Reads {@code wavelength_spectra_metadata.parquet} + {@code wavelength_spectra_data.parquet} into
  * {@link WavelengthSpectrum}s. The metadata member, packed or split, is decoded by
  * {@link WavelengthMetadataDecoder}; spectra keep its order, and an index without data rows reads as empty arrays.
- * UV/DAD data is dense {@code point} layout (no null-marking, no precursors).
+ * UV/DAD data is dense {@code point} layout (no null-marking, no precursors), grouped by {@link PointArrays} through
+ * the data member's {@link SignalPlan}: from its {@code wavelength_spectrum_array_index} footer, else inferred from
+ * its column names.
  */
 final class WavelengthSpectrumStore {
-
-    private static final String F_WL_INDEX = "wavelength_spectrum_index";
-    private static final String F_WAVELENGTH = "wavelength";
 
     /** Names a member given directly as an {@link InputFile} in error messages, by its manifest role. */
     private static final String MEMBER = "wavelength spectrum metadata member";
 
     private final List<WavelengthSpectrum> all;
     private final Map<Long, WavelengthSpectrum> byIndex;
+    private final SignalPlan plan;
 
-    private WavelengthSpectrumStore(List<WavelengthSpectrum> all) {
+    private WavelengthSpectrumStore(List<WavelengthSpectrum> all, SignalPlan plan) {
         this.all = List.copyOf(all);
         this.byIndex = new LinkedHashMap<>();
         for (WavelengthSpectrum w : all) {
             byIndex.put(w.index(), w);
         }
+        this.plan = plan;
     }
 
     List<WavelengthSpectrum> all() {
@@ -43,6 +44,11 @@ final class WavelengthSpectrumStore {
 
     Optional<WavelengthSpectrum> byIndex(long index) {
         return Optional.ofNullable(byIndex.get(index));
+    }
+
+    /** The plan the data member was decoded with, or {@code null} when it was not read (no wavelength spectra). */
+    SignalPlan plan() {
+        return plan;
     }
 
     /**
@@ -73,9 +79,10 @@ final class WavelengthSpectrumStore {
     /** Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. */
     private static WavelengthSpectrumStore load(List<WavelengthMetadataDecoder.Header> headers, InputFile dataFile) {
         if (headers.isEmpty()) {
-            return new WavelengthSpectrumStore(List.of());
+            return new WavelengthSpectrumStore(List.of(), null);
         }
-        Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, F_WL_INDEX, F_WAVELENGTH);
+        SignalPlan plan = plan(dataFile);
+        Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, plan);
 
         List<WavelengthSpectrum> all = new ArrayList<>(headers.size());
         for (WavelengthMetadataDecoder.Header h : headers) {
@@ -84,7 +91,14 @@ final class WavelengthSpectrumStore {
             double[] intensity = xy == null ? new double[0] : xy.intensity();
             all.add(new WavelengthSpectrum(h.index(), h.id(), h.time(), h.lambdaMax(), wavelength, intensity));
         }
-        return new WavelengthSpectrumStore(all);
+        return new WavelengthSpectrumStore(all, plan);
+    }
+
+    /** The signal plan of a data member: from its array index footer, else inferred from its column names. */
+    private static SignalPlan plan(InputFile dataFile) {
+        ParquetFooter footer = ParquetFooter.read(dataFile);
+        return SignalPlan.of(ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM),
+                footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM);
     }
 
     /** A source whose every member is {@code file}; it has no manifest. */

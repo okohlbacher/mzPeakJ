@@ -1,13 +1,9 @@
 package org.mzpeak.io;
 
-import ms.numpress.MSNumpress;
-import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
-import org.apache.parquet.schema.Type;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
-import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
 
 import java.util.ArrayList;
@@ -20,10 +16,9 @@ import java.util.Optional;
  * Reads {@code chromatograms_metadata.parquet} + {@code chromatograms_data.parquet} into {@link Chromatogram}s.
  * The metadata member, packed or split, is decoded by {@link ChromatogramMetadataDecoder}; chromatograms keep its
  * order, and an index without data rows reads as empty arrays.
- * The data member is read in both {@code point} layout (one row per time point) and {@code chunk} layout
- * (delta-encoded time values with one chunk row per chromatogram, as used in the chunked mzPeak variant).
- * Intensities come from the literal {@code intensity} column; a point row falls back to a numeric
- * {@code intensity_*} column (e.g. UV absorbance), a chunk row to MS-Numpress SLOF bytes.
+ * The data member, in {@code point} or {@code chunk} layout, is decoded by {@link ChromatogramDataDecoder} through
+ * its {@link SignalPlan}: from the member's {@code chromatogram_array_index} footer, else inferred from its column
+ * names.
  */
 final class ChromatogramStore {
 
@@ -33,8 +28,9 @@ final class ChromatogramStore {
     private final List<Chromatogram> all;
     private final Map<Long, Chromatogram> byIndex;
     private final Map<String, Chromatogram> byId;
+    private final SignalPlan plan;
 
-    private ChromatogramStore(List<Chromatogram> all) {
+    private ChromatogramStore(List<Chromatogram> all, SignalPlan plan) {
         this.all = List.copyOf(all);
         this.byIndex = new LinkedHashMap<>();
         this.byId = new LinkedHashMap<>();
@@ -44,11 +40,15 @@ final class ChromatogramStore {
                 byId.putIfAbsent(c.id(), c);
             }
         }
+        this.plan = plan;
     }
 
     List<Chromatogram> all()                    { return all; }
     Optional<Chromatogram> byIndex(long index)  { return Optional.ofNullable(byIndex.get(index)); }
     Optional<Chromatogram> byId(String id)      { return Optional.ofNullable(byId.get(id)); }
+
+    /** The plan the data member was decoded with, or {@code null} when it was not read (no chromatograms). */
+    SignalPlan plan()                           { return plan; }
 
     /**
      * Loads the members that {@code manifest} lists under the roles (chromatogram, metadata) and (chromatogram, data
@@ -78,10 +78,11 @@ final class ChromatogramStore {
     /** Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. */
     private static ChromatogramStore load(List<ChromatogramMetadataDecoder.Header> headers, InputFile dataFile) {
         if (headers.isEmpty()) {
-            return new ChromatogramStore(List.of());
+            return new ChromatogramStore(List.of(), null);
         }
-        // ---- data: point or chunk layout -------------------------------------------
-        Map<Long, PointArrays.XY> data = loadData(dataFile);
+        // ---- data: point or chunk layout, as the plan says -------------------------
+        SignalPlan plan = plan(dataFile);
+        Map<Long, PointArrays.XY> data = ChromatogramDataDecoder.decode(dataFile, plan);
 
         // ---- assemble --------------------------------------------------------------
         List<Chromatogram> all = new ArrayList<>(headers.size());
@@ -91,7 +92,14 @@ final class ChromatogramStore {
             double[] intensity = xy == null ? new double[0] : xy.intensity();
             all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), time, intensity));
         }
-        return new ChromatogramStore(all);
+        return new ChromatogramStore(all, plan);
+    }
+
+    /** The signal plan of a data member: from its array index footer, else inferred from its column names. */
+    private static SignalPlan plan(InputFile dataFile) {
+        ParquetFooter footer = ParquetFooter.read(dataFile);
+        return SignalPlan.of(ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.CHROMATOGRAM),
+                footer.schema(), SignalEntity.CHROMATOGRAM);
     }
 
     /** A source whose every member is {@code file}; it has no manifest. */
@@ -116,119 +124,5 @@ final class ChromatogramStore {
             public void close() {
             }
         };
-    }
-
-    /**
-     * Route to the correct data decoder by inspecting the top-level struct name of the first row.
-     * {@code point} rows use the standard PointArrays grouping; {@code chunk} rows use delta decoding.
-     */
-    private static Map<Long, PointArrays.XY> loadData(InputFile dataFile) {
-        // Peek at the schema to decide layout (point vs chunk).
-        // PointArrays.groupByIndex handles point; we implement chunk inline.
-        Map<Long, PointArrays.XY>[] result = new Map[] {null};
-        Map<Long, DoubleArrayBuilder[]> chunkAcc = new LinkedHashMap<>();
-
-        ParquetGroups.forEach(dataFile, row -> {
-            Group point = ParquetGroups.optGroup(row, "point");
-            if (point != null) {
-                // Point layout: delegate collection inline
-                Long idx = ParquetGroups.optLong(point, "chromatogram_index");
-                if (idx == null) return;
-                Double t  = ParquetGroups.optDouble(point, "time");
-                Double in = ParquetGroups.optDouble(point, "intensity");
-                if (in == null) {
-                    in = fallbackPointIntensity(point);
-                }
-                DoubleArrayBuilder[] b = chunkAcc.computeIfAbsent(idx,
-                        k -> new DoubleArrayBuilder[] {new DoubleArrayBuilder(), new DoubleArrayBuilder()});
-                b[0].add(t  == null ? Double.NaN : t);
-                b[1].add(in == null ? 0.0 : in);
-                return;
-            }
-            Group chunk = ParquetGroups.optGroup(row, "chunk");
-            if (chunk == null) return;
-
-            // Chunk layout: time_chunk_start + cumulative-sum of time_chunk_values → time axis
-            Long idx = ParquetGroups.optLong(chunk, "chromatogram_index");
-            if (idx == null) return;
-            Double start = ParquetGroups.optDouble(chunk, "time_chunk_start");
-            if (start == null) return;
-
-            double[] deltas    = ParquetGroups.doubleListNullable(chunk, "time_chunk_values");
-            double[] intensity = chunkIntensity(chunk, idx);
-
-            // Reconstruct time axis: time[0] = start; time[i+1] = time[i] + deltas[i]
-            // intensity.length == deltas.length + 1 (intensity[0] is at time_chunk_start)
-            int n = deltas.length + 1;
-            double[] time = new double[n];
-            time[0] = start;
-            for (int i = 0; i < deltas.length; i++) {
-                double d = deltas[i];
-                time[i + 1] = time[i] + (Double.isNaN(d) ? 0.0 : d);
-            }
-
-            // Pair with intensity; guard against length mismatch (shouldn't happen in well-formed files)
-            DoubleArrayBuilder[] b = chunkAcc.computeIfAbsent(idx,
-                    k -> new DoubleArrayBuilder[] {new DoubleArrayBuilder(), new DoubleArrayBuilder()});
-            for (int i = 0; i < n; i++) {
-                b[0].add(time[i]);
-                double in = (i < intensity.length) ? intensity[i] : 0.0;
-                b[1].add(Double.isNaN(in) ? 0.0 : in);
-            }
-        });
-
-        Map<Long, PointArrays.XY> out = new LinkedHashMap<>();
-        chunkAcc.forEach((idx, b) -> out.put(idx, new PointArrays.XY(b[0].toArray(), b[1].toArray())));
-        return out;
-    }
-
-    /**
-     * Intensity of a point row whose literal {@code intensity} is null: the first non-null value among the
-     * point's primitive numeric (FLOAT, DOUBLE, INT32, INT64) fields named {@code intensity_*}, in schema order —
-     * e.g. the {@code intensity_f32_au} absorbance column of a UV/DAD chromatogram. List, group, repeated and
-     * BINARY fields are skipped without being read. Returns {@code null} when there is no such value.
-     */
-    private static Double fallbackPointIntensity(Group point) {
-        for (Type field : point.getType().getFields()) {
-            if (!field.getName().startsWith("intensity_")
-                    || !field.isPrimitive() || field.isRepetition(Type.Repetition.REPEATED)) {
-                continue;
-            }
-            switch (field.asPrimitiveType().getPrimitiveTypeName()) {
-                case FLOAT, DOUBLE, INT32, INT64 -> {
-                    Double v = ParquetGroups.optDouble(point, field.getName());
-                    if (v != null) {
-                        return v;
-                    }
-                }
-                default -> { }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Intensity values of a chunk row: the plain {@code intensity} list when present, otherwise the MS-Numpress
-     * SLOF bytes in {@code intensity_numpress_slof_bytes}. Returns an empty array when neither is present.
-     */
-    private static double[] chunkIntensity(Group chunk, long chromatogramIndex) {
-        if (ParquetGroups.has(chunk, "intensity")) {
-            return ParquetGroups.doubleListNullable(chunk, "intensity");
-        }
-        if (ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")) {
-            byte[] bytes = ParquetGroups.byteList(chunk, "intensity_numpress_slof_bytes");
-            if (bytes.length == 0) {
-                return new double[0];
-            }
-            try {
-                return MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, bytes, bytes.length);
-            } catch (RuntimeException e) {
-                throw new MzPeakException("Failed to Numpress-decode intensity for chromatogram_index "
-                        + chromatogramIndex, e);
-            }
-        }
-        // A chunk with only intensity_numpress_pic_bytes is not decoded yet and reads as zero intensities
-        // (deferred: PIC chromatograms, via MSNumpress.decodePic, since decode() rejects PIC payloads < 8 bytes).
-        return new double[0];
     }
 }
