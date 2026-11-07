@@ -8,6 +8,7 @@ import org.mzpeak.model.meta.ScanSettings;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -22,8 +23,68 @@ import java.util.Optional;
  */
 public final class MzPeakManifest {
 
-    /** A single file entry from the manifest. */
-    public record Entry(String name, String entityType, String dataKind) {
+    /**
+     * A single file entry from the manifest.
+     *
+     * @param name          member name, relative to the dataset root
+     * @param entityType    the {@code entity_type} string as written
+     * @param dataKind      the {@code data_kind} string as written
+     * @param columnMapping the {@code column_mapping} list (alias {@code metadata_mapping}) in file order; empty if
+     *                      absent
+     * @param parameters    the {@code parameters} list; empty if absent
+     * @param checksum      the {@code checksum} string as written (lowercase hex SHA-512), or {@code null} if absent
+     */
+    public record Entry(String name, String entityType, String dataKind, List<ColumnMapping> columnMapping,
+                        List<Param> parameters, String checksum) {
+
+        /** Copies both lists; a {@code null} list becomes an empty one. */
+        public Entry {
+            columnMapping = columnMapping == null ? List.of() : List.copyOf(columnMapping);
+            parameters = parameters == null ? List.of() : List.copyOf(parameters);
+        }
+
+        /** An entry with no column mapping, no parameters and no checksum. */
+        public Entry(String name, String entityType, String dataKind) {
+            this(name, entityType, dataKind, List.of(), List.of(), null);
+        }
+
+        /** The first column mapping, in file order, whose accession is {@code accession}. */
+        public Optional<ColumnMapping> columnForAccession(String accession) {
+            Objects.requireNonNull(accession, "accession");
+            for (ColumnMapping m : columnMapping) {
+                if (accession.equals(m.accession())) {
+                    return Optional.of(m);
+                }
+            }
+            return Optional.empty();
+        }
+
+        /** The first column mapping, in file order, whose path is {@code dottedPath} (e.g. {@code ms_level}). */
+        public Optional<ColumnMapping> columnAtPath(String dottedPath) {
+            Objects.requireNonNull(dottedPath, "dottedPath");
+            for (ColumnMapping m : columnMapping) {
+                if (dottedPath.equals(m.path())) {
+                    return Optional.of(m);
+                }
+            }
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * One {@code column_mapping} item of a file entry: ties a column of the member's Parquet schema to a CV term.
+     *
+     * @param name       the human-readable term name
+     * @param path       the column path, delimited at nesting levels by {@code '.'} and omitting list/element
+     *                   levels (e.g. {@code scan_windows.scan_window_lower_limit}); a path given as a JSON array of
+     *                   segments is joined with {@code '.'}
+     * @param accession  the CURIE of the term, or {@code null}
+     * @param unit       the CURIE of the column's unit, or {@code null}; a unit given as a JSON array (a path to a
+     *                   column holding the unit) is joined with {@code '.'} like {@code path}
+     * @param termMarker the {@code term_marker} flag: the column holds child-term CURIEs or presence booleans of
+     *                   the term rather than its value; {@code null} when the key is absent
+     */
+    public record ColumnMapping(String name, String path, String accession, String unit, Boolean termMarker) {
     }
 
     /** A controlled-vocabulary ontology reference from {@code metadata.cv_list}. */
@@ -86,10 +147,17 @@ public final class MzPeakManifest {
             }
             List<Entry> entries = new ArrayList<>();
             for (JsonNode f : filesNode) {
+                JsonNode mapping = f.get("column_mapping");
+                if (mapping == null || mapping.isNull()) {
+                    mapping = f.get("metadata_mapping");
+                }
                 entries.add(new Entry(
                         text(f, "name"),
                         text(f, "entity_type"),
-                        text(f, "data_kind")));
+                        text(f, "data_kind"),
+                        parseColumnMapping(mapping),
+                        parseParamArray(f.get("parameters"), true),
+                        text(f, "checksum")));
             }
 
             // Parse optional metadata block
@@ -121,19 +189,24 @@ public final class MzPeakManifest {
         List<ScanSettings> out = new ArrayList<>();
         for (JsonNode ss : ssList) {
             String id = text(ss, "id");
-            List<Param> params = parseParamArray(ss.get("parameters"));
+            List<Param> params = parseParamArray(ss.get("parameters"), false);
             out.add(new ScanSettings(id, params));
         }
         return out;
     }
 
-    private static List<Param> parseParamArray(JsonNode arr) {
+    /**
+     * Parses a param list. With {@code unitKey} the unit is read from {@code unit}, falling back to
+     * {@code unit_accession}; without it only {@code unit_accession} is read.
+     */
+    private static List<Param> parseParamArray(JsonNode arr, boolean unitKey) {
         if (arr == null || !arr.isArray()) return List.of();
         List<Param> out = new ArrayList<>();
         for (JsonNode p : arr) {
             String name = text(p, "name");
             String accession = text(p, "accession");
-            String unit = text(p, "unit_accession");
+            String unit = unitKey ? text(p, "unit") : null;
+            if (unit == null) unit = text(p, "unit_accession");
             Object value = parseParamValue(p.get("value"));
             out.add(new Param(name, accession, value, unit));
         }
@@ -150,6 +223,33 @@ public final class MzPeakManifest {
         try { return Long.parseLong(s); } catch (NumberFormatException ignored) {}
         try { return Double.parseDouble(s); } catch (NumberFormatException ignored) {}
         return s;
+    }
+
+    private static List<ColumnMapping> parseColumnMapping(JsonNode arr) {
+        if (arr == null || !arr.isArray()) return List.of();
+        List<ColumnMapping> out = new ArrayList<>();
+        for (JsonNode c : arr) {
+            if (!c.isObject()) continue;
+            JsonNode marker = c.get("term_marker");
+            out.add(new ColumnMapping(
+                    text(c, "name"),
+                    dottedPath(c.get("path")),
+                    text(c, "accession"),
+                    dottedPath(c.get("unit")),
+                    marker != null && marker.isBoolean() ? Boolean.valueOf(marker.booleanValue()) : null));
+        }
+        return out;
+    }
+
+    /** A string as is, a JSON array of path segments joined with {@code '.'}, or {@code null}. */
+    private static String dottedPath(JsonNode v) {
+        if (v == null || v.isNull()) return null;
+        if (!v.isArray()) return v.asText();
+        List<String> segments = new ArrayList<>();
+        for (JsonNode s : v) {
+            segments.add(s.asText());
+        }
+        return String.join(".", segments);
     }
 
     private static List<CvEntry> parseCvList(JsonNode meta) {
