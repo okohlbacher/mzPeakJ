@@ -219,8 +219,8 @@ final class Golden {
         /**
          * Compare {@code x} and {@code y} with a summary line: {@code n} exactly, the sums and pairing sums
          * relatively, the head and tail pairs per value. For an R line, pass the stored arrays with null cells
-         * as NaN. When the line has filled points, the sums use {@code relFilled} plus an allowance of
-         * {@code filledAbsDa} per filled point, and head and tail x values {@code filledAbsDa}.
+         * as NaN. When the line has filled points, the sums use {@code relFilled} and head and tail x values
+         * {@code filledAbsDa}. A non-finite sum or value matches only an identical one.
          */
         static List<String> compare(Line e, double[] x, double[] y, Tolerance t) {
             String what = label(e.kind(), e.key(), e.arrayType());
@@ -241,12 +241,11 @@ final class Golden {
             boolean filled = !stored && e.nFilled() > 0;
             double rel = filled ? t.relFilled() : t.relExact();
             double relY = Double.isNaN(t.relNumpress()) ? rel : Math.max(rel, t.relNumpress());
-            double fillX = filled ? e.nFilled() * t.filledAbsDa() : 0.0;
-            checkSum(out, what, "sum_x", e.sumX(), a.sumX, rel, fillX);
-            checkSum(out, what, "sum_y", e.sumY(), a.sumY, relY, 0.0);
-            checkSum(out, what, "sum_xy", e.sumXY(), a.sumXY, relY, fillX * maxAbs(y));
-            checkSum(out, what, "sum_ix", e.sumIX(), a.sumIX, rel, fillX * Math.max(0, x.length - 1));
-            checkSum(out, what, "sum_iy", e.sumIY(), a.sumIY, relY, 0.0);
+            checkSum(out, what, "sum_x", e.sumX(), a.sumX, rel);
+            checkSum(out, what, "sum_y", e.sumY(), a.sumY, relY);
+            checkSum(out, what, "sum_xy", e.sumXY(), a.sumXY, relY);
+            checkSum(out, what, "sum_ix", e.sumIX(), a.sumIX, rel);
+            checkSum(out, what, "sum_iy", e.sumIY(), a.sumIY, relY);
             double absX = filled ? t.filledAbsDa() : 0.0;
             int k = Math.min(3, x.length);
             checkPairs(out, what, "head", e.head(), x, y, 0, k, absX, t.relNumpress());
@@ -327,17 +326,15 @@ final class Golden {
         }
 
         private static void checkSum(List<String> out, String what, String stat, double expected, double actual,
-                                     double rel, double abs) {
-            if (Double.isNaN(expected) || Double.isNaN(actual)) {
-                if (!(Double.isNaN(expected) && Double.isNaN(actual))) {
-                    out.add(String.format(Locale.ROOT, "%s: %s expected %s but was %s", what, stat, expected, actual));
-                }
+                                     double rel) {
+            if (same(expected, actual)) {
                 return;
             }
-            if (expected == actual) {
+            if (!Double.isFinite(expected) || !Double.isFinite(actual)) {
+                out.add(String.format(Locale.ROOT, "%s: %s expected %s but was %s", what, stat, expected, actual));
                 return;
             }
-            double bound = rel * Math.max(Math.abs(expected), Math.abs(actual)) + abs;
+            double bound = rel * Math.abs(expected);
             double diff = Math.abs(expected - actual);
             if (!(diff <= bound)) {
                 out.add(String.format(Locale.ROOT, "%s: %s expected %s but was %s (difference %s, allowed %s)", what,
@@ -365,23 +362,18 @@ final class Golden {
         }
 
         private static boolean yMatches(double expected, double actual, double relNumpress) {
-            if (same(expected, actual) || Double.isNaN(relNumpress)) {
-                return same(expected, actual);
+            if (same(expected, actual)) {
+                return true;
             }
-            return Math.abs(expected - actual) <= relNumpress * Math.max(Math.abs(expected), Math.abs(actual));
+            if (Double.isNaN(relNumpress) || !Double.isFinite(expected) || !Double.isFinite(actual)) {
+                return false;
+            }
+            return Math.abs(expected - actual) <= relNumpress * Math.abs(expected);
         }
 
         /** Equal values, with NaN equal to NaN and 0.0 equal to -0.0. */
         private static boolean same(double expected, double actual) {
             return expected == actual || (Double.isNaN(expected) && Double.isNaN(actual));
-        }
-
-        private static double maxAbs(double[] values) {
-            double max = 0.0;
-            for (double v : values) {
-                max = Math.max(max, Math.abs(v));
-            }
-            return max;
         }
     }
 

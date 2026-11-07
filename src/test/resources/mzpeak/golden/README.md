@@ -106,5 +106,7 @@ take 3,826,648 bytes, within the 8 MB cap, so the 20,000-point threshold stands.
 - `n` exact, stored values exact, digests bit-exact.
 - Filled m/z within 5e-5 Da: the Python reader uses the stored model only for single-point clusters and the
   cluster's local median spacing otherwise, mzPeakJ the stored polynomial for every cluster (DESIGN.md §4).
-- Sums and pairing statistics relative 1e-12; when `n_filled` > 0, relative 1e-9 plus 5e-5 Da per filled
-  point on the sums that involve x.
+- Sums and pairing statistics relative 1e-12 of the expected value; relative 1e-9 when `n_filled` > 0
+  (design §2.4). On small and Example_Processed.img, mzPeakJ's polynomial fill and the Python fill differ by
+  at most 0.12 of that bound.
+- An infinite sum or value matches only the identical value, under every tolerance; NaN matches NaN.

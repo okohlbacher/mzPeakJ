@@ -7,6 +7,7 @@ import org.apache.parquet.io.InputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.Golden.Comparator;
 import org.mzpeak.io.Golden.Digest;
 import org.mzpeak.io.Golden.FullArray;
@@ -36,8 +37,9 @@ import static org.assertj.core.api.Assertions.within;
 /**
  * The golden files of the HEAD Python reader ({@link Golden}) and their comparator. The files must hold the
  * values the unit FX-1b names and stay internally consistent; the comparator must catch arrays that keep
- * their per-array sums but lose their pairing (a rotated intensity, a reversed ion mobility), and a single
- * flipped bit under a digest. Raw cells are read with parquet-java from the members the manifest names, so
+ * their per-array sums but lose their pairing (a rotated intensity, a reversed ion mobility), a single
+ * flipped bit under a digest, an infinite value under any tolerance and a stored-point shift beyond the
+ * §2.4 sum tolerance. Raw cells are read with parquet-java from the members the manifest names, so
  * the Python output is also checked against an independent Java read where the fixture stores plain points.
  */
 class GoldenComparatorTest {
@@ -262,6 +264,74 @@ class GoldenComparatorTest {
                 .anyMatch(m -> m.contains(": sum_xy "))
                 .anyMatch(m -> m.contains(": sum_iy "))
                 .noneMatch(m -> m.contains(": sum_y "));
+    }
+
+    @ParameterizedTest(name = "{0} Da")
+    @ValueSource(doubles = {0.02, 0.05, 0.1, -0.05})
+    void storedPointShiftInAFilledSpectrumIsReportedBySumX(double shift) {
+        // §2.4: relative 1e-9 on the sums once filled points are involved, about 0.012 Da on this sum_x
+        Golden g = Golden.load("small.mzpeak");
+        Line line = g.line(Kind.S, "0").orElseThrow();
+        FullArray full = g.full(Kind.S, "0").orElseThrow();
+        int point = 10;
+        assertThat(line.nFilled()).isEqualTo(2376);
+        assertThat(full.filled()[point]).isFalse();
+        assertThat(Comparator.compare(line, full.x(), full.y(), T)).isEmpty();
+
+        double[] shifted = full.x().clone();
+        shifted[point] += shift;
+        assertThat(Comparator.compare(line, shifted, full.y(), T)).anyMatch(m -> m.contains(": sum_x "));
+        assertThat(Comparator.compareFull(full, shifted, full.y(), T))
+                .singleElement().asString().contains("point " + point);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(doubles = {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    void infiniteMzIsReported(double infinity) {
+        Golden g = Golden.load("small.mzpeak");
+        Line line = g.line(Kind.S, "2").orElseThrow();
+        FullArray full = g.full(Kind.S, "2").orElseThrow();
+        int point = full.x().length / 2;
+        assertThat(line.nFilled()).isZero();
+
+        double[] x = full.x().clone();
+        x[point] = infinity;
+        assertThat(Comparator.compare(line, x, full.y(), T))
+                .anyMatch(m -> m.contains(": sum_x "))
+                .anyMatch(m -> m.contains(": sum_xy "))
+                .anyMatch(m -> m.contains(": sum_ix "));
+        assertThat(Comparator.compareFull(full, x, full.y(), T)).singleElement().asString().contains("point " + point);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(doubles = {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    void infiniteIntensityIsReportedUnderANumpressTolerance(double infinity) {
+        Golden.Tolerance numpress = new Golden.Tolerance(T.filledAbsDa(), T.relExact(), T.relFilled(), 1e-3);
+        Golden g = Golden.load("small.mzpeak");
+        Line line = g.line(Kind.S, "2").orElseThrow();
+        FullArray full = g.full(Kind.S, "2").orElseThrow();
+        int point = full.y().length / 2;
+        assertThat(full.y()[point]).isPositive();
+
+        // the Numpress tolerance is in effect: a relative error of 1e-4 passes it and fails the exact rule
+        double[] close = full.y().clone();
+        close[point] *= 1 + 1e-4;
+        assertThat(Comparator.compare(line, full.x(), close, numpress)).isEmpty();
+        assertThat(Comparator.compareFull(full, full.x(), close, numpress)).isEmpty();
+        assertThat(Comparator.compareFull(full, full.x(), close, T)).isNotEmpty();
+
+        double[] y = full.y().clone();
+        y[point] = infinity;
+        assertThat(Comparator.compare(line, full.x(), y, numpress))
+                .anyMatch(m -> m.contains(": sum_y "))
+                .anyMatch(m -> m.contains(": sum_xy "))
+                .anyMatch(m -> m.contains(": sum_iy "));
+        assertThat(Comparator.compareFull(full, full.x(), y, numpress))
+                .singleElement().asString().contains("point " + point);
+
+        double[] head = full.y().clone();
+        head[0] = infinity;
+        assertThat(Comparator.compare(line, full.x(), head, numpress)).anyMatch(m -> m.contains(": head pair 0 "));
     }
 
     @Test
