@@ -27,7 +27,6 @@ import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
-import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
@@ -308,9 +307,12 @@ class PackedSpectrumMetadataCharacterizationTest {
         assertThat(precursorLines(List.of(withoutPrecursor))).containsExactly("(null|null|null|[]|([]))");
     }
 
-    /** Today's rule: every selected ion goes to the spectrum's first precursor, whatever its precursor_index. */
+    /**
+     * RD-7's rule: a selected ion goes to the first precursor of its spectrum with an equal precursor_index,
+     * whatever the row order. (Before RD-7 every selected ion went to the spectrum's first precursor.)
+     */
     @Test
-    void everySelectedIonGoesToTheFirstPrecursorInFileOrder() {
+    void eachSelectedIonGoesToThePrecursorWithItsPrecursorIndex() {
         Group first = newRow();
         put(first, SPECTRUM, fixtureStruct(SPECTRUM, 5));
         put(first, PRECURSOR, fixtureStruct(PRECURSOR, 5));
@@ -319,20 +321,17 @@ class PackedSpectrumMetadataCharacterizationTest {
         rekeyed(second, PRECURSOR, 9, 5);
         put(second, SELECTED_ION, fixtureStruct(SELECTED_ION, 5));
 
-        SelectedIon ion5 = fixtureDescription(5).primaryPrecursor().selectedIons().get(0);
-        SelectedIon ion9 = fixtureDescription(9).primaryPrecursor().selectedIons().get(0);
+        Precursor precursor5 = fixtureDescription(5).primaryPrecursor();
         Precursor precursor9 = fixtureDescription(9).primaryPrecursor();
+        assertThat(precursor5.precursorIndex()).isEqualTo(1L);
         assertThat(precursor9.precursorIndex()).isEqualTo(8L);
+        assertThat(ParquetGroups.optLong(fixtureStruct(SELECTED_ION, 5), "precursor_index")).isEqualTo(1L);
         assertThat(ParquetGroups.optLong(fixtureStruct(SELECTED_ION, 9), "precursor_index")).isEqualTo(8L);
 
         List<Precursor> precursors = only(decode(List.of(first, second))).precursors();
 
-        assertThat(precursors).hasSize(2);
-        assertThat(Canonical.lines(precursors.get(0).selectedIons(), Canonical::selectedIon))
-                .containsExactly(Canonical.selectedIon(ion9), Canonical.selectedIon(ion5));
-        assertThat(Canonical.precursor(precursors.get(1))).isEqualTo(Canonical.precursor(new Precursor(
-                precursor9.precursorIndex(), precursor9.precursorId(), precursor9.isolationWindow(), List.of(),
-                precursor9.activation())));
+        assertThat(Canonical.lines(precursors, Canonical::precursor))
+                .containsExactly(Canonical.precursor(precursor5), Canonical.precursor(precursor9));
     }
 
     @Test
