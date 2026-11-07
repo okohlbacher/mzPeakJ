@@ -25,29 +25,14 @@ public record Activation(List<Param> parameters) {
     }
 
     /**
-     * Known PSI-MS dissociation method accessions. Activation parameter lists can include non-method entries
-     * (e.g. collision energy), so we whitelist rather than blacklist.
-     */
-    private static final java.util.Set<String> KNOWN_METHODS = java.util.Set.of(
-            CvTerms.CID,   // MS:1000133 CID
-            CvTerms.HCD,   // MS:1000422 HCD
-            CvTerms.ETD,   // MS:1000598 ETD
-            CvTerms.ECD,   // MS:1000250 ECD
-            CvTerms.IRMPD, // MS:1000262 IRMPD
-            "MS:1000435",  // multiphoton dissociation (MPD)
-            "MS:1000044",  // dissociation method (parent term)
-            "MS:1002631",  // supplemental beam-type CID
-            "MS:1002678",  // EThcD
-            "MS:1003181"   // UVPD
-    );
-
-    /**
-     * Params that describe dissociation methods (whitelisted CV method accessions, so energy/config params
-     * are excluded even if other non-energy, non-method params appear).
+     * Params that describe dissociation methods: those whose accession is in {@link CvTerms#DISSOCIATION_METHODS}
+     * (the descendants of MS:1000044), in list order. Energy and other attribute params are excluded, and so are
+     * MS:1000044 itself and MS:1002631 (EThcD, a combined dissociation method attribute in PSI-MS, which stays in
+     * {@link #parameters()}).
      */
     public List<Param> methods() {
         return parameters.stream()
-                .filter(p -> p.accession() != null && KNOWN_METHODS.contains(p.accession()))
+                .filter(p -> p.accession() != null && CvTerms.DISSOCIATION_METHODS.containsKey(p.accession()))
                 .toList();
     }
 

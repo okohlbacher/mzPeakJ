@@ -52,7 +52,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code IMS_1000051_position_y} scan columns, which the fixture does not have.
  *
  * <p>RD-7 changes the selected-ion join on purpose and RD-5 reads the split layout; they update the cases that pin
- * today's rule.
+ * today's rule. RD-11 replaces the ion mobility term list, so an array term such as MS:1002477 no longer keeps the
+ * typed ion mobility column out.
  */
 class PackedSpectrumMetadataCharacterizationTest {
 
@@ -241,9 +242,15 @@ class PackedSpectrumMetadataCharacterizationTest {
                 .containsExactly(resolvingPower);
         // an ion mobility param already present wins over the column
         assertThat(scanParams(scan -> {
+            addParam(scan, "MS:1002476", "ion mobility drift time", 2.5);
+            scan.add("ion_mobility_value", 1.25);
+        })).containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:2.5|null)");
+        // RD-11: MS:1002477 is an ion mobility array term, not an ion mobility type, so the column is appended
+        assertThat(scanParams(scan -> {
             addParam(scan, "MS:1002477", "mean ion mobility drift time", 2.5);
             scan.add("ion_mobility_value", 1.25);
-        })).containsExactly(resolvingPower, "(mean ion mobility drift time|MS:1002477|Double:2.5|null)");
+        })).containsExactly(resolvingPower, "(mean ion mobility drift time|MS:1002477|Double:2.5|null)",
+                "(ion mobility value|MS:1002476|Double:1.25|null)");
     }
 
     @Test
