@@ -1,5 +1,7 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.SimpleGroup;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
@@ -9,9 +11,11 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mzpeak.model.ScanEvent;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -20,9 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The packed layout read through {@link ColumnResolver#packed}: on every legacy fixture (HUPO-PSI/mzPeak 29e59b2),
- * the accession of each column name that the mzPeakJ 0.10.3 spectrum row decoders hard-code resolves to that name,
- * so the decoders can resolve by accession and leave the pin-era names to {@link ColumnTable}. Members are found by
- * role.
+ * each accession the spectrum row decoders resolve gives the column name that mzPeakJ 0.10.3 hard-coded, so the
+ * pin-era names now live only in {@link ColumnTable}. Also pins the lookup order of the delta model and the
+ * instrument configuration on constructed packed structs. Members are found by role.
  */
 class PackedResolverTest {
 
@@ -144,6 +148,63 @@ class PackedResolverTest {
         assertThat(scan.resolve("IMS:1000051")).isEqualTo("IMS_1000051_position_y");
     }
 
+    // ---- lookup order on constructed structs -----------------------------------------------------------------
+
+    @Test
+    void theDeltaModelIsTheFirstOfMs1003821Ms1003820AndThenTheScalarMedianDelta() {
+        MessageType all = spectrum("polynomial_delta_coordinate_interpolation", "coordinate_spacing_model",
+                "mz_delta_model", "median_delta");
+        assertThat(deltaModel(all, row -> {
+            list(row, "polynomial_delta_coordinate_interpolation", 5.0, 0.5);
+            list(row, "coordinate_spacing_model", 99.0);
+            list(row, "mz_delta_model", 99.0);
+            row.add("median_delta", 99.0);
+        })).containsExactly(5.0, 0.5);
+        assertThat(deltaModel(spectrum("coordinate_spacing_model", "mz_delta_model", "median_delta"), row -> {
+            list(row, "coordinate_spacing_model", 3.0);
+            list(row, "mz_delta_model", 99.0);
+            row.add("median_delta", 99.0);
+        })).containsExactly(3.0);
+        assertThat(deltaModel(spectrum("mz_delta_model", "median_delta"), row -> {
+            list(row, "mz_delta_model", 1.0, 2.0);
+            row.add("median_delta", 99.0);
+        })).containsExactly(1.0, 2.0);
+        assertThat(deltaModel(spectrum("median_delta"), row -> row.add("median_delta", 0.25)))
+                .containsExactly(0.25);
+
+        // the column is chosen by schema: a null cell of the chosen column is no model, whatever else the row has
+        assertThat(deltaModel(spectrum("mz_delta_model", "median_delta"), row -> row.add("median_delta", 99.0)))
+                .isEmpty();
+        assertThat(deltaModel(spectrum("median_delta"), row -> { })).isEmpty();
+        assertThat(deltaModel(spectrum(), row -> { })).isEmpty();
+    }
+
+    @Test
+    void theInstrumentConfigurationIdWinsOverTheRef() {
+        MessageType both = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("source_index")
+                .optional(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(32, false))
+                .named("instrument_configuration_ref")
+                .optional(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(32, false))
+                .named("instrument_configuration_id")
+                .named("scan");
+        Group row = new SimpleGroup(both);
+        row.add("source_index", 0L);
+        row.add("instrument_configuration_ref", 7);
+        row.add("instrument_configuration_id", 3);
+        assertThat(scanRow(both, row).instrumentConfigurationRef()).isEqualTo(3);
+
+        MessageType ref = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("source_index")
+                .optional(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(32, false))
+                .named("instrument_configuration_ref")
+                .named("scan");
+        Group legacy = new SimpleGroup(ref);
+        legacy.add("source_index", 0L);
+        legacy.add("instrument_configuration_ref", 7);
+        assertThat(scanRow(ref, legacy).instrumentConfigurationRef()).isEqualTo(7);
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------------------
 
     /** The schema of the spectrum metadata member of the legacy {@code fixture}, found by role. */
@@ -171,5 +232,41 @@ class PackedResolverTest {
             return child.getType(0).asGroupType().getType(0).asGroupType();
         }
         return child;
+    }
+
+    /** A packed spectrum struct with an index and the named delta-model columns, {@code median_delta} a scalar. */
+    private static MessageType spectrum(String... modelColumns) {
+        Types.MessageTypeBuilder b = Types.buildMessage();
+        b.optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index");
+        for (String column : modelColumns) {
+            if ("median_delta".equals(column)) {
+                b.optional(PrimitiveTypeName.DOUBLE).named(column);
+            } else {
+                b.addField(Types.optionalList().optionalElement(PrimitiveTypeName.DOUBLE).named(column));
+            }
+        }
+        return b.named("spectrum");
+    }
+
+    /** The delta model {@link SpectrumRowDecoder} decodes from a row of {@code schema} with {@code cells}. */
+    private static double[] deltaModel(MessageType schema, Consumer<Group> cells) {
+        Group row = new SimpleGroup(schema);
+        row.add("index", 0L);
+        cells.accept(row);
+        FacetRow facetRow = new FacetRow(Facet.SPECTRUM, row, ColumnResolver.packed(schema, Facet.SPECTRUM));
+        return SpectrumRowDecoder.decode(facetRow, 0).mzDeltaModel;
+    }
+
+    /** Sets the list cell {@code field} of {@code row} to {@code values}. */
+    private static void list(Group row, String field, double... values) {
+        Group list = row.addGroup(field);
+        for (double v : values) {
+            list.addGroup("list").add("element", v);
+        }
+    }
+
+    private static ScanEvent scanRow(MessageType schema, Group row) {
+        return ScanRowDecoder.decode(new FacetRow(Facet.SPECTRUM_SCAN, row,
+                ColumnResolver.packed(schema, Facet.SPECTRUM_SCAN)));
     }
 }

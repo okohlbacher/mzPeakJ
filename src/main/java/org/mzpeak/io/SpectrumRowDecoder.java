@@ -1,52 +1,78 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
-import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.SignalContinuity;
 
 import java.util.List;
 
-/** Decodes one {@code spectrum} struct of the packed spectrum metadata layout into a {@link SpectrumHead}. */
+/**
+ * Decodes one spectrum row of the spectrum metadata into a {@link SpectrumHead}; columns are resolved by accession.
+ */
 final class SpectrumRowDecoder {
 
     // spectrum facet
     private static final String F_ID = "id";
-    private static final String F_MS_LEVEL = "MS_1000511_ms_level";
+    private static final String MS_LEVEL = "MS:1000511";
     private static final String F_TIME = "time";
-    private static final String F_POLARITY = "MS_1000465_scan_polarity";
-    private static final String F_REPRESENTATION = "MS_1000525_spectrum_representation";
-    private static final String F_N_POINTS = "MS_1003060_number_of_data_points";
-    private static final String F_N_PEAKS = "MS_1003059_number_of_peaks";
+    private static final String POLARITY = "MS:1000465";
+    private static final String REPRESENTATION = "MS:1000525";
+    private static final String N_POINTS = "MS:1003060";
+    private static final String N_PEAKS = "MS:1003059";
+
+    // m/z delta model, most current first
+    private static final String POLYNOMIAL_DELTA_INTERPOLATION = "MS:1003821";
+    private static final String COORDINATE_SPACING_MODEL = "MS:1003820";
+    private static final String F_COORDINATE_SPACING_MODEL = "coordinate_spacing_model";
     private static final String F_MZ_DELTA_MODEL = "mz_delta_model";
+    private static final String F_MEDIAN_DELTA = "median_delta";
 
     private SpectrumRowDecoder() {
     }
 
-    /** Decodes the {@code spectrum} struct whose (non-negative) {@code index} is {@code idx}. */
-    static SpectrumHead decode(Group spectrum, long idx) {
+    /** Decodes the spectrum row whose (non-negative) {@code index} is {@code idx}. */
+    static SpectrumHead decode(FacetRow spectrum, long idx) {
+        ColumnResolver columns = spectrum.columns();
+        Group g = spectrum.group();
         SpectrumHead b = new SpectrumHead();
         b.index = idx;
-        b.id = ParquetGroups.optString(spectrum, F_ID);
-        Integer level = ParquetGroups.optInt(spectrum, F_MS_LEVEL);
+        b.id = columns.stringValue(g, F_ID);
+        Integer level = columns.intValue(g, columns.resolve(MS_LEVEL));
         b.msLevel = level == null ? 0 : level;
-        Double t = ParquetGroups.optDouble(spectrum, F_TIME);
+        Double t = columns.doubleValue(g, F_TIME);
         b.time = t == null ? Double.NaN : t;
-        b.polarity = Polarity.fromCode(ParquetGroups.optInt(spectrum, F_POLARITY));
-        b.continuity = SignalContinuity.fromCurie(ParquetGroups.optString(spectrum, F_REPRESENTATION));
-        Long nPts = ParquetGroups.optLong(spectrum, F_N_POINTS);
+        b.polarity = Polarity.fromCode(columns.intValue(g, columns.resolve(POLARITY)));
+        b.continuity = SignalContinuity.fromCurie(columns.stringValue(g, columns.resolve(REPRESENTATION)));
+        Long nPts = columns.longValue(g, columns.resolve(N_POINTS));
         b.numberOfDataPoints = nPts == null ? 0 : nPts;
-        Long nPeaks = ParquetGroups.optLong(spectrum, F_N_PEAKS);
+        Long nPeaks = columns.longValue(g, columns.resolve(N_PEAKS));
         b.numberOfPeaks = nPeaks == null ? 0 : nPeaks;
-        b.spectrumParams = ParquetGroups.readParams(spectrum, "parameters");
-        b.mzDeltaModel = ParquetGroups.doubleListNullable(spectrum, F_MZ_DELTA_MODEL);
+        b.spectrumParams = columns.params(g);
+        b.mzDeltaModel = deltaModel(columns, g);
         return b;
     }
 
     /**
-     * Mutable assembly holder for one spectrum's core fields, plus its {@code mz_delta_model} polynomial
-     * coefficients (empty when the struct has none).
+     * The row's m/z delta model coefficients: the list column of MS:1003821, else of MS:1003820 (also named
+     * {@code coordinate_spacing_model} or {@code mz_delta_model}), else the scalar {@code median_delta} as a
+     * one-coefficient model. Empty when the row has none.
+     */
+    private static double[] deltaModel(ColumnResolver columns, Group g) {
+        String list = columns.resolve(POLYNOMIAL_DELTA_INTERPOLATION);
+        if (list == null) {
+            list = columns.resolve(COORDINATE_SPACING_MODEL, F_COORDINATE_SPACING_MODEL, F_MZ_DELTA_MODEL);
+        }
+        if (list != null) {
+            return columns.doubleList(g, list);
+        }
+        Double median = columns.doubleValue(g, columns.resolveName(F_MEDIAN_DELTA));
+        return median == null ? new double[0] : new double[] {median};
+    }
+
+    /**
+     * Mutable assembly holder for one spectrum's core fields, plus its m/z delta model polynomial coefficients
+     * (empty when the row has none).
      */
     static final class SpectrumHead {
         long index;

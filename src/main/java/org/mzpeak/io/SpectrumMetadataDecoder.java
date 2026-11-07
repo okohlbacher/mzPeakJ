@@ -44,14 +44,15 @@ final class SpectrumMetadataDecoder {
     }
 
     private static Decoded decode(InputFile metadataFile, String member) {
-        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "spectrum", F_INDEX, member);
+        ParquetFooter footer = ParquetFooter.read(metadataFile);
+        MetadataShape shape = MetadataShape.detect(footer, "spectrum", F_INDEX, member);
         if (shape == MetadataShape.SPLIT) {
             throw new MzPeakException(member + ": split metadata layout not supported yet");
         }
         if (shape == MetadataShape.EMPTY) {
             return new Decoded(new ArrayList<>(), new HashMap<>());
         }
-        return PackedMetadataReader.read(metadataFile);
+        return PackedMetadataReader.read(metadataFile, footer.schema());
     }
 
     /** Decoded spectrum metadata plus the per-spectrum {@code mz_delta_model} polynomial coefficients. */
