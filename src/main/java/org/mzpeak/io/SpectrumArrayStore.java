@@ -18,9 +18,14 @@ import org.mzpeak.io.parquet.ParquetGroups;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.System.Logger.Level;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -33,14 +38,32 @@ import java.util.function.Consumer;
  * value) throws an {@link MzPeakException} instead of being dropped or misdecoded. Null-marked m/z is resolved by
  * {@link NullFill}.
  *
+ * <p><b>Extra arrays:</b> every other array the plan lists ({@link SignalPlan#extras()}), such as diaPASEF's ion
+ * mobility, is read parallel to the m/z, with null cells as NaN. A spectrum whose cells of an extra are all null
+ * (NaN) gets no array for it. An extra that cannot be decoded for a spectrum (a chunk list whose length does not match
+ * its m/z, a transform column that carries a value, cells that are not numbers) is dropped from that spectrum with a
+ * WARNING, logged once per member and extra; the m/z and intensity are read as without it.
+ *
  * <p><b>Streaming:</b> per-row-group min/max statistics of the plan's index column ({@code spectrum_index}) are
  * read at open time; {@link #get} decodes only the row group(s) covering the requested index, caching the last
  * decoded block run. Memory usage is bounded to one row-group run rather than the whole file.
  */
 final class SpectrumArrayStore implements AutoCloseable {
 
-    record Arrays(double[] mz, double[] intensity) {
+    /**
+     * The decoded arrays of one spectrum.
+     *
+     * @param extras the extra arrays, each parallel to {@code mz}, keyed as in {@link SignalPlan#extras()} and in
+     *               plan order; empty when the member has none
+     */
+    record Arrays(double[] mz, double[] intensity, Map<String, double[]> extras) {
+
+        Arrays(double[] mz, double[] intensity) {
+            this(mz, intensity, Map.of());
+        }
     }
+
+    private static final System.Logger LOG = System.getLogger(SpectrumArrayStore.class.getName());
 
     private final ParquetFileReader reader;
     private final MessageType schema;
@@ -51,6 +74,10 @@ final class SpectrumArrayStore implements AutoCloseable {
     private final long[] rgMin;
     private final long[] rgMax;
     private final ColumnIOFactory columnIO = new ColumnIOFactory();
+    /** The member name in warnings. */
+    private final String member;
+    /** The extras a WARNING has been logged for. */
+    private final Set<String> warnedExtras = new HashSet<>();
 
     // cache of the last-decoded contiguous block run [cachedFirst, cachedLast]
     private int cachedFirst = -1;
@@ -59,7 +86,7 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, SignalPlan plan,
                                boolean reconstructProfile, Map<Long, double[]> deltaModels, long[] rgMin,
-                               long[] rgMax) {
+                               long[] rgMax, String member) {
         this.reader = reader;
         this.schema = schema;
         this.plan = plan;
@@ -68,6 +95,7 @@ final class SpectrumArrayStore implements AutoCloseable {
         this.deltaModels = deltaModels;
         this.rgMin = rgMin;
         this.rgMax = rgMax;
+        this.member = member;
     }
 
     /**
@@ -77,6 +105,12 @@ final class SpectrumArrayStore implements AutoCloseable {
      *                         two m/z value columns
      */
     static SpectrumArrayStore load(InputFile file, boolean reconstructProfile, Map<Long, double[]> deltaModels) {
+        return load(file, "spectrum signal member", reconstructProfile, deltaModels);
+    }
+
+    /** {@link #load(InputFile, boolean, Map)} for the member named {@code member}, which warnings name. */
+    static SpectrumArrayStore load(InputFile file, String member, boolean reconstructProfile,
+                                   Map<Long, double[]> deltaModels) {
         try {
             ParquetFileReader reader = ParquetFileReader.open(file, ParquetGroups.readOptions());
             try {
@@ -94,7 +128,8 @@ final class SpectrumArrayStore implements AutoCloseable {
                     rgMin[b] = range[0];
                     rgMax[b] = range[1];
                 }
-                return new SpectrumArrayStore(reader, schema, plan, reconstructProfile, deltaModels, rgMin, rgMax);
+                return new SpectrumArrayStore(reader, schema, plan, reconstructProfile, deltaModels, rgMin, rgMax,
+                        member);
             } catch (RuntimeException e) {
                 try {
                     reader.close();
@@ -165,7 +200,7 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private Map<Long, Arrays> decodeBlocks(int first, int last) {
         Map<Long, Arrays> result = new HashMap<>();
-        Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels, plan, chunks);
+        Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels, plan, chunks, this::dropExtra);
         try {
             for (int b = first; b <= last; b++) {
                 PageReadStore pages = reader.readRowGroup(b);
@@ -181,6 +216,21 @@ final class SpectrumArrayStore implements AutoCloseable {
             throw new UncheckedIOException("Failed reading row groups " + first + ".." + last, e);
         }
         return result;
+    }
+
+    /** Logs that extra {@code key} is dropped from spectrum {@code si}, the first time for {@code key}. */
+    private void dropExtra(String key, long si, String reason) {
+        if (warnedExtras.add(key)) {
+            LOG.log(Level.WARNING, () -> member + ": the extra array " + key + " of spectrum_index " + si + " "
+                    + reason + "; it is dropped from that spectrum, whose m/z and intensity are kept (logged once per"
+                    + " member and extra array)");
+        }
+    }
+
+    /** Receives the extras the accumulator drops from a spectrum. */
+    @FunctionalInterface
+    private interface ExtraDrops {
+        void drop(String key, long si, String reason);
     }
 
     @Override
@@ -205,13 +255,18 @@ final class SpectrumArrayStore implements AutoCloseable {
         private final String intensityField;
         /** Chunk layout: the row decoder; null for the point layout. */
         private final ChunkRowDecoder chunks;
+        /** The plan's extras: key to the point values column, or to null when only a transform column holds it. */
+        private final Map<String, String> extraFields = new LinkedHashMap<>();
+        private final ExtraDrops drops;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
         private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
+        /** The current spectrum's extras not dropped so far, in plan order. */
+        private Map<String, DoubleArrayBuilder> extras;
 
         Accumulator(Map<Long, Arrays> result, boolean reconstructProfile, Map<Long, double[]> deltaModels,
-                    SignalPlan plan, ChunkRowDecoder chunks) {
+                    SignalPlan plan, ChunkRowDecoder chunks, ExtraDrops drops) {
             this.result = result;
             this.reconstructProfile = reconstructProfile;
             this.deltaModels = deltaModels;
@@ -220,6 +275,22 @@ final class SpectrumArrayStore implements AutoCloseable {
             this.mzField = plan.axis().values() == null ? null : plan.axis().values().field();
             this.intensityField = plan.plainIntensity().map(Column::field).orElse(null);
             this.chunks = chunks;
+            plan.extras().forEach((key, extra) -> extraFields.put(key,
+                    extra.values() == null ? null : extra.values().field()));
+            this.drops = drops;
+            this.extras = newExtras();
+        }
+
+        /** Empty builders for every extra of the plan; an unmodifiable empty map when it has none. */
+        private Map<String, DoubleArrayBuilder> newExtras() {
+            if (extraFields.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, DoubleArrayBuilder> out = new LinkedHashMap<>();
+            for (String key : extraFields.keySet()) {
+                out.put(key, new DoubleArrayBuilder());
+            }
+            return out;
         }
 
         @Override
@@ -241,6 +312,18 @@ final class SpectrumArrayStore implements AutoCloseable {
                 mz.add(axis[i]);
                 intensity.add(values[i]);
             }
+            for (Iterator<Map.Entry<String, DoubleArrayBuilder>> it = extras.entrySet().iterator(); it.hasNext(); ) {
+                Map.Entry<String, DoubleArrayBuilder> extra = it.next();
+                String reason = decoded.dropped().get(extra.getKey());
+                if (reason != null) {
+                    it.remove();
+                    drops.drop(extra.getKey(), si, reason);
+                    continue;
+                }
+                for (double v : decoded.extras().get(extra.getKey())) {
+                    extra.getValue().add(v);
+                }
+            }
         }
 
         private void acceptPoint(Group point) {
@@ -249,6 +332,19 @@ final class SpectrumArrayStore implements AutoCloseable {
             // Null-marked point: NaN m/z + 0 intensity placeholder, resolved on flush.
             mz.add(mzVal == null ? Double.NaN : mzVal);
             intensity.add(inVal == null ? 0.0 : inVal);
+            for (Iterator<Map.Entry<String, DoubleArrayBuilder>> it = extras.entrySet().iterator(); it.hasNext(); ) {
+                Map.Entry<String, DoubleArrayBuilder> extra = it.next();
+                String field = extraFields.get(extra.getKey());
+                Double v;
+                try {
+                    v = field == null ? null : ParquetGroups.optDouble(point, field);
+                } catch (RuntimeException e) {
+                    it.remove();
+                    drops.drop(extra.getKey(), current, "cannot be read as a number (" + e.getMessage() + ")");
+                    continue;
+                }
+                extra.getValue().add(v == null ? Double.NaN : v);
+            }
         }
 
         private long requireIndex(Group g) {
@@ -278,14 +374,15 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
             double[] mzArray = mz.toArray();
             double[] intensityArray = intensity.toArray();
+            Map<String, double[]> extraArrays = extraArrays();
             double[] model = deltaModels == null ? null : deltaModels.get(current);
             Arrays arrays;
             if (reconstructProfile && model != null && model.length > 0) {
                 // Exact reconstruction: fill null-marked m/z by stepping with the stored polynomial delta model.
                 NullFill.polynomialFill(mzArray, model);
-                arrays = new Arrays(mzArray, intensityArray);
+                arrays = new Arrays(mzArray, intensityArray, extraArrays);
             } else {
-                arrays = NullFill.finalizeArrays(mzArray, intensityArray, reconstructProfile);
+                arrays = NullFill.finalizeArrays(mzArray, intensityArray, extraArrays, reconstructProfile);
             }
             if (result.putIfAbsent(current, arrays) != null) {
                 throw new MzPeakException("signal file is not sorted by spectrum_index (index " + current
@@ -293,6 +390,22 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
             mz = new DoubleArrayBuilder();
             intensity = new DoubleArrayBuilder();
+            extras = newExtras();
+        }
+
+        /** The current spectrum's extras that have a value other than NaN; an unmodifiable empty map if none. */
+        private Map<String, double[]> extraArrays() {
+            Map<String, double[]> out = new LinkedHashMap<>();
+            for (Map.Entry<String, DoubleArrayBuilder> extra : extras.entrySet()) {
+                double[] values = extra.getValue().toArray();
+                for (double v : values) {
+                    if (!Double.isNaN(v)) {
+                        out.put(extra.getKey(), values);
+                        break;
+                    }
+                }
+            }
+            return out.isEmpty() ? Map.of() : out;
         }
     }
 }
