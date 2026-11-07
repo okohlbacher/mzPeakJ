@@ -35,7 +35,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Outputs are compared with {@link WriterSnapshotTest#snapshot}, member digests plus the ZIP entry order of an
  * archive, on the legacy {@code has_uv} fixture (spectra, chromatograms, wavelength spectra, scan settings and file
- * metadata) read with {@link ForwardBackwardCorpusTest#readSource}.
+ * metadata) read with {@link ForwardBackwardCorpusTest#readSource}; the Numpress archive and the Numpress row-group
+ * cases use the legacy {@code small.unpacked} fixture.
  */
 class WriterOptionsTest {
 
@@ -242,6 +243,27 @@ class WriterOptionsTest {
             assertThat(rowGroups(split.members().get(name))).as("row groups of %s", name).isGreaterThan(1);
         }
         assertThat(rowGroups(split.members().get("chromatograms_metadata.parquet"))).isEqualTo(1);
+    }
+
+    /** The Numpress chunks get the option too: it writes exactly what the property of the same size writes. */
+    @Test
+    void aRowGroupSizeOptionSplitsTheNumpressChunksLikeTheProperty(@TempDir Path tmp) {
+        assertPropertyUnset();
+        Source s = source(SMALL);
+
+        Snapshot plain = snapshot(tmp.resolve("default"), false, options(NUMPRESS), s);
+        Snapshot option = snapshot(tmp.resolve("option"), false, options(NUMPRESS.withRowGroupSize(32768)), s);
+        Snapshot property;
+        System.setProperty(ROW_GROUP_SIZE, "32768");
+        try {
+            property = snapshot(tmp.resolve("property"), false, options(NUMPRESS), s);
+        } finally {
+            System.clearProperty(ROW_GROUP_SIZE);
+        }
+
+        assertThat(option).isEqualTo(property);
+        assertThat(rowGroups(plain.members().get(DATA))).as("default row groups of %s", DATA).isEqualTo(1);
+        assertThat(rowGroups(option.members().get(DATA))).as("row groups of %s", DATA).isEqualTo(6);
     }
 
     @Test
