@@ -31,13 +31,14 @@ import static org.assertj.core.api.Assertions.within;
 
 /**
  * RD-12: a spectrum chunk the reader cannot decode fails with a precise {@link MzPeakException} instead of being
- * dropped or misdecoded. Covered: grid chunks ({@code MS:1003826}), unknown {@code chunk_encoding} CURIEs, Numpress
- * intensity without a Numpress m/z source, and unknown {@code *numpress*} columns that carry a value.
+ * dropped or misdecoded. Covered: grid chunks ({@code MS:1003826}) of a grid type RD-20 does not decode, or without
+ * the grid encoding, unknown {@code chunk_encoding} CURIEs, Numpress intensity without a Numpress m/z source, and
+ * unknown {@code *numpress*} columns that carry a value.
  *
- * <p>The grid case reads the current diaPASEF.grid peaks member as is. The other cases write constructed chunk rows
- * whose values come from row 0 of the current small.numpress data member (spectrum 0, chunk_encoding
- * {@code MS:1002312}, Numpress linear m/z and SLOF intensity) or from row 0 of the diaPASEF.grid peaks member, and
- * read them back through {@link SpectrumArrayStore#load}. Members are found by manifest role.
+ * <p>The cases write constructed chunk rows whose values come from row 0 of the current small.numpress data member
+ * (spectrum 0, chunk_encoding {@code MS:1002312}, Numpress linear m/z and SLOF intensity) or from row 0 of the
+ * diaPASEF.grid peaks member, and read them back through {@link SpectrumArrayStore#load}. Members are found by
+ * manifest role.
  */
 class UnsupportedEncodingTest {
 
@@ -52,19 +53,17 @@ class UnsupportedEncodingTest {
     // ---- grid chunks ------------------------------------------------------------------------------------------
 
     @Test
-    void diaPasefGridPeaksFailWithThePreciseGridError() {
-        try (MzPeakSource source = MzPeakSource.open(Fixtures.current("diaPASEF.grid.mzpeak"))) {
-            String peaks = MzPeakManifest.fromSource(source).find("spectrum", "peaks").orElseThrow().name();
-            try (SpectrumArrayStore store = SpectrumArrayStore.load(source.inputFile(peaks), false, Map.of())) {
-                assertThatThrownBy(() -> store.get(0))
-                        .isInstanceOf(MzPeakException.class)
-                        .hasMessageContaining("MS:1003826")
-                        .hasMessageContaining("MS:9999002")
-                        .hasMessageContaining("spectrum_index 0")
-                        .hasMessageNotContaining("must equal")
-                        .hasMessage(GRID_ERROR);
-            }
-        }
+    void aGridChunkOfAnUnknownGridTypeFailsWithThePreciseGridError() {
+        // RD-20 decodes the grid types of GridModels.KINDS, diaPASEF.grid's MS:9999002 among them (GridDecodeTest)
+        ChunkRow row = gridRow0();
+        assertThat(read(row).mz()).hasSameSizeAs(row.gridIndices);
+        row.gridType = "MS:9999999";
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("MS:1003826")
+                .hasMessageContaining("spectrum_index 0")
+                .hasMessageNotContaining("must equal")
+                .hasMessage(GRID_ERROR.replace("MS:9999002", "MS:9999999"));
     }
 
     @Test

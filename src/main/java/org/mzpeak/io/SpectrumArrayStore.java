@@ -32,17 +32,18 @@ import java.util.function.Consumer;
  * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) in a streaming,
  * memory-bounded fashion. The columns are the ones the member's {@link SignalPlan} names: from its
  * {@code spectrum_array_index} footer, or inferred from the column names when it has none (as in mzPeakJ output).
- * Supports the {@code point} layout, delta-encoded {@code chunk} layout, and MS-Numpress chunks (linear m/z +
- * SLOF intensity); chunk rows are decoded by {@link ChunkRowDecoder}. A chunk it cannot decode (a coordinate grid,
- * an unknown {@code chunk_encoding}, Numpress intensity without Numpress m/z, or an unknown Numpress column with a
- * value) throws an {@link MzPeakException} instead of being dropped or misdecoded. Null-marked m/z is resolved by
- * {@link NullFill}.
+ * Supports the {@code point} layout, delta-encoded {@code chunk} layout, MS-Numpress chunks (linear m/z +
+ * SLOF intensity) and coordinate grid chunks; chunk rows are decoded by {@link ChunkRowDecoder}. A chunk it cannot
+ * decode (a coordinate grid of an unknown grid_type, an unknown {@code chunk_encoding}, Numpress intensity without
+ * Numpress m/z, or an unknown Numpress column with a value) throws an {@link MzPeakException} instead of being dropped
+ * or misdecoded. Null-marked m/z is resolved by {@link NullFill}.
  *
  * <p><b>Extra arrays:</b> every other array the plan lists ({@link SignalPlan#extras()}), such as diaPASEF's ion
  * mobility, is read parallel to the m/z, with null cells as NaN. A spectrum whose cells of an extra are all null
- * (NaN) gets no array for it. An extra that cannot be decoded for a spectrum (a chunk list whose length does not match
- * its m/z, a transform column that carries a value, cells that are not numbers) is dropped from that spectrum with a
- * WARNING, logged once per member and extra; the m/z and intensity are read as without it.
+ * (NaN) gets no array for it. An extra that cannot be decoded for a spectrum (a chunk list or grid whose length does
+ * not match its m/z, a grid of an unknown grid_type, a Numpress transform column that carries a value, cells that are
+ * not numbers) is dropped from that spectrum with a WARNING, logged once per member and extra; the m/z and intensity
+ * are read as without it.
  *
  * <p><b>Streaming:</b> per-row-group min/max statistics of the plan's index column ({@code spectrum_index}) are
  * read at open time; {@link #get} decodes only the row group(s) covering the requested index, caching the last

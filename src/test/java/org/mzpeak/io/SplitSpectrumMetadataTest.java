@@ -41,7 +41,6 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * RD-5: the split spectrum metadata layout of the current fixtures (HUPO-PSI/mzPeak 2ee2589), whose spectrum, scans,
@@ -59,10 +58,6 @@ class SplitSpectrumMetadataTest {
     private static final String SMALL = "small.mzpeak";
     private static final String DIA_REF = "diaPASEF.ref.mzpeak";
     private static final String DIA_GRID = "diaPASEF.grid.mzpeak";
-
-    /** RD-12's error for the first grid chunk of diaPASEF.grid's peaks member. */
-    private static final String GRID_ERROR = "unsupported chunk encoding MS:1003826 (coordinate grid, draft) with "
-            + "grid_type MS:9999002 for spectrum_index 0; grid decoding is not implemented";
 
     /**
      * The measured Numpress tolerance for intensities: the Python reader rounds the decoded SLOF intensities of
@@ -114,8 +109,8 @@ class SplitSpectrumMetadataTest {
     /**
      * Every spectrum passes the golden rules: its arrays match its S line, its full arrays or digest where the
      * golden holds them, and its peaks match its P line (no peaks without one). The numbers of lines checked are
-     * pinned, so the test cannot pass vacuously. diaPASEF.grid's peaks are grid-encoded; see
-     * {@link #diaPasefGridDescribesItsSpectraLikeDiaPasefRefAndFailsOnItsGridPeaks()}.
+     * pinned, so the test cannot pass vacuously. diaPASEF.grid's peaks are grid-encoded; {@link GridDecodeTest} checks
+     * them against diaPASEF.ref and both goldens.
      */
     @ParameterizedTest(name = "{0}")
     @CsvSource({
@@ -266,13 +261,14 @@ class SplitSpectrumMetadataTest {
     // ---- (f) diaPASEF.grid ---------------------------------------------------------------------------------------
 
     @Test
-    void diaPasefGridDescribesItsSpectraLikeDiaPasefRefAndFailsOnItsGridPeaks() {
+    void diaPasefGridDescribesItsSpectraLikeDiaPasefRef() {
         try (MzPeakReader grid = MzPeakReader.open(Fixtures.current(DIA_GRID));
              MzPeakReader ref = MzPeakReader.open(Fixtures.current(DIA_REF))) {
             assertThat(grid.size()).isEqualTo(9);
             assertThat(Canonical.lines(grid.metadata(), Canonical::describe))
                     .containsExactlyElementsOf(Canonical.lines(ref.metadata(), Canonical::describe));
-            assertThatThrownBy(() -> grid.getSpectrum(0)).isInstanceOf(MzPeakException.class).hasMessage(GRID_ERROR);
+            // its grid-encoded peaks decode since RD-20
+            assertThat(grid.getSpectrum(0).orElseThrow().mz()).hasSize(ref.getSpectrum(0).orElseThrow().mz().length);
         }
     }
 
