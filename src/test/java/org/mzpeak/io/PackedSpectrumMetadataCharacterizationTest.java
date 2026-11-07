@@ -363,17 +363,20 @@ class PackedSpectrumMetadataCharacterizationTest {
         assertThat(decoded.deltaModels()).isEmpty();
     }
 
+    /** RD-5: the split layout is decoded through the manifest, which names its facet members; never without it. */
     @Test
-    void theSplitLayoutIsNotSupportedYet() {
+    void theSplitLayoutIsDecodedThroughTheManifestOnly() {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.current("small.unpacked.mzpeak"))) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
             String member = manifest.find(EntityType.SPECTRUM, DataKind.METADATA).orElseThrow().name();
             assertThatThrownBy(() -> SpectrumMetadataDecoder.decode(source.inputFile(member)))
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessage("spectrum metadata member: split metadata layout not supported yet");
-            assertThatThrownBy(() -> SpectrumMetadataDecoder.decode(source, manifest))
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage(member + ": split metadata layout not supported yet");
+                    .hasMessage("spectrum metadata member: the split metadata layout keeps its scans, precursors"
+                            + " and selected ions in members of their own; decode it through the manifest");
+            SpectrumMetadataDecoder.Decoded decoded = SpectrumMetadataDecoder.decode(source, manifest);
+            assertThat(decoded.descriptions()).hasSize(48);
+            assertThat(decoded.deltaModels()).containsOnlyKeys(MS1);
+            assertThat(decoded.deltaModels().get(0L)).hasSize(3);
         }
     }
 
