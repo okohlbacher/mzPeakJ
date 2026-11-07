@@ -27,9 +27,10 @@ final class SelectedIonRowDecoder {
     }
 
     /**
-     * Decodes one selected-ion row, or returns {@code null} when its m/z is null. Its Params are the
-     * {@code parameters} list, then the typed ion mobility ({@link IonMobilityParams}, in both layouts), then the
-     * scope's leftovers ({@link ColumnResolver#leftovers}, split layout only).
+     * Decodes one selected-ion row, or returns {@code null} when its m/z is null (the Rust reference instead keeps
+     * such an ion with m/z 0.0, together with its charge and intensity). Its Params are the {@code parameters} list,
+     * then the typed ion mobility ({@link IonMobilityParams}, in both layouts), then the scope's leftovers
+     * ({@link ColumnResolver#leftovers}, split layout only).
      */
     static SelectedIon decode(FacetRow ion) {
         ColumnResolver columns = ion.columns();
