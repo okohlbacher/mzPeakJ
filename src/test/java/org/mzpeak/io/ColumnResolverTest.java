@@ -401,6 +401,93 @@ class ColumnResolverTest {
                 .hasMessageContaining("activation");
     }
 
+    /**
+     * The {@link ColumnTable} path wins over its fallbacks, and both win over the extra names, whatever the schema
+     * order; in both layouts.
+     */
+    @Test
+    void theCanonicalPathWinsOverAFallbackAndBothWinOverTheExtraNames() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                .optional(PrimitiveTypeName.INT32).named("level")
+                .optional(PrimitiveTypeName.INT32).named("MS_1000511_ms_level")
+                .optional(PrimitiveTypeName.INT32).named("ms_level")
+                .optional(PrimitiveTypeName.INT32).named("polarity")
+                .optional(PrimitiveTypeName.INT32).named("MS_1000465_scan_polarity")
+                .named("arrow_schema");
+        for (ColumnResolver columns : List.of(
+                ColumnResolver.split(schema, new Entry("constructed.parquet", "spectrum", "metadata"), Facet.SPECTRUM),
+                ColumnResolver.packed(schema, Facet.SPECTRUM))) {
+            assertThat(columns.resolve("MS:1000511")).as("path over fallback").isEqualTo("ms_level");
+            assertThat(columns.resolve("MS:1000511", "level", "MS_1000511_ms_level")).as("path over extra names")
+                    .isEqualTo("ms_level");
+            assertThat(columns.resolve("MS:1000465", "polarity")).as("fallback over an extra name")
+                    .isEqualTo("MS_1000465_scan_polarity");
+        }
+    }
+
+    /**
+     * A column that the column_mapping assigns to another term is not resolved under the canonical accession, so it
+     * stays a leftover of its mapped term. Fails on 1e400ed, which read the column as MS:1000045 through ColumnTable
+     * and counted it as consumed.
+     */
+    @Test
+    void aColumnMappedToAnotherTermIsNotTakenForTheCanonicalAccession() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("source_index")
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                        .named("dissociation_method")
+                    .optional(PrimitiveTypeName.DOUBLE).named("collision_energy")
+                    .named("activation")
+                .named("arrow_schema");
+        Param supplemental = new Param("supplemental collision energy", "MS:1002680", 12.5, "UO:0000266");
+        Entry entry = new Entry("constructed_precursors.parquet", "spectrum", "precursors", List.of(
+                new ColumnMapping(supplemental.name(), "activation.collision_energy", "MS:1002680", "UO:0000266",
+                        null)), List.of(), null);
+        ColumnResolver columns = ColumnResolver.split(schema, entry, Facet.SPECTRUM_PRECURSOR);
+        ColumnResolver activation = columns.child("activation");
+        assertThat(activation.resolve("MS:1000045")).isNull();
+        assertThat(activation.resolve("MS:1000045", "collision_energy")).as("nor as an extra name").isNull();
+        assertThat(activation.resolve("MS:1002680")).isEqualTo("collision_energy");
+        assertThat(activation.resolve("MS:1000044")).as("an unmapped column keeps its ColumnTable identity")
+                .isEqualTo("dissociation_method");
+
+        Group row = new SimpleGroupFactory(schema).newGroup().append("source_index", 3L);
+        row.addGroup("activation").append("dissociation_method", "MS:1000133").append("collision_energy", 12.5);
+        assertThat(PrecursorRowDecoder.decode(new FacetRow(Facet.SPECTRUM_PRECURSOR, row, columns)).activation()
+                .parameters()).containsExactly(new Param(null, "MS:1000133", null, null), supplemental);
+    }
+
+    /**
+     * A BOOLEAN term-marker column mapped to a child term (here CID) is not taken for the dissociation method
+     * (MS:1000044, a CURIE column): it gives its own Param when true. Fails on 1e400ed with a ClassCastException.
+     */
+    @Test
+    void aBooleanMarkerMappedToAChildTermIsNotReadAsTheDissociationMethod() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("source_index")
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.BOOLEAN).named("dissociation_method")
+                    .named("activation")
+                .named("arrow_schema");
+        Entry entry = new Entry("constructed_precursors.parquet", "spectrum", "precursors", List.of(
+                new ColumnMapping("collision-induced dissociation", "activation.dissociation_method", "MS:1000133",
+                        null, true)), List.of(), null);
+        ColumnResolver columns = ColumnResolver.split(schema, entry, Facet.SPECTRUM_PRECURSOR);
+        assertThat(columns.child("activation").resolve("MS:1000044")).isNull();
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+
+        Group present = factory.newGroup().append("source_index", 3L);
+        present.addGroup("activation").append("dissociation_method", true);
+        Group absent = factory.newGroup().append("source_index", 3L);
+        absent.addGroup("activation").append("dissociation_method", false);
+        assertThat(PrecursorRowDecoder.decode(new FacetRow(Facet.SPECTRUM_PRECURSOR, present, columns)).activation()
+                .parameters()).containsExactly(new Param("collision-induced dissociation", "MS:1000133", null, null));
+        assertThat(PrecursorRowDecoder.decode(new FacetRow(Facet.SPECTRUM_PRECURSOR, absent, columns)).activation()
+                .parameters()).isEmpty();
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------------------
 
     /** A member's manifest entry, Parquet schema and rows, read with parquet-java. */

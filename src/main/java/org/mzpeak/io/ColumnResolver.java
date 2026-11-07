@@ -86,7 +86,8 @@ final class ColumnResolver {
     /**
      * The field of this scope that holds the term {@code accession}: the first column_mapping path with that
      * accession, then the {@link ColumnTable} path, then its fallbacks, then {@code extraNames}; each only when it
-     * names a field directly in this scope.
+     * names a field directly in this scope. A field that the column_mapping assigns to another accession is never
+     * taken from the {@link ColumnTable} path, its fallbacks or {@code extraNames}.
      *
      * @return the field name, or {@code null} when none is present
      */
@@ -103,17 +104,34 @@ final class ColumnResolver {
         Optional<Column> column = ColumnTable.byAccession(facet, accession);
         if (column.isPresent()) {
             String field = field(column.get().path());
-            if (field != null) {
+            if (field != null && !mappedToAnother(field, accession)) {
                 return field;
             }
             for (String fallback : column.get().fallbacks()) {
                 field = field(fallback);
-                if (field != null) {
+                if (field != null && !mappedToAnother(field, accession)) {
                     return field;
                 }
             }
         }
-        return resolveName(extraNames);
+        for (String name : extraNames) {
+            if (name != null && scope.containsField(name) && !mappedToAnother(name, accession)) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether the member's column_mapping (split layout only) assigns {@code field} of this scope to a term other
+     * than {@code accession}.
+     */
+    private boolean mappedToAnother(String field, String accession) {
+        if (entry == null) {
+            return false;
+        }
+        Optional<ColumnMapping> mapped = entry.columnAtPath(path(field));
+        return mapped.isPresent() && mapped.get().accession() != null && !accession.equals(mapped.get().accession());
     }
 
     /** The first of {@code names} that is a field directly in this scope, or {@code null}. */
