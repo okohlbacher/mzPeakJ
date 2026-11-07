@@ -51,16 +51,17 @@ final class ChromatogramStore {
      * Loads the members that {@code manifest} lists under the roles (chromatogram, metadata) and (chromatogram, data
      * arrays); error messages name the metadata member by its file name.
      *
-     * @return the store, or {@code null} when the manifest lacks either member
+     * @return the store, or {@code null} when the manifest lacks either member or lists it without a name
      */
     static ChromatogramStore load(MzPeakSource source, MzPeakManifest manifest) {
-        Optional<MzPeakManifest.Entry> metadata = manifest.find(EntityType.CHROMATOGRAM, DataKind.METADATA);
-        Optional<MzPeakManifest.Entry> data = manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS);
-        if (metadata.isEmpty() || data.isEmpty()) {
+        String metadataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.METADATA)
+                .map(MzPeakManifest.Entry::name).orElse(null);
+        String dataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS)
+                .map(MzPeakManifest.Entry::name).orElse(null);
+        if (metadataName == null || dataName == null) {
             return null;
         }
-        String metadataName = metadata.get().name();
-        return load(source.inputFile(metadataName), metadataName, source.inputFile(data.get().name()));
+        return load(source.inputFile(metadataName), metadataName, source.inputFile(dataName));
     }
 
     /** Loads a metadata and a data member given directly; error messages name the metadata member by its role. */

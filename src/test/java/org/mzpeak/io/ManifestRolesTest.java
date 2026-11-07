@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
@@ -249,6 +250,44 @@ class ManifestRolesTest {
                 .hasMessage("Manifest has no spectrum metadata file");
     }
 
+    /** A store member listed under its role but without a name counts as missing, as it did on the base code. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"chromatograms_metadata.parquet", "chromatograms_data.parquet",
+            "wavelength_spectra_metadata.parquet", "wavelength_spectra_data.parquet"})
+    void aStoreMemberWithoutANameCountsAsMissing(String member, @TempDir Path tmp) throws IOException {
+        Path dir = unpack(Fixtures.legacy("has_uv.mzpeak"), tmp);
+        editIndex(dir, index -> {
+            for (JsonNode f : index.path("files")) {
+                if (member.equals(f.path("name").asText())) {
+                    ((ObjectNode) f).remove("name");
+                }
+            }
+        });
+        boolean chromatogram = member.startsWith("chromatograms_");
+        try (MzPeakSource source = MzPeakSource.open(dir)) {
+            MzPeakManifest m = MzPeakManifest.fromSource(source);
+            assertThat(m.files()).filteredOn(e -> e.name() == null).hasSize(1);
+            if (chromatogram) {
+                assertThat(ChromatogramStore.load(source, m)).isNull();
+                assertThat(WavelengthSpectrumStore.load(source, m).all()).hasSize(520);
+            } else {
+                assertThat(WavelengthSpectrumStore.load(source, m)).isNull();
+                assertThat(ChromatogramStore.load(source, m).all()).hasSize(2);
+            }
+        }
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            if (chromatogram) {
+                assertThat(reader.chromatograms()).isEmpty();
+                assertThat(reader.getChromatogram(0)).isEmpty();
+                assertThat(reader.wavelengthSpectra()).hasSize(520);
+            } else {
+                assertThat(reader.wavelengthSpectra()).isEmpty();
+                assertThat(reader.getWavelengthSpectrum(0)).isEmpty();
+                assertThat(reader.chromatograms()).hasSize(2);
+            }
+        }
+    }
+
     /** Shape errors name the member the manifest resolved, here a data member listed under a metadata role. */
     @Test
     void shapeErrorsNameTheResolvedMember(@TempDir Path tmp) throws IOException {
@@ -295,6 +334,8 @@ class ManifestRolesTest {
         editIndex(edited, index -> {
             ArrayNode files = (ArrayNode) index.path("files");
             // inserted first, so a wrong match would win over the real member
+            files.insertObject(0).put("name", "spectra_peaks.parquet")
+                    .put("entity_type", "spectrum").put("data_kind", "bar");
             files.insertObject(0).put("name", "spectra_data.parquet")
                     .put("entity_type", "Foo").put("data_kind", "bar");
             files.insertObject(0).put("name", "spectra_data.parquet")
@@ -305,14 +346,14 @@ class ManifestRolesTest {
         MzPeakManifest before = manifest(original);
         MzPeakManifest after = manifest(edited);
 
-        List<Entry> added = after.files().subList(0, 3);
-        assertThat(added).extracting(Entry::entityType).containsExactly("provenance", "vendor", "Foo");
-        assertThat(added).extracting(Entry::dataKind).containsExactly("signature", "proprietary", "bar");
+        List<Entry> added = after.files().subList(0, 4);
+        assertThat(added).extracting(Entry::entityType).containsExactly("provenance", "vendor", "Foo", "spectrum");
+        assertThat(added).extracting(Entry::dataKind).containsExactly("signature", "proprietary", "bar", "bar");
         assertThat(added).extracting(Entry::entity)
-                .containsExactly(EntityType.PROVENANCE, EntityType.OTHER, EntityType.OTHER);
+                .containsExactly(EntityType.PROVENANCE, EntityType.OTHER, EntityType.OTHER, EntityType.SPECTRUM);
         assertThat(added).extracting(Entry::kind)
-                .containsExactly(DataKind.SIGNATURE, DataKind.PROPRIETARY, DataKind.OTHER);
-        assertThat(after.files().subList(3, after.files().size())).isEqualTo(before.files());
+                .containsExactly(DataKind.SIGNATURE, DataKind.PROPRIETARY, DataKind.OTHER, DataKind.OTHER);
+        assertThat(after.files().subList(4, after.files().size())).isEqualTo(before.files());
 
         for (EntityType entity : EntityType.values()) {
             for (DataKind kind : DataKind.values()) {
@@ -326,8 +367,10 @@ class ManifestRolesTest {
         }
         assertThat(after.find(EntityType.OTHER, DataKind.PROPRIETARY)).isEmpty();
         assertThat(after.find(EntityType.OTHER, DataKind.OTHER)).isEmpty();
+        assertThat(after.find(EntityType.SPECTRUM, DataKind.OTHER)).isEmpty();
         assertThat(after.find("vendor", "proprietary")).isEmpty();
         assertThat(after.find("Foo", "bar")).isEmpty();
+        assertThat(after.find("spectrum", "bar")).isEmpty();
         assertThat(after.find("other", "other")).isEmpty();
     }
 
