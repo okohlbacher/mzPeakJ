@@ -199,6 +199,14 @@ class ManifestEntryTest {
         params.addObject().put("name", "both").putNull("accession")
                 .put("value", true).put("unit", "UO:0000031").put("unit_accession", "UO:0000010");
         params.addObject().put("name", "neither").putNull("accession").putNull("value").putNull("unit");
+        params.addObject().put("name", "serial").putNull("accession").put("value", "00123");
+        params.addObject().put("name", "version").putNull("accession").put("value", "1.10");
+        params.addObject().put("name", "suffix").putNull("accession").put("value", "5f");
+        params.addObject().put("name", "nan").putNull("accession").put("value", "NaN");
+        params.addObject().put("name", "count").putNull("accession").put("value", 42);
+        params.addObject().put("name", "list").putNull("accession").putArray("value").add(1).add("a");
+        params.addObject().put("name", "object").putNull("accession").putObject("value").put("k", "v");
+        params.addObject().put("name", "absent").putNull("accession");
         writeIndex(copy, index);
 
         Entry e = entry(manifest(copy), "spectra_data.parquet");
@@ -207,7 +215,15 @@ class ManifestEntryTest {
                 new Param("scan start time", "MS:1000016", 1.5, "UO:0000031"),
                 new Param("label", null, "x", "UO:0000010"),
                 new Param("both", null, true, "UO:0000031"),
-                new Param("neither", null, null, null));
+                new Param("neither", null, null, null),
+                new Param("serial", null, "00123", null),
+                new Param("version", null, "1.10", null),
+                new Param("suffix", null, "5f", null),
+                new Param("nan", null, "NaN", null),
+                new Param("count", null, 42L, null),
+                new Param("list", null, "[1,\"a\"]", null),
+                new Param("object", null, "{\"k\":\"v\"}", null),
+                new Param("absent", null, null, null));
     }
 
     @Test

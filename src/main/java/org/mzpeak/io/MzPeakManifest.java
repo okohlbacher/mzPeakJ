@@ -31,7 +31,8 @@ public final class MzPeakManifest {
      * @param dataKind      the {@code data_kind} string as written
      * @param columnMapping the {@code column_mapping} list (alias {@code metadata_mapping}) in file order; empty if
      *                      absent
-     * @param parameters    the {@code parameters} list; empty if absent
+     * @param parameters    the {@code parameters} list; empty if absent. Values keep their JSON type (a string stays
+     *                      a {@code String}); an array or object value becomes its JSON text
      * @param checksum      the {@code checksum} string as written (lowercase hex SHA-512), or {@code null} if absent
      */
     public record Entry(String name, String entityType, String dataKind, List<ColumnMapping> columnMapping,
@@ -156,7 +157,7 @@ public final class MzPeakManifest {
                         text(f, "entity_type"),
                         text(f, "data_kind"),
                         parseColumnMapping(mapping),
-                        parseParamArray(f.get("parameters"), true),
+                        parseEntryParams(f.get("parameters")),
                         text(f, "checksum")));
             }
 
@@ -189,28 +190,52 @@ public final class MzPeakManifest {
         List<ScanSettings> out = new ArrayList<>();
         for (JsonNode ss : ssList) {
             String id = text(ss, "id");
-            List<Param> params = parseParamArray(ss.get("parameters"), false);
+            List<Param> params = parseParamArray(ss.get("parameters"));
             out.add(new ScanSettings(id, params));
         }
         return out;
     }
 
-    /**
-     * Parses a param list. With {@code unitKey} the unit is read from {@code unit}, falling back to
-     * {@code unit_accession}; without it only {@code unit_accession} is read.
-     */
-    private static List<Param> parseParamArray(JsonNode arr, boolean unitKey) {
+    private static List<Param> parseParamArray(JsonNode arr) {
         if (arr == null || !arr.isArray()) return List.of();
         List<Param> out = new ArrayList<>();
         for (JsonNode p : arr) {
             String name = text(p, "name");
             String accession = text(p, "accession");
-            String unit = unitKey ? text(p, "unit") : null;
-            if (unit == null) unit = text(p, "unit_accession");
+            String unit = text(p, "unit_accession");
             Object value = parseParamValue(p.get("value"));
             out.add(new Param(name, accession, value, unit));
         }
         return out;
+    }
+
+    /**
+     * Parses a file entry's param list. The unit is read from {@code unit}, falling back to
+     * {@code unit_accession}; the value keeps its JSON type ({@link #jsonValue}).
+     */
+    private static List<Param> parseEntryParams(JsonNode arr) {
+        if (arr == null || !arr.isArray()) return List.of();
+        List<Param> out = new ArrayList<>();
+        for (JsonNode p : arr) {
+            String unit = text(p, "unit");
+            if (unit == null) unit = text(p, "unit_accession");
+            out.add(new Param(text(p, "name"), text(p, "accession"), jsonValue(p.get("value")), unit));
+        }
+        return out;
+    }
+
+    /**
+     * A param value as typed in JSON, without coercion (Rust {@code MetaParam}): a boolean as {@code Boolean}, an
+     * integral number as {@code Long}, any other number as {@code Double}, a string as the same {@code String}, an
+     * array or object as its compact JSON text, and an absent or {@code null} value as {@code null}.
+     */
+    private static Object jsonValue(JsonNode v) {
+        if (v == null || v.isNull()) return null;
+        if (v.isBoolean()) return v.booleanValue();
+        if (v.isIntegralNumber()) return v.asLong();
+        if (v.isNumber()) return v.asDouble();
+        if (v.isContainerNode()) return v.toString();
+        return v.asText();
     }
 
     private static Object parseParamValue(JsonNode v) {
