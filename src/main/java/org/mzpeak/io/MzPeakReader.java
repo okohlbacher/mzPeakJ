@@ -16,6 +16,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -25,14 +26,63 @@ import java.util.Optional;
  * chromatograms.
  *
  * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
- * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); pass
- * {@code reconstructProfile=false} to get only the stored non-null points. Not thread-safe.
+ * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); open with
+ * {@link Options#withReconstructProfile(boolean) Options.defaults().withReconstructProfile(false)} to get only the
+ * stored non-null points. Not thread-safe.
  */
 public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
+    /**
+     * How a reader decodes a dataset. Immutable: start from {@link #defaults()} and derive variants with the
+     * {@code with...} methods, each of which returns a new instance. Two instances are equal when all their options
+     * are equal.
+     */
+    public static final class Options {
+
+        private final boolean reconstructProfile;
+
+        private Options(boolean reconstructProfile) {
+            this.reconstructProfile = reconstructProfile;
+        }
+
+        /** The default options: null-marked profile points are reconstructed. */
+        public static Options defaults() {
+            return new Options(true);
+        }
+
+        /**
+         * Whether null-marked profile points are reconstructed, so that the point count matches the declared
+         * {@code number_of_data_points}; {@code false} returns only the stored (non-null) points. Default
+         * {@code true}.
+         */
+        public boolean reconstructProfile() {
+            return reconstructProfile;
+        }
+
+        /** These options with {@link #reconstructProfile()} set to {@code reconstructProfile}, as a new instance. */
+        public Options withReconstructProfile(boolean reconstructProfile) {
+            return new Options(reconstructProfile);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Options other && reconstructProfile == other.reconstructProfile;
+        }
+
+        @Override
+        public int hashCode() {
+            return Boolean.hashCode(reconstructProfile);
+        }
+
+        @Override
+        public String toString() {
+            return "Options[reconstructProfile=" + reconstructProfile + "]";
+        }
+    }
+
     private final MzPeakSource source;
     private final MzPeakManifest manifest;
-    private final boolean reconstructProfile;
+    private final Options options;
     private final List<SpectrumDescription> descriptions;
     private final Map<Long, double[]> deltaModels;
     private final Map<Long, Integer> indexToOrdinal;
@@ -58,13 +108,14 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private ChromatogramStore chromatogramStore;
     private boolean wavelengthLoaded;
     private WavelengthSpectrumStore wavelengthStore;
+    private boolean closed;
 
-    private MzPeakReader(MzPeakSource source, MzPeakManifest manifest, boolean reconstructProfile,
+    private MzPeakReader(MzPeakSource source, MzPeakManifest manifest, Options options,
                          SpectrumMetadataDecoder.Decoded decoded, String metadataFileName,
                          String dataFileName, String peaksFileName) {
         this.source = source;
         this.manifest = manifest;
-        this.reconstructProfile = reconstructProfile;
+        this.options = options;
         this.descriptions = decoded.descriptions();
         this.deltaModels = decoded.deltaModels();
         this.metadataFileName = metadataFileName;
@@ -102,25 +153,64 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /** Open an mzPeak dataset (directory or ZIP), reconstructing null-marked profile points. */
     public static MzPeakReader open(Path path) {
-        return open(path, true);
+        return open(path, Options.defaults());
     }
 
     /** Open an mzPeak dataset; {@code reconstructProfile=false} returns only stored (non-null) profile points. */
     public static MzPeakReader open(Path path, boolean reconstructProfile) {
-        MzPeakSource source = MzPeakSource.open(path);
+        return open(path, Options.defaults().withReconstructProfile(reconstructProfile));
+    }
+
+    /**
+     * Open an mzPeak dataset (directory or ZIP) with {@code options}.
+     *
+     * @throws NullPointerException if {@code path} or {@code options} is {@code null}
+     */
+    public static MzPeakReader open(Path path, Options options) {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(options, "options");
+        return open(MzPeakSource.open(path), options);
+    }
+
+    /**
+     * Open the mzPeak dataset that {@code source} provides, with the {@linkplain Options#defaults() default
+     * options}. The reader takes ownership of {@code source}; see {@link #open(MzPeakSource, Options)}.
+     *
+     * @throws NullPointerException if {@code source} is {@code null}
+     */
+    public static MzPeakReader open(MzPeakSource source) {
+        return open(source, Options.defaults());
+    }
+
+    /**
+     * Open the mzPeak dataset that {@code source} provides, with {@code options}.
+     *
+     * <p>The reader takes ownership of {@code source} and closes it exactly once: when this method throws (also for
+     * a {@code null} {@code options}), or on the first {@link #close()} of the returned reader.
+     *
+     * @throws NullPointerException if {@code source} or {@code options} is {@code null}
+     */
+    public static MzPeakReader open(MzPeakSource source, Options options) {
+        Objects.requireNonNull(source, "source");
         try {
+            Objects.requireNonNull(options, "options");
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
             SpectrumMetadataDecoder.Decoded decoded = SpectrumMetadataDecoder.decode(source, manifest);
             // present: decode() throws when the manifest lists no spectrum metadata member
             String metadataFile = member(manifest, EntityType.SPECTRUM, DataKind.METADATA);
             String dataFile = member(manifest, EntityType.SPECTRUM, DataKind.DATA_ARRAYS);
             String peaksFile = member(manifest, EntityType.SPECTRUM, DataKind.PEAKS);
-            return new MzPeakReader(source, manifest, reconstructProfile, decoded,
+            return new MzPeakReader(source, manifest, options, decoded,
                     metadataFile, dataFile, peaksFile);
         } catch (RuntimeException e) {
             source.close();
             throw e;
         }
+    }
+
+    /** The options this reader was opened with. */
+    public Options options() {
+        return options;
     }
 
     /** The name of the member with role {@code (entity, kind)}, or {@code null} if the manifest lists none. */
@@ -298,7 +388,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private synchronized SpectrumArrayStore data() {
         if (!dataLoaded) {
             dataStore = dataFileName == null ? null : SpectrumArrayStore.load(source.inputFile(dataFileName),
-                    dataFileName, reconstructProfile, deltaModels);
+                    dataFileName, options.reconstructProfile(), deltaModels);
             dataLoaded = true;
         }
         return dataStore;
@@ -307,7 +397,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private synchronized SpectrumArrayStore peaks() {
         if (!peaksLoaded) {
             peakStore = peaksFileName == null ? null : SpectrumArrayStore.load(source.inputFile(peaksFileName),
-                    peaksFileName, reconstructProfile, deltaModels);
+                    peaksFileName, options.reconstructProfile(), deltaModels);
             peaksLoaded = true;
         }
         return peakStore;
@@ -349,18 +439,26 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         };
     }
 
+    /** Release the signal readers and close the source. Only the first call has an effect. */
     @Override
     public void close() {
-        if (dataStore != null) {
-            dataStore.close();
-            dataStore = null;
+        if (closed) {
+            return;
         }
-        if (peakStore != null) {
-            peakStore.close();
-            peakStore = null;
+        closed = true;
+        try {
+            if (dataStore != null) {
+                dataStore.close();
+                dataStore = null;
+            }
+            if (peakStore != null) {
+                peakStore.close();
+                peakStore = null;
+            }
+            chromatogramStore = null;
+            wavelengthStore = null;
+        } finally {
+            source.close();
         }
-        chromatogramStore = null;
-        wavelengthStore = null;
-        source.close();
     }
 }
