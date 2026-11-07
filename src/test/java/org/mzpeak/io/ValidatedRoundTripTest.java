@@ -189,7 +189,7 @@ class ValidatedRoundTripTest {
 
     private static long approximateSize(Path path) throws IOException {
         if (Files.isRegularFile(path)) return Files.size(path);
-        try (var walk = Files.walk(path)) {
+        try (var walk = Files.walk(path.toRealPath())) {
             return walk.filter(Files::isRegularFile)
                     .mapToLong(p -> {
                         try { return Files.size(p); } catch (IOException e) { return 0L; }

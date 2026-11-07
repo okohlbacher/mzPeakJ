@@ -82,8 +82,9 @@ public final class MzPeakWriter {
      * file/run metadata. This is the full round-trip form consumed by the forward-backward test.
      *
      * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
-     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, as must every
-     * precursor_index; otherwise an {@link MzPeakException} is thrown before anything is written.
+     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative. The primary
+     * precursor's precursor_index, the only one written, must be non-negative; several spectra may share it.
+     * Otherwise an {@link MzPeakException} is thrown before anything is written.
      */
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                       List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
@@ -172,8 +173,9 @@ public final class MzPeakWriter {
      * Full Numpress directory form including wavelength spectra and scan settings.
      *
      * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
-     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, as must every
-     * precursor_index; otherwise an {@link MzPeakException} is thrown before anything is written.
+     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative. The primary
+     * precursor's precursor_index, the only one written, must be non-negative; several spectra may share it.
+     * Otherwise an {@link MzPeakException} is thrown before anything is written.
      */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,

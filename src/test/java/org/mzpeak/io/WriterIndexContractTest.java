@@ -119,6 +119,7 @@ class WriterIndexContractTest {
         lastFirst.add(s.spectra.get(last));
         lastFirst.addAll(s.spectra.subList(0, last));
         assertThat(lastFirst.get(0).index()).as("index of the first spectrum passed").isEqualTo(47);
+        assertThat(lastFirst.get(0).peaks()).as("peaks of the first spectrum passed").hasSize(636);
         Path dir = tmp.resolve("last-first.mzpeak");
 
         writeWithSmallRowGroups(layout, dir, List.copyOf(lastFirst), s);
@@ -132,6 +133,9 @@ class WriterIndexContractTest {
                 .as("spectrum.index in spectra_metadata.parquet row order").isSorted();
         assertThat(indexColumn(data, layout == Layout.POINT ? "point" : "chunk", "spectrum_index"))
                 .as("spectrum_index in spectra_data.parquet row order").isSorted();
+        assertThat(indexColumn(dir.resolve("spectra_peaks.parquet"), layout == Layout.POINT ? "point" : "chunk",
+                "spectrum_index"))
+                .as("spectrum_index in spectra_peaks.parquet row order").isSorted();
     }
 
     // ---- unique indices ---------------------------------------------------------------------------

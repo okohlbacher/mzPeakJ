@@ -335,6 +335,9 @@ class ForwardBackwardCorpusTest {
     }
 
     private static void comparePrecursor(List<String> diffs, String tag, Precursor a, Precursor b) {
+        eq(diffs, tag + ".precursorIndex", a.precursorIndex(), b.precursorIndex());
+        eq(diffs, tag + ".precursorId", a.precursorId(), b.precursorId());
+
         IsolationWindow ia = a.isolationWindow();
         IsolationWindow ib = b.isolationWindow();
         if (ia != null && ib != null) {
@@ -370,6 +373,10 @@ class ForwardBackwardCorpusTest {
     }
 
     private static void compareScanEvent(List<String> diffs, String tag, ScanEvent a, ScanEvent b) {
+        eqDouble(diffs, tag + ".scan.startTime", a.startTime(), b.startTime(), 0.0);
+        eqBoxedDouble(diffs, tag + ".scan.injectionTime", a.injectionTime(), b.injectionTime());
+        eq(diffs, tag + ".scan.filterString", a.filterString(), b.filterString());
+
         // scan windows (lower/upper limit list)
         List<ScanWindow> wa = a.scanWindows();
         List<ScanWindow> wb = b.scanWindows();
@@ -402,6 +409,8 @@ class ForwardBackwardCorpusTest {
 
     private static void compareWavelength(List<String> diffs, int i, WavelengthSpectrum a, WavelengthSpectrum b) {
         String tag = "wavelength[" + i + "]";
+        eq(diffs, tag + ".index", a.index(), b.index());
+        eq(diffs, tag + ".id", a.id(), b.id());
         eqArrayExact(diffs, tag + ".wavelength", a.wavelength(), b.wavelength());
         eqArrayExact(diffs, tag + ".intensity", a.intensity(), b.intensity());
         eqDouble(diffs, tag + ".time", a.time(), b.time(), 0.0);
@@ -621,7 +630,7 @@ class ForwardBackwardCorpusTest {
         if (Files.isRegularFile(path)) {
             return Files.size(path);
         }
-        try (var walk = Files.walk(path)) {
+        try (var walk = Files.walk(path.toRealPath())) {
             return walk.filter(Files::isRegularFile)
                     .mapToLong(p -> {
                         try { return Files.size(p); } catch (IOException e) { return 0L; }
