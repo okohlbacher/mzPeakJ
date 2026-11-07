@@ -187,8 +187,9 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     }
 
     /**
-     * An {@link Source#INFERRED INFERRED} index for a member without one. It lists, in schema order, the columns
-     * today's decoders read by name, so a plan built from it resolves exactly those columns. The prefix is
+     * An {@link Source#INFERRED INFERRED} index for a member without one. It lists, in schema order except as noted
+     * for chromatograms, the columns today's decoders read by name, so a plan built from it resolves exactly those
+     * columns, with the same intensity priority. The prefix is
      * {@code point} when the schema has that struct, else {@code chunk} when it has that one (spectra and
      * chromatograms only; wavelength spectra are read from {@code point} rows only).
      * <ul>
@@ -201,8 +202,9 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
      *       {@code intensity_numpress_slof_bytes} and {@code intensity_numpress_pic_bytes}.
      *   <li>Chromatograms, as read by {@link ChromatogramStore}: in {@code point}, {@code time} (rank 1),
      *       {@code intensity} and every non-repeated FLOAT, DOUBLE, INT32 or INT64 column named
-     *       {@code intensity_*}; in {@code chunk}, the {@code time_chunk_*} and {@code chunk_encoding} columns of
-     *       the time axis (rank 1), the {@code intensity} list (chunk secondary) and
+     *       {@code intensity_*}, the latter listed after all other columns (in schema order among themselves) because
+     *       they are read only when {@code intensity} is null; in {@code chunk}, the {@code time_chunk_*} and
+     *       {@code chunk_encoding} columns of the time axis (rank 1), the {@code intensity} list (chunk secondary) and
      *       {@code intensity_numpress_slof_bytes}. PIC intensity is not read for chromatograms, so it is not
      *       listed.
      *   <li>Wavelength spectra, as read by {@link PointArrays}: {@code wavelength} (rank 1) and {@code intensity}.
@@ -217,14 +219,23 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
             prefix = CHUNK_PREFIX;
         }
         List<Entry> entries = new ArrayList<>();
+        // a chromatogram point's intensity_* columns are read only after the literal intensity (Q-U5)
+        List<Entry> intensityFallbacks = new ArrayList<>();
         if (hasGroup(schema, prefix)) {
             for (Type field : schema.getType(prefix).asGroupType().getFields()) {
                 Entry e = inferEntry(entity, prefix, field);
-                if (e != null) {
+                if (e == null) {
+                    continue;
+                }
+                if (entity == SignalEntity.CHROMATOGRAM && prefix.equals(POINT_PREFIX)
+                        && isNumericIntensityFallback(field)) {
+                    intensityFallbacks.add(e);
+                } else {
                     entries.add(e);
                 }
             }
         }
+        entries.addAll(intensityFallbacks);
         return new ArrayIndex(entity, prefix, entries, Source.INFERRED);
     }
 

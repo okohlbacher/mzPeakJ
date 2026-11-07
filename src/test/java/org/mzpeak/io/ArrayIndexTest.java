@@ -305,6 +305,30 @@ class ArrayIndexTest {
     }
 
     @Test
+    void inferListsTheLiteralChromatogramIntensityBeforeItsFallbacksWhateverTheSchemaOrder() {
+        // ChromatogramStore reads the literal intensity first and the intensity_* columns, in schema order, only
+        // when it is null (Q-U5); an inferred index must keep that priority
+        MessageType point = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index;
+                    optional double intensity_f32_au;
+                    optional double time;
+                    optional int32 intensity_counts;
+                    optional float intensity;
+                  }
+                }""");
+        ArrayIndex index = ArrayIndex.infer(point, SignalEntity.CHROMATOGRAM);
+        assertThat(index.entries()).extracting(Entry::field).containsExactly(
+                "chromatogram_index", "time", "intensity", "intensity_f32_au", "intensity_counts");
+
+        SignalPlan plan = SignalPlan.of(index, point, SignalEntity.CHROMATOGRAM);
+        assertThat(plan.intensities()).extracting(SignalPlan.Column::path)
+                .containsExactly("point.intensity", "point.intensity_f32_au", "point.intensity_counts");
+        assertThat(plan.plainIntensity()).map(SignalPlan.Column::path).contains("point.intensity");
+    }
+
+    @Test
     void inferReadsWavelengthSpectraFromPointRowsOnly() {
         MessageType point = MessageTypeParser.parseMessageType("""
                 message m {
