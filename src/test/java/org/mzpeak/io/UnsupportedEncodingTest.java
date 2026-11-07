@@ -193,13 +193,45 @@ class UnsupportedEncodingTest {
     }
 
     @Test
-    void numpressColumnsWinOverTheChunkEncoding() {
-        // Column presence selects the Numpress decoder (design §8.2): a Numpress row's encoding is not checked.
+    void theNumpressEncodingWithoutNumpressColumnsDecodesAsDeltaAsBefore() {
+        // MS:1002312 is a known encoding, but only the Numpress columns select the Numpress decoder (design §8.2).
+        Row0 row0 = Row0.INSTANCE;
+        SpectrumArrayStore.Arrays numpress = read(row0.delta("MS:1002312"));
+        SpectrumArrayStore.Arrays delta = read(row0.delta("MS:1003089"));
+        assertThat(numpress.mz()).isEqualTo(delta.mz());
+        assertThat(numpress.intensity()).isEqualTo(delta.intensity());
+    }
+
+    @Test
+    void anUnknownChunkEncodingOnTheNumpressRowFailsNamingTheCurie() {
+        // Before RD-12 the Numpress columns alone chose the decoder and the unknown CURIE went unnoticed.
         ChunkRow row = Row0.INSTANCE.asStored();
         row.encoding = "MS:9999999";
-        SpectrumArrayStore.Arrays arrays = read(row);
-        assertThat(arrays.mz()).isEqualTo(Row0.INSTANCE.mz);
-        assertThat(arrays.intensity()).isEqualTo(Row0.INSTANCE.intensity);
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk encoding MS:9999999 for spectrum_index 0");
+    }
+
+    @Test
+    void aGridEncodingOnTheNumpressRowFailsWithTheGridError() {
+        ChunkRow row = Row0.INSTANCE.asStored();
+        row.encoding = "MS:1003826";
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type (none)"
+                        + " for spectrum_index 0; grid decoding is not implemented");
+    }
+
+    @Test
+    void numpressColumnsWinOverAKnownChunkEncoding() {
+        // Among the known encodings, column presence selects the Numpress decoder (design §8.2).
+        for (String encoding : new String[] {null, "MS:1003089", "MS:1000576", "MS:1003088"}) {
+            ChunkRow row = Row0.INSTANCE.asStored();
+            row.encoding = encoding;
+            SpectrumArrayStore.Arrays arrays = read(row);
+            assertThat(arrays.mz()).as(String.valueOf(encoding)).isEqualTo(Row0.INSTANCE.mz);
+            assertThat(arrays.intensity()).as(String.valueOf(encoding)).isEqualTo(Row0.INSTANCE.intensity);
+        }
     }
 
     // ---- fixtures and constructed rows ------------------------------------------------------------------------

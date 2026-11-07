@@ -213,6 +213,12 @@ final class SpectrumArrayStore implements AutoCloseable {
             long si = requireIndex(chunk);
             transition(si);
             rejectUnknownNumpressColumns(chunk, si);
+            String encoding = ParquetGroups.optString(chunk, "chunk_encoding");
+            if (encoding != null && encoding.contains("1003826")) {
+                throw unsupportedGrid(chunk, si);
+            }
+            // Checked for every row: Numpress column presence picks the decoder, but never admits an unknown CURIE.
+            boolean absolute = isAbsolute(encoding, si);
             if (ParquetGroups.has(chunk, "mz_numpress_linear_bytes")
                     || ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")
                     || ParquetGroups.has(chunk, "intensity_numpress_pic_bytes")) {
@@ -220,11 +226,13 @@ final class SpectrumArrayStore implements AutoCloseable {
                 return;
             }
             double start = orZero(ParquetGroups.optDouble(chunk, "mz_chunk_start"));
-            String encoding = ParquetGroups.optString(chunk, "chunk_encoding");
             double[] rawMz = ParquetGroups.doubleListNullable(chunk, "mz_chunk_values");
             double[] chunkIntensity = ParquetGroups.doubleListNullable(chunk, "intensity");
-            rejectGrid(chunk, encoding, rawMz, chunkIntensity, si);
-            double[] chunkMz = decodeChunkMz(rawMz, start, isAbsolute(encoding, si));
+            if (ParquetGroups.has(chunk, "mz_grid") && rawMz.length == 0 && chunkIntensity.length > 0) {
+                // A grid chunk without the grid chunk_encoding: the intensities pair with grid indices, not values.
+                throw unsupportedGrid(chunk, si);
+            }
+            double[] chunkMz = decodeChunkMz(rawMz, start, absolute);
             // A chunk whose intensity list is one longer than its m/z values emits chunk_start as a real point
             // (its intensity is intensity[0]); the delta-decoded values then pair with intensity[1..]. A chunk
             // with equal lengths pairs its values one-to-one with intensities and has no separate start point.
@@ -349,26 +357,24 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
 
         /**
-         * Throws for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding not decoded yet): one whose
+         * The error for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding not decoded yet): one whose
          * {@code chunk_encoding} names the grid, or one with an {@code mz_grid} struct and intensities but no chunk
          * values. Without this check the intensities fail the length check with a misleading message.
          */
-        private static void rejectGrid(Group chunk, String encoding, double[] values, double[] intensity, long si) {
+        private static MzPeakException unsupportedGrid(Group chunk, long si) {
             Group grid = ParquetGroups.optGroup(chunk, "mz_grid");
-            boolean gridEncoding = encoding != null && encoding.contains("1003826");
-            if (gridEncoding || (grid != null && values.length == 0 && intensity.length > 0)) {
-                String gridType = grid == null ? null : ParquetGroups.optString(grid, "grid_type");
-                throw new MzPeakException("unsupported chunk encoding " + GRID_ENCODING
-                        + " (coordinate grid, draft) with grid_type " + (gridType == null ? "(none)" : gridType)
-                        + " for spectrum_index " + si + "; grid decoding is not implemented");
-            }
+            String gridType = grid == null ? null : ParquetGroups.optString(grid, "grid_type");
+            return new MzPeakException("unsupported chunk encoding " + GRID_ENCODING
+                    + " (coordinate grid, draft) with grid_type " + (gridType == null ? "(none)" : gridType)
+                    + " for spectrum_index " + si + "; grid decoding is not implemented");
         }
 
         /**
          * Whether a non-Numpress chunk with {@code encoding} stores absolute m/z ({@code MS:1000576},
          * {@code MS:1003088}) rather than deltas from {@code chunk_start} ({@code null}, {@code MS:1003089}).
          * Numpress ({@code MS:1002312}) is chosen by column presence; a row that names it without carrying a Numpress
-         * column decodes as delta, as before. Any other encoding throws instead of being decoded as delta.
+         * column decodes as delta, as before. Any other encoding throws instead of being decoded as delta, also on a
+         * row whose Numpress columns would select the Numpress decoder.
          */
         private static boolean isAbsolute(String encoding, long si) {
             if (encoding == null || encoding.equals(DELTA_ENCODING)
