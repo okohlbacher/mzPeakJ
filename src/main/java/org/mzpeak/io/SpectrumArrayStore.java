@@ -452,8 +452,17 @@ final class SpectrumArrayStore implements AutoCloseable {
     /**
      * Fill NaN m/z by stepping with the per-spectrum delta model {@code beta} (the mzPeak
      * {@code mz_delta_model} polynomial: {@code delta(mz) = beta[0] + beta[1]*mz + beta[2]*mz^2 + ...}). Each
-     * filled point advances from its neighbour by the predicted local spacing — closer to the original grid
-     * than linear interpolation. Mirrors the reference reconstruction's use of the polynomial delta model.
+     * filled point sits one predicted local spacing from a stored neighbour — closer to the original grid than
+     * linear interpolation.
+     *
+     * <p>The fill is flank-aware. Null marking replaces the zero-intensity points on both sides of each stored
+     * cluster, so an interior run of two nulls is the right flank of one cluster followed by the left flank of the
+     * next: the first null steps forwards from the left anchor, the last steps backwards from the right anchor
+     * ({@code m[right] - predict(m[right])}). In a longer interior run (not produced by null marking) every null
+     * but the last steps forwards. A leading run steps backwards from the first stored value; a trailing run and an
+     * interior single null step forwards. The stored model is applied to both flanks as is, without re-fitting;
+     * on the small.numpress ground truth this lands within 1e-6 Da. The Rust reference {@code fill_nulls_for} is
+     * also flank-aware but uses the polynomial only for single-point clusters and a local median spacing otherwise.
      */
     static void polynomialFill(double[] m, double[] beta) {
         int n = m.length;
@@ -477,8 +486,12 @@ final class SpectrumArrayStore implements AutoCloseable {
             while (right < n && Double.isNaN(m[right])) {
                 right++;
             }
-            int end = (right == n) ? n : right;           // interior or trailing run: step forwards
-            for (int k = i; k < end; k++) {
+            int end = right;
+            if (right < n && right - i >= 2) {            // interior run of 2+: its last null is the left flank
+                m[right - 1] = m[right] - predict(m[right], beta);   // of the next cluster, so step backwards
+                end = right - 1;
+            }
+            for (int k = i; k < end; k++) {               // right flank and the rest of the run: step forwards
                 m[k] = m[k - 1] + predict(m[k - 1], beta);
             }
             i = right + 1;

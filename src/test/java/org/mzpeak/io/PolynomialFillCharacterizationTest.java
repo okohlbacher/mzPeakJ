@@ -87,11 +87,14 @@ class PolynomialFillCharacterizationTest {
                 Double.NaN, 204.82205175281157, 204.8223057452734, 204.8225597383652}, out, 0, 1, 2, 3, 5, 6, 7);
     }
 
-    /** The last null of an interior run of two or more, index 4 in both inputs. */
+    /**
+     * The last null of an interior run of two or more, index 4 in both inputs. It steps backwards from the right
+     * anchor: stored[5] - delta(stored[5]).
+     */
     @Test
     void lastNullOfInteriorRun() {
-        assertExactValue("interior run of 3, last null", 204.8217977391623, fill(2, 3, 4)[4]);
-        assertExactValue("interior run of 2, last null", 204.82179774643478, fill(3, 4)[4]);
+        assertExactValue("interior run of 3, last null", 204.82179776762217, fill(2, 3, 4)[4]);
+        assertExactValue("interior run of 2, last null", 204.82179776762217, fill(3, 4)[4]);
     }
 
     @Test

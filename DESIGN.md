@@ -169,7 +169,20 @@ delta(mz) = β₀ + β₁·mz + β₂·mz²  (degree-2 least-squares polynomial 
 **mzPeakJ reconstruction (default: `reconstructProfile=true`):**
 
 1. Read the `mz_delta_model` coefficients from the `spectrum` group.
-2. Step through null-marked m/z placeholders, advancing each by `predict(prev_mz)` using the polynomial.
+2. Fill each null-marked m/z placeholder one `predict(mz)` step from a stored neighbour, flank-aware. Null
+   marking replaces the zero-intensity points on both sides of each stored cluster, so an interior run of two
+   nulls is the right flank of one cluster followed by the left flank of the next. The first null steps forwards
+   from the left anchor (`m[left] + predict(m[left])`), the last steps backwards from the right anchor
+   (`m[right] - predict(m[right])`). A leading run steps backwards from the first stored value; a trailing run,
+   an interior single null and the middle of a longer run step forwards. The stored polynomial is used for both
+   flanks as is, without re-fitting. Against the unmarked m/z of the same 14 profile spectra in
+   `small.numpress.mzpeak`, every reconstructed point lands within 1e-6 Da
+   (`ProfileReconstructionGroundTruthTest`). Stepping the whole run forwards from the left anchor, as earlier
+   versions did, put 17,892 of the 39,968 null-marked points more than 1e-3 Da off (up to 154 Da).
+   The Rust reference (`fill_nulls_for`) and the spec's `fill_nulls` are flank-aware in the same way, but they
+   take the polynomial only for a single-point cluster and the cluster's local second-median spacing otherwise.
+   mzPeakJ uses the polynomial for every cluster; on these fixtures the local-median variant is off by up to
+   about 2e-5 Da.
 3. Assign intensity 0 to all reconstructed points.
 4. Result: correct point count (13589), exact anchor values, monotonic axis.
 
