@@ -203,14 +203,16 @@ public final class MzPeakManifest {
     private final boolean imaging;
     private final String version;
     private final List<CvEntry> cvList;
+    private final JsonNode metadataJson;
 
     private MzPeakManifest(List<Entry> files, List<ScanSettings> scanSettingsList, boolean imaging,
-                            String version, List<CvEntry> cvList) {
+                            String version, List<CvEntry> cvList, JsonNode metadataJson) {
         this.files = List.copyOf(files);
         this.scanSettingsList = List.copyOf(scanSettingsList);
         this.imaging = imaging;
         this.version = version;
         this.cvList = cvList == null ? List.of() : List.copyOf(cvList);
+        this.metadataJson = metadataJson;
     }
 
     public List<Entry> files() {
@@ -219,7 +221,9 @@ public final class MzPeakManifest {
 
     /**
      * Scan settings from {@code metadata.scan_settings_list} — present for imaging (MSI / imzML)
-     * datasets; empty for conventional LC-MS files.
+     * datasets; empty for conventional LC-MS files. A param's unit is read from {@code unit}, falling back to
+     * {@code unit_accession}. {@link MzPeakReader#scanSettings()} also finds scan settings that only the footer
+     * holds.
      */
     public List<ScanSettings> scanSettingsList() {
         return scanSettingsList;
@@ -241,6 +245,14 @@ public final class MzPeakManifest {
     /** CV ontology references from {@code metadata.cv_list}; empty if absent. */
     public List<CvEntry> cvList() {
         return cvList;
+    }
+
+    /**
+     * The {@code metadata} object as parsed, or {@code null} if it is absent or not an object. Shared, not copied:
+     * callers must not modify it.
+     */
+    JsonNode metadataJson() {
+        return metadataJson;
     }
 
     /** Parse {@code mzpeak_index.json} from a source (directory or ZIP). */
@@ -274,7 +286,8 @@ public final class MzPeakManifest {
             String version = meta != null && meta.isObject() ? text(meta, "version") : null;
             List<CvEntry> cvList = parseCvList(meta);
 
-            return new MzPeakManifest(entries, scanSettings, isImaging, version, cvList);
+            return new MzPeakManifest(entries, scanSettings, isImaging, version, cvList,
+                    meta != null && meta.isObject() ? meta : null);
         } catch (IOException e) {
             throw new MzPeakException("Failed to parse mzpeak_index.json in " + source.describe(), e);
         }
@@ -309,7 +322,14 @@ public final class MzPeakManifest {
 
     private static List<ScanSettings> parseScanSettingsList(JsonNode meta) {
         if (meta == null || !meta.isObject()) return List.of();
-        JsonNode ssList = meta.get("scan_settings_list");
+        return parseScanSettings(meta.get("scan_settings_list"));
+    }
+
+    /**
+     * Parses a {@code scan_settings_list} document, from the manifest or a footer; anything but an array gives an
+     * empty list.
+     */
+    static List<ScanSettings> parseScanSettings(JsonNode ssList) {
         if (ssList == null || !ssList.isArray()) return List.of();
         List<ScanSettings> out = new ArrayList<>();
         for (JsonNode ss : ssList) {
@@ -326,7 +346,8 @@ public final class MzPeakManifest {
         for (JsonNode p : arr) {
             String name = text(p, "name");
             String accession = text(p, "accession");
-            String unit = text(p, "unit_accession");
+            String unit = text(p, "unit");
+            if (unit == null) unit = text(p, "unit_accession");
             Object value = parseParamValue(p.get("value"));
             out.add(new Param(name, accession, value, unit));
         }

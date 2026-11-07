@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -44,6 +45,9 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private final String peaksFileName;  // nullable
     private boolean fileMetadataLoaded;
     private org.mzpeak.model.meta.FileMetadata fileMetadata;
+    private boolean scanSettingsLoaded;
+    private List<org.mzpeak.model.meta.ScanSettings> scanSettings;
+    private Map<String, String> footerKeyValue;
 
     private boolean dataLoaded;
     private SpectrumArrayStore dataStore;
@@ -128,11 +132,15 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     }
 
     /**
-     * Scan settings from the manifest's {@code metadata.scan_settings_list} — non-empty for
-     * imaging (MSI / imzML) datasets, empty for conventional LC-MS files.
+     * Scan settings from the manifest's {@code metadata.scan_settings_list}, else from the spectrum metadata
+     * footer — non-empty for imaging (MSI / imzML) datasets, empty for conventional LC-MS files.
      */
-    public java.util.List<org.mzpeak.model.meta.ScanSettings> scanSettings() {
-        return manifest.scanSettingsList();
+    public synchronized java.util.List<org.mzpeak.model.meta.ScanSettings> scanSettings() {
+        if (!scanSettingsLoaded) {
+            scanSettings = FooterMetadataReader.scanSettings(manifest.metadataJson(), this::footerKeyValue);
+            scanSettingsLoaded = true;
+        }
+        return scanSettings;
     }
 
     /**
@@ -140,7 +148,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      * flag set or {@link #scanSettings()} is non-empty).
      */
     public boolean isImaging() {
-        return manifest.isImaging() || !manifest.scanSettingsList().isEmpty();
+        return manifest.isImaging() || !scanSettings().isEmpty();
     }
 
     public int size() {
@@ -259,13 +267,24 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     // ---- file/run metadata ------------------------------------------------------------------------
 
-    /** File/run-level metadata (instrument, software, run, file description, ...) from the Parquet footer. */
+    /**
+     * File/run-level metadata (instrument, software, run, file description, ...) from the manifest's
+     * {@code metadata}; a document the manifest lacks is read from the spectrum metadata footer.
+     */
     public synchronized org.mzpeak.model.meta.FileMetadata fileMetadata() {
         if (!fileMetadataLoaded) {
-            fileMetadata = FooterMetadataReader.read(source.inputFile(metadataFileName));
+            fileMetadata = FooterMetadataReader.resolve(manifest.metadataJson(), this::footerKeyValue);
             fileMetadataLoaded = true;
         }
         return fileMetadata;
+    }
+
+    /** The key-value metadata of the spectrum metadata member's Parquet footer, read on first use. */
+    private synchronized Map<String, String> footerKeyValue() {
+        if (footerKeyValue == null) {
+            footerKeyValue = ParquetGroups.footerKeyValue(source.inputFile(metadataFileName));
+        }
+        return footerKeyValue;
     }
 
     // ---- lazy stores ------------------------------------------------------------------------------
