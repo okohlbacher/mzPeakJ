@@ -7,9 +7,10 @@
 #
 #   -s   also print intensity statistics (min / quartiles / median / max / mean / count)
 #
-# Examples:
-#   ./mzpeak-fileinfo.sh src/test/resources/mzpeak/small.mzpeak
-#   ./mzpeak-fileinfo.sh src/test/resources/mzpeak/has_uv.mzpeak -s
+# Examples (bundled fixtures: src/test/resources/mzpeak-legacy/ holds the packed-layout set mzPeakJ reads;
+# src/test/resources/mzpeak/ holds the current upstream set, which is not yet supported):
+#   ./mzpeak-fileinfo.sh src/test/resources/mzpeak-legacy/small.mzpeak
+#   ./mzpeak-fileinfo.sh src/test/resources/mzpeak-legacy/has_uv.mzpeak -s
 #
 set -euo pipefail
 

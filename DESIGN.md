@@ -8,8 +8,11 @@ anyone extending mzPeakJ or porting the format to a new language.
 > [`mzpeak_prototyping`](https://github.com/mobiusklein/mzpeak_prototyping) and the HUPO-PSI spec. Ground
 > truth is the upstream `doc/index.md` **plus the actual example Parquet files** (the published paper
 > [doi:10.1021/acs.jproteome.5c00435](https://doi.org/10.1021/acs.jproteome.5c00435) does not include
-> schema detail). mzPeak is an unstable prototype; this project is pinned to upstream commit `29e59b2`
-> (see `src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`).
+> schema detail). mzPeak is an unstable prototype; this project reads and writes the layout of upstream
+> commit `29e59b2`, whose examples are vendored as the legacy set (`src/test/resources/mzpeak-legacy/`).
+> The current examples of upstream commit `2ee2589` are vendored in `src/test/resources/mzpeak/` but are not
+> yet supported (split metadata tables, array index, checksums). Each directory names its commit in
+> `UPSTREAM_COMMIT.txt`.
 
 ---
 

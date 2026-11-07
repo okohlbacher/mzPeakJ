@@ -111,7 +111,8 @@ All tools share `--ms-level`, `--rt-min`, `--rt-max` filter options.
 
 ## Bundled fixtures
 
-Five HUPO-PSI example datasets are included under `src/test/resources/mzpeak/`:
+Two sets of HUPO-PSI example datasets are included. The legacy set, from upstream commit `29e59b2`, lies under
+`src/test/resources/mzpeak-legacy/` and uses the packed metadata layout that mzPeakJ reads and writes:
 
 | Fixture | Layout | Contents |
 |---|---|---|
@@ -120,6 +121,11 @@ Five HUPO-PSI example datasets are included under `src/test/resources/mzpeak/`:
 | `small.chunked.mzpeak` | delta-chunk, STORED ZIP | same data + secondary centroid peaks for every spectrum |
 | `small.numpress.mzpeak` | Numpress chunk, STORED ZIP | same data, MS:1002312 linear m/z + MS:1002314 SLOF intensity |
 | `has_uv.mzpeak` | point, STORED ZIP | 212 MS spectra + 520 UV/DAD spectra + TIC & DAD chromatograms |
+
+The current set, from upstream commit `2ee2589`, lies under `src/test/resources/mzpeak/` (not yet supported):
+`small`, `small.chunked`, `small.numpress`, `small.unpacked`, `has_uv`, `diaPASEF.ref`, `diaPASEF.grid` and
+`Example_Processed.img`. It uses split metadata tables, an array index and SHA-512 checksums. mzPeakJ opens
+these files but does not list their spectra yet.
 
 ---
 

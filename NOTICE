@@ -14,8 +14,13 @@ MS-Numpress (ms-numpress)
   (http://www.apache.org/licenses/LICENSE-2.0).
   The original Apache-2.0 license headers are retained in those files.
 
-HUPO-PSI mzPeak example data
+HUPO-PSI mzPeak example data (current set)
   Files: src/test/resources/mzpeak/**
-  Source: https://github.com/HUPO-PSI/mzPeak (pinned commit 03ccdb7)
+  Source: https://github.com/HUPO-PSI/mzPeak (commit 2ee2589)
+  Licensed under Apache License, Version 2.0.
+
+HUPO-PSI mzPeak example data (legacy set)
+  Files: src/test/resources/mzpeak-legacy/**
+  Source: https://github.com/HUPO-PSI/mzPeak (commit 29e59b2)
   Licensed under Apache License, Version 2.0.
 ------------------------------------------------------------------------
