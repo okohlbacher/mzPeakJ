@@ -17,21 +17,43 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.WavelengthSpectrum;
+import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * AP-9: the per-point extra arrays and the intensity unit of chromatograms.
+ * AP-9: the per-point extra arrays ({@link Chromatogram#arrays()}) and the intensity unit
+ * ({@link Chromatogram#intensityUnit()}) of chromatograms, decoded from the plan of the chromatogram data member
+ * (design sections 8.1, 8.4 and 10).
+ *
+ * <p>Oracles: the pyarrow cells of the fixtures' {@code point.ms_level} column (pyarrow 26.0.1), and the same cells
+ * read straight from the member; small.chunked and the other small* TICs against current small.unpacked; the units
+ * of the footers' intensity entries; constructed members for the decoding rules.
  *
  * <p>Characterization, pinned on the code before AP-9 (agent-team/upstream-p1 17e639f): the 5-argument
  * {@link Chromatogram} constructor, and the time and intensity arrays of constructed members whose array index lists
@@ -42,6 +64,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ChromatogramArraysTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** The 48 'ms level' cells of the small* TIC: pyarrow's point.ms_level of current small.unpacked. */
+    private static final double[] SMALL_TIC_MS_LEVEL = {
+            1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2,
+            2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2};
 
     private static final MessageType CHROMATOGRAM_METADATA = MessageTypeParser.parseMessageType("""
             message m {
@@ -157,6 +184,309 @@ class ChromatogramArraysTest {
         assertArrays(all.get(3), new double[] {0, 1, 2, 3}, new double[] {1, 2, slof[0], slof[1]});
     }
 
+    // ---- (a), (b): fixture chromatograms -------------------------------------------------------------------------
+
+    @Test
+    void currentSmallUnpackedTicCarriesTheMsLevelCells() {
+        Path dataset = Fixtures.current("small.unpacked.mzpeak");
+        Chromatogram tic = chromatogramsOf(dataset).get(0);
+
+        assertThat(tic.arrays().keySet()).containsExactly("ms level");
+        assertThat(tic.arrays().get("ms level")).hasSize(48).startsWith(1, 1, 2, 2, 2, 2)
+                .containsExactly(SMALL_TIC_MS_LEVEL)
+                .containsExactly(cells(storedCells(dataset, 0, "ms_level")));
+        assertThat(tic.intensityUnit()).isEqualTo("MS:1000131");
+    }
+
+    @Test
+    void legacySmallUnpackedTicCarriesItsOwnMsLevelCells() {
+        Path dataset = Fixtures.legacy("small.unpacked.mzpeak");
+        Chromatogram tic = chromatogramsOf(dataset).get(0);
+
+        assertThat(tic.arrays().keySet()).containsExactly("ms level");
+        assertThat(tic.arrays().get("ms level")).containsExactly(cells(storedCells(dataset, 0, "ms_level")))
+                .containsExactly(SMALL_TIC_MS_LEVEL);
+        assertThat(tic.intensityUnit()).isEqualTo("MS:1000131");
+    }
+
+    static Stream<Arguments> smallFixtures() {
+        Stream<Arguments> current = Stream.of("small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak")
+                .map(name -> Arguments.of("current " + name, Fixtures.current(name)));
+        Stream<Arguments> legacy = Stream.of("small.unpacked.mzpeak", "small.mzpeak", "small.chunked.mzpeak",
+                        "small.numpress.mzpeak")
+                .map(name -> Arguments.of("legacy " + name, Fixtures.legacy(name)));
+        return Stream.concat(current, legacy);
+    }
+
+    /**
+     * Every other small* TIC, point or chunk (chunk secondary 'ms level' list, plain or SLOF intensity), carries the
+     * same 'ms level' array as current small.unpacked, element by element, and the counts unit.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("smallFixtures")
+    void smallTicArraysEqualTheUnpackedTic(String label, Path dataset) {
+        Chromatogram expected = chromatogramsOf(Fixtures.current("small.unpacked.mzpeak")).get(0);
+        Chromatogram tic = chromatogramsOf(dataset).get(0);
+
+        assertThat(tic.arrays().keySet()).containsExactly("ms level");
+        assertThat(tic.arrays().get("ms level")).isEqualTo(expected.arrays().get("ms level"));
+        assertThat(tic.intensityUnit()).isEqualTo("MS:1000131");
+    }
+
+    static Stream<Path> hasUvInBothSets() {
+        return Stream.of(Fixtures.current("has_uv.mzpeak"), Fixtures.legacy("has_uv.mzpeak"));
+    }
+
+    /**
+     * has_uv: the TIC has 212 'ms level' cells (all 1) in counts; 'DAD1 A' is in absorbance, from the
+     * intensity_f32_au entry, and has no 'ms level' entry because all 526 of its cells are null.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("hasUvInBothSets")
+    void hasUvTicHasMsLevelsAndDad1IsInAbsorbance(Path dataset) {
+        List<Chromatogram> all = chromatogramsOf(dataset);
+
+        Chromatogram tic = all.get(0);
+        List<Double> ticCells = storedCells(dataset, 0, "ms_level");
+        assertThat(ticCells).hasSize(212).containsOnly(1.0);
+        assertThat(tic.arrays().keySet()).containsExactly("ms level");
+        assertThat(tic.arrays().get("ms level")).containsExactly(cells(ticCells));
+        assertThat(tic.intensityUnit()).isEqualTo("MS:1000131");
+
+        Chromatogram dad = all.get(1);
+        assertThat(dad.id()).startsWith("DAD1 A");
+        assertThat(storedCells(dataset, 1, "ms_level")).hasSize(526).containsOnlyNulls();
+        assertThat(dad.arrays()).isEmpty();
+        assertThat(dad.intensityUnit()).isEqualTo("UO:0000269");
+    }
+
+    /** The diaPASEF intensity entries name no unit, and their members have no extra column. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"diaPASEF.ref.mzpeak", "diaPASEF.grid.mzpeak"})
+    void diaPasefChromatogramsHaveNoUnitAndNoArrays(String fixture) {
+        List<Chromatogram> all = chromatogramsOf(Fixtures.current(fixture));
+
+        assertThat(all).hasSize(2).allSatisfy(c -> {
+            assertThat(c.size()).isEqualTo(9);
+            assertThat(c.intensityUnit()).isNull();
+            assertThat(c.arrays()).isEmpty();
+        });
+    }
+
+    // ---- (c): mzPeakJ output ----------------------------------------------------------------------------------
+
+    /**
+     * An archive mzPeakJ writes has no array index, so its INFERRED plan gives no unit and no extras; the writer
+     * does not store them yet (WR-11).
+     */
+    @Test
+    void mzPeakJArchiveGivesNoUnitAndNoArrays() {
+        List<Spectrum> spectra = new ArrayList<>();
+        List<Chromatogram> chromatograms;
+        List<WavelengthSpectrum> wavelength;
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
+            reader.iterator().forEachRemaining(spectra::add);
+            chromatograms = reader.chromatograms();
+            wavelength = reader.wavelengthSpectra();
+        }
+        assertThat(chromatograms.get(0).arrays()).containsOnlyKeys("ms level");
+        Path archive = tmp.resolve("written.mzpeak");
+        MzPeakWriter.writeArchive(archive, spectra, chromatograms, wavelength, List.of(), FileMetadata.EMPTY);
+
+        try (MzPeakSource source = MzPeakSource.open(archive)) {
+            assertThat(ChromatogramStore.load(source, MzPeakManifest.fromSource(source)).plan().source())
+                    .isEqualTo(ArrayIndex.Source.INFERRED);
+        }
+        List<Chromatogram> readBack = chromatogramsOf(archive);
+        assertThat(readBack).hasSize(2);
+        for (int i = 0; i < readBack.size(); i++) {
+            Chromatogram c = readBack.get(i);
+            assertThat(c.time()).isEqualTo(chromatograms.get(i).time());
+            assertThat(c.intensity()).isEqualTo(chromatograms.get(i).intensity());
+            assertThat(c.intensityUnit()).as("%s unit", c.id()).isNull();
+            assertThat(c.arrays()).as("%s arrays", c.id()).isEmpty();
+        }
+    }
+
+    // ---- (e): the record ---------------------------------------------------------------------------------------
+
+    @Test
+    void sevenArgumentConstructorKeepsTheArraysInOrderWithoutCopyingThem() {
+        double[] time = {1.0, 2.0};
+        double[] intensity = {3.0, 4.0};
+        double[] z = {5.0, 6.0};
+        double[] a = {7.0, 8.0};
+        double[] msLevel = {1.0, 2.0};
+        Map<String, double[]> in = new LinkedHashMap<>();
+        in.put("z", z);
+        in.put("a", a);
+        in.put("ms level", msLevel);
+
+        Chromatogram c = new Chromatogram(0, "TIC", "MS:1000235", time, intensity, "MS:1000131", in);
+
+        assertThat(c.intensityUnit()).isEqualTo("MS:1000131");
+        assertThat(c.arrays().keySet()).containsExactly("z", "a", "ms level");
+        assertThat(c.arrays().get("z")).isSameAs(z);
+        assertThat(c.arrays().get("a")).isSameAs(a);
+        assertThat(c.arrays().get("ms level")).isSameAs(msLevel);
+        assertThat(c.time()).isSameAs(time);
+        assertThat(c.intensity()).isSameAs(intensity);
+
+        // a copy of the map: later changes to the argument do not show
+        in.remove("a");
+        in.put("late", new double[2]);
+        assertThat(c.arrays().keySet()).containsExactly("z", "a", "ms level");
+
+        // unmodifiable
+        assertThatThrownBy(() -> c.arrays().put("x", new double[2]))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> c.arrays().remove("z")).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> c.arrays().clear()).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> c.arrays().entrySet().iterator().next().setValue(new double[2]))
+                .isInstanceOf(UnsupportedOperationException.class);
+
+        // a null map is an empty one
+        Chromatogram none = new Chromatogram(0, "TIC", null, time, intensity, null, null);
+        assertThat(none.arrays()).isEmpty();
+        assertThat(none.intensityUnit()).isNull();
+    }
+
+    @Test
+    void sevenArgumentConstructorRejectsNullKeysNullValuesAndLengthMismatches() {
+        double[] time = {1.0, 2.0};
+        double[] intensity = {3.0, 4.0};
+        Map<String, double[]> nullKey = new HashMap<>();
+        nullKey.put(null, new double[2]);
+        Map<String, double[]> nullValue = new HashMap<>();
+        nullValue.put("ms level", null);
+
+        assertThatThrownBy(() -> new Chromatogram(0, "x", null, time, intensity, null, nullKey))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("arrays has a null key");
+        assertThatThrownBy(() -> new Chromatogram(0, "x", null, time, intensity, null, nullValue))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("arrays[ms level] is null");
+        assertThatThrownBy(() -> new Chromatogram(0, "x", null, time, intensity, null,
+                Map.of("ms level", new double[3])))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("arrays[ms level]/time length mismatch: 3 vs 2");
+        assertThatThrownBy(() -> new Chromatogram(0, "x", null, null, null, null, Map.of("ms level", new double[1])))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("arrays[ms level]/time length mismatch: 1 vs 0");
+        // the time/intensity check comes first
+        assertThatThrownBy(() -> new Chromatogram(0, "x", null, time, new double[1], null,
+                Map.of("ms level", new double[3])))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("time/intensity length mismatch: 2 vs 1");
+    }
+
+    @Test
+    void fiveArgumentConstructorSetsNoUnitAndNoArrays() {
+        double[] time = {1.0, 2.0};
+        double[] intensity = {3.0, 4.0};
+        Chromatogram five = new Chromatogram(0, "x", "MS:1000235", time, intensity);
+
+        assertThat(five.intensityUnit()).isNull();
+        assertThat(five.arrays()).isEmpty();
+        assertThat(five).isEqualTo(new Chromatogram(0, "x", "MS:1000235", time, intensity, null, Map.of()))
+                .hasSameHashCodeAs(new Chromatogram(0, "x", "MS:1000235", time, intensity, null, null));
+        // equals and hashCode include the new components
+        assertThat(new Chromatogram(0, "x", "MS:1000235", time, intensity, "MS:1000131", Map.of()))
+                .isNotEqualTo(five);
+        assertThat(new Chromatogram(0, "x", "MS:1000235", time, intensity, null, Map.of("ms level", time)))
+                .isNotEqualTo(five);
+    }
+
+    // ---- decoding rules on constructed members ------------------------------------------------------------------
+
+    /**
+     * Point rows: extras are grouped per chromatogram index and keyed as the plan keys them (array name for
+     * MS:1000786, {@code <key>@<field>} for a further column of a key, else the array type), null cells read as
+     * NaN, and a key whose cells are all null in a chromatogram has no entry there. The unit is that of the entry
+     * that supplied the values; mixed units give null with one WARNING, and a chromatogram without any value has no
+     * unit. The string column cannot be read as numbers: it is dropped with one WARNING, the rest is read.
+     */
+    @Test
+    void pointMemberExtrasAndUnits() {
+        List<List<Chromatogram>> out = new ArrayList<>();
+        List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
+                () -> out.add(pointMemberChromatograms(true)));
+        List<Chromatogram> all = out.get(0);
+
+        Chromatogram c0 = all.get(0);
+        assertThat(c0.intensityUnit()).isEqualTo("MS:1000131");
+        assertThat(c0.arrays().keySet()).containsExactly("ms level", "ms level@ms_level_f64", "MS:1000516");
+        assertThat(c0.arrays().get("ms level")).containsExactly(1, Double.NaN, 2);
+        assertThat(c0.arrays().get("ms level@ms_level_f64")).containsExactly(Double.NaN, 2.5, Double.NaN);
+        assertThat(c0.arrays().get("MS:1000516")).containsExactly(2, Double.NaN, Double.NaN);
+
+        assertThat(all.get(1).intensityUnit()).isEqualTo("UO:0000269");
+        assertThat(all.get(1).arrays()).isEmpty();
+
+        assertThat(all.get(2).intensityUnit()).isNull();
+        assertThat(all.get(2).arrays().keySet()).containsExactly("ms level");
+        assertThat(all.get(2).arrays().get("ms level")).containsExactly(3, 3);
+
+        assertThat(all.get(3).intensityUnit()).isNull();
+        assertThat(all.get(3).arrays().keySet()).containsExactly("ms level");
+        assertThat(all.get(3).arrays().get("ms level")).containsExactly(1);
+
+        assertThat(all.get(4).intensityUnit()).isNull();
+        assertThat(all.get(4).arrays()).isEmpty();
+
+        assertThat(warnings(records)).satisfiesExactlyInAnyOrder(
+                m -> assertThat(m).contains("label", "point.label"),
+                m -> assertThat(m).contains("chromatogram_index 2", "MS:1000131", "UO:0000269"));
+    }
+
+    /** Without an array index the plan is INFERRED: no unit, no extras and no WARNING, though two units mix. */
+    @Test
+    void inferredPlanGivesNoUnitAndNoArrays() {
+        List<List<Chromatogram>> out = new ArrayList<>();
+        List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
+                () -> out.add(pointMemberChromatograms(false)));
+
+        assertThat(out.get(0)).hasSize(5).allSatisfy(c -> {
+            assertThat(c.intensityUnit()).isNull();
+            assertThat(c.arrays()).isEmpty();
+        });
+        assertThat(warnings(records)).isEmpty();
+    }
+
+    /**
+     * Chunk rows: an extra list aligns 1:1 with the time values its chunk decodes to, a null list reads as NaN
+     * cells, and the chunks of one index are appended in row order; a skipped chunk (no start) adds no cells. A list
+     * of another length drops that key for that chromatogram with one WARNING. The unit is that of the intensity
+     * list or the SLOF entry that supplied the chunk; mixed units give null with one WARNING. An extra stored only
+     * as a chunk transform is not decoded: it is dropped with one WARNING.
+     */
+    @Test
+    void chunkMemberExtrasAndUnits() {
+        List<List<Chromatogram>> out = new ArrayList<>();
+        List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
+                () -> out.add(chunkMemberChromatograms()));
+        List<Chromatogram> all = out.get(0);
+
+        assertThat(all.get(0).intensityUnit()).isEqualTo("MS:1000131");
+        assertThat(all.get(0).arrays().keySet()).containsExactly("ms level");
+        assertThat(all.get(0).arrays().get("ms level")).containsExactly(1, Double.NaN, 2, Double.NaN, Double.NaN);
+
+        assertThat(all.get(1).intensityUnit()).isEqualTo("MS:1000131");
+        assertThat(all.get(1).arrays()).isEmpty();
+
+        assertThat(all.get(2).intensityUnit()).isEqualTo("UO:0000269");
+        assertThat(all.get(2).arrays()).isEmpty();
+
+        assertThat(all.get(3).intensityUnit()).isNull();
+        assertThat(all.get(3).arrays().keySet()).containsExactly("ms level");
+        assertThat(all.get(3).arrays().get("ms level")).containsExactly(5, 5, 6, 6);
+
+        assertThat(warnings(records)).satisfiesExactlyInAnyOrder(
+                m -> assertThat(m).contains("compressed level", "chunk.ms_level_slof"),
+                m -> assertThat(m).contains("chromatogram_index 1", "ms level", "2", "3"),
+                m -> assertThat(m).contains("chromatogram_index 3", "MS:1000131", "UO:0000269"));
+    }
+
     // ---- constructed members ----------------------------------------------------------------------------------
 
     /**
@@ -236,6 +566,42 @@ class ChromatogramArraysTest {
     }
 
     // ---- helpers ----------------------------------------------------------------------------------------------
+
+    /** The chromatograms of a dataset, read through {@link MzPeakReader}. */
+    private static List<Chromatogram> chromatogramsOf(Path dataset) {
+        try (MzPeakReader reader = MzPeakReader.open(dataset)) {
+            return reader.chromatograms();
+        }
+    }
+
+    /**
+     * The cells of {@code point.<field>} in the rows of chromatogram {@code index}, in row order, read straight from
+     * the chromatogram data member (found by its manifest role); null cells stay null.
+     */
+    private static List<Double> storedCells(Path dataset, long index, String field) {
+        List<Double> cells = new ArrayList<>();
+        try (MzPeakSource source = MzPeakSource.open(dataset)) {
+            String data = MzPeakManifest.fromSource(source).find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS)
+                    .orElseThrow().name();
+            ParquetGroups.forEach(source.inputFile(data), row -> {
+                Group point = ParquetGroups.optGroup(row, "point");
+                if (point != null && Long.valueOf(index).equals(ParquetGroups.optLong(point, "chromatogram_index"))) {
+                    cells.add(ParquetGroups.optDouble(point, field));
+                }
+            });
+        }
+        return cells;
+    }
+
+    /** The cells as a {@code double[]}, null as NaN. */
+    private static double[] cells(List<Double> cells) {
+        return cells.stream().mapToDouble(v -> v == null ? Double.NaN : v).toArray();
+    }
+
+    /** The messages of the WARNING records. */
+    private static List<String> warnings(List<LogRecord> records) {
+        return records.stream().filter(r -> r.getLevel() == Level.WARNING).map(LogRecord::getMessage).toList();
+    }
 
     /** The chromatograms of {@code data}, with one header {@code c<index>} per index, in the given order. */
     private List<Chromatogram> chromatograms(Path data, long... indices) {
