@@ -253,13 +253,20 @@ public final class MzPeakManifest {
                 throw new MzPeakException("mzpeak_index.json has no 'files' array in " + source.describe());
             }
             List<Entry> entries = new ArrayList<>();
-            for (JsonNode f : filesNode) {
+            for (int i = 0; i < filesNode.size(); i++) {
+                JsonNode f = filesNode.get(i);
+                String name = text(f, "name");
+                if (name == null) {
+                    // both references reject a nameless entry at parse time (Rust FileEntry.name is required)
+                    throw new MzPeakException("mzpeak_index.json files[" + i + "] (" + text(f, "entity_type") + "/"
+                            + text(f, "data_kind") + ") has no name in " + source.describe());
+                }
                 JsonNode mapping = f.get("column_mapping");
                 if (mapping == null || mapping.isNull()) {
                     mapping = f.get("metadata_mapping");
                 }
                 entries.add(new Entry(
-                        text(f, "name"),
+                        name,
                         text(f, "entity_type"),
                         text(f, "data_kind"),
                         parseColumnMapping(mapping),

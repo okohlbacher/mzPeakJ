@@ -8,7 +8,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.GoldenMeta.Row;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
@@ -400,23 +399,18 @@ class SplitSpectrumMetadataTest {
     }
 
     /**
-     * Facet members are optional: without them, or listed without a name, the spectra keep their own row and lose
-     * only their facets.
+     * Facet members are optional: without them the spectra keep their own row and lose only their facets. (A facet
+     * entry without a name is an invalid manifest; see {@code ManifestRolesTest}.)
      */
-    @ParameterizedTest(name = "facet entries {0}")
-    @ValueSource(strings = {"removed", "nameless"})
-    void missingFacetMembersAreLegal(String how, @TempDir Path tmp) throws IOException {
+    @Test
+    void missingFacetMembersAreLegal(@TempDir Path tmp) throws IOException {
         Path dir = copy(Fixtures.current("small.unpacked.mzpeak"), tmp);
         Set<String> facets = Set.of("scans", "precursors", "selected_ions");
         editFiles(dir, files -> {
             for (int i = files.size() - 1; i >= 0; i--) {
                 if (files.get(i).path("entity_type").asText().equals("spectrum")
                         && facets.contains(files.get(i).path("data_kind").asText())) {
-                    if (how.equals("removed")) {
-                        files.remove(i);
-                    } else {
-                        ((ObjectNode) files.get(i)).remove("name");
-                    }
+                    files.remove(i);
                 }
             }
         });

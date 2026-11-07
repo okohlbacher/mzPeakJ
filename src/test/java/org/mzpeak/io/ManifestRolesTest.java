@@ -9,7 +9,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
@@ -250,42 +249,66 @@ class ManifestRolesTest {
                 .hasMessage("Manifest has no spectrum metadata file");
     }
 
-    /** A store member listed under its role but without a name counts as missing, as it did on the base code. */
-    @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"chromatograms_metadata.parquet", "chromatograms_data.parquet",
-            "wavelength_spectra_metadata.parquet", "wavelength_spectra_data.parquet"})
-    void aStoreMemberWithoutANameCountsAsMissing(String member, @TempDir Path tmp) throws IOException {
-        Path dir = unpack(Fixtures.legacy("has_uv.mzpeak"), tmp);
+    static Stream<Arguments> namelessMembers() {
+        return Stream.of(
+                Arguments.of("legacy", "has_uv.mzpeak", "chromatograms_metadata.parquet"),
+                Arguments.of("legacy", "has_uv.mzpeak", "chromatograms_data.parquet"),
+                Arguments.of("legacy", "has_uv.mzpeak", "wavelength_spectra_metadata.parquet"),
+                Arguments.of("legacy", "has_uv.mzpeak", "wavelength_spectra_data.parquet"),
+                Arguments.of("current", "small.unpacked.mzpeak", "spectra_metadata.parquet"),
+                Arguments.of("current", "small.unpacked.mzpeak", "spectra_data.parquet"),
+                Arguments.of("current", "small.unpacked.mzpeak", "spectra_metadata_scans.parquet"));
+    }
+
+    /**
+     * A member listed under its role but without a name makes the manifest invalid, as in both references (Rust
+     * {@code FileEntry.name} is required, Python reads {@code data["name"]}). Fails on 1e400ed, where a nameless
+     * member counted as missing, so spectra silently lost their arrays or facets.
+     */
+    @ParameterizedTest(name = "{0} {1} {2}")
+    @MethodSource("namelessMembers")
+    void aMemberWithoutANameIsRejected(String set, String fixture, String member, @TempDir Path tmp)
+            throws IOException {
+        Path dir = unpack(set.equals("legacy") ? Fixtures.legacy(fixture) : Fixtures.current(fixture), tmp);
+        int[] position = {-1};
+        String[] role = {null};
         editIndex(dir, index -> {
-            for (JsonNode f : index.path("files")) {
+            JsonNode files = index.path("files");
+            for (int i = 0; i < files.size(); i++) {
+                JsonNode f = files.get(i);
                 if (member.equals(f.path("name").asText())) {
+                    position[0] = i;
+                    role[0] = f.path("entity_type").asText() + "/" + f.path("data_kind").asText();
                     ((ObjectNode) f).remove("name");
                 }
             }
         });
-        boolean chromatogram = member.startsWith("chromatograms_");
+        assertThat(position[0]).as(member).isNotNegative();
+        String expected = "mzpeak_index.json files[" + position[0] + "] (" + role[0] + ") has no name in ";
+
         try (MzPeakSource source = MzPeakSource.open(dir)) {
-            MzPeakManifest m = MzPeakManifest.fromSource(source);
-            assertThat(m.files()).filteredOn(e -> e.name() == null).hasSize(1);
-            if (chromatogram) {
-                assertThat(ChromatogramStore.load(source, m)).isNull();
-                assertThat(WavelengthSpectrumStore.load(source, m).all()).hasSize(520);
-            } else {
-                assertThat(WavelengthSpectrumStore.load(source, m)).isNull();
-                assertThat(ChromatogramStore.load(source, m).all()).hasSize(2);
-            }
+            assertThatThrownBy(() -> MzPeakManifest.fromSource(source))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith(expected)
+                    .hasMessageEndingWith(source.describe());
         }
-        try (MzPeakReader reader = MzPeakReader.open(dir)) {
-            if (chromatogram) {
-                assertThat(reader.chromatograms()).isEmpty();
-                assertThat(reader.getChromatogram(0)).isEmpty();
-                assertThat(reader.wavelengthSpectra()).hasSize(520);
-            } else {
-                assertThat(reader.wavelengthSpectra()).isEmpty();
-                assertThat(reader.getWavelengthSpectrum(0)).isEmpty();
-                assertThat(reader.chromatograms()).hasSize(2);
-            }
-        }
+        assertThatThrownBy(() -> MzPeakReader.open(dir))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith(expected);
+    }
+
+    /** Of two entries with the same role, the first in manifest order wins. */
+    @Test
+    void aDuplicateRoleResolvesToTheFirstEntryInManifestOrder(@TempDir Path tmp) throws IOException {
+        Path dir = unpack(Fixtures.current("small.unpacked.mzpeak"), tmp);
+        editIndex(dir, index -> ((ArrayNode) index.path("files")).insertObject(0)
+                .put("name", "spectra_peaks.parquet").put("entity_type", "spectrum").put("data_kind", "data_arrays"));
+        MzPeakManifest m = manifest(dir);
+
+        assertThat(m.files()).filteredOn(e -> e.kind() == DataKind.DATA_ARRAYS && e.entity() == EntityType.SPECTRUM)
+                .extracting(Entry::name).containsExactly("spectra_peaks.parquet", "spectra_data.parquet");
+        assertThat(m.find(EntityType.SPECTRUM, DataKind.DATA_ARRAYS)).containsSame(m.files().get(0));
+        assertThat(m.find("spectrum", "data arrays")).containsSame(m.files().get(0));
     }
 
     /** Shape errors name the member the manifest resolved, here a data member listed under a metadata role. */

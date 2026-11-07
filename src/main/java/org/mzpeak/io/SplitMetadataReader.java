@@ -9,8 +9,8 @@ import java.util.Optional;
  * Reads spectrum metadata in the split layout (HUPO-PSI/mzPeak 0a28759 and later): one flat table per facet, each
  * its own member found by manifest role. The spectrum table ({@code index}) and its scans, precursors and selected
  * ions ({@code source_index}) feed a {@link SpectrumFacetAssembler}, which joins them strictly by key. A facet
- * member the manifest does not list, or lists without a name, is legal and contributes no rows; members of other
- * roles (products, provenance, signature, other) are not read.
+ * member the manifest does not list is legal and contributes no rows; members of other roles (products, provenance,
+ * signature, other) are not read.
  */
 final class SplitMetadataReader {
 
@@ -30,7 +30,7 @@ final class SplitMetadataReader {
     static void read(MzPeakSource source, MzPeakManifest manifest, SpectrumFacetAssembler assembler) {
         for (Facet facet : FACETS) {
             Optional<Entry> entry = facet.entry(manifest);
-            if (entry.isEmpty() || entry.get().name() == null) {
+            if (entry.isEmpty()) {
                 continue;
             }
             MetadataTable.forEachRow(source, entry.get(), facet, row -> assembler.accept(row.key(), row));
