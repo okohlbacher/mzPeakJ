@@ -26,6 +26,10 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
  * imaging-position columns, scan settings, and wavelength facets — so a read &rarr; write cycle preserves
  * everything {@link MzPeakReader} surfaces.
+ *
+ * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
+ * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
+ * Each other overload is a shorthand for one of them; its documentation names the call it stands for.
  */
 public final class MzPeakWriter {
 
@@ -34,50 +38,106 @@ public final class MzPeakWriter {
     private MzPeakWriter() {
     }
 
+    /**
+     * Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory,
+     * spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY, Options.defaults())}.
+     */
     public static void writeDirectory(Path directory, List<Spectrum> spectra) {
-        writeDirectory(directory, spectra, List.of());
-    }
-
-    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
-        writeDirectory(directory, spectra, chromatograms, FileMetadata.EMPTY);
-    }
-
-    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
-                                      FileMetadata fileMetadata) {
-        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata);
+        writeDirectory(directory, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY, Options.defaults());
     }
 
     /**
-     * Write an unpacked {@code *.mzpeak/} directory, including wavelength spectra, scan settings, and
-     * file/run metadata. This is the full round-trip form consumed by the forward-backward test.
+     * Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory,
+     * spectra, chromatograms, List.of(), List.of(), FileMetadata.EMPTY, Options.defaults())}.
+     */
+    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
+        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), FileMetadata.EMPTY, Options.defaults());
+    }
+
+    /**
+     * Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory,
+     * spectra, chromatograms, List.of(), List.of(), fileMetadata, Options.defaults())}.
+     */
+    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                      FileMetadata fileMetadata) {
+        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata, Options.defaults());
+    }
+
+    /**
+     * Write an unpacked {@code *.mzpeak/} directory in point layout, including wavelength spectra, scan settings,
+     * and file/run metadata. Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)
+     * writeDirectory(directory, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+     * Options.defaults())}.
+     */
+    public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                      List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
+                                      FileMetadata fileMetadata) {
+        writeDirectory(directory, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                Options.defaults());
+    }
+
+    /**
+     * Write an unpacked {@code *.mzpeak/} directory, including wavelength spectra, scan settings, and file/run
+     * metadata, with the given {@link Options}. This is the full form behind every other {@code writeDirectory} and
+     * {@code writeDirectoryNumpress} overload.
      *
      * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative. The primary
      * precursor's precursor_index, the only one written, must be non-negative; several spectra may share it.
      * Otherwise an {@link MzPeakException} is thrown before anything is written.
+     *
+     * @throws NullPointerException if {@code options} is {@code null}
      */
     public static void writeDirectory(Path directory, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                       List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
-                                      FileMetadata fileMetadata) {
+                                      FileMetadata fileMetadata, Options options) {
         write(directory, false, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
-                Options.defaults());
+                Objects.requireNonNull(options, "options"));
     }
 
+    /**
+     * Same as {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options) writeArchive(archive, spectra,
+     * chromatograms, List.of(), List.of(), FileMetadata.EMPTY, Options.defaults())}.
+     */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms) {
-        writeArchive(archive, spectra, chromatograms, FileMetadata.EMPTY);
+        writeArchive(archive, spectra, chromatograms, List.of(), List.of(), FileMetadata.EMPTY, Options.defaults());
     }
 
+    /**
+     * Same as {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options) writeArchive(archive, spectra,
+     * chromatograms, List.of(), List.of(), fileMetadata, Options.defaults())}.
+     */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                     FileMetadata fileMetadata) {
-        writeArchive(archive, spectra, chromatograms, List.of(), List.of(), fileMetadata);
+        writeArchive(archive, spectra, chromatograms, List.of(), List.of(), fileMetadata, Options.defaults());
     }
 
-    /** Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place). */
+    /**
+     * Write a single-file STORED {@code .mzpeak} ZIP in point layout (atomically: build in temp, then move into
+     * place). Same as {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options) writeArchive(archive,
+     * spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata, Options.defaults())}.
+     */
     public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                     List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                                     FileMetadata fileMetadata) {
-        write(archive, true, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+        writeArchive(archive, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
                 Options.defaults());
+    }
+
+    /**
+     * Write a single-file STORED {@code .mzpeak} ZIP (atomically: build in temp, then move into place) with the
+     * given {@link Options}. This is the full form behind every other {@code writeArchive} and
+     * {@code writeArchiveNumpress} overload. The input contract is that of
+     * {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)}; a violation is reported before
+     * the temp directory is created.
+     *
+     * @throws NullPointerException if {@code options} is {@code null}
+     */
+    public static void writeArchive(Path archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                    List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
+                                    FileMetadata fileMetadata, Options options) {
+        write(archive, true, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                Objects.requireNonNull(options, "options"));
     }
 
     // ---- Numpress-encoded chunk layout API --------------------------------------------------------
@@ -87,39 +147,53 @@ public final class MzPeakWriter {
      * m/z is encoded with Numpress linear ({@code MS:1002312}); intensity with Numpress SLOF
      * ({@code MS:1002314}). Chromatograms are written in standard point layout. Round-trips through
      * {@link MzPeakReader} on any container and layout variant.
+     *
+     * <p>Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory,
+     * spectra, chromatograms, List.of(), List.of(), FileMetadata.EMPTY,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS))}.
      */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms) {
-        writeDirectoryNumpress(directory, spectra, chromatograms,
-                FileMetadata.EMPTY, NumpressIntensityEncoding.SLOF);
+        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), FileMetadata.EMPTY,
+                Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS));
     }
 
+    /**
+     * Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory,
+     * spectra, chromatograms, List.of(), List.of(), fileMetadata,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS))}.
+     */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,
                                              FileMetadata fileMetadata) {
-        writeDirectoryNumpress(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata,
-                NumpressIntensityEncoding.SLOF);
+        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata,
+                Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS));
     }
 
     /**
      * Write an unpacked directory with Numpress encoding and a caller-chosen intensity encoding.
      * Use {@link NumpressIntensityEncoding#SLOF} (default) for floating-point intensities and
      * {@link NumpressIntensityEncoding#PIC} for non-negative integer ion-count arrays.
+     *
+     * <p>Same as {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory,
+     * spectra, chromatograms, List.of(), List.of(), fileMetadata,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS).withNumpressIntensity(intensityEncoding))},
+     * where a {@code null} {@code intensityEncoding} means SLOF.
      */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,
                                              FileMetadata fileMetadata,
                                              NumpressIntensityEncoding intensityEncoding) {
-        writeDirectoryNumpress(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata, intensityEncoding);
+        writeDirectory(directory, spectra, chromatograms, List.of(), List.of(), fileMetadata,
+                numpress(intensityEncoding));
     }
 
     /**
-     * Full Numpress directory form including wavelength spectra and scan settings.
-     *
-     * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
-     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative. The primary
-     * precursor's precursor_index, the only one written, must be non-negative; several spectra may share it.
-     * Otherwise an {@link MzPeakException} is thrown before anything is written.
+     * Full Numpress directory form including wavelength spectra and scan settings. Same as
+     * {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory(directory, spectra,
+     * chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS).withNumpressIntensity(intensityEncoding))},
+     * where a {@code null} {@code intensityEncoding} means SLOF.
      */
     public static void writeDirectoryNumpress(Path directory, List<Spectrum> spectra,
                                              List<Chromatogram> chromatograms,
@@ -127,30 +201,47 @@ public final class MzPeakWriter {
                                              List<ScanSettings> scanSettings,
                                              FileMetadata fileMetadata,
                                              NumpressIntensityEncoding intensityEncoding) {
-        write(directory, false, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+        writeDirectory(directory, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
                 numpress(intensityEncoding));
     }
 
-    /** Write a single-file STORED {@code .mzpeak} ZIP with Numpress encoding. */
+    /**
+     * Write a single-file STORED {@code .mzpeak} ZIP with Numpress encoding. Same as
+     * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options) writeArchive(archive, spectra,
+     * chromatograms, List.of(), List.of(), FileMetadata.EMPTY,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS))}.
+     */
     public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
                                            List<Chromatogram> chromatograms) {
-        writeArchiveNumpress(archive, spectra, chromatograms, FileMetadata.EMPTY);
+        writeArchive(archive, spectra, chromatograms, List.of(), List.of(), FileMetadata.EMPTY,
+                Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS));
     }
 
+    /**
+     * Same as {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options) writeArchive(archive, spectra,
+     * chromatograms, List.of(), List.of(), fileMetadata,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS))}.
+     */
     public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
                                            List<Chromatogram> chromatograms,
                                            FileMetadata fileMetadata) {
-        writeArchiveNumpress(archive, spectra, chromatograms, List.of(), List.of(), fileMetadata);
+        writeArchive(archive, spectra, chromatograms, List.of(), List.of(), fileMetadata,
+                Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS));
     }
 
-    /** Full Numpress archive form including wavelength spectra and scan settings. */
+    /**
+     * Full Numpress archive form including wavelength spectra and scan settings, with SLOF intensities. Same as
+     * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options) writeArchive(archive, spectra,
+     * chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+     * Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS))}; that form also takes PIC intensities.
+     */
     public static void writeArchiveNumpress(Path archive, List<Spectrum> spectra,
                                            List<Chromatogram> chromatograms,
                                            List<WavelengthSpectrum> wavelengthSpectra,
                                            List<ScanSettings> scanSettings,
                                            FileMetadata fileMetadata) {
-        write(archive, true, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
-                numpress(NumpressIntensityEncoding.SLOF));
+        writeArchive(archive, spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
+                Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS));
     }
 
     /**
@@ -160,21 +251,30 @@ public final class MzPeakWriter {
     public enum NumpressIntensityEncoding { SLOF, PIC }
 
     /** How spectra_data and spectra_peaks are encoded; chromatograms and wavelength spectra are always points. */
-    enum SignalEncoding {
+    public enum SignalEncoding {
         /** One row per point: index, m/z and intensity. */
         POINT,
-        /** MS-Numpress chunks: Numpress linear m/z and Numpress SLOF or PIC intensity. */
+        /**
+         * MS-Numpress chunks: Numpress linear m/z and Numpress SLOF or PIC intensity, as chosen by
+         * {@link Options#numpressIntensity()}.
+         */
         NUMPRESS
     }
 
     /**
-     * The settings of one write, immutable: {@link #defaults()} plus with-methods. The plain overloads use the
-     * defaults (point layout), the Numpress overloads {@link SignalEncoding#NUMPRESS} with their intensity encoding.
+     * The settings of one write: immutable and compared by value. Start from {@link #defaults()} and change a
+     * setting with its with-method, which returns a new instance and leaves the receiver unchanged:
      *
-     * <p>{@link #rowGroupSize()} is not applied yet: every member still takes its row-group size from the
-     * {@code mzpeak.writer.rowGroupSize} system property, or else the Parquet default.
+     * <pre>{@code
+     * MzPeakWriter.Options options = MzPeakWriter.Options.defaults()
+     *         .withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS)
+     *         .withNumpressIntensity(MzPeakWriter.NumpressIntensityEncoding.PIC);
+     * }</pre>
+     *
+     * <p>Settings are only ever added as new with-methods, never as constructor or factory parameters (there is no
+     * public constructor), so code written against this class keeps compiling when a setting is added.
      */
-    static final class Options {
+    public static final class Options {
 
         private static final Options DEFAULTS =
                 new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF, OptionalLong.empty());
@@ -190,38 +290,84 @@ public final class MzPeakWriter {
             this.rowGroupSize = rowGroupSize;
         }
 
-        /** Point layout, SLOF Numpress intensity, no row-group size. */
-        static Options defaults() {
+        /** Point layout, SLOF Numpress intensity, no row-group size: what the plain overloads write. */
+        public static Options defaults() {
             return DEFAULTS;
         }
 
-        SignalEncoding signalEncoding() {
+        /** How spectra_data and spectra_peaks are encoded; {@link SignalEncoding#POINT} by default. */
+        public SignalEncoding signalEncoding() {
             return signalEncoding;
         }
 
-        /** The Numpress intensity encoding; ignored unless {@link #signalEncoding()} is NUMPRESS. */
-        NumpressIntensityEncoding numpressIntensity() {
+        /**
+         * The Numpress intensity encoding, {@link NumpressIntensityEncoding#SLOF} by default; ignored unless
+         * {@link #signalEncoding()} is {@link SignalEncoding#NUMPRESS}.
+         */
+        public NumpressIntensityEncoding numpressIntensity() {
             return numpressIntensity;
         }
 
-        OptionalLong rowGroupSize() {
+        /**
+         * The target row-group size in bytes of every Parquet member, empty by default. When it is empty, the
+         * {@code mzpeak.writer.rowGroupSize} system property applies if it is set, and otherwise the parquet-java
+         * default.
+         */
+        public OptionalLong rowGroupSize() {
             return rowGroupSize;
         }
 
-        Options withSignalEncoding(SignalEncoding encoding) {
+        /**
+         * These options with {@code encoding} for spectra_data and spectra_peaks.
+         *
+         * @throws NullPointerException if {@code encoding} is {@code null}
+         */
+        public Options withSignalEncoding(SignalEncoding encoding) {
             return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize);
         }
 
-        Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
+        /**
+         * These options with {@code encoding} for Numpress intensities; it takes effect only with
+         * {@link SignalEncoding#NUMPRESS}.
+         *
+         * @throws NullPointerException if {@code encoding} is {@code null}
+         */
+        public Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
             return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize);
         }
 
-        /** @throws IllegalArgumentException if {@code bytes} is not positive */
-        Options withRowGroupSize(long bytes) {
+        /**
+         * These options with a target row-group size of {@code bytes} for every Parquet member; it takes precedence
+         * over the {@code mzpeak.writer.rowGroupSize} system property. parquet-java checks the size only every so
+         * many rows, so a small member stays in one row group.
+         *
+         * @throws IllegalArgumentException if {@code bytes} is not positive
+         */
+        public Options withRowGroupSize(long bytes) {
             if (bytes <= 0) {
                 throw new IllegalArgumentException("row-group size must be positive: " + bytes);
             }
             return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes));
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            return o instanceof Options other && signalEncoding == other.signalEncoding
+                    && numpressIntensity == other.numpressIntensity && rowGroupSize.equals(other.rowGroupSize);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize);
+        }
+
+        @Override
+        public String toString() {
+            return "Options[signalEncoding=" + signalEncoding + ", numpressIntensity=" + numpressIntensity
+                    + ", rowGroupSize=" + rowGroupSize + "]";
         }
     }
 
