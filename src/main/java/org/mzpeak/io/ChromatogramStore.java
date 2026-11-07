@@ -1,7 +1,9 @@
 package org.mzpeak.io;
 
+import ms.numpress.MSNumpress;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
+import org.apache.parquet.schema.Type;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
 
@@ -15,6 +17,8 @@ import java.util.Optional;
  * Reads {@code chromatograms_metadata.parquet} + {@code chromatograms_data.parquet} into {@link Chromatogram}s.
  * Handles both {@code point} layout (one row per time point) and {@code chunk} layout (delta-encoded time
  * values with one chunk row per chromatogram, as used in the chunked mzPeak variant).
+ * Intensities come from the literal {@code intensity} column; a point row falls back to a numeric
+ * {@code intensity_*} column (e.g. UV absorbance), a chunk row to MS-Numpress SLOF bytes.
  */
 final class ChromatogramStore {
 
@@ -86,6 +90,9 @@ final class ChromatogramStore {
                 if (idx == null) return;
                 Double t  = ParquetGroups.optDouble(point, "time");
                 Double in = ParquetGroups.optDouble(point, "intensity");
+                if (in == null) {
+                    in = fallbackPointIntensity(point);
+                }
                 DoubleArrayBuilder[] b = chunkAcc.computeIfAbsent(idx,
                         k -> new DoubleArrayBuilder[] {new DoubleArrayBuilder(), new DoubleArrayBuilder()});
                 b[0].add(t  == null ? Double.NaN : t);
@@ -102,7 +109,7 @@ final class ChromatogramStore {
             if (start == null) return;
 
             double[] deltas    = ParquetGroups.doubleListNullable(chunk, "time_chunk_values");
-            double[] intensity = ParquetGroups.doubleListNullable(chunk, "intensity");
+            double[] intensity = chunkIntensity(chunk, idx);
 
             // Reconstruct time axis: time[0] = start; time[i+1] = time[i] + deltas[i]
             // intensity.length == deltas.length + 1 (intensity[0] is at time_chunk_start)
@@ -127,5 +134,55 @@ final class ChromatogramStore {
         Map<Long, PointArrays.XY> out = new LinkedHashMap<>();
         chunkAcc.forEach((idx, b) -> out.put(idx, new PointArrays.XY(b[0].toArray(), b[1].toArray())));
         return out;
+    }
+
+    /**
+     * Intensity of a point row whose literal {@code intensity} is null: the first non-null value among the
+     * point's primitive numeric (FLOAT, DOUBLE, INT32, INT64) fields named {@code intensity_*}, in schema order —
+     * e.g. the {@code intensity_f32_au} absorbance column of a UV/DAD chromatogram. List, group, repeated and
+     * BINARY fields are skipped without being read. Returns {@code null} when there is no such value.
+     */
+    private static Double fallbackPointIntensity(Group point) {
+        for (Type field : point.getType().getFields()) {
+            if (!field.getName().startsWith("intensity_")
+                    || !field.isPrimitive() || field.isRepetition(Type.Repetition.REPEATED)) {
+                continue;
+            }
+            switch (field.asPrimitiveType().getPrimitiveTypeName()) {
+                case FLOAT, DOUBLE, INT32, INT64 -> {
+                    Double v = ParquetGroups.optDouble(point, field.getName());
+                    if (v != null) {
+                        return v;
+                    }
+                }
+                default -> { }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Intensity values of a chunk row: the plain {@code intensity} list when present, otherwise the MS-Numpress
+     * SLOF bytes in {@code intensity_numpress_slof_bytes}. Returns an empty array when neither is present.
+     */
+    private static double[] chunkIntensity(Group chunk, long chromatogramIndex) {
+        if (ParquetGroups.has(chunk, "intensity")) {
+            return ParquetGroups.doubleListNullable(chunk, "intensity");
+        }
+        if (ParquetGroups.has(chunk, "intensity_numpress_slof_bytes")) {
+            byte[] bytes = ParquetGroups.byteList(chunk, "intensity_numpress_slof_bytes");
+            if (bytes.length == 0) {
+                return new double[0];
+            }
+            try {
+                return MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, bytes, bytes.length);
+            } catch (RuntimeException e) {
+                throw new MzPeakException("Failed to Numpress-decode intensity for chromatogram_index "
+                        + chromatogramIndex, e);
+            }
+        }
+        // A chunk with only intensity_numpress_pic_bytes is not decoded yet and reads as zero intensities
+        // (deferred: PIC chromatograms, via MSNumpress.decodePic, since decode() rejects PIC payloads < 8 bytes).
+        return new double[0];
     }
 }
