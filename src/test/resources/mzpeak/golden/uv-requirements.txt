@@ -1,0 +1,15 @@
+# Pinned environment of generate_golden.py (mzPeakJ FX-1b), used with CPython 3.13.12; see README.md.
+# Direct dependencies of the HEAD Python mzPeak reader (pyproject.toml plus its numpress extra):
+pyarrow==26.0.1
+numpy==2.5.4
+pandas==3.1.1
+scipy==1.18.1
+psims==1.4.0
+pynumpress==0.1.5
+# Their dependencies, pinned as `uv pip compile --python 3.13.12` resolved them:
+lxml==6.1.3
+python-dateutil==4.0.0
+six==1.17.0
+sqlalchemy==2.1.8
+typing-extensions==4.16.0
+tzdata==2026.6
