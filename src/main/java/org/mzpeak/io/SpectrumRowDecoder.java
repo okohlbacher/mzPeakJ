@@ -5,7 +5,10 @@ import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.SignalContinuity;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Decodes one spectrum row of the spectrum metadata into a {@link SpectrumHead}; columns are resolved by accession.
@@ -31,43 +34,63 @@ final class SpectrumRowDecoder {
     private SpectrumRowDecoder() {
     }
 
-    /** Decodes the spectrum row whose (non-negative) {@code index} is {@code idx}. */
+    /**
+     * Decodes the spectrum row whose (non-negative) {@code index} is {@code idx}. Its Params are the
+     * {@code parameters} list, then the row's leftovers ({@link ColumnResolver#leftovers}, split layout only): its
+     * scalar columns that none of the fields below is read from, such as the summary columns and the
+     * {@code spectrum_type} term marker.
+     */
     static SpectrumHead decode(FacetRow spectrum, long idx) {
         ColumnResolver columns = spectrum.columns();
         Group g = spectrum.group();
+        Set<String> consumed = new HashSet<>();
         SpectrumHead b = new SpectrumHead();
         b.index = idx;
-        b.id = columns.stringValue(g, F_ID);
-        Integer level = columns.intValue(g, columns.resolve(MS_LEVEL));
+        b.id = columns.stringValue(g, consume(consumed, F_ID));
+        Integer level = columns.intValue(g, consume(consumed, columns.resolve(MS_LEVEL)));
         b.msLevel = level == null ? 0 : level;
-        Double t = columns.doubleValue(g, F_TIME);
+        Double t = columns.doubleValue(g, consume(consumed, F_TIME));
         b.time = t == null ? Double.NaN : t;
-        b.polarity = Polarity.fromCode(columns.intValue(g, columns.resolve(POLARITY)));
-        b.continuity = SignalContinuity.fromCurie(columns.stringValue(g, columns.resolve(REPRESENTATION)));
-        Long nPts = columns.longValue(g, columns.resolve(N_POINTS));
+        b.polarity = Polarity.fromCode(columns.intValue(g, consume(consumed, columns.resolve(POLARITY))));
+        b.continuity = SignalContinuity.fromCurie(
+                columns.stringValue(g, consume(consumed, columns.resolve(REPRESENTATION))));
+        Long nPts = columns.longValue(g, consume(consumed, columns.resolve(N_POINTS)));
         b.numberOfDataPoints = nPts == null ? 0 : nPts;
-        Long nPeaks = columns.longValue(g, columns.resolve(N_PEAKS));
+        Long nPeaks = columns.longValue(g, consume(consumed, columns.resolve(N_PEAKS)));
         b.numberOfPeaks = nPeaks == null ? 0 : nPeaks;
         b.spectrumParams = columns.params(g);
-        b.mzDeltaModel = deltaModel(columns, g);
+        b.mzDeltaModel = deltaModel(columns, g, consumed);
+        List<Param> leftovers = columns.leftovers(g, consumed);
+        if (!leftovers.isEmpty()) {
+            b.spectrumParams = new ArrayList<>(b.spectrumParams);
+            b.spectrumParams.addAll(leftovers);
+        }
         return b;
     }
 
     /**
      * The row's m/z delta model coefficients: the list column of MS:1003821, else of MS:1003820 (also named
      * {@code coordinate_spacing_model} or {@code mz_delta_model}), else the scalar {@code median_delta} as a
-     * one-coefficient model. Empty when the row has none.
+     * one-coefficient model. Empty when the row has none. The column it is read from is added to {@code consumed}.
      */
-    private static double[] deltaModel(ColumnResolver columns, Group g) {
+    private static double[] deltaModel(ColumnResolver columns, Group g, Set<String> consumed) {
         String list = columns.resolve(POLYNOMIAL_DELTA_INTERPOLATION);
         if (list == null) {
             list = columns.resolve(COORDINATE_SPACING_MODEL, F_COORDINATE_SPACING_MODEL, F_MZ_DELTA_MODEL);
         }
         if (list != null) {
-            return columns.doubleList(g, list);
+            return columns.doubleList(g, consume(consumed, list));
         }
-        Double median = columns.doubleValue(g, columns.resolveName(F_MEDIAN_DELTA));
+        Double median = columns.doubleValue(g, consume(consumed, columns.resolveName(F_MEDIAN_DELTA)));
         return median == null ? new double[0] : new double[] {median};
+    }
+
+    /** Adds the resolved {@code field}, unless {@code null}, to {@code consumed}, and returns it. */
+    private static String consume(Set<String> consumed, String field) {
+        if (field != null) {
+            consumed.add(field);
+        }
+        return field;
     }
 
     /**
