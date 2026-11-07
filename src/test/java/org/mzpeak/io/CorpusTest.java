@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.model.CentroidPeak;
@@ -22,13 +23,21 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
- * Corpus smoke-test: opens every {@code .mzpeak} file found under
- * {@code ~/Claude/mzML2mzPeak/data} (and its subdirectories), verifies that the reader can
- * load metadata and materialise the first spectrum without throwing, and asserts structural
- * invariants (array lengths, non-negative index) that must hold regardless of instrument/format.
+ * Corpus smoke-test: opens every {@code .mzpeak} file found under the corpus root (and its
+ * subdirectories), verifies that the reader can load metadata and materialise the first spectrum
+ * without throwing, and asserts structural invariants (array lengths, non-negative index) that must
+ * hold regardless of instrument/format.
  *
- * <p>The test is <em>skipped</em> (not failed) when the corpus directory is absent, so CI on
- * GitHub passes without the local data tree.
+ * <p><strong>Opt-in.</strong> The class only runs when {@code -Dmzpeak.corpus.dir=<dir>} is set, so
+ * a plain {@code mvn verify} neither scans a local multi-GB corpus nor depends on one:
+ * <pre>
+ *   mvn test -Dtest=CorpusTest -Dmzpeak.corpus.dir=/path/to/corpus
+ * </pre>
+ * The root may be a symlink, and may itself be a single {@code .mzpeak} dataset directory. When the
+ * root is absent or holds no {@code .mzpeak} files, the parameterized tests receive the
+ * {@link #NO_CORPUS_FILES} sentinel and are <em>skipped</em> (not failed). The round-trip harnesses
+ * ({@link ValidatedRoundTripTest}, {@link ForwardBackwardCorpusTest}) reuse {@link #corpusFiles()}
+ * and fall back to {@code ~/Claude/mzML2mzPeak/data} when the property is unset.
  *
  * <p>Coverage of this corpus:
  * <ul>
@@ -40,9 +49,18 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  *       (timsTOF, DTIMS), MRM/SRM (chromatogram-only), UV/DAD
  * </ul>
  */
+@EnabledIfSystemProperty(named = "mzpeak.corpus.dir", matches = ".+")
 class CorpusTest {
 
     static final Path CORPUS_ROOT = corpusRoot();
+
+    /**
+     * Placeholder argument handed to the parameterized tests when there are no corpus files to test.
+     * Its name does not end in {@code .mzpeak}, so it can never collide with a real corpus entry (not
+     * even with a root that is itself a dataset, which {@link #corpusFiles()} reports as
+     * {@link #CORPUS_ROOT}).
+     */
+    static final Path NO_CORPUS_FILES = CORPUS_ROOT.resolve("no-mzpeak-corpus-files");
 
     private static Path corpusRoot() {
         String prop = System.getProperty("mzpeak.corpus.dir");
@@ -50,30 +68,56 @@ class CorpusTest {
                             : Path.of(System.getProperty("user.home"), "Claude/mzML2mzPeak/data");
     }
 
+    /** {@code true} if {@code p} is the {@link #NO_CORPUS_FILES} placeholder, not a corpus entry. */
+    static boolean isSentinel(Path p) {
+        return p.equals(NO_CORPUS_FILES);
+    }
+
     /**
-     * Collect all {@code .mzpeak} files (ZIPs) and {@code .mzpeak} directories under the corpus root.
-     * Returns a sentinel stream containing only {@link #CORPUS_ROOT} when the root is absent so that
-     * JUnit 5.11 (which rejects empty {@code @MethodSource} streams) does not throw
-     * {@code PreconditionViolationException}; each parameterized test calls {@code assumeTrue} on
-     * the first line and skips gracefully when the sentinel is received.
+     * {@code files} as a stream, or a stream holding only {@link #NO_CORPUS_FILES} when it is empty.
+     * JUnit 5.11 rejects an empty {@code @MethodSource} with {@code PreconditionViolationException};
+     * each parameterized test instead assumes {@code !isSentinel(..)} first and skips on the sentinel.
+     * Callers that filter or limit the corpus apply this <em>after</em> doing so.
+     */
+    static Stream<Path> orSentinel(List<Path> files) {
+        return files.isEmpty() ? Stream.of(NO_CORPUS_FILES) : files.stream();
+    }
+
+    /**
+     * Collect all {@code .mzpeak} files (ZIPs) and {@code .mzpeak} directories under the corpus root,
+     * sorted, or only the {@link #NO_CORPUS_FILES} sentinel when the root is absent or holds none.
+     *
+     * <p>The walk starts at the root's real path, so a symlinked root is followed; links below the
+     * root are listed but not descended into. Each hit is mapped back onto {@link #CORPUS_ROOT}, so
+     * display names keep the configured path, and a root that is itself a {@code .mzpeak} dataset is
+     * returned as {@link #CORPUS_ROOT}. A symlinked root counts as a dataset when either the link
+     * name or its target name ends in {@code .mzpeak}.
      */
     static Stream<Path> corpusFiles() throws IOException {
         if (!Files.isDirectory(CORPUS_ROOT)) {
-            return Stream.of(CORPUS_ROOT); // sentinel — tests skip via assumeTrue
+            return orSentinel(List.of()); // tests skip via assumeThat(isSentinel(..))
         }
+        Path real = CORPUS_ROOT.toRealPath();
         List<Path> found = new ArrayList<>();
-        try (var walk = Files.walk(CORPUS_ROOT)) {
+        try (var walk = Files.walk(real)) {
             walk.forEach(p -> {
-                String name = p.getFileName().toString();
-                if (name.endsWith(".mzpeak")) {
+                Path mapped = CORPUS_ROOT.resolve(real.relativize(p));
+                // Below the root both names agree; at the root either the link or its target may
+                // carry the .mzpeak suffix.
+                if (hasMzPeakName(p) || hasMzPeakName(mapped)) {
                     boolean isDir = Files.isDirectory(p);
                     boolean isFile = Files.isRegularFile(p);
-                    if (isDir || isFile) found.add(p);
+                    if (isDir || isFile) found.add(mapped);
                 }
             });
         }
         found.sort(null);
-        return found.stream();
+        return orSentinel(found);
+    }
+
+    private static boolean hasMzPeakName(Path p) {
+        Path name = p.getFileName();
+        return name != null && name.toString().endsWith(".mzpeak");
     }
 
     // ---- parameterized open + metadata test -----------------------------------------------
@@ -82,7 +126,7 @@ class CorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void canOpenAndReadMetadata(Path file) {
-        assumeThat(Files.isDirectory(CORPUS_ROOT)).as("corpus absent — skip").isTrue();
+        assumeThat(isSentinel(file)).as("no corpus files — skip").isFalse();
         assertThatNoException().isThrownBy(() -> {
             try (MzPeakReader r = MzPeakReader.open(file)) {
                 assertThat(r.size()).as("spectrum count must be >= 0").isGreaterThanOrEqualTo(0);
@@ -104,7 +148,7 @@ class CorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void canReadFirstSpectrum(Path file) {
-        assumeThat(Files.isDirectory(CORPUS_ROOT)).as("corpus absent — skip").isTrue();
+        assumeThat(isSentinel(file)).as("no corpus files — skip").isFalse();
         assertThatNoException().isThrownBy(() -> {
             try (MzPeakReader r = MzPeakReader.open(file)) {
                 if (r.size() == 0) return; // nothing to read
@@ -132,7 +176,7 @@ class CorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFiles")
     void sampledSpectra_haveConsistentArraysAndValidPeaks(Path file) throws Exception {
-        assumeThat(Files.isDirectory(CORPUS_ROOT)).as("corpus absent — skip").isTrue();
+        assumeThat(isSentinel(file)).as("no corpus files — skip").isFalse();
         try (MzPeakReader r = MzPeakReader.open(file)) {
             // Use an explicit iterator so next() is not called beyond the cap (enhanced-for would
             // materialize one extra spectrum when i == MAX_SPECTRA_PER_FILE at the loop condition).

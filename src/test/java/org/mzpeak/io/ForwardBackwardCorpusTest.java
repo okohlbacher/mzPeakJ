@@ -91,18 +91,15 @@ class ForwardBackwardCorpusTest {
 
     static Stream<Path> corpusFilesForRoundTrip() throws IOException {
         long maxFiles = Long.getLong("mzpeak.roundtrip.maxFiles", Long.MAX_VALUE);
-        Stream<Path> base = CorpusTest.corpusFiles().filter(p -> {
-            // Keep the absent-corpus sentinel so JUnit does not reject an empty stream.
-            if (p.equals(CorpusTest.CORPUS_ROOT) && !Files.isDirectory(CorpusTest.CORPUS_ROOT)) {
-                return true;
-            }
+        Stream<Path> base = CorpusTest.corpusFiles().filter(p -> !CorpusTest.isSentinel(p)).filter(p -> {
             try {
                 return approximateSize(p) <= MAX_FILE_BYTES;
             } catch (IOException e) {
                 return false;
             }
         });
-        return maxFiles == Long.MAX_VALUE ? base : base.limit(maxFiles);
+        // Re-add the sentinel only after filtering and limiting, so JUnit never gets an empty stream.
+        return CorpusTest.orSentinel((maxFiles == Long.MAX_VALUE ? base : base.limit(maxFiles)).toList());
     }
 
     @Tag("corpus")
@@ -110,7 +107,7 @@ class ForwardBackwardCorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFilesForRoundTrip")
     void forwardBackward(Path src, @TempDir Path tmpDir) throws Exception {
-        assumeThat(Files.isDirectory(CorpusTest.CORPUS_ROOT)).as("corpus absent — skip").isTrue();
+        assumeThat(CorpusTest.isSentinel(src)).as("no corpus files — skip").isFalse();
 
         String validatorCmd = System.getProperty("mzpeak.validator.command", "mzpeak-validate");
         assumeThat(validatorAvailable(validatorCmd))

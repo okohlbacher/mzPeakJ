@@ -50,18 +50,22 @@ class ValidatedRoundTripTest {
     private static final long FULL_VALIDATION_THRESHOLD = 5L * 1024 * 1024;
 
     static Stream<Path> corpusFilesForRoundTrip() throws IOException {
-        return CorpusTest.corpusFiles().filter(p -> {
-            try {
-                return approximateSize(p) <= MAX_FILE_BYTES;
-            } catch (IOException e) {
-                return false;
-            }
-        });
+        return CorpusTest.orSentinel(CorpusTest.corpusFiles()
+                .filter(p -> !CorpusTest.isSentinel(p))
+                .filter(p -> {
+                    try {
+                        return approximateSize(p) <= MAX_FILE_BYTES;
+                    } catch (IOException e) {
+                        return false;
+                    }
+                })
+                .toList());
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpusFilesForRoundTrip")
     void roundTrip_validatesClean(Path src, @TempDir Path tmpDir) throws Exception {
+        assumeThat(CorpusTest.isSentinel(src)).as("no corpus files — skip").isFalse();
         String validatorCmd = System.getProperty("mzpeak.validator.command", "mzpeak-validate");
         assumeThat(validatorAvailable(validatorCmd))
                 .as("mzpeak-validate not found; install it or set -Dmzpeak.validator.command=")
