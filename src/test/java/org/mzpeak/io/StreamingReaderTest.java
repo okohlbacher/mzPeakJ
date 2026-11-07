@@ -65,8 +65,9 @@ class StreamingReaderTest {
 
     /**
      * Looks up every source spectrum in {@code reread}, first in reverse index order and then forward, and
-     * asserts bit-identical m/z and intensity arrays and an equal peak list each time. The reverse pass makes
-     * every lookup change block runs; the forward pass then re-reads the same spectra after those switches.
+     * asserts bit-identical m/z and intensity arrays and an equal peak list each time. The reverse pass walks the
+     * row groups against storage order, so lookups switch block runs backwards; the forward pass then re-reads
+     * the same spectra after those switches.
      */
     static void assertReReadsExactly(MzPeakReader reread, List<Spectrum> source) {
         assertThat(reread.size()).isEqualTo(source.size());
