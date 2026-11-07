@@ -20,8 +20,9 @@ import java.util.Optional;
 
 /**
  * Reads an mzPeak dataset — either an unpacked {@code *.mzpeak/} directory or a single-file (STORED)
- * {@code .mzpeak} ZIP. Surface: open, count, metadata access, spectrum (m/z + intensity + peaks)
- * materialization, lookup by index / scan number / native id / retention time, iteration, and chromatograms.
+ * {@code .mzpeak} ZIP. Surface: open, count, metadata access, spectrum (m/z + intensity + peaks + extra arrays
+ * such as ion mobility) materialization, lookup by index / scan number / native id / retention time, iteration, and
+ * chromatograms.
  *
  * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
  * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); pass
@@ -226,17 +227,22 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
         double[] mz;
         double[] intensity;
+        Map<String, double[]> arrays;
         if (profile != null) {
             mz = profile.mz();
             intensity = profile.intensity();
+            arrays = profile.extras();
         } else if (centroids != null) {
             mz = centroids.mz();
             intensity = centroids.intensity();
+            arrays = centroids.extras();
         } else {
             mz = new double[0];
             intensity = new double[0];
+            arrays = Map.of();
         }
-        return new Spectrum(description, mz, intensity, peakList);
+        return new Spectrum(description, mz, intensity, peakList, arrays,
+                centroids == null ? Map.of() : centroids.extras());
     }
 
     // ---- chromatograms ----------------------------------------------------------------------------
@@ -291,8 +297,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     private synchronized SpectrumArrayStore data() {
         if (!dataLoaded) {
-            dataStore = dataFileName == null ? null
-                    : SpectrumArrayStore.load(source.inputFile(dataFileName), reconstructProfile, deltaModels);
+            dataStore = dataFileName == null ? null : SpectrumArrayStore.load(source.inputFile(dataFileName),
+                    dataFileName, reconstructProfile, deltaModels);
             dataLoaded = true;
         }
         return dataStore;
@@ -300,8 +306,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     private synchronized SpectrumArrayStore peaks() {
         if (!peaksLoaded) {
-            peakStore = peaksFileName == null ? null
-                    : SpectrumArrayStore.load(source.inputFile(peaksFileName), reconstructProfile, deltaModels);
+            peakStore = peaksFileName == null ? null : SpectrumArrayStore.load(source.inputFile(peaksFileName),
+                    peaksFileName, reconstructProfile, deltaModels);
             peaksLoaded = true;
         }
         return peakStore;
