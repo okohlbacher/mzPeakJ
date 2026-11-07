@@ -6,9 +6,8 @@ import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 
 /**
- * What {@link MzPeakWriter} derives from a spectrum's payload: the rows it contributes to spectra_data and
- * spectra_peaks, and the summary columns of its spectra_metadata row (observed m/z range, base peak, total ion
- * current).
+ * What {@link MzPeakWriter} derives from a spectrum's payload: the summary columns of its spectra_metadata row
+ * (observed m/z range, base peak, total ion current).
  */
 final class SpectrumSummary {
 
@@ -54,21 +53,5 @@ final class SpectrumSummary {
 
     private static boolean isCentroid(Spectrum s) {
         return s.description().signalContinuity() == SignalContinuity.CENTROID;
-    }
-
-    // Facet routing is by *container*, not by signal continuity: the mz/intensity point arrays go to
-    // spectra_data and the explicit centroid peak list goes to spectra_peaks. This preserves the source
-    // layout exactly — including centroid spectra whose centroids are stored in spectra_data (e.g. SRM/MRM
-    // transitions, which the reference also stores there), which a continuity-based rule would wrongly
-    // flip into spectra_peaks on write.
-
-    /** Rows this spectrum contributes to {@code spectra_data} (the point/profile arrays). */
-    static int profileRows(Spectrum s) {
-        return s.mz().length;
-    }
-
-    /** Rows this spectrum contributes to {@code spectra_peaks} (the explicit centroid peak list). */
-    static int peakRows(Spectrum s) {
-        return s.peaks().size();
     }
 }

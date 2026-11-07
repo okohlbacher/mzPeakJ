@@ -10,17 +10,15 @@ import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
 import ms.numpress.MSNumpress;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
+import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Spectrum;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.List;
 
 import static org.mzpeak.io.ParquetOutput.UINT64;
 import static org.mzpeak.io.ParquetOutput.openWriter;
-import static org.mzpeak.io.SpectrumSummary.peakRows;
-import static org.mzpeak.io.SpectrumSummary.profileRows;
 
 /**
  * Writes the MS-Numpress chunk layout of {@link MzPeakWriter} for spectra_data and spectra_peaks: chunks of up to
@@ -64,44 +62,38 @@ final class NumpressSignalWriter {
     }
 
     /**
-     * Write spectra as MS-Numpress chunk rows. Each spectrum is split into fixed-size chunks; m/z is encoded
-     * with Numpress linear and intensity with Numpress SLOF. Output is compatible with
+     * Write spectra as MS-Numpress chunk rows: the plan's spectra_data rows ({@code mz()}/{@code intensity()} of
+     * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code peaks()} of every entry
+     * routed there). Each spectrum is split into fixed-size chunks; m/z is encoded with Numpress linear and
+     * intensity with the plan's Numpress intensity encoding. Output is compatible with
      * {@code SpectrumArrayStore.acceptNumpressChunk}.
      */
-    static void writeNumpressChunks(Path file, List<Spectrum> spectra, boolean centroidFile,
-                                    NumpressIntensityEncoding intensityEncoding)
-            throws IOException {
+    static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
+        NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
         SimpleGroupFactory factory = new SimpleGroupFactory(NUMPRESS_CHUNK_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA)) {
-            for (Spectrum s : spectra) {
+            for (SpectrumEntry entry : plan.spectra()) {
+                Spectrum s = entry.source();
                 double[] mz;
                 double[] intensity;
                 if (centroidFile) {
-                    if (peakRows(s) == 0) {
+                    if (!entry.peaks()) {
                         continue;
                     }
-                    if (!s.peaks().isEmpty()) {
-                        mz = new double[s.peaks().size()];
-                        intensity = new double[s.peaks().size()];
-                        for (int i = 0; i < mz.length; i++) {
-                            mz[i] = s.peaks().get(i).mz();
-                            intensity[i] = s.peaks().get(i).intensity();
-                        }
-                    } else {
-                        mz = s.mz();
-                        intensity = s.intensity();
+                    mz = new double[s.peaks().size()];
+                    intensity = new double[s.peaks().size()];
+                    for (int i = 0; i < mz.length; i++) {
+                        mz[i] = s.peaks().get(i).mz();
+                        intensity[i] = s.peaks().get(i).intensity();
                     }
                 } else {
-                    if (profileRows(s) == 0) {
+                    if (!entry.data()) {
                         continue;
                     }
                     mz = s.mz();
                     intensity = s.intensity();
                 }
                 int n = mz.length;
-                if (n == 0) {
-                    continue;
-                }
                 int pos = 0;
                 while (pos < n) {
                     int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
@@ -134,7 +126,7 @@ final class NumpressSignalWriter {
 
                     Group row = factory.newGroup();
                     Group chunk = row.addGroup("chunk");
-                    chunk.add("spectrum_index", s.index());
+                    chunk.add("spectrum_index", entry.sourceIndex());
                     chunk.add("mz_chunk_start", chunkMz[0]);
                     chunk.add("mz_chunk_end", chunkMz[chunkLen - 1]);
                     chunk.add("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR);
