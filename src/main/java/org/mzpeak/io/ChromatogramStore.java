@@ -4,6 +4,8 @@ import ms.numpress.MSNumpress;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.schema.Type;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
 
@@ -22,7 +24,7 @@ import java.util.Optional;
  */
 final class ChromatogramStore {
 
-    /** Names the member in error messages, by its manifest role. */
+    /** Names a member given directly as an {@link InputFile} in error messages, by its manifest role. */
     private static final String MEMBER = "chromatogram metadata member";
 
     private final List<Chromatogram> all;
@@ -45,10 +47,32 @@ final class ChromatogramStore {
     Optional<Chromatogram> byIndex(long index)  { return Optional.ofNullable(byIndex.get(index)); }
     Optional<Chromatogram> byId(String id)      { return Optional.ofNullable(byId.get(id)); }
 
+    /**
+     * Loads the members that {@code manifest} lists under the roles (chromatogram, metadata) and (chromatogram, data
+     * arrays); error messages name the metadata member by its file name.
+     *
+     * @return the store, or {@code null} when the manifest lacks either member or lists it without a name
+     */
+    static ChromatogramStore load(MzPeakSource source, MzPeakManifest manifest) {
+        String metadataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.METADATA)
+                .map(MzPeakManifest.Entry::name).orElse(null);
+        String dataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS)
+                .map(MzPeakManifest.Entry::name).orElse(null);
+        if (metadataName == null || dataName == null) {
+            return null;
+        }
+        return load(source.inputFile(metadataName), metadataName, source.inputFile(dataName));
+    }
+
+    /** Loads a metadata and a data member given directly; error messages name the metadata member by its role. */
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
-        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "chromatogram", "index", MEMBER);
+        return load(metadataFile, MEMBER, dataFile);
+    }
+
+    private static ChromatogramStore load(InputFile metadataFile, String member, InputFile dataFile) {
+        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "chromatogram", "index", member);
         if (shape == MetadataShape.SPLIT) {
-            throw new MzPeakException(MEMBER + ": split metadata layout not supported yet");
+            throw new MzPeakException(member + ": split metadata layout not supported yet");
         }
         if (shape == MetadataShape.EMPTY) {
             return new ChromatogramStore(List.of());

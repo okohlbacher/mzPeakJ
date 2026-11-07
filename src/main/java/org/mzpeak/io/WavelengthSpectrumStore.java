@@ -2,6 +2,8 @@ package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.WavelengthSpectrum;
 
@@ -24,7 +26,7 @@ final class WavelengthSpectrumStore {
     private static final String F_WL_INDEX = "wavelength_spectrum_index";
     private static final String F_WAVELENGTH = "wavelength";
 
-    /** Names the member in error messages, by its manifest role. */
+    /** Names a member given directly as an {@link InputFile} in error messages, by its manifest role. */
     private static final String MEMBER = "wavelength spectrum metadata member";
 
     private final List<WavelengthSpectrum> all;
@@ -46,10 +48,32 @@ final class WavelengthSpectrumStore {
         return Optional.ofNullable(byIndex.get(index));
     }
 
+    /**
+     * Loads the members that {@code manifest} lists under the roles (wavelength spectrum, metadata) and (wavelength
+     * spectrum, data arrays); error messages name the metadata member by its file name.
+     *
+     * @return the store, or {@code null} when the manifest lacks either member or lists it without a name
+     */
+    static WavelengthSpectrumStore load(MzPeakSource source, MzPeakManifest manifest) {
+        String metadataName = manifest.find(EntityType.WAVELENGTH_SPECTRUM, DataKind.METADATA)
+                .map(MzPeakManifest.Entry::name).orElse(null);
+        String dataName = manifest.find(EntityType.WAVELENGTH_SPECTRUM, DataKind.DATA_ARRAYS)
+                .map(MzPeakManifest.Entry::name).orElse(null);
+        if (metadataName == null || dataName == null) {
+            return null;
+        }
+        return load(source.inputFile(metadataName), metadataName, source.inputFile(dataName));
+    }
+
+    /** Loads a metadata and a data member given directly; error messages name the metadata member by its role. */
     static WavelengthSpectrumStore load(InputFile metadataFile, InputFile dataFile) {
-        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "spectrum", F_INDEX, MEMBER);
+        return load(metadataFile, MEMBER, dataFile);
+    }
+
+    private static WavelengthSpectrumStore load(InputFile metadataFile, String member, InputFile dataFile) {
+        MetadataShape shape = MetadataShape.detect(ParquetFooter.read(metadataFile), "spectrum", F_INDEX, member);
         if (shape == MetadataShape.SPLIT) {
-            throw new MzPeakException(MEMBER + ": split metadata layout not supported yet");
+            throw new MzPeakException(member + ": split metadata layout not supported yet");
         }
         if (shape == MetadataShape.EMPTY) {
             return new WavelengthSpectrumStore(List.of());

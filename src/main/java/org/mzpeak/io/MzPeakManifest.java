@@ -8,12 +8,16 @@ import org.mzpeak.model.meta.ScanSettings;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
  * The {@code mzpeak_index.json} manifest. Maps each member Parquet file to its role
- * {@code (entity_type, data_kind)} so readers resolve files by role rather than by hardcoded filename.
+ * {@code (entity_type, data_kind)} so readers resolve files by role rather than by hardcoded filename. Roles are
+ * normalized as the reference implementation does ({@link EntityType}, {@link DataKind}), so the pin-era spellings
+ * ({@code data arrays}, {@code wavelength spectrum}) and the current ones ({@code data_arrays},
+ * {@code wavelength_spectrum}) resolve alike; {@link Entry} keeps the strings as written.
  *
  * <p>Also parses the optional {@code metadata} object, which may carry:
  * <ul>
@@ -22,6 +26,98 @@ import java.util.Optional;
  * </ul>
  */
 public final class MzPeakManifest {
+
+    /**
+     * The {@code entity_type} of a member: the thing the member describes. Parsed as the reference implementation
+     * does (Rust {@code EntityType::from_str}).
+     */
+    public enum EntityType {
+        SPECTRUM("spectrum"),
+        CHROMATOGRAM("chromatogram"),
+        WAVELENGTH_SPECTRUM("wavelength_spectrum"),
+        PROVENANCE("provenance"),
+        /** Any other value, including {@code "other"} and an absent one; never matches in {@link #find}. */
+        OTHER("other");
+
+        private final String canonical;
+
+        EntityType(String canonical) {
+            this.canonical = canonical;
+        }
+
+        /** The spelling the current spec writes, e.g. {@code wavelength_spectrum}. */
+        public String canonical() {
+            return canonical;
+        }
+
+        /**
+         * Parses an {@code entity_type} string: lowercased and trimmed, accepting the aliases {@code mass spectrum},
+         * {@code mass_spectrum} and {@code wavelength spectrum}. Anything else, and {@code null}, is {@link #OTHER}.
+         */
+        public static EntityType parse(String raw) {
+            if (raw == null) {
+                return OTHER;
+            }
+            return switch (raw.toLowerCase(Locale.ROOT).strip()) {
+                case "spectrum", "mass spectrum", "mass_spectrum" -> SPECTRUM;
+                case "chromatogram" -> CHROMATOGRAM;
+                case "wavelength spectrum", "wavelength_spectrum" -> WAVELENGTH_SPECTRUM;
+                case "provenance" -> PROVENANCE;
+                default -> OTHER;
+            };
+        }
+    }
+
+    /**
+     * The {@code data_kind} of a member: which facet of its entity the member holds. Parsed as the reference
+     * implementation does (Rust {@code DataKind::from_str}).
+     */
+    public enum DataKind {
+        DATA_ARRAYS("data_arrays"),
+        PEAKS("peaks"),
+        METADATA("metadata"),
+        SCANS("scans"),
+        PRECURSORS("precursors"),
+        SELECTED_IONS("selected_ions"),
+        PRODUCTS("products"),
+        SIGNATURE("signature"),
+        PROPRIETARY("proprietary"),
+        /** Any other value, including {@code "other"} and an absent one; never matches in {@link #find}. */
+        OTHER("other");
+
+        private final String canonical;
+
+        DataKind(String canonical) {
+            this.canonical = canonical;
+        }
+
+        /** The spelling the current spec writes, e.g. {@code data_arrays}. */
+        public String canonical() {
+            return canonical;
+        }
+
+        /**
+         * Parses a {@code data_kind} string: lowercased and trimmed, accepting the alias {@code data arrays}.
+         * Anything else, and {@code null}, is {@link #OTHER}.
+         */
+        public static DataKind parse(String raw) {
+            if (raw == null) {
+                return OTHER;
+            }
+            return switch (raw.toLowerCase(Locale.ROOT).strip()) {
+                case "data arrays", "data_arrays" -> DATA_ARRAYS;
+                case "peaks" -> PEAKS;
+                case "metadata" -> METADATA;
+                case "scans" -> SCANS;
+                case "precursors" -> PRECURSORS;
+                case "selected_ions" -> SELECTED_IONS;
+                case "products" -> PRODUCTS;
+                case "signature" -> SIGNATURE;
+                case "proprietary" -> PROPRIETARY;
+                default -> OTHER;
+            };
+        }
+    }
 
     /**
      * A single file entry from the manifest.
@@ -47,6 +143,16 @@ public final class MzPeakManifest {
         /** An entry with no column mapping, no parameters and no checksum. */
         public Entry(String name, String entityType, String dataKind) {
             this(name, entityType, dataKind, List.of(), List.of(), null);
+        }
+
+        /** The parsed {@link #entityType()}; {@link EntityType#OTHER} for an unknown or absent value. */
+        public EntityType entity() {
+            return EntityType.parse(entityType);
+        }
+
+        /** The parsed {@link #dataKind()}; {@link DataKind#OTHER} for an unknown or absent value. */
+        public DataKind kind() {
+            return DataKind.parse(dataKind);
         }
 
         /** The first column mapping, in file order, whose accession is {@code accession}. */
@@ -174,11 +280,29 @@ public final class MzPeakManifest {
         }
     }
 
-    /** Resolve the single file matching a role, or empty if none. */
-    public Optional<Entry> find(String entityType, String dataKind) {
+    /**
+     * Resolve the first file, in manifest order, whose parsed role is {@code (entity, kind)}, or empty if none. A
+     * role with {@link EntityType#OTHER} or {@link DataKind#OTHER} never matches.
+     */
+    public Optional<Entry> find(EntityType entity, DataKind kind) {
+        Objects.requireNonNull(entity, "entity");
+        Objects.requireNonNull(kind, "kind");
+        if (entity == EntityType.OTHER || kind == DataKind.OTHER) {
+            return Optional.empty();
+        }
         return files.stream()
-                .filter(e -> entityType.equals(e.entityType()) && dataKind.equals(e.dataKind()))
+                .filter(e -> e.entity() == entity && e.kind() == kind)
                 .findFirst();
+    }
+
+    /**
+     * Resolve a file by role strings, parsed with {@link EntityType#parse} and {@link DataKind#parse}, so that
+     * {@code ("spectrum", "data arrays")} and {@code ("spectrum", "data_arrays")} find the same file.
+     *
+     * @see #find(EntityType, DataKind)
+     */
+    public Optional<Entry> find(String entityType, String dataKind) {
+        return find(EntityType.parse(entityType), DataKind.parse(dataKind));
     }
 
     // ---- metadata parsing ------------------------------------------------------------------
