@@ -16,23 +16,28 @@ import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The writer's side of the reader's index contract, for both full-form directory writers. All other public
- * {@link MzPeakWriter} overloads delegate to these two.
+ * The writer's side of the reader's index contract, for both full-form directory writers and, for the rejections,
+ * both full-form archive writers. All other public {@link MzPeakWriter} overloads delegate to these four.
  *
  * <p>Spectrum, precursor_index, chromatogram and wavelength-spectrum indices are stored as UINT64, so a negative
  * one is rejected before anything is written, and so is a duplicate spectrum, chromatogram or wavelength-spectrum
  * index: the reader refuses to open a file with a duplicate spectrum.index and merges chromatogram and wavelength
  * rows that share an index. The reader finds a spectrum's data rows through the index range of each row group,
  * so spectra may be passed in any order but are written in index order; the caller's list is never modified.
+ * A rejected archive write leaves neither the archive nor a {@code .mzpeak-write-*} temp entry behind.
  */
 class WriterIndexContractTest {
 
@@ -48,10 +53,9 @@ class WriterIndexContractTest {
         Source s = ForwardBackwardCorpusTest.readSource(UNPACKED);
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
         spectra.set(0, withIndex(spectra.get(0), -1));
-        Path dir = tmp.resolve("negative-spectrum.mzpeak");
 
-        assertRejectedBeforeWriting(dir, () -> write(layout, dir, spectra, s.chromatograms, s.wavelengthSpectra, s),
-                "spectrum index must be non-negative (mzPeak indices are uint64): -1");
+        assertRejectedBeforeWriting(layout, tmp, "negative-spectrum", spectra, s.chromatograms, s.wavelengthSpectra,
+                s, "spectrum index must be non-negative (mzPeak indices are uint64): -1");
     }
 
     @ParameterizedTest
@@ -61,10 +65,9 @@ class WriterIndexContractTest {
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
         int msn = indexOfFirstWithPrecursor(spectra);
         spectra.set(msn, withPrecursorIndex(spectra.get(msn), -1L));
-        Path dir = tmp.resolve("negative-precursor.mzpeak");
 
-        assertRejectedBeforeWriting(dir, () -> write(layout, dir, spectra, s.chromatograms, s.wavelengthSpectra, s),
-                "precursor_index must be non-negative (mzPeak indices are uint64): -1");
+        assertRejectedBeforeWriting(layout, tmp, "negative-precursor", spectra, s.chromatograms, s.wavelengthSpectra,
+                s, "precursor_index must be non-negative (mzPeak indices are uint64): -1");
     }
 
     @ParameterizedTest
@@ -74,10 +77,9 @@ class WriterIndexContractTest {
         Chromatogram c = s.chromatograms.get(0);
         List<Chromatogram> chromatograms = List.of(
                 new Chromatogram(-1, c.id(), c.typeCurie(), c.time(), c.intensity()));
-        Path dir = tmp.resolve("negative-chromatogram.mzpeak");
 
-        assertRejectedBeforeWriting(dir, () -> write(layout, dir, s.spectra, chromatograms, s.wavelengthSpectra, s),
-                "chromatogram index must be non-negative (mzPeak indices are uint64): -1");
+        assertRejectedBeforeWriting(layout, tmp, "negative-chromatogram", s.spectra, chromatograms,
+                s.wavelengthSpectra, s, "chromatogram index must be non-negative (mzPeak indices are uint64): -1");
     }
 
     // ---- spectrum order ---------------------------------------------------------------------------
@@ -151,14 +153,10 @@ class WriterIndexContractTest {
         List<Spectrum> appended = new ArrayList<>(s.spectra);
         appended.add(twin);
 
-        Path adjacentDir = tmp.resolve("duplicate-adjacent.mzpeak");
-        assertRejectedBeforeWriting(adjacentDir,
-                () -> write(layout, adjacentDir, adjacent, s.chromatograms, s.wavelengthSpectra, s),
-                "duplicate spectrum index: 17");
-        Path appendedDir = tmp.resolve("duplicate-appended.mzpeak");
-        assertRejectedBeforeWriting(appendedDir,
-                () -> write(layout, appendedDir, appended, s.chromatograms, s.wavelengthSpectra, s),
-                "duplicate spectrum index: 17");
+        assertRejectedBeforeWriting(layout, tmp, "duplicate-adjacent", adjacent, s.chromatograms,
+                s.wavelengthSpectra, s, "duplicate spectrum index: 17");
+        assertRejectedBeforeWriting(layout, tmp, "duplicate-appended", appended, s.chromatograms,
+                s.wavelengthSpectra, s, "duplicate spectrum index: 17");
     }
 
     @ParameterizedTest
@@ -169,10 +167,9 @@ class WriterIndexContractTest {
         List<Chromatogram> chromatograms = List.of(
                 new Chromatogram(7, tic.id(), tic.typeCurie(), tic.time(), tic.intensity()),
                 new Chromatogram(7, tic.id() + "-copy", tic.typeCurie(), tic.time(), tic.intensity()));
-        Path dir = tmp.resolve("duplicate-chromatogram.mzpeak");
 
-        assertRejectedBeforeWriting(dir, () -> write(layout, dir, s.spectra, chromatograms, s.wavelengthSpectra, s),
-                "duplicate chromatogram index: 7");
+        assertRejectedBeforeWriting(layout, tmp, "duplicate-chromatogram", s.spectra, chromatograms,
+                s.wavelengthSpectra, s, "duplicate chromatogram index: 7");
     }
 
     @ParameterizedTest
@@ -183,9 +180,8 @@ class WriterIndexContractTest {
         assertThat(waves).as("has_uv wavelength spectra").hasSizeGreaterThan(123);
         WavelengthSpectrum w = waves.get(123);
         waves.add(w);
-        Path dir = tmp.resolve("duplicate-wavelength.mzpeak");
 
-        assertRejectedBeforeWriting(dir, () -> write(layout, dir, s.spectra, s.chromatograms, waves, s),
+        assertRejectedBeforeWriting(layout, tmp, "duplicate-wavelength", s.spectra, s.chromatograms, waves, s,
                 "duplicate wavelength spectrum index: " + w.index());
     }
 
@@ -196,9 +192,8 @@ class WriterIndexContractTest {
         List<WavelengthSpectrum> waves = new ArrayList<>(s.wavelengthSpectra);
         WavelengthSpectrum w = waves.get(0);
         waves.set(0, new WavelengthSpectrum(-1, w.id(), w.time(), w.lambdaMax(), w.wavelength(), w.intensity()));
-        Path dir = tmp.resolve("negative-wavelength.mzpeak");
 
-        assertRejectedBeforeWriting(dir, () -> write(layout, dir, s.spectra, s.chromatograms, waves, s),
+        assertRejectedBeforeWriting(layout, tmp, "negative-wavelength", s.spectra, s.chromatograms, waves, s,
                 "wavelength spectrum index must be non-negative (mzPeak indices are uint64): -1");
     }
 
@@ -212,6 +207,18 @@ class WriterIndexContractTest {
         } else {
             MzPeakWriter.writeDirectoryNumpress(dir, spectra, chromatograms, wavelengthSpectra, s.scanSettings,
                     s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.SLOF);
+        }
+    }
+
+    private static void writeArchive(Layout layout, Path archive, List<Spectrum> spectra,
+                                     List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
+                                     Source s) {
+        if (layout == Layout.POINT) {
+            MzPeakWriter.writeArchive(archive, spectra, chromatograms, wavelengthSpectra, s.scanSettings,
+                    s.fileMetadata);
+        } else {
+            MzPeakWriter.writeArchiveNumpress(archive, spectra, chromatograms, wavelengthSpectra, s.scanSettings,
+                    s.fileMetadata);
         }
     }
 
@@ -253,9 +260,43 @@ class WriterIndexContractTest {
         return values;
     }
 
-    private static void assertRejectedBeforeWriting(Path dir, ThrowingCallable write, String... messageParts) {
-        assertThatThrownBy(write).isInstanceOf(MzPeakException.class).hasMessageContainingAll(messageParts);
+    /**
+     * Asserts that the input is rejected with the message both as {@code <name>.mzpeak} directory and as archive,
+     * and that neither write leaves anything behind: no directory, and next to the archive neither the archive nor
+     * a {@code .mzpeak-write-*} temp entry.
+     */
+    private static void assertRejectedBeforeWriting(Layout layout, Path tmp, String name, List<Spectrum> spectra,
+                                                    List<Chromatogram> chromatograms,
+                                                    List<WavelengthSpectrum> wavelengthSpectra, Source s,
+                                                    String... messageParts) {
+        Path dir = tmp.resolve(name + ".mzpeak");
+        assertRejected(() -> write(layout, dir, spectra, chromatograms, wavelengthSpectra, s), messageParts);
         assertThat(dir).as("output directory after a rejected write").doesNotExist();
+
+        Path parent = tmp.resolve(name + "-archive");
+        Path archive = parent.resolve(name + ".mzpeak");
+        try {
+            Files.createDirectories(parent);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        assertRejected(() -> writeArchive(layout, archive, spectra, chromatograms, wavelengthSpectra, s),
+                messageParts);
+        assertThat(entries(parent)).as("entries next to %s after a rejected write", archive)
+                .noneMatch(entry -> entry.startsWith(".mzpeak-write-"))
+                .isEmpty();
+    }
+
+    private static void assertRejected(ThrowingCallable write, String... messageParts) {
+        assertThatThrownBy(write).isInstanceOf(MzPeakException.class).hasMessageContainingAll(messageParts);
+    }
+
+    private static List<String> entries(Path dir) {
+        try (Stream<Path> files = Files.list(dir)) {
+            return files.map(f -> f.getFileName().toString()).sorted().collect(Collectors.toList());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     private static int indexOfFirstWithPrecursor(List<Spectrum> spectra) {
