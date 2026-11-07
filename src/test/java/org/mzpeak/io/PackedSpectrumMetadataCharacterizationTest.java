@@ -24,6 +24,7 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
@@ -279,6 +280,27 @@ class PackedSpectrumMetadataCharacterizationTest {
                         + ";(collision energy|MS:1000045|Double:35.0|UO:0000266)]))");
     }
 
+    /**
+     * Asymmetric isolation-window offsets keep their sides. Every fixture window is symmetric (1.0, 1.0), so swapping
+     * the lower and upper offsets would otherwise go unnoticed; SplitPrecursorsTest has the split case.
+     */
+    @Test
+    void asymmetricIsolationWindowOffsetsKeepTheirSides() {
+        String lower = "MS_1000828_isolation_window_lower_offset";
+        String upper = "MS_1000829_isolation_window_upper_offset";
+        Group fixturePrecursor = fixtureStruct(PRECURSOR, 5);
+        Group row = newRow();
+        put(row, SPECTRUM, fixtureStruct(SPECTRUM, 5));
+        Group precursor = put(row, PRECURSOR, fixturePrecursor, "isolation_window");
+        Group window = precursor.addGroup("isolation_window");
+        copy(fixturePrecursor.getGroup("isolation_window", 0), window, Set.of(lower, upper));
+        addNumber(window, lower, 0.5);
+        addNumber(window, upper, 1.5);
+
+        assertThat(only(decode(List.of(row))).primaryPrecursor().isolationWindow())
+                .isEqualTo(new IsolationWindow(558.8689575195312, 0.5, 1.5));
+    }
+
     @Test
     void selectedIonsWithoutAPrecursorFormAPrecursorlessPrecursor() {
         Group row = newRow();
@@ -509,6 +531,16 @@ class PackedSpectrumMetadataCharacterizationTest {
                     default -> throw new AssertionError("unexpected " + primitive + " field " + name);
                 }
             }
+        }
+    }
+
+    /** Adds {@code value} as the numeric field {@code field} of {@code g}, in the field's physical type. */
+    private static void addNumber(Group g, String field, double value) {
+        PrimitiveTypeName type = g.getType().getType(field).asPrimitiveType().getPrimitiveTypeName();
+        switch (type) {
+            case FLOAT -> g.add(field, (float) value);
+            case DOUBLE -> g.add(field, value);
+            default -> throw new AssertionError("unexpected " + type + " field " + field);
         }
     }
 

@@ -240,6 +240,35 @@ class SplitPrecursorsTest {
                 new Param("ion mobility value", DEFAULT_ION_MOBILITY_TYPE, 0.75, null));
     }
 
+    /**
+     * Asymmetric isolation-window offsets keep their sides. Every fixture window is symmetric, so swapping the lower
+     * and upper offsets would otherwise go unnoticed; the packed layout has the same case in
+     * {@code PackedSpectrumMetadataCharacterizationTest}.
+     */
+    @Test
+    void asymmetricIsolationWindowOffsetsKeepTheirSides() {
+        Rows rows = Rows.load("split");
+        FacetRow original = rows.precursor(5, 1L);
+        ColumnResolver window = original.columns().child("isolation_window");
+        String lower = window.resolve("MS:1000828");
+        String upper = window.resolve("MS:1000829");
+        assertThat(lower).isEqualTo("isolation_window_lower_offset");
+        assertThat(upper).isEqualTo("isolation_window_upper_offset");
+
+        Group g = new SimpleGroup(original.group().getType());
+        copy(original.group(), g, Set.of("isolation_window"));
+        Group w = g.addGroup("isolation_window");
+        copy(original.group().getGroup("isolation_window", 0), w, Set.of(lower, upper));
+        addNumber(w, lower, 0.5);
+        addNumber(w, upper, 1.5);
+        FacetRow asymmetric = new FacetRow(original.facet(), g, original.columns());
+
+        Double target = rows.precursorOf(5).isolationWindow().targetMz();
+        assertThat(target).isNotNull();
+        assertThat(only(rows.assemble(5, List.of(asymmetric), List.of())).isolationWindow())
+                .isEqualTo(new IsolationWindow(target, 0.5, 1.5));
+    }
+
     // ---- leftovers and the column-over-list rule, on constructed split rows --------------------------------------
 
     /**
@@ -736,6 +765,16 @@ class SplitPrecursorsTest {
         }
         if (unit != null) {
             item.add("unit", unit);
+        }
+    }
+
+    /** Adds {@code value} as the numeric field {@code field} of {@code g}, in the field's physical type. */
+    private static void addNumber(Group g, String field, double value) {
+        PrimitiveTypeName type = g.getType().getType(field).asPrimitiveType().getPrimitiveTypeName();
+        switch (type) {
+            case FLOAT -> g.add(field, (float) value);
+            case DOUBLE -> g.add(field, value);
+            default -> throw new AssertionError("unexpected " + type + " field " + field);
         }
     }
 
