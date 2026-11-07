@@ -105,7 +105,7 @@ class LayoutEquivalenceTest {
     }
 
     /** {@link Arrays#equals(double[], double[])}, reporting the first differing position on failure. */
-    private static void assertIdentical(String what, double[] expected, double[] actual) {
+    static void assertIdentical(String what, double[] expected, double[] actual) {
         assertThat(Arrays.equals(expected, actual))
                 .as(() -> {
                     int k = Arrays.mismatch(expected, actual);
