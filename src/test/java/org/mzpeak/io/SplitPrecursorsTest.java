@@ -1,7 +1,11 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroup;
+import org.apache.parquet.io.InputFile;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
@@ -24,6 +28,7 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SpectrumDescription;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -264,6 +269,37 @@ class SplitPrecursorsTest {
                 new Param("opt_activation_note", null, "pulsed", null),
                 new Param("activation energy", "MS:1000509", 2.0, ELECTRONVOLT),
                 new Param("free text", null, "kept", null));
+    }
+
+    /**
+     * A collision-energy unit given as a JSON array names a column of per-row unit CURIEs (Rust PathOrCURIE), which
+     * is not resolved yet: the energy keeps its value and gets no unit, rather than the column path as its unit.
+     */
+    @Test
+    void aCollisionEnergyUnitGivenAsAColumnPathGivesNoUnit() throws IOException {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            ObjectNode index = (ObjectNode) new ObjectMapper().readTree(source.readManifestBytes());
+            int edited = 0;
+            for (JsonNode file : index.path("files")) {
+                for (JsonNode m : file.path("column_mapping")) {
+                    if (file.path("name").asText().equals("spectra_metadata_precursors.parquet")
+                            && m.path("accession").asText().equals(COLLISION_ENERGY)) {
+                        ((ObjectNode) m).putArray("unit").add("collision_energy_unit");
+                        edited++;
+                    }
+                }
+            }
+            assertThat(edited).isEqualTo(1);
+            MzPeakSource view = withManifest(source, new ObjectMapper().writeValueAsBytes(index));
+            Entry entry = Facet.SPECTRUM_PRECURSOR.entry(MzPeakManifest.fromSource(view)).orElseThrow();
+            List<FacetRow> rows = new ArrayList<>();
+            MetadataTable.forEachRow(view, entry, Facet.SPECTRUM_PRECURSOR, rows::add);
+            FacetRow row = rows.stream().filter(r -> r.key() == 5).findFirst().orElseThrow();
+
+            assertThat(PrecursorRowDecoder.decode(row).activation().parameters())
+                    .filteredOn(p -> COLLISION_ENERGY.equals(p.accession()))
+                    .containsExactly(new Param("collision energy", COLLISION_ENERGY, 35.0, null));
+        }
     }
 
     /** A false boolean marker gives no Param, and a list entry is kept when its column is null. */
@@ -604,6 +640,30 @@ class SplitPrecursorsTest {
     }
 
     // ---- helpers ---------------------------------------------------------------------------------------------
+
+    /** {@code source} with {@code manifest} in place of its own {@code mzpeak_index.json}. */
+    private static MzPeakSource withManifest(MzPeakSource source, byte[] manifest) {
+        return new MzPeakSource() {
+            @Override
+            public byte[] readManifestBytes() {
+                return manifest.clone();
+            }
+
+            @Override
+            public InputFile inputFile(String name) {
+                return source.inputFile(name);
+            }
+
+            @Override
+            public String describe() {
+                return source.describe();
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
 
     private static <T> T only(List<T> items) {
         assertThat(items).hasSize(1);

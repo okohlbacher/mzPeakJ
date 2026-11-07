@@ -186,12 +186,20 @@ public final class MzPeakManifest {
      *                   levels (e.g. {@code scan_windows.scan_window_lower_limit}); a path given as a JSON array of
      *                   segments is joined with {@code '.'}
      * @param accession  the CURIE of the term, or {@code null}
-     * @param unit       the CURIE of the column's unit, or {@code null}; a unit given as a JSON array (a path to a
-     *                   column holding the unit) is joined with {@code '.'} like {@code path}
+     * @param unit       the CURIE of the column's unit, given as a JSON string, or {@code null}; never a column path
      * @param termMarker the {@code term_marker} flag: the column holds child-term CURIEs or presence booleans of
      *                   the term rather than its value; {@code null} when the key is absent
+     * @param unitPath   the path of a column holding a unit CURIE per row, for a unit given as a JSON array of
+     *                   segments (Rust {@code PathOrCURIE}), joined with {@code '.'} like {@code path}; {@code null}
+     *                   otherwise. Such a unit column is not resolved yet, so the mapped values have no unit
      */
-    public record ColumnMapping(String name, String path, String accession, String unit, Boolean termMarker) {
+    public record ColumnMapping(String name, String path, String accession, String unit, Boolean termMarker,
+                                String unitPath) {
+
+        /** A mapping without a unit column: {@link #unitPath()} is {@code null}. */
+        public ColumnMapping(String name, String path, String accession, String unit, Boolean termMarker) {
+            this(name, path, accession, unit, termMarker, null);
+        }
     }
 
     /** A controlled-vocabulary ontology reference from {@code metadata.cv_list}. */
@@ -387,12 +395,15 @@ public final class MzPeakManifest {
         for (JsonNode c : arr) {
             if (!c.isObject()) continue;
             JsonNode marker = c.get("term_marker");
+            JsonNode unit = c.get("unit");
+            boolean unitIsPath = unit != null && unit.isArray();
             out.add(new ColumnMapping(
                     text(c, "name"),
                     dottedPath(c.get("path")),
                     text(c, "accession"),
-                    dottedPath(c.get("unit")),
-                    marker != null && marker.isBoolean() ? Boolean.valueOf(marker.booleanValue()) : null));
+                    unitIsPath ? null : dottedPath(unit),
+                    marker != null && marker.isBoolean() ? Boolean.valueOf(marker.booleanValue()) : null,
+                    unitIsPath ? dottedPath(unit) : null));
         }
         return out;
     }
