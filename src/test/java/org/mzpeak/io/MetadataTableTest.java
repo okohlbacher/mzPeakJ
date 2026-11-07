@@ -24,6 +24,7 @@ import org.mzpeak.model.Chromatogram;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@link MetadataTable#forEachRow} in both layouts: split rows against the raw pyarrow cells of {@link GoldenMeta}
  * (FX-2), packed rows against today's decoders, and the key rules on constructed tables. Members are found by role.
+ * Malformed columns of constructed members fail with an {@link MzPeakException} that names the member and the column.
  */
 class MetadataTableTest {
 
@@ -228,6 +230,122 @@ class MetadataTableTest {
                     assertThat(rows).as("%s", facet).hasSize(48);
                 }
             }
+        }
+    }
+
+    // ---- malformed columns: MzPeakException naming the member and the column ------------------------------------
+
+    /** Fails on 1e400ed with a ClassCastException. */
+    @Test
+    void aScalarInPlaceOfAStructOrAListOfStructsThrows() {
+        MessageType precursors = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("source_index")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("isolation_window")
+                .named("arrow_schema");
+        write("scalar_window_precursors.parquet", precursors, new SimpleGroupFactory(precursors).newGroup()
+                .append("source_index", 5L).append("isolation_window", "wide"));
+        MessageType scans = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("source_index")
+                .optional(PrimitiveTypeName.DOUBLE).named("scan_windows")
+                .named("arrow_schema");
+        write("scalar_window_scans.parquet", scans, new SimpleGroupFactory(scans).newGroup()
+                .append("source_index", 5L).append("scan_windows", 100.0));
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            List<FacetRow> precursorRows = rows(src,
+                    new Entry("scalar_window_precursors.parquet", "spectrum", "precursors"), Facet.SPECTRUM_PRECURSOR);
+            assertThat(precursorRows).hasSize(1);
+            assertThatThrownBy(() -> PrecursorRowDecoder.decode(precursorRows.get(0)))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("scalar_window_precursors.parquet: isolation_window is a scalar column, expected a"
+                            + " struct");
+            List<FacetRow> scanRows = rows(src, new Entry("scalar_window_scans.parquet", "spectrum", "scans"),
+                    Facet.SPECTRUM_SCAN);
+            assertThat(scanRows).hasSize(1);
+            assertThatThrownBy(() -> ScanRowDecoder.decode(scanRows.get(0)))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("scalar_window_scans.parquet: scan_windows is a scalar column, expected a list of"
+                            + " structs");
+        }
+    }
+
+    /** Fails on 1e400ed with an IllegalStateException that does not name the member. */
+    @Test
+    void aBooleanSplitKeyThrows() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.BOOLEAN).named("source_index")
+                .optional(PrimitiveTypeName.DOUBLE).named("scan_start_time")
+                .named("arrow_schema");
+        write("boolean_key_scans.parquet", schema, new SimpleGroupFactory(schema).newGroup()
+                .append("source_index", true).append("scan_start_time", 1.5));
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+                    new Entry("boolean_key_scans.parquet", "spectrum", "scans"), Facet.SPECTRUM_SCAN, r -> { }))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("boolean_key_scans.parquet: source_index is not an integer: BOOLEAN");
+        }
+    }
+
+    /** Fails on 1e400ed with an IllegalStateException that does not name the member. */
+    @Test
+    void aNonNumericDeltaModelListThrows() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                .addField(Types.optionalList().optionalElement(PrimitiveTypeName.BINARY)
+                        .as(LogicalTypeAnnotation.stringType()).named("mz_delta_model"))
+                .named("arrow_schema");
+        Group row = new SimpleGroupFactory(schema).newGroup().append("index", 0L);
+        row.addGroup("mz_delta_model").addGroup("list").append("element", "1e-5");
+        write("text_delta_spectra.parquet", schema, row);
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            List<FacetRow> rows = rows(src, new Entry("text_delta_spectra.parquet", "spectrum", "metadata"),
+                    Facet.SPECTRUM);
+            assertThat(rows).hasSize(1);
+            assertThatThrownBy(() -> SpectrumRowDecoder.decode(rows.get(0), 0))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("text_delta_spectra.parquet: mz_delta_model is not a numeric list: ")
+                    .hasMessageContaining("BINARY");
+        }
+    }
+
+    /**
+     * Packed type errors name the member file, through the spectrum metadata decoder and through
+     * {@link MetadataTable}. Fails on 1e400ed with IllegalStateExceptions that name neither.
+     */
+    @Test
+    void aPackedTypeErrorNamesTheMemberFile() throws IOException {
+        MessageType spectra = Types.buildMessage()
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                        .named("MS_1000511_ms_level")
+                    .named("spectrum")
+                .named("arrow_schema");
+        Group spectrum = new SimpleGroupFactory(spectra).newGroup();
+        spectrum.addGroup("spectrum").append("index", 0L).append("MS_1000511_ms_level", "two");
+        write("packed_spectra.parquet", spectra, spectrum);
+        MessageType chromatograms = Types.buildMessage()
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.BOOLEAN).named("index")
+                    .named("chromatogram")
+                .named("arrow_schema");
+        Group chromatogram = new SimpleGroupFactory(chromatograms).newGroup();
+        chromatogram.addGroup("chromatogram").append("index", true);
+        write("packed_chromatograms.parquet", chromatograms, chromatogram);
+        Files.writeString(tmp.resolve("mzpeak_index.json"), "{\"files\": [{\"name\": \"packed_spectra.parquet\","
+                + " \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}]}");
+
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThatThrownBy(() -> SpectrumMetadataDecoder.decode(src, manifest))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("packed_spectra.parquet, packed struct 'spectrum': MS_1000511_ms_level is not an"
+                            + " integer: BINARY");
+            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+                    new Entry("packed_chromatograms.parquet", "chromatogram", "metadata"), Facet.CHROMATOGRAM,
+                    r -> { }))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("packed_chromatograms.parquet, packed struct 'chromatogram': index is not an integer:"
+                            + " BOOLEAN");
         }
     }
 

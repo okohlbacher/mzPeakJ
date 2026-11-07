@@ -38,7 +38,7 @@ final class SpectrumMetadataDecoder {
         InputFile metadataFile = source.inputFile(entry.name());
         ParquetFooter footer = ParquetFooter.read(metadataFile);
         return switch (MetadataShape.detect(footer, "spectrum", F_INDEX, entry.name())) {
-            case PACKED -> PackedMetadataReader.read(metadataFile, footer.schema());
+            case PACKED -> PackedMetadataReader.read(metadataFile, footer.schema(), entry.name());
             case SPLIT -> {
                 SpectrumFacetAssembler assembler = new SpectrumFacetAssembler();
                 SplitMetadataReader.read(source, manifest, assembler);
@@ -56,7 +56,7 @@ final class SpectrumMetadataDecoder {
     static Decoded decode(InputFile metadataFile) {
         ParquetFooter footer = ParquetFooter.read(metadataFile);
         return switch (MetadataShape.detect(footer, "spectrum", F_INDEX, MEMBER)) {
-            case PACKED -> PackedMetadataReader.read(metadataFile, footer.schema());
+            case PACKED -> PackedMetadataReader.read(metadataFile, footer.schema(), MEMBER);
             case SPLIT -> throw new MzPeakException(MEMBER + ": the split metadata layout keeps its scans,"
                     + " precursors and selected ions in members of their own; decode it through the manifest");
             case EMPTY -> empty();
