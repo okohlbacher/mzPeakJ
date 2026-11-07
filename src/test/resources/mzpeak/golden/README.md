@@ -3,17 +3,20 @@
 The oracle for reading the current fixtures in `src/test/resources/mzpeak` (HUPO-PSI/mzPeak 2ee2589).
 `generate_golden.py` runs the Python reader of that commit (`python/mzpeak`) over one dataset and records
 what it returns. The test helper `org.mzpeak.io.Golden` parses the files and compares mzPeakJ's arrays
-against them; `GoldenComparatorTest` checks the files and the comparator. The build never runs Python.
+against them; `GoldenComparatorTest` checks the files and the comparator. With `--meta` it also dumps the raw
+cells of every metadata member with pyarrow alone, which `org.mzpeak.io.GoldenMeta` reads and `GoldenMetaTest`
+checks. The build never runs Python.
 
 | File | Content |
 |---|---|
-| `generate_golden.py` | the generator: `generate_golden.py <dataset> [--out DIR] [--reader-commit COMMIT]` |
+| `generate_golden.py` | the generator: `generate_golden.py <dataset> [--out DIR] [--meta] [--reader-commit COMMIT]` |
 | `uv-requirements.txt` | the pinned package versions (the only place they are pinned) |
 | `<name>.tsv` | one summary line per spectrum, peak list, chromatogram, wavelength spectrum and extra array |
 | `<name>.arrays.tsv` | full arrays (or digests) of selected spectra and of every chromatogram |
+| `<name>.meta.jsonl` | one JSON line per row of every metadata, scans, precursors and selected_ions member |
 
 `<name>` is the dataset file name without `.mzpeak`. Without `--out`, the generator writes the summary table
-to stdout; the writer interop units use that form on files mzPeakJ wrote.
+to stdout; the writer interop units use that form on files mzPeakJ wrote. `--meta` needs `--out`.
 
 ## Pinned environment
 
@@ -37,8 +40,9 @@ to stdout; the writer interop units use that form on files mzPeakJ wrote.
 | typing-extensions | 4.16.0 |
 | tzdata | 2026.6 |
 
-The committed files were generated on macOS arm64. Every header records the reader commit, a SHA-256 over
-the installed reader's sources, the Python and package versions and the command.
+The committed files were generated on macOS arm64. Every `.tsv` header records the reader commit, a SHA-256
+over the installed reader's sources, the Python and package versions and the command; a `.meta.jsonl` header
+records the Python and pyarrow versions and the command.
 
 ## Regenerating
 
@@ -52,7 +56,7 @@ TMP=$(mktemp -d)
 git -C "$REF" archive "$COMMIT" python | tar -x -C "$TMP"
 for f in small small.chunked small.numpress small.unpacked has_uv diaPASEF.ref diaPASEF.grid Example_Processed.img; do
   uv run --no-project --python 3.13.12 --with "$TMP/python" --with-requirements "$GOLDEN/uv-requirements.txt" \
-    python -I "$GOLDEN/generate_golden.py" "src/test/resources/mzpeak/$f.mzpeak" --out "$GOLDEN" --reader-commit "$COMMIT"
+    python -I "$GOLDEN/generate_golden.py" "src/test/resources/mzpeak/$f.mzpeak" --out "$GOLDEN" --meta --reader-commit "$COMMIT"
 done
 rm -rf "$TMP"
 git -C "$REF" status --porcelain   # prints nothing
@@ -60,7 +64,8 @@ git -C "$REF" status --porcelain   # prints nothing
 
 `git archive` copies the committed `python/` directory of 2ee2589 into the temporary directory, where uv
 builds and installs it; `python -I` keeps the user site and `PYTHON*` variables out. The loop reproduces the
-committed files byte for byte on the same platform.
+committed files byte for byte on the same platform. `--meta` does not change the `.tsv` files; their headers
+record the command without it.
 
 ## Summary lines (`<name>.tsv`)
 
@@ -100,6 +105,30 @@ Spectrum 0, the first centroid spectrum (MS:1000127), the last spectrum and ever
 
 Spectrum 0 of diaPASEF.ref and diaPASEF.grid has 205,921 points and is a D line. All `*.tsv` files together
 take 3,826,648 bytes, within the 8 MB cap, so the 20,000-point threshold stands.
+
+## Metadata cells (`<name>.meta.jsonl`)
+
+The raw cells of every member whose manifest `data_kind` is metadata, scans, precursors or selected_ions, as
+pyarrow reads them; the Python reader is not involved, so the cells do not depend on how either reader
+interprets them. After `#` header lines (Python and pyarrow versions, command), one JSON object per row, in
+manifest order and then row order:
+
+```
+{"member":"spectra_metadata_scans.parquet","entity_type":"spectrum","data_kind":"scans","row":0,"values":{...}}
+```
+
+- `member`, `entity_type` and `data_kind` come from the manifest entry, `row` is the 0-based row ordinal within
+  the member, and `values` is the row as pyarrow's `to_pylist` returns it, in column order, without the
+  `auxiliary_arrays` column (`number_of_auxiliary_arrays` stays; it is 0 in every row of the 8 fixtures).
+- Structs are objects, lists are arrays, nulls are `null`. Integer cells (uint64 included) are written as
+  integers, float32 and float64 cells as Python's shortest round-trip repr of the double, so a float32 cell
+  equals the float widened to double. NaN and the infinities would be written as `NaN`, `Infinity` and
+  `-Infinity`; the 8 fixtures have none.
+- A member without rows has no line; its Parquet row count is 0.
+
+`GoldenMeta` reads integral numbers as `Long` and the others as `Double`, and walks dotted paths
+(`activation.dissociation_method`, `parameters.0.accession`, or `scan_windows.scan_window_lower_limit` through
+a list). All `*.meta.jsonl` files together take 1,612,430 bytes, within the 3 MB cap.
 
 ## Tolerances (`Golden.Tolerance.DEFAULT`)
 

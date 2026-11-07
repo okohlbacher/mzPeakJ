@@ -1,8 +1,8 @@
-"""Golden output of the HEAD Python mzPeak reader for one dataset (mzPeakJ unit FX-1b).
+"""Golden output of the HEAD Python mzPeak reader for one dataset (mzPeakJ units FX-1b and FX-2).
 
 Usage::
 
-    generate_golden.py <dataset> [--out DIR] [--reader-commit COMMIT]
+    generate_golden.py <dataset> [--out DIR] [--meta] [--reader-commit COMMIT]
 
 Without ``--out`` the summary table goes to stdout. With ``--out`` the summary is written to
 ``DIR/<name>.tsv`` and the selected full arrays to ``DIR/<name>.arrays.tsv``, where ``<name>`` is the
@@ -32,17 +32,28 @@ every chromatogram. ``A kind key i x y filled`` stores one point; an entity abov
 is stored as one ``D kind key n n_filled sha256_x sha256_y extras`` line instead, the SHA-256 taken over the
 little-endian float64 bytes with NaN canonicalised (``extras`` is ``key=sha256;...`` or ``-``). When a
 selected spectrum is digested, the dataset's smallest spectrum is stored in full as well.
+
+``--meta`` (with ``--out``) also writes ``DIR/<name>.meta.jsonl``: after ``#`` header lines, one JSON object
+per row of every member whose manifest data_kind is metadata, scans, precursors or selected_ions, in manifest
+and row order, with the keys ``member``, ``entity_type``, ``data_kind``, ``row`` and ``values``. ``values`` is
+the row as pyarrow's ``to_pylist`` returns it, without the ``auxiliary_arrays`` column; NaN and infinities are
+written as ``NaN``, ``Infinity`` and ``-Infinity``. These cells come from pyarrow alone, not from the reader,
+and the flag leaves the other two files unchanged: their headers record the command without it.
 """
 
 import argparse
 import hashlib
 import importlib.metadata
+import json
 import math
 import os
 import platform
 import sys
+import zipfile
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import mzpeak
 from mzpeak import MzPeakFile
@@ -60,6 +71,11 @@ TIME_ARRAY = "MS:1000595"
 WAVELENGTH_ARRAY = "MS:1000617"
 NON_STANDARD_ARRAY = "MS:1000786"
 CENTROID_SPECTRUM = "MS:1000127"
+
+MANIFEST = "mzpeak_index.json"
+META_DATA_KINDS = ("metadata", "scans", "precursors", "selected_ions")
+META_DROPPED_COLUMNS = ("auxiliary_arrays",)
+META_COLUMNS = ("member", "entity_type", "data_kind", "row", "values")
 
 
 class Entity:
@@ -331,6 +347,43 @@ def header(title, dataset, command, reader_commit, columns):
     ]
 
 
+def read_member(dataset, name):
+    """The bytes of one dataset member, from an unpacked directory or a single-file ZIP."""
+    if os.path.isdir(dataset):
+        with open(os.path.join(dataset, name), "rb") as fh:
+            return fh.read()
+    with zipfile.ZipFile(dataset) as archive:
+        return archive.read(name)
+
+
+def meta_lines(dataset):
+    """Raw pyarrow cells, one JSON line per row, of every member with a metadata-like manifest data_kind."""
+    manifest = json.loads(read_member(dataset, MANIFEST))
+    lines = []
+    for entry in manifest["files"]:
+        if entry.get("data_kind") not in META_DATA_KINDS:
+            continue
+        table = pq.read_table(pa.BufferReader(read_member(dataset, entry["name"])))
+        table = table.drop_columns([c for c in META_DROPPED_COLUMNS if c in table.column_names])
+        for row, values in enumerate(table.to_pylist()):
+            record = dict(zip(META_COLUMNS, (entry["name"], entry["entity_type"], entry["data_kind"], row,
+                                             values)))
+            lines.append(json.dumps(record, allow_nan=True, ensure_ascii=True, separators=(",", ":")))
+    return lines
+
+
+def meta_header(dataset, command):
+    return [
+        f"# Golden metadata cells of {dataset}, read with pyarrow alone (mzPeakJ FX-2)",
+        f"# python: {platform.python_implementation()} {platform.python_version()}",
+        f"# packages: pyarrow=={importlib.metadata.version('pyarrow')}",
+        f"# command: {command}",
+        f"# data-kinds: {' '.join(META_DATA_KINDS)}",
+        f"# dropped-columns: {' '.join(META_DROPPED_COLUMNS)}",
+        f"# columns: {' '.join(META_COLUMNS)}",
+    ]
+
+
 def render(header_lines, rows):
     return "".join(line + "\n" for line in header_lines) + "".join("\t".join(r) + "\n" for r in rows)
 
@@ -339,17 +392,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Golden output of the HEAD Python mzPeak reader.")
     parser.add_argument("dataset", help="an .mzpeak archive or unpacked directory")
     parser.add_argument("--out", help="write <name>.tsv and <name>.arrays.tsv into this directory")
+    parser.add_argument("--meta", action="store_true",
+                        help="with --out, also write <name>.meta.jsonl, the raw cells of the metadata members")
     parser.add_argument("--reader-commit", default="unrecorded",
                         help="the mzPeak-reference commit the reader copy was taken from")
     args = parser.parse_args(argv)
+    if args.meta and not args.out:
+        parser.error("--meta needs --out")
 
     dataset = os.path.basename(os.path.normpath(args.dataset))
     name = dataset[:-len(".mzpeak")] if dataset.endswith(".mzpeak") else dataset
-    command = f"generate_golden.py {dataset}"
-    if args.out:
-        command += f" --out {os.path.basename(os.path.normpath(args.out))}"
-    if args.reader_commit != "unrecorded":
-        command += f" --reader-commit {args.reader_commit}"
+    out = f" --out {os.path.basename(os.path.normpath(args.out))}" if args.out else ""
+    commit = f" --reader-commit {args.reader_commit}" if args.reader_commit != "unrecorded" else ""
+    command = f"generate_golden.py {dataset}{out}{commit}"
+    meta_command = f"generate_golden.py {dataset}{out} --meta{commit}"
 
     reader = MzPeakFile(args.dataset)
     unfilled = MzPeakFile(args.dataset)
@@ -368,7 +424,11 @@ def main(argv=None):
     arrays = render(header("Golden arrays", dataset, command, args.reader_commit,
                            "A kind key i x y filled | D kind key n n_filled sha256_x sha256_y extras"),
                     array_rows(spectra, chromatograms))
-    for suffix, text in ((".tsv", summary), (".arrays.tsv", arrays)):
+    outputs = [(".tsv", summary), (".arrays.tsv", arrays)]
+    if args.meta:
+        meta = meta_header(dataset, meta_command) + meta_lines(args.dataset)
+        outputs.append((".meta.jsonl", "".join(line + "\n" for line in meta)))
+    for suffix, text in outputs:
         with open(os.path.join(args.out, name + suffix), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
     return 0
