@@ -200,7 +200,7 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
      *       linear and grid transforms {@code mz_numpress_linear_bytes} and {@code mz_grid} of the axis, the
      *       {@code intensity} list (chunk secondary) and the Numpress intensity transforms
      *       {@code intensity_numpress_slof_bytes} and {@code intensity_numpress_pic_bytes}.
-     *   <li>Chromatograms, as read by {@link ChromatogramStore}: in {@code point}, {@code time} (rank 1),
+     *   <li>Chromatograms, as read by {@link ChromatogramDataDecoder}: in {@code point}, {@code time} (rank 1),
      *       {@code intensity} and every non-repeated FLOAT, DOUBLE, INT32 or INT64 column named
      *       {@code intensity_*}, the latter listed after all other columns (in schema order among themselves) because
      *       they are read only when {@code intensity} is null; in {@code chunk}, the {@code time_chunk_*} and
@@ -299,7 +299,7 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
         return null;
     }
 
-    /** The {@code intensity_*} rule of {@link ChromatogramStore}'s point-row fallback. */
+    /** The {@code intensity_*} rule of {@link ChromatogramDataDecoder}'s point-row fallback. */
     private static boolean isNumericIntensityFallback(Type field) {
         if (!field.getName().startsWith("intensity_")
                 || !field.isPrimitive() || field.isRepetition(Type.Repetition.REPEATED)) {
