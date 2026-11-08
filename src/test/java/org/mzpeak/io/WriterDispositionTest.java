@@ -211,6 +211,33 @@ class WriterDispositionTest {
         assertThat(Arrays.equals(data[1], intensity)).as("stored intensity %s", Arrays.toString(data[1])).isTrue();
     }
 
+    /**
+     * The point layout writes a peak copy from {@code mz()}/{@code intensity()} in stored order, not from the sorted
+     * {@code peaks()}, to spectra_peaks only, and the re-read arrays keep that order.
+     */
+    @Test
+    void pointLayoutWritesAnUnsortedPeakCopyInStoredOrder(@TempDir Path tmp) {
+        double[] mz = {300.0, 100.0, 200.0};
+        double[] intensity = {3.0, 1.0, 2.0};
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, copyOf(mz, intensity));
+        assertThat(mzs(s.peaks())).containsExactly(100.0, 200.0, 300.0);
+
+        Path out = write(tmp, s);
+
+        assertThat(out.resolve(DATA)).doesNotExist();
+        assertThat(route(out, 0)).isEqualTo("data=- peaks=3 number_of_data_points=- number_of_peaks=3");
+        double[][] peaks = storedRows(out.resolve(PEAKS), 0);
+        assertThat(Arrays.equals(peaks[0], mz)).as("stored m/z %s", Arrays.toString(peaks[0])).isTrue();
+        assertThat(Arrays.equals(peaks[1], intensity)).as("stored intensity %s", Arrays.toString(peaks[1])).isTrue();
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            Spectrum back = r.getSpectrum(0).orElseThrow();
+            assertThat(Arrays.equals(back.mz(), mz)).as("re-read m/z %s", Arrays.toString(back.mz())).isTrue();
+            assertThat(Arrays.equals(back.intensity(), intensity))
+                    .as("re-read intensity %s", Arrays.toString(back.intensity())).isTrue();
+            assertThat(back.peaks()).isEqualTo(s.peaks());
+        }
+    }
+
     // ---- Numpress -----------------------------------------------------------------------------------------------
 
     /**
