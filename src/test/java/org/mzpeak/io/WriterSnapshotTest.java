@@ -40,14 +40,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * later). The round-trip tests only check what mzPeakJ reads back; this snapshot also catches drift in manifest keys,
  * Parquet schemas and types, footer key-values and ZIP entry order.
  *
- * <p>Each case reads a legacy fixture with {@link ForwardBackwardCorpusTest#readSource}, writes it with one of the
+ * <p>Each case reads a fixture with {@link ForwardBackwardCorpusTest#readSource}, writes it with one of the
  * full-form overloads (wavelength spectra, scan settings and file metadata included), and digests every member of the
  * output with {@link ContentDigest}, which ignores ZSTD bytes and ZIP timestamps. The archive case also records the
  * ZIP entries in file order with their method. The pinned line of the manifest digests it with every member checksum
  * masked ({@link #maskedIndex}). The expected lines live in
- * {@code src/test/resources/writer-snapshots/<fixture>.<overload>.tsv}. On a mismatch the test prints the full actual
- * TSV and writes it to {@code target/writer-snapshots/}; a unit that changes writer output on purpose copies it over
- * the expected file and explains the change.
+ * {@code src/test/resources/writer-snapshots/<fixture>.<overload>.tsv} for a legacy fixture and in
+ * {@code current.<fixture>.<overload>.tsv} for a current one. A current fixture is read through the split layout, so
+ * its spectra carry the leftover Params of that layout, imaging positions and scan settings with units, which the
+ * legacy fixtures lack (WR-5a). On a mismatch the test prints the full actual TSV and writes it to
+ * {@code target/writer-snapshots/}; a unit that changes writer output on purpose copies it over the expected file and
+ * explains the change.
  */
 class WriterSnapshotTest {
 
@@ -61,8 +64,27 @@ class WriterSnapshotTest {
     /** A member checksum in the manifest; group 1 is the key and the opening quote of the value. */
     private static final Pattern CHECKSUM = Pattern.compile("(\"checksum\"\\s*:\\s*\")[0-9a-f]{128}\"");
 
-    /** Fixtures read once per class; the tests never modify a source in place. */
+    /** Fixtures read once per class, keyed by set and name; the tests never modify a source in place. */
     private static final Map<String, Source> SOURCES = new ConcurrentHashMap<>();
+
+    /** The fixture set a case reads its source from. */
+    enum FixtureSet {
+        LEGACY("legacy", ""),
+        CURRENT("current", "current.");
+
+        final String label;
+        /** Prefix of the snapshot file name. */
+        final String filePrefix;
+
+        FixtureSet(String label, String filePrefix) {
+            this.label = label;
+            this.filePrefix = filePrefix;
+        }
+
+        Path path(String fixture) {
+            return this == LEGACY ? Fixtures.legacy(fixture) : Fixtures.current(fixture);
+        }
+    }
 
     /** The full-form writer overloads under test. */
     enum Overload {
@@ -90,25 +112,29 @@ class WriterSnapshotTest {
 
     static Stream<Arguments> cases() {
         return Stream.of(
-                Arguments.of("small.unpacked.mzpeak", Overload.WRITE_DIRECTORY),
-                Arguments.of("small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_SLOF),
-                Arguments.of("small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_PIC),
-                Arguments.of("has_uv.mzpeak", Overload.WRITE_DIRECTORY),
-                Arguments.of("has_uv.mzpeak", Overload.WRITE_ARCHIVE));
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_SLOF),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_PIC),
+                Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_DIRECTORY),
+                Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_ARCHIVE),
+                Arguments.of(FixtureSet.CURRENT, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY),
+                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY));
     }
 
-    @ParameterizedTest(name = "{0} via {1}")
+    @ParameterizedTest(name = "{0} {1} via {2}")
     @MethodSource("cases")
-    void writtenMembersMatchTheSnapshot(String fixture, Overload overload, @TempDir Path tmp) throws IOException {
+    void writtenMembersMatchTheSnapshot(FixtureSet set, String fixture, Overload overload, @TempDir Path tmp)
+            throws IOException {
         assertThat(System.getProperty(ROW_GROUP_SIZE)).as("%s must be unset: it changes the row groups", ROW_GROUP_SIZE)
                 .isNull();
-        Path out = write(fixture, overload, source(fixture), tmp.resolve("out.mzpeak"));
+        Path out = write(fixture, overload, source(set, fixture), tmp.resolve("out.mzpeak"));
         Snapshot actual = snapshot(out, overload.archive);
-        assertThat(actual.members().keySet()).as("members of %s via %s", fixture, overload.label)
+        assertThat(actual.members().keySet()).as("members of %s %s via %s", set.label, fixture, overload.label)
                 .containsExactlyInAnyOrderElementsOf(manifestMembers(out));
 
-        String name = fixture.substring(0, fixture.length() - ".mzpeak".length()) + "." + overload.label + ".tsv";
-        List<String> actualLines = tsv(fixture, overload, actual, maskedIndex(out));
+        String name = set.filePrefix + fixture.substring(0, fixture.length() - ".mzpeak".length()) + "."
+                + overload.label + ".tsv";
+        List<String> actualLines = tsv(set, fixture, overload, actual, maskedIndex(out));
         Path expectedFile = SNAPSHOTS.resolve(name);
         List<String> expectedLines = Files.isRegularFile(expectedFile)
                 ? Files.readAllLines(expectedFile, StandardCharsets.UTF_8) : List.of();
@@ -183,7 +209,12 @@ class WriterSnapshotTest {
     }
 
     private static Source source(String fixture) {
-        return SOURCES.computeIfAbsent(fixture, f -> ForwardBackwardCorpusTest.readSource(Fixtures.legacy(f)));
+        return source(FixtureSet.LEGACY, fixture);
+    }
+
+    private static Source source(FixtureSet set, String fixture) {
+        return SOURCES.computeIfAbsent(set.label + "/" + fixture,
+                k -> ForwardBackwardCorpusTest.readSource(set.path(fixture)));
     }
 
     private static String withoutRecords(String detail) {
@@ -305,9 +336,10 @@ class WriterSnapshotTest {
                 HexFormat.of().formatHex(digest));
     }
 
-    private static List<String> tsv(String fixture, Overload overload, Snapshot snapshot, ContentDigest index) {
+    private static List<String> tsv(FixtureSet set, String fixture, Overload overload, Snapshot snapshot,
+                                    ContentDigest index) {
         List<String> lines = new ArrayList<>();
-        lines.add("# WriterSnapshotTest (WR-0a): legacy " + fixture + " written by MzPeakWriter."
+        lines.add("# WriterSnapshotTest (WR-0a): " + set.label + " " + fixture + " written by MzPeakWriter."
                 + overload.label.replace('-', ' '));
         lines.add(HEADER);
         snapshot.members().values().forEach(d -> lines.add(d.member().equals(INDEX) ? index.tsvLine() : d.tsvLine()));
