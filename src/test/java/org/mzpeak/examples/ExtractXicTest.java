@@ -6,8 +6,11 @@ import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Spectrum;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -30,6 +33,18 @@ class ExtractXicTest {
 
     private static SpectrumFilter filter(String... args) {
         return SpectrumFilter.from(new ExampleArgs(args));
+    }
+
+    /** Exit status of {@code ExtractXic.run(args, out, err)} and what it printed to out and err. */
+    private record Captured(int status, String out, String err) {
+    }
+
+    private static Captured runCaptured(String... args) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int status = ExtractXic.run(args, new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        return new Captured(status, out.toString(StandardCharsets.UTF_8), err.toString(StandardCharsets.UTF_8));
     }
 
     /** Retention time and the intensity of every point in [lo, hi] summed, for each spectrum of {@code msLevel}. */
@@ -105,6 +120,34 @@ class ExtractXicTest {
     }
 
     @Test
+    void runWritesTheCsvPrintsWhatItWroteAndReturns0(@TempDir Path tmp) throws IOException {
+        Path out = tmp.resolve("xic.csv");
+
+        Captured r = runCaptured(FIXTURE.toString(), out.toString(), "--mz", "810.4155", "--tol-ppm", "10");
+
+        double tolDa = BASE_PEAK_MZ * 10 / 1.0e6;
+        assertThat(r.status()).isZero();
+        assertThat(r.out()).isEqualTo(
+                "Wrote XIC with 14 points (m/z 810.4155 +/- 0.0081 Da) to " + out + System.lineSeparator());
+        assertThat(r.err()).isEmpty();
+        assertThat(Files.readAllLines(out)).isEqualTo(csv(expected(1, BASE_PEAK_MZ - tolDa, BASE_PEAK_MZ + tolDa)));
+    }
+
+    @Test
+    void runWithoutInputOutputOrMzPrintsUsageAndReturns2(@TempDir Path tmp) {
+        Path out = tmp.resolve("xic.csv");
+        for (String[] args : List.of(new String[0], new String[]{FIXTURE.toString(), "--mz", "810.4155"},
+                new String[]{FIXTURE.toString(), out.toString(), "--tol-da", "0.1"})) {
+            Captured r = runCaptured(args);
+
+            assertThat(r.status()).isEqualTo(2);
+            assertThat(r.out()).isEmpty();
+            assertThat(r.err()).isEqualTo(USAGE + System.lineSeparator());
+        }
+        assertThat(out).doesNotExist();
+    }
+
+    @Test
     void mainPrintsWhatItWrote(@TempDir Path tmp) throws Exception {
         Path out = tmp.resolve("xic.csv");
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ExtractXic.class,
@@ -120,7 +163,7 @@ class ExtractXicTest {
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ExtractXic.class, FIXTURE.toString(),
                 "--mz", "810.4155");
         assertThat(r.exitStatus()).isEqualTo(2);
-        assertThat(r.stderr()).contains(USAGE);
+        assertThat(r.stderr()).isEqualTo(USAGE + System.lineSeparator());
         assertThat(r.stdout()).isEmpty();
     }
 
@@ -130,7 +173,7 @@ class ExtractXicTest {
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ExtractXic.class, FIXTURE.toString(),
                 out.toString());
         assertThat(r.exitStatus()).isEqualTo(2);
-        assertThat(r.stderr()).contains(USAGE);
+        assertThat(r.stderr()).isEqualTo(USAGE + System.lineSeparator());
         assertThat(r.stdout()).isEmpty();
         assertThat(out).doesNotExist();
     }

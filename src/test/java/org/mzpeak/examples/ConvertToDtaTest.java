@@ -13,8 +13,11 @@ import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,6 +41,18 @@ class ConvertToDtaTest {
 
     private static SpectrumFilter filter(String... args) {
         return SpectrumFilter.from(new ExampleArgs(args));
+    }
+
+    /** Exit status of {@code ConvertToDta.run(args, out, err)} and what it printed to out and err. */
+    private record Captured(int status, String out, String err) {
+    }
+
+    private static Captured runCaptured(String... args) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int status = ConvertToDta.run(args, new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        return new Captured(status, out.toString(StandardCharsets.UTF_8), err.toString(StandardCharsets.UTF_8));
     }
 
     private static List<String> fileNames(Path dir) throws IOException {
@@ -174,6 +189,35 @@ class ConvertToDtaTest {
     }
 
     @Test
+    void runWritesTheFilesPrintsHowManyAndReturns0(@TempDir Path tmp) throws IOException {
+        Path out = tmp.resolve("dta");
+        List<Spectrum> early = fixtureMs2(0.2);
+
+        Captured r = runCaptured(FIXTURE.toString(), out.toString(), "--rt-max", "0.2");
+
+        assertThat(r.status()).isZero();
+        assertThat(r.out()).isEqualTo("Wrote " + early.size() + " .dta files to " + out + System.lineSeparator());
+        assertThat(r.err()).isEmpty();
+        // without --default-charge the uncharged fixture precursors get charge 2
+        assertThat(fileNames(out)).containsExactlyInAnyOrderElementsOf(early.stream()
+                .map(s -> "small." + scan(s) + "." + scan(s) + ".2.dta").toList());
+        Spectrum s = early.get(0);
+        assertThat(Files.readString(out.resolve("small." + scan(s) + "." + scan(s) + ".2.dta"))).isEqualTo(dta(s, 2));
+    }
+
+    @Test
+    void runWithoutInputOrOutputDirectoryPrintsUsageAndReturns2() {
+        for (String[] args : List.of(new String[0], new String[]{FIXTURE.toString()},
+                new String[]{FIXTURE.toString(), "--ms-level", "2", "--default-charge", "3"})) {
+            Captured r = runCaptured(args);
+
+            assertThat(r.status()).isEqualTo(2);
+            assertThat(r.out()).isEmpty();
+            assertThat(r.err()).isEqualTo(USAGE + System.lineSeparator());
+        }
+    }
+
+    @Test
     void mainPrintsWhatItWrote(@TempDir Path tmp) throws Exception {
         Path out = tmp.resolve("dta");
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ConvertToDta.class, FIXTURE.toString(),
@@ -187,7 +231,7 @@ class ConvertToDtaTest {
     void mainWithoutOutputDirectoryPrintsUsageAndExitsWithStatus2(@TempDir Path tmp) throws Exception {
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ConvertToDta.class, FIXTURE.toString());
         assertThat(r.exitStatus()).isEqualTo(2);
-        assertThat(r.stderr()).contains(USAGE);
+        assertThat(r.stderr()).isEqualTo(USAGE + System.lineSeparator());
         assertThat(r.stdout()).isEmpty();
     }
 }

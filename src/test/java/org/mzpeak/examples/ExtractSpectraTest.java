@@ -8,6 +8,9 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -25,6 +28,18 @@ class ExtractSpectraTest {
 
     private static SpectrumFilter filter(String... args) {
         return SpectrumFilter.from(new ExampleArgs(args));
+    }
+
+    /** Exit status of {@code ExtractSpectra.run(args, out, err)} and what it printed to out and err. */
+    private record Captured(int status, String out, String err) {
+    }
+
+    private static Captured runCaptured(String... args) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int status = ExtractSpectra.run(args, new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        return new Captured(status, out.toString(StandardCharsets.UTF_8), err.toString(StandardCharsets.UTF_8));
     }
 
     /** The spectra of {@code dataset} that {@code filter} accepts, in file order. */
@@ -89,6 +104,34 @@ class ExtractSpectraTest {
     }
 
     @Test
+    void runWritesTheFilteredCopyPrintsWhatItWroteAndReturns0(@TempDir Path tmp) {
+        Path out = tmp.resolve("ms1-late");
+        int expected = spectra(FIXTURE, filter("--ms-level", "1", "--rt-min", "0.1")).size();
+        assertThat(expected).isPositive().isLessThan(14);
+
+        Captured r = runCaptured(FIXTURE.toString(), out.toString(), "--ms-level", "1", "--rt-min", "0.1");
+
+        assertThat(r.status()).isZero();
+        assertThat(r.out()).isEqualTo("Wrote " + expected + " spectra (ms-level=[1] rt=[0.1,Infinity]) to " + out
+                + System.lineSeparator());
+        assertThat(r.err()).isEmpty();
+        assertThat(out).isDirectory();
+        assertCopy(out, filter("--ms-level", "1", "--rt-min", "0.1"));
+    }
+
+    @Test
+    void runWithoutInputOrOutputPrintsUsageAndReturns2() {
+        for (String[] args : List.of(new String[0], new String[]{FIXTURE.toString()},
+                new String[]{FIXTURE.toString(), "--ms-level", "2", "--rt-max", "0.2"})) {
+            Captured r = runCaptured(args);
+
+            assertThat(r.status()).isEqualTo(2);
+            assertThat(r.out()).isEmpty();
+            assertThat(r.err()).isEqualTo(USAGE + System.lineSeparator());
+        }
+    }
+
+    @Test
     void mainPrintsWhatItWrote(@TempDir Path tmp) throws Exception {
         Path out = tmp.resolve("ms2.mzpeak");
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ExtractSpectra.class,
@@ -104,7 +147,7 @@ class ExtractSpectraTest {
         ForkedExampleMain.Result r = ForkedExampleMain.run(tmp, ExtractSpectra.class, FIXTURE.toString(),
                 "--ms-level", "2");
         assertThat(r.exitStatus()).isEqualTo(2);
-        assertThat(r.stderr()).contains(USAGE);
+        assertThat(r.stderr()).isEqualTo(USAGE + System.lineSeparator());
         assertThat(r.stdout()).isEmpty();
         try (var files = Files.list(tmp)) {
             assertThat(files.map(p -> p.getFileName().toString()))
