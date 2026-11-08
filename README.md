@@ -411,7 +411,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
   precursor activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD)
   facets, and the imaging `scan_settings_list` — and is gated by the independent `mzpeak-validate` validator.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
-- **95 test methods across 24 classes** (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
+- Tests on both vendored fixture sets, checked against golden outputs of the upstream Python reader
+  (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
   (`CorpusTest`, `ValidatedRoundTripTest`, `ForwardBackwardCorpusTest`, enabled with
   `-Dmzpeak.roundtrip=true`) expand to hundreds of cases over the local HUPO-PSI + vendor corpus
   (539 `.mzpeak` files); cross-validated against the Rust `mzpeak_prototyping` reference fixtures and
