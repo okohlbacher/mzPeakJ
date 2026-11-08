@@ -504,6 +504,53 @@ class ColumnStatisticsTest {
      * INT64 statistics keep their value: a signed column its sign, an INTEGER(64,false) column below 2<sup>63</sup>
      * its unsigned value.
      */
+    /**
+     * An INT32 column annotated as a DATE (MC5) and a repeated INT64 field (MC9) hold no statistics a term can use,
+     * though their primitive types are numeric.
+     */
+    @Test
+    void aDateColumnAndARepeatedFieldGiveNoStatistics() {
+        MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
+                + "  optional int64 index (INTEGER(64,false));\n"
+                + "  optional double time;\n"
+                + "  optional int32 acquisition_date (DATE);\n"
+                + "  repeated int64 counts;\n"
+                + "}");
+        write("spectra_metadata.parquet", schema, Integer.MAX_VALUE, true,
+                new SimpleGroupFactory(schema).newGroup().append("index", 0L).append("time", 1.0)
+                        .append("acquisition_date", 19000).append("counts", 3L).append("counts", 4L));
+        manifest("{\"name\": \"spectra_metadata.parquet\", \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\","
+                + " \"column_mapping\": ["
+                + "{\"name\": \"acquisition date\", \"path\": \"acquisition_date\", \"accession\": \"MS:9999003\","
+                + " \"unit\": null},"
+                + "{\"name\": \"counts\", \"path\": \"counts\", \"accession\": \"MS:9999004\", \"unit\": null}]}");
+
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            assertThat(reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, "MS:9999003")).isEmpty();
+            assertThat(reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, "MS:9999004")).isEmpty();
+        }
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThat(MetadataColumns.resolve(manifest, src, EntityType.SPECTRUM, DataKind.METADATA, "MS:9999003"))
+                    .isPresent();
+            assertThat(MetadataColumns.resolve(manifest, src, EntityType.SPECTRUM, DataKind.METADATA, "MS:9999004"))
+                    .isEmpty();
+        }
+    }
+
+    /** A smallest lowest observed m/z above the largest highest one is reported, not returned as a range. */
+    @Test
+    void anInvertedObservedMzRangeThrows() {
+        writeSplitMetadata(new Double[][] {{500.0, 300.0}, {600.0, 400.0}, {null, null}, {null, null},
+                {700.0, 350.0}}, true);
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            assertThatThrownBy(reader::observedMzRange)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectra_metadata.parquet: the smallest lowest observed m/z 500.0 exceeds the largest"
+                            + " highest observed m/z 400.0");
+        }
+    }
+
     @Test
     void int64StatisticsAreReadSignedOrUnsigned() {
         writeInt64Metadata(new long[] {3_000_000_000L, -5_000_000_000L, 7L},

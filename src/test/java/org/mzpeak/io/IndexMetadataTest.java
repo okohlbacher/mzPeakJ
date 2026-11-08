@@ -367,6 +367,33 @@ class IndexMetadataTest {
                 "sf", "2005-07-20T19:44:22Z", List.of(new Param("n", "MS:2", 2.5, null))));
     }
 
+    /** An index document set to JSON null counts as missing: the footer's is read, the run's too (FM5). */
+    @Test
+    void aJsonNullIndexDocumentIsReadFromTheFooter() {
+        ObjectNode index = MAPPER.createObjectNode();
+        index.putNull("run");
+        index.putNull("software_list");
+        Map<String, String> footer = Map.of(
+                "run", "{\"id\": \"footer-run\", \"default_instrument_id\": 3}",
+                "software_list", "[{\"id\": \"footer-software\", \"version\": \"2\"}]");
+        FileMetadata m = FooterMetadataReader.resolve(index, () -> footer);
+        assertThat(m.run()).isEqualTo(new MsRun("footer-run", 3, null, null, null, List.of()));
+        assertThat(m.software()).extracting(Software::id).containsExactly("footer-software");
+    }
+
+    /** An index run with every field but its parameters takes the footer run's parameters (FM8). */
+    @Test
+    void anIndexRunWithoutParametersTakesTheFootersParameters() {
+        ObjectNode index = MAPPER.createObjectNode();
+        index.putObject("run").put("id", "index-run").put("default_instrument_configuration_id", 1)
+                .put("default_data_processing_id", "dp").put("default_source_file_id", "sf")
+                .put("start_time", "2005-07-20T19:44:22Z");
+        Map<String, String> footer = Map.of("run", "{\"id\": \"footer-run\","
+                + " \"parameters\": [{\"name\": \"n\", \"accession\": \"MS:2\", \"value\": 2.5, \"unit\": null}]}");
+        assertThat(FooterMetadataReader.resolve(index, () -> footer).run()).isEqualTo(new MsRun("index-run", 1, "dp",
+                "sf", "2005-07-20T19:44:22Z", List.of(new Param("n", "MS:2", 2.5, null))));
+    }
+
     /** Canonical writes components by name; this fails when a model record gains one it does not write. */
     @Test
     void canonicalFormCoversEveryRecordComponent() {

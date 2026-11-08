@@ -350,6 +350,51 @@ class EncodedChromatogramTest {
         }
     }
 
+    /** A split row with a null index is rejected; only packed placeholder rows are skipped (MC10). */
+    @Test
+    void aNullSplitIndexIsRejected() {
+        MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
+                + "  optional int64 index (INTEGER(64,false));\n"
+                + "  optional double total_ion_current;\n"
+                + "}");
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        write(schema, Integer.MAX_VALUE, List.of(
+                factory.newGroup().append("index", 0L).append("total_ion_current", 1.0),
+                factory.newGroup().append("total_ion_current", 2.0)));
+        manifest("{\"name\": \"spectra_metadata.parquet\", \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}");
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThatThrownBy(() -> MetadataColumns.valuesByIndex(manifest, src, EntityType.SPECTRUM,
+                    TOTAL_ION_CURRENT))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectra_metadata.parquet row 1: index is null; a split metadata key must not be null");
+        }
+    }
+
+    /** A duplicate index is rejected in the packed layout too, naming the struct. */
+    @Test
+    void aDuplicatePackedIndexIsRejected() {
+        MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
+                + "  optional group spectrum {\n"
+                + "    optional int64 index (INTEGER(64,false));\n"
+                + "    optional double time;\n"
+                + "    optional double MS_1000285_total_ion_current_unit_MS_1000131;\n"
+                + "    optional int64 MS_1000505_base_peak_intensity_unit_MS_1000131;\n"
+                + "  }\n"
+                + "}");
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        write(schema, Integer.MAX_VALUE, List.of(packedRow(factory, 0L, 1.0, 10.0, 100L),
+                packedRow(factory, 0L, 2.0, 20.0, 200L)));
+        manifest("{\"name\": \"spectra_metadata.parquet\", \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}");
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThatThrownBy(() -> MetadataColumns.valuesByIndex(manifest, src, EntityType.SPECTRUM,
+                    TOTAL_ION_CURRENT))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectra_metadata.parquet: duplicate spectrum.index 0");
+        }
+    }
+
     @Test
     void aClosedReaderIsRejected() {
         MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.mzpeak"));
