@@ -11,14 +11,18 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.Provider;
+import java.security.Security;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link Sha512} (WR-1): 128 lowercase hex characters, the FIPS 180-2 values for the standard inputs, every byte up to
- * the end of a stream that delivers short reads, and the stream left open.
+ * the end of a stream that delivers short reads, the stream left open, and the failure on a platform without SHA-512.
  */
 class Sha512Test {
 
@@ -55,6 +59,34 @@ class Sha512Test {
 
         assertThat(Sha512.hex(file)).isEqualTo(reference(bytes));
         assertThat(Sha512.hex(abc)).isEqualTo(ABC);
+    }
+
+    /**
+     * With the security providers that offer SHA-512 removed for the duration of the call, the checksum fails
+     * unchecked, before the stream is read. The providers are put back at their positions afterwards.
+     */
+    @Test
+    void withoutAProviderOfSha512TheChecksumFails() throws IOException {
+        List<Provider> before = List.of(Security.getProviders());
+        Provider[] offering = Security.getProviders("MessageDigest.SHA-512");
+        assertThat(offering).isNotEmpty();
+        ShortReads in = new ShortReads("abc".getBytes(StandardCharsets.US_ASCII), 7);
+        try {
+            for (Provider p : offering) {
+                Security.removeProvider(p.getName());
+            }
+            assertThatThrownBy(() -> Sha512.hex(in))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("SHA-512 is not available")
+                    .hasCauseInstanceOf(NoSuchAlgorithmException.class);
+        } finally {
+            for (Provider p : offering) {
+                Security.insertProviderAt(p, before.indexOf(p) + 1);
+            }
+        }
+        assertThat(Security.getProviders()).containsExactlyElementsOf(before);
+        assertThat(in.read()).as("first byte, unread").isEqualTo('a');
+        assertThat(Sha512.hex(new ByteArrayInputStream(new byte[0]))).isEqualTo(EMPTY);
     }
 
     private static String reference(byte[] bytes) {
