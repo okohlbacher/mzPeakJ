@@ -123,7 +123,7 @@ final class PackedMetadataWriter {
     static void writeSpectrumMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
         long scanIndexCounter = 0;
-        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, plan.footer())) {
+        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, plan.footer(), plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
                 SpectrumDescription d = s.description();
@@ -273,7 +273,7 @@ final class PackedMetadataWriter {
 
     static void writeChromatogramMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_META_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, CHROM_META_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, CHROM_META_SCHEMA, plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
                 Chromatogram c = entry.source();
                 Group row = factory.newGroup();
@@ -293,7 +293,7 @@ final class PackedMetadataWriter {
 
     static void writeWavelengthMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_META_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_META_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_META_SCHEMA, plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
                 WavelengthSpectrum w = entry.source();
                 Group row = factory.newGroup();

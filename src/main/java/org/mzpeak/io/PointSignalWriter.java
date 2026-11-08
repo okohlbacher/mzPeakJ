@@ -48,7 +48,7 @@ final class PointSignalWriter {
      */
     static void writeSpectrumPoints(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_DATA_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_DATA_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_DATA_SCHEMA, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
                 if (centroidFile) {
@@ -75,7 +75,7 @@ final class PointSignalWriter {
 
     static void writeChromatogramData(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_DATA_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, CHROM_DATA_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, CHROM_DATA_SCHEMA, plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
                 Chromatogram c = entry.source();
                 double[] time = c.time();
@@ -90,7 +90,7 @@ final class PointSignalWriter {
 
     static void writeWavelengthData(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_DATA_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_DATA_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_DATA_SCHEMA, plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
                 WavelengthSpectrum w = entry.source();
                 double[] wl = w.wavelength();

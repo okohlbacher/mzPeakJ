@@ -13,6 +13,7 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
+import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Param;
 
@@ -20,15 +21,17 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 /**
  * Parquet output shared by the {@link MzPeakWriter} components: opening a ZSTD-compressed writer with optional
- * footer key-values and the {@code mzpeak.writer.rowGroupSize} override, the UINT64 annotation, and the
- * {@code parameters} and {@code scan_windows} list fields with the {@code parameters} encoder.
+ * footer key-values and the row-group size of the write, the UINT64 annotation, and the {@code parameters} and
+ * {@code scan_windows} list fields with the {@code parameters} encoder.
  */
 final class ParquetOutput {
 
     private static final String SCHEMA_PROPERTY = "parquet.example.schema";
+    private static final String ROW_GROUP_SIZE_PROPERTY = "mzpeak.writer.rowGroupSize";
 
     /** uint64 logical type annotation (unsigned 64-bit int, matching mzPeak spec for index/count fields). */
     static final LogicalTypeAnnotation UINT64 = LogicalTypeAnnotation.intType(64, false);
@@ -65,12 +68,12 @@ final class ParquetOutput {
                 .named("scan_windows");
     }
 
-    static ParquetWriter<Group> openWriter(Path file, MessageType schema) throws IOException {
-        return openWriter(file, schema, Map.of());
+    static ParquetWriter<Group> openWriter(Path file, MessageType schema, Options options) throws IOException {
+        return openWriter(file, schema, Map.of(), options);
     }
 
     static ParquetWriter<Group> openWriter(Path file, MessageType schema,
-                                           Map<String, String> footerMetadata) throws IOException {
+                                           Map<String, String> footerMetadata, Options options) throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
         conf.set(SCHEMA_PROPERTY, schema.toString());
         var builder = ExampleParquetWriter.builder(new LocalOutputFile(file))
@@ -81,12 +84,24 @@ final class ParquetOutput {
         if (footerMetadata != null && !footerMetadata.isEmpty()) {
             builder = builder.withExtraMetaData(footerMetadata);
         }
-        // Allow tests to force a small row-group size via -Dmzpeak.writer.rowGroupSize=N.
-        String rowGroupSize = System.getProperty("mzpeak.writer.rowGroupSize");
-        if (rowGroupSize != null) {
-            builder = builder.withRowGroupSize(Long.parseLong(rowGroupSize));
+        OptionalLong rowGroupSize = rowGroupSize(options);
+        if (rowGroupSize.isPresent()) {
+            builder = builder.withRowGroupSize(rowGroupSize.getAsLong());
         }
         return builder.build();
+    }
+
+    /**
+     * The row-group size of every member: {@link Options#rowGroupSize()} if set, else the
+     * {@code mzpeak.writer.rowGroupSize} system property if set (which lets tests force small row groups with
+     * {@code -Dmzpeak.writer.rowGroupSize=N}), else empty for the parquet-java default.
+     */
+    static OptionalLong rowGroupSize(Options options) {
+        if (options.rowGroupSize().isPresent()) {
+            return options.rowGroupSize();
+        }
+        String property = System.getProperty(ROW_GROUP_SIZE_PROPERTY);
+        return property == null ? OptionalLong.empty() : OptionalLong.of(Long.parseLong(property));
     }
 
     /**

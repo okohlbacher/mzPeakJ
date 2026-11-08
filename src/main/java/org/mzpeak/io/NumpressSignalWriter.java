@@ -71,7 +71,7 @@ final class NumpressSignalWriter {
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
         SimpleGroupFactory factory = new SimpleGroupFactory(NUMPRESS_CHUNK_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA)) {
+        try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
                 double[] mz;
