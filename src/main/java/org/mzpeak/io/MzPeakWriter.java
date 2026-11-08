@@ -41,6 +41,15 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
  * Each other overload is a shorthand for one of them; its documentation names the call it stands for.
+ *
+ * <p>An archive holds the members in name order and the manifest last, each STORED with the time 2000-01-01T00:00
+ * and no extra field but the zip64 one that sizes and offsets over 4 GiB need, so its ZIP layer does not depend on
+ * when or in which time zone it is written. The members are streamed into it, so they may exceed 2 GiB.
+ * Within one JVM, the same input and options give the same bytes. Across JVM runs, only the footers of the Parquet
+ * members can differ: parquet-java writes the encodings of each column chunk in the iteration order of a
+ * {@code HashSet} of enum constants, which hash by identity, so that order can change from one run to the next, and
+ * with it a member's bytes, its SHA-512 checksum in the manifest and its CRC in an archive. What the members contain
+ * (schema, footer key-values, row groups and records) is the same in every run.
  */
 public final class MzPeakWriter {
 
