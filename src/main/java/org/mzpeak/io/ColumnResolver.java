@@ -14,6 +14,7 @@ import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Param;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -28,6 +29,9 @@ import java.util.Set;
 final class ColumnResolver {
 
     private static final String PARAMETERS = "parameters";
+    /** The physical types {@link ParquetGroups#optLong} and {@link ParquetGroups#optDouble} read. */
+    private static final Set<PrimitiveTypeName> NUMERIC = EnumSet.of(
+            PrimitiveTypeName.INT32, PrimitiveTypeName.INT64, PrimitiveTypeName.FLOAT, PrimitiveTypeName.DOUBLE);
 
     private final GroupType scope;
     /** The member's manifest entry in the split layout; {@code null} in the packed layout. */
@@ -60,6 +64,14 @@ final class ColumnResolver {
         return new ColumnResolver(struct, null, facet, "", "packed struct '" + struct.getName() + "'");
     }
 
+    /** {@link #packed(GroupType, Facet)} of the member named {@code member}, which error messages name too. */
+    static ColumnResolver packed(GroupType struct, Facet facet, String member) {
+        Objects.requireNonNull(struct, "struct");
+        Objects.requireNonNull(facet, "facet");
+        Objects.requireNonNull(member, "member");
+        return new ColumnResolver(struct, null, facet, "", member + ", packed struct '" + struct.getName() + "'");
+    }
+
     /**
      * The resolver of the struct {@code field}, or of the element struct of the list {@code field}, of this scope.
      * Mapping paths omit list and element levels, so both continue the dotted path with {@code field}.
@@ -86,7 +98,8 @@ final class ColumnResolver {
     /**
      * The field of this scope that holds the term {@code accession}: the first column_mapping path with that
      * accession, then the {@link ColumnTable} path, then its fallbacks, then {@code extraNames}; each only when it
-     * names a field directly in this scope.
+     * names a field directly in this scope. A field that the column_mapping assigns to another accession is never
+     * taken from the {@link ColumnTable} path, its fallbacks or {@code extraNames}.
      *
      * @return the field name, or {@code null} when none is present
      */
@@ -103,17 +116,34 @@ final class ColumnResolver {
         Optional<Column> column = ColumnTable.byAccession(facet, accession);
         if (column.isPresent()) {
             String field = field(column.get().path());
-            if (field != null) {
+            if (field != null && !mappedToAnother(field, accession)) {
                 return field;
             }
             for (String fallback : column.get().fallbacks()) {
                 field = field(fallback);
-                if (field != null) {
+                if (field != null && !mappedToAnother(field, accession)) {
                     return field;
                 }
             }
         }
-        return resolveName(extraNames);
+        for (String name : extraNames) {
+            if (name != null && scope.containsField(name) && !mappedToAnother(name, accession)) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether the member's column_mapping (split layout only) assigns {@code field} of this scope to a term other
+     * than {@code accession}.
+     */
+    private boolean mappedToAnother(String field, String accession) {
+        if (entry == null) {
+            return false;
+        }
+        Optional<ColumnMapping> mapped = entry.columnAtPath(path(field));
+        return mapped.isPresent() && mapped.get().accession() != null && !accession.equals(mapped.get().accession());
     }
 
     /** The first of {@code names} that is a field directly in this scope, or {@code null}. */
@@ -171,13 +201,14 @@ final class ColumnResolver {
      * rest read as {@link ParquetGroups#optLong} reads them. {@code null} when the field is {@code null}, absent or
      * null in this row.
      *
-     * @throws MzPeakException if an unsigned 64-bit cell has the high bit set; the message names the field
+     * @throws MzPeakException if an unsigned 64-bit cell has the high bit set, or the column is not numeric; the
+     *                         message names the member and the field
      */
     Long longValue(Group row, String field) {
         if (field == null || !ParquetGroups.has(row, field)) {
             return null;
         }
-        PrimitiveType type = row.getType().getType(field).asPrimitiveType();
+        PrimitiveType type = scalar(row, field);
         if (unsigned(type)) {
             if (type.getPrimitiveTypeName() == PrimitiveTypeName.INT32) {
                 return Integer.toUnsignedLong(row.getInteger(field, 0));
@@ -191,6 +222,7 @@ final class ColumnResolver {
                 return value;
             }
         }
+        requireType(field, type, NUMERIC, "an integer");
         return ParquetGroups.optLong(row, field);
     }
 
@@ -213,20 +245,34 @@ final class ColumnResolver {
     /**
      * A numeric cell as double; unsigned integers read as {@link #longValue}, the rest as
      * {@link ParquetGroups#optDouble}.
+     *
+     * @throws MzPeakException if the column is not numeric; the message names the member and the field
      */
     Double doubleValue(Group row, String field) {
         if (field == null || !ParquetGroups.has(row, field)) {
             return null;
         }
-        if (unsigned(row.getType().getType(field).asPrimitiveType())) {
+        PrimitiveType type = scalar(row, field);
+        if (unsigned(type)) {
             return longValue(row, field).doubleValue();
         }
+        requireType(field, type, NUMERIC, "numeric");
         return ParquetGroups.optDouble(row, field);
     }
 
-    /** A string cell, or {@code null}. */
+    /**
+     * A string cell, or {@code null}.
+     *
+     * @throws MzPeakException if the column is not BINARY (or FIXED_LEN_BYTE_ARRAY); the message names the member
+     *                         and the field
+     */
     String stringValue(Group row, String field) {
-        return field == null ? null : ParquetGroups.optString(row, field);
+        if (field == null || !ParquetGroups.has(row, field)) {
+            return null;
+        }
+        requireType(field, scalar(row, field),
+                EnumSet.of(PrimitiveTypeName.BINARY, PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY), "a string");
+        return ParquetGroups.optString(row, field);
     }
 
     /**
@@ -238,7 +284,7 @@ final class ColumnResolver {
         if (field == null || !ParquetGroups.has(row, field)) {
             return null;
         }
-        PrimitiveTypeName p = row.getType().getType(field).asPrimitiveType().getPrimitiveTypeName();
+        PrimitiveTypeName p = scalar(row, field).getPrimitiveTypeName();
         return switch (p) {
             case BOOLEAN -> row.getBoolean(field, 0);
             case INT32 -> row.getInteger(field, 0) != 0;
@@ -246,9 +292,24 @@ final class ColumnResolver {
         };
     }
 
-    /** A numeric list cell, as {@link ParquetGroups#doubleListNullable} reads it; empty when absent or null. */
+    /**
+     * A numeric list cell, as {@link ParquetGroups#doubleListNullable} reads it; empty when absent or null.
+     *
+     * @throws MzPeakException if the column is a scalar or its elements are not numeric; the message names the
+     *                         member and the field
+     */
     double[] doubleList(Group row, String field) {
-        return field == null ? new double[0] : ParquetGroups.doubleListNullable(row, field);
+        if (field == null) {
+            return new double[0];
+        }
+        if (ParquetGroups.has(row, field) && row.getType().getType(field).isPrimitive()) {
+            throw new MzPeakException(member + ": " + path(field) + " is a scalar column, expected a list");
+        }
+        try {
+            return ParquetGroups.doubleListNullable(row, field);
+        } catch (IllegalStateException | ClassCastException e) {
+            throw new MzPeakException(member + ": " + path(field) + " is not a numeric list: " + e.getMessage(), e);
+        }
     }
 
     /** The scope's {@code parameters} list, as {@link ParquetGroups#readParams} reads it, in both layouts. */
@@ -324,8 +385,29 @@ final class ColumnResolver {
     // ---- paths ------------------------------------------------------------------------------------------------
 
     /** The dotted path of {@code field} below the facet's table or packed struct. */
-    private String path(String field) {
+    String path(String field) {
         return prefix.isEmpty() ? field : prefix + "." + field;
+    }
+
+    /**
+     * The primitive type of {@code field} of {@code row}.
+     *
+     * @throws MzPeakException if the field is a struct or a list
+     */
+    private PrimitiveType scalar(Group row, String field) {
+        Type type = row.getType().getType(field);
+        if (!type.isPrimitive()) {
+            throw new MzPeakException(member + ": " + path(field) + " is a struct or list column, expected a scalar");
+        }
+        return type.asPrimitiveType();
+    }
+
+    /** Throws unless {@code type} is one of {@code accepted}; the message names the member and the field. */
+    private void requireType(String field, PrimitiveType type, Set<PrimitiveTypeName> accepted, String expected) {
+        if (!accepted.contains(type.getPrimitiveTypeName())) {
+            throw new MzPeakException(member + ": " + path(field) + " is not " + expected + ": "
+                    + type.getPrimitiveTypeName());
+        }
     }
 
     /** The field directly in this scope that the facet-relative {@code dottedPath} names, or {@code null}. */

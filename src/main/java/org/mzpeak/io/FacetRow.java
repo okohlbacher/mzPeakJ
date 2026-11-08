@@ -59,14 +59,24 @@ record FacetRow(Facet facet, Group group, ColumnResolver columns) {
         return value;
     }
 
-    /** The struct {@code struct} of this row, or {@code null} when it is absent or null. */
+    /**
+     * The struct {@code struct} of this row, or {@code null} when it is absent or null.
+     *
+     * @throws MzPeakException if {@code struct} is a scalar column holding a value in this row
+     */
     FacetRow child(String struct) {
+        requireGroup(struct, "a struct");
         Group g = ParquetGroups.optGroup(group, struct);
         return g == null ? null : new FacetRow(facet, g, columns.child(struct));
     }
 
-    /** The element structs of the list {@code listField} of this row, in list order; empty when absent or null. */
+    /**
+     * The element structs of the list {@code listField} of this row, in list order; empty when absent or null.
+     *
+     * @throws MzPeakException if {@code listField} is a scalar column holding a value in this row
+     */
     List<FacetRow> children(String listField) {
+        requireGroup(listField, "a list of structs");
         List<Group> elements = ParquetGroups.groupList(group, listField);
         if (elements.isEmpty()) {
             return List.of();
@@ -77,6 +87,14 @@ record FacetRow(Facet facet, Group group, ColumnResolver columns) {
             out.add(new FacetRow(facet, element, elementColumns));
         }
         return Collections.unmodifiableList(out);
+    }
+
+    /** Throws when {@code field} holds a value in this row but is a scalar column rather than {@code expected}. */
+    private void requireGroup(String field, String expected) {
+        if (ParquetGroups.has(group, field) && group.getType().getType(field).isPrimitive()) {
+            throw new MzPeakException(columns.member() + ": " + columns.path(field) + " is a scalar column, expected "
+                    + expected);
+        }
     }
 
     /**

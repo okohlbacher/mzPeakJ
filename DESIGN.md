@@ -56,7 +56,8 @@ Members, offsets and the archive itself may exceed 4 GiB:
 The manifest lists every member under `files`. Each entry carries `name`, `entity_type`, `data_kind`,
 `column_mapping` (alias `metadata_mapping`; see §2.2), `parameters` and `checksum` (lowercase hex SHA-512 of the
 member). The `metadata` object carries the format `version`, the `cv_list`, the `scan_settings_list` and the
-file-level documents (§7).
+file-level documents (§7). An entry without a `name` makes the parser throw, naming its position and role, as both
+references reject it.
 
 The role `(entity_type, data_kind)` identifies a member. **Resolve members by role, never by file name.**
 `MzPeakManifest` parses both strings as the Rust reference does (`FromStr`): lowercased and trimmed, with
@@ -145,6 +146,8 @@ taking only a field directly in the current scope:
 3. the `ColumnTable` fallbacks: spec alternates, then pin-era names (§2.4);
 4. names given by the caller.
 
+Steps 2 to 4 never take a field that the member's `column_mapping` assigns to another accession.
+
 `ColumnTable` is the constant column identity of the nine facets, shared by reader and writer. Its canonical
 rows are the union of the `column_mapping`s of the 8 current example manifests, copied verbatim. Paths are
 dotted and omit list and element levels (`scan_windows.scan_window_lower_limit`). Example_Processed.img stores
@@ -154,14 +157,21 @@ A **term marker** column (`term_marker: true`) holds child-term CURIEs of its te
 example `spectrum_representation` = `MS:1000128` or `activation.dissociation_method` = `MS:1000133`. A
 boolean term marker holds presence flags; only TRUE counts.
 
+A mapping's `unit` is a unit CURIE when given as a string. Given as a JSON array, it is the path of a column of
+per-row unit CURIEs (Rust `PathOrCURIE`), kept apart as `ColumnMapping.unitPath`; that column is not resolved
+yet, so the mapped values have no unit.
+
 **Typed reads** go through `ParquetGroups` and are unsigned-aware: uint8, uint16 and uint32 cells are not
-sign-extended; a uint64 cell with the high bit set throws.
+sign-extended; a uint64 cell with the high bit set throws. A column of the wrong shape or physical type (a scalar
+where a struct or a list is expected, a struct where a scalar is, a non-numeric list) throws an `MzPeakException`
+that names the member and the column, in both layouts.
 
 **Leftovers.** Scalar columns that no decoder consumes become Params (split layout only). Only primitive,
 non-repeated fields directly in the scope are visited. Structural columns (`ColumnTable.structural`: keys such
 as `index`, `id`, `source_index`, `scan_index` or `precursor_index`, and bookkeeping columns such as
-`parameters`, `auxiliary_arrays`, `number_of_auxiliary_arrays` or `data_processing_id`), consumed columns and
-null cells are skipped. Unknown `opt_` columns become Params like any other unmapped column.
+`parameters`, `auxiliary_arrays`, `number_of_auxiliary_arrays`, `data_processing_id` or the spec's
+`data_processing_ref`), consumed columns and null cells are skipped. Unknown `opt_` columns become Params like
+any other unmapped column.
 
 | Column | Param |
 |---|---|
@@ -180,21 +190,25 @@ and dropped.
 | Decoder | Fields |
 |---|---|
 | `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers |
-| `ScanRowDecoder` | MS:1000016 scan start time, MS:1000927 ion injection time, MS:1000512 filter string, MS:1000616 preset scan configuration; `instrument_configuration_id`; `spectrum_reference`; `scan_windows` (MS:1000501/MS:1000500, a window needs both); `parameters`; typed ion mobility (§5); IMS:1000050/51 positions as Long Params when the list lacks them; leftovers |
+| `ScanRowDecoder` | MS:1000016 scan start time in minutes (converted from its mapping's unit: second, millisecond or hour; another unit, or a unit column, throws), MS:1000927 ion injection time, MS:1000512 filter string, MS:1000616 preset scan configuration; `instrument_configuration_id`; `spectrum_reference`; `scan_windows` (MS:1000501/MS:1000500, a window needs both); `parameters`; typed ion mobility (§5); IMS:1000050/51 positions as Long Params when the list lacks them; leftovers |
 | `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
 | `SelectedIonRowDecoder` | MS:1000744 (a row without it is skipped), MS:1000041, MS:1000042, `parameters`, typed ion mobility, leftovers |
 
 ### 2.3 One assembler for both layouts
 
 `SpectrumFacetAssembler` takes the rows of both layouts, keyed as above, and builds the `SpectrumDescription`s
-sorted by index. `PrecursorJoin` attaches the precursors of one spectrum. Its key is
+sorted by index. A spectrum without a `time` takes the smallest finite scan start time as its retention time,
+which is where the Rust reader takes it from. `PrecursorJoin` attaches the precursors of one spectrum. Its key is
 `(source_index, precursor_index)`, null equal to null:
 
-- precursors keep their file order;
+- precursors keep their file order, as in the Python reader (the Rust reference pushes them in reverse, so its
+  first precursor is the one with the highest `precursor_index`);
 - a selected ion goes to the **first** precursor with its key; one whose key no precursor has goes to the
   spectrum's first precursor (the Rust reference falls back to the last one);
 - selected ions of a spectrum without precursor rows form a precursor-less `Precursor` (the Rust reference
-  drops them).
+  drops them);
+- a selected-ion row whose m/z is null is dropped (the Rust reference keeps the ion with m/z 0.0, its charge and
+  its intensity).
 
 Every example has one precursor per MSn spectrum, so the divergences do not show there. Two precursors of one
 spectrum that share a key cannot be told apart by either reader.
@@ -341,7 +355,8 @@ encoded values fit in uint16; this is transparent to the reader.
 
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
 misdecoded: a grid chunk, an unknown `chunk_encoding`, Numpress intensity that decodes to values without a
-Numpress m/z source, and a value in a `*numpress*` column the plan does not decode.
+Numpress m/z source, Numpress m/z that decodes to values without an intensity column, and a value in a
+`*numpress*` column the plan does not decode.
 
 **Coordinate grids are rejected.** A chunk with `chunk_encoding` `MS:1003826` (the draft coordinate-grid
 encoding) throws `unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type <type> for
@@ -739,8 +754,8 @@ expected values and says why.
 - **Metadata not decoded:** products facets; chromatogram precursor and selected-ion facets; the wavelength
   scans facet; Params of chromatograms and wavelength spectra; precursor- and isolation-window-scope leftovers;
   leftover Params in the legacy packed layout.
-- **Precursor join.** The reference-identical join (last precursor for unmatched ions, orphan ions dropped)
-  is not ported (§2.3).
+- **Precursor join.** The reference-identical join (precursors in reverse, last precursor for unmatched ions,
+  orphan ions dropped, null-m/z ions kept) is not ported (§2.3).
 - **Null fill.** The reference readers' local-median rule is not ported (§4.3).
 - **Provenance and signature** members are ignored, and the items of the draft imaging profile (such as a
   pixel-grid API) are not implemented.

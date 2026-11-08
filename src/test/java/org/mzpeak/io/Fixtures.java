@@ -9,8 +9,9 @@ import java.util.List;
  *
  * <ul>
  *   <li>{@link #CURRENT}: the 8 examples of HUPO-PSI/mzPeak 2ee2589 (split metadata facets, array index,
- *       SHA-512 checksums), byte-identical to upstream. The reader reads their spectrum metadata; their
- *       chromatogram and wavelength-spectrum metadata are not supported yet.
+ *       SHA-512 checksums), byte-identical to upstream. The reader reads their spectrum metadata (RD-5),
+ *       chromatogram metadata (RD-8) and wavelength-spectrum metadata (RD-9), and decodes the grid-encoded signal
+ *       of diaPASEF.grid (RD-20).
  *   <li>{@link #LEGACY}: the 5 examples of HUPO-PSI/mzPeak 29e59b2 (packed metadata layout). They guard the
  *       packed layout that mzPeakJ 0.10.3 and earlier write and the existing tests run on.
  * </ul>

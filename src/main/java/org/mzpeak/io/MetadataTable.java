@@ -41,15 +41,17 @@ final class MetadataTable {
         MessageType schema = footer.schema();
         String key = FacetRow.keyColumn(schema, facet);
         switch (MetadataShape.detect(footer, facet.packedStruct(), key, member)) {
-            case PACKED -> packed(file, schema.getType(facet.packedStruct()).asGroupType(), facet, handler);
+            case PACKED -> packed(file, schema.getType(facet.packedStruct()).asGroupType(), facet, member,
+                    handler);
             case SPLIT -> split(file, ColumnResolver.split(schema, entry, facet), facet, member, key, handler);
             case EMPTY -> {
             }
         }
     }
 
-    private static void packed(InputFile file, GroupType struct, Facet facet, Consumer<FacetRow> handler) {
-        ColumnResolver columns = ColumnResolver.packed(struct, facet);
+    private static void packed(InputFile file, GroupType struct, Facet facet, String member,
+                               Consumer<FacetRow> handler) {
+        ColumnResolver columns = ColumnResolver.packed(struct, facet, member);
         String key = FacetRow.keyColumn(struct, facet);
         ParquetGroups.forEach(file, row -> {
             Group g = ParquetGroups.optGroup(row, struct.getName());

@@ -61,12 +61,30 @@ final class SpectrumFacetAssembler {
             List<Precursor> precursors = PrecursorJoin.join(
                     precursorsBySource.get(b.index), selectedIonsBySource.get(b.index));
             out.add(new SpectrumDescription(
-                    b.index, b.id, b.msLevel, b.time, b.polarity, b.continuity,
+                    b.index, b.id, b.msLevel, retentionTime(b.time, scans), b.polarity, b.continuity,
                     b.numberOfDataPoints, b.numberOfPeaks, scans, precursors,
                     b.spectrumParams));
         }
         out.sort((a, b) -> Long.compare(a.index(), b.index()));
         return new Decoded(out, deltaModels);
+    }
+
+    /**
+     * The spectrum's {@code time}, or, when that is NaN (absent), the smallest finite start time of its scans, which
+     * is where the Rust reader takes the retention time from; NaN when there is neither.
+     */
+    private static double retentionTime(double time, List<ScanEvent> scans) {
+        if (!Double.isNaN(time)) {
+            return time;
+        }
+        double earliest = Double.NaN;
+        for (ScanEvent scan : scans) {
+            double start = scan.startTime();
+            if (Double.isFinite(start) && (Double.isNaN(earliest) || start < earliest)) {
+                earliest = start;
+            }
+        }
+        return earliest;
     }
 
     private static void bucket(Map<Long, List<FacetRow>> target, long key, FacetRow row) {

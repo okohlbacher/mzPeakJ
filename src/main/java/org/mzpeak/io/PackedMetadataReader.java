@@ -24,12 +24,15 @@ final class PackedMetadataReader {
     private PackedMetadataReader() {
     }
 
-    /** Reads every row of {@code metadataFile}, whose {@code schema} has the packed shape, in one pass. */
-    static Decoded read(InputFile metadataFile, GroupType schema) {
-        ColumnResolver spectrumColumns = packed(schema, Facet.SPECTRUM);
-        ColumnResolver scanColumns = packed(schema, Facet.SPECTRUM_SCAN);
-        ColumnResolver precursorColumns = packed(schema, Facet.SPECTRUM_PRECURSOR);
-        ColumnResolver selectedIonColumns = packed(schema, Facet.SPECTRUM_SELECTED_ION);
+    /**
+     * Reads every row of {@code metadataFile}, whose {@code schema} has the packed shape, in one pass; column errors
+     * name the member {@code member}.
+     */
+    static Decoded read(InputFile metadataFile, GroupType schema, String member) {
+        ColumnResolver spectrumColumns = packed(schema, Facet.SPECTRUM, member);
+        ColumnResolver scanColumns = packed(schema, Facet.SPECTRUM_SCAN, member);
+        ColumnResolver precursorColumns = packed(schema, Facet.SPECTRUM_PRECURSOR, member);
+        ColumnResolver selectedIonColumns = packed(schema, Facet.SPECTRUM_SELECTED_ION, member);
         SpectrumFacetAssembler assembler = new SpectrumFacetAssembler();
 
         ParquetGroups.forEach(metadataFile, row -> {
@@ -54,12 +57,12 @@ final class PackedMetadataReader {
      * The resolver of {@code facet}'s packed struct, or {@code null} when the schema has no such struct (then no row
      * has one either).
      */
-    private static ColumnResolver packed(GroupType schema, Facet facet) {
+    private static ColumnResolver packed(GroupType schema, Facet facet, String member) {
         String struct = facet.packedStruct();
         if (!schema.containsField(struct) || schema.getType(struct).isPrimitive()) {
             return null;
         }
-        return ColumnResolver.packed(schema.getType(struct).asGroupType(), facet);
+        return ColumnResolver.packed(schema.getType(struct).asGroupType(), facet, member);
     }
 
     private static void indexFacet(Group row, Facet facet, ColumnResolver columns, SpectrumFacetAssembler assembler) {

@@ -252,11 +252,17 @@ class SpectrumArrayStoreCharacterizationTest {
         assertExact("intensity", pic, arrays.intensity());
     }
 
+    /**
+     * Throws since the P0 final-review fix (p0-final 304f02f), which this characterization recorded before as an
+     * empty spectrum: decoded m/z is never dropped. UnsupportedEncodingTest has the empty-payload case.
+     */
     @Test
-    void numpressMzWithoutAnyIntensityGivesAnEmptySpectrum() {
-        SpectrumArrayStore.Arrays arrays = read(writeChunk(Row0.INSTANCE.numpressMz()), 0, false);
-        assertThat(arrays.mz()).isEmpty();
-        assertThat(arrays.intensity()).isEmpty();
+    void numpressMzWithoutAnyIntensityThrows() {
+        Path file = writeChunk(Row0.INSTANCE.numpressMz());
+        assertThatThrownBy(() -> read(file, 0, false))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk: Numpress linear m/z without an intensity column (SLOF, PIC or"
+                        + " intensity) for spectrum_index 0");
     }
 
     @Test

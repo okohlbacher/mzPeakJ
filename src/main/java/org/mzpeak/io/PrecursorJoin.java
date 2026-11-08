@@ -13,12 +13,16 @@ import java.util.Objects;
  * spectrum already share their {@code source_index}, so the join key {@code (source_index, precursor_index)} comes
  * down to {@code precursor_index}, with null equal to null:
  * <ul>
- *   <li>precursors keep their file order;
+ *   <li>precursors keep their file order, as in the Python reader (the Rust reference pushes a spectrum's
+ *       precursors in reverse, so its first precursor is the one with the highest {@code precursor_index});
  *   <li>a selected ion goes to the first precursor with its key, and one whose key no precursor has goes to the
  *       first precursor (the Rust reference falls back to the last one);
  *   <li>selected ions without any precursor row form a precursor-less {@link Precursor} (the Rust reference drops
- *       them).
+ *       them);
+ *   <li>a selected-ion row whose m/z is null is dropped ({@link SelectedIonRowDecoder#decode}; the Rust reference
+ *       keeps the ion with m/z 0.0, its charge and its intensity).
  * </ul>
+ * Aligning these with the reference waits for a multi-precursor fixture.
  */
 final class PrecursorJoin {
 

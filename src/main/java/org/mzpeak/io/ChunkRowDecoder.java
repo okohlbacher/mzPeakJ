@@ -18,8 +18,8 @@ import java.util.Map;
  * <ul>
  *   <li>A value in a Numpress column (the axis's MS:1002312 transform, or a SLOF or PIC intensity transform) selects
  *       the Numpress decoder: column presence wins over a known chunk_encoding. The intensity is SLOF, then PIC, then
- *       the plain list, chosen per row. Numpress intensity that decodes to values without Numpress m/z throws; an
- *       empty payload is skipped.
+ *       the plain list, chosen per row. Numpress intensity that decodes to values without Numpress m/z throws, as
+ *       does Numpress m/z that decodes to values without any intensity column; an empty payload is skipped.
  *   <li>Otherwise the axis values are decoded from the chunk start with a null-aware delta (chunk_encoding null or
  *       MS:1003089) or kept absolute (MS:1000576, MS:1003088), and paired with the plain intensity list.
  *   <li>A grid chunk (chunk_encoding MS:1003826, also on a Numpress row) takes the m/z from the axis's grid
@@ -201,8 +201,9 @@ final class ChunkRowDecoder {
      * where m/z is Numpress-encoded but intensity is stored as a plain intensity LIST. We detect
      * this by falling back to the plain intensity column when no intensity Numpress bytes are present.
      *
-     * <p>Numpress intensity without Numpress m/z has no m/z to pair with: an empty payload is skipped, and
-     * one that decodes to values throws rather than dropping them.
+     * <p>Numpress intensity without Numpress m/z has no m/z to pair with, and Numpress m/z without an intensity
+     * column has no intensity: an empty payload is skipped, and one that decodes to values throws rather than
+     * dropping them.
      */
     private Row decodeNumpress(Group chunk, String chunkEncoding, long si) {
         if (!has(chunk, linear)) {
@@ -222,7 +223,11 @@ final class ChunkRowDecoder {
             // Mixed format: m/z is Numpress-compressed, intensity is a plain double list.
             chunkIntensity = ParquetGroups.doubleListNullable(chunk, intensity);
         } else {
-            // No intensity data at all — skip this chunk; the spectrum will materialise as empty.
+            // No intensity column: only an empty m/z payload is skipped; decoded m/z is never dropped.
+            if (axis.length > 0) {
+                throw new MzPeakException("unsupported chunk: Numpress linear m/z without an intensity column"
+                        + " (SLOF, PIC or intensity) for spectrum_index " + si);
+            }
             return EMPTY;
         }
         if (axis.length != chunkIntensity.length) {

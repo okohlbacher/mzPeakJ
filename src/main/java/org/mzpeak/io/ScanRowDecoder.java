@@ -45,7 +45,7 @@ final class ScanRowDecoder {
         ColumnResolver columns = scan.columns();
         Group g = scan.group();
         Set<String> consumed = new HashSet<>();
-        Double start = columns.doubleValue(g, consume(consumed, columns.resolve(SCAN_START_TIME)));
+        Double start = startTimeInMinutes(columns, g, consume(consumed, columns.resolve(SCAN_START_TIME)));
         Double injection = columns.doubleValue(g, consume(consumed, columns.resolve(ION_INJECTION_TIME)));
         String filter = columns.stringValue(g, consume(consumed, columns.resolve(FILTER_STRING)));
         Integer presetScan = columns.intValue(g, consume(consumed, columns.resolve(PRESET_SCAN_CONFIGURATION)));
@@ -128,5 +128,37 @@ final class ScanRowDecoder {
             consumed.add(field);
         }
         return field;
+    }
+
+    /**
+     * The scan start time cell of {@code field} in minutes, converted from the unit of its mapping (the
+     * column_mapping, else {@link ColumnTable}, which gives minutes): minutes or no unit as is, seconds, milliseconds
+     * and hours converted, as the Rust reader does. {@code null} when the cell is null or the field absent.
+     *
+     * @throws MzPeakException if the unit is any other, or is given per row by a unit column (not resolved yet)
+     */
+    private static Double startTimeInMinutes(ColumnResolver columns, Group g, String field) {
+        Double value = columns.doubleValue(g, field);
+        if (value == null) {
+            return null;
+        }
+        MzPeakManifest.ColumnMapping mapping = columns.mapping(field).orElse(null);
+        if (mapping != null && mapping.unitPath() != null) {
+            throw new MzPeakException(columns.member() + ": scan start time column " + columns.path(field)
+                    + " takes its unit from the column " + mapping.unitPath() + ", which is not supported");
+        }
+        String unit = mapping == null ? null : mapping.unit();
+        if (unit == null) {
+            return value;
+        }
+        return switch (unit) {
+            case "UO:0000031" -> value; // minute
+            case "UO:0000010" -> value / 60; // second
+            case "UO:0000028" -> value / 60_000; // millisecond
+            case "UO:0000032" -> value * 60; // hour
+            default -> throw new MzPeakException(columns.member() + ": scan start time column " + columns.path(field)
+                    + " has the unit " + unit + "; supported are minute (UO:0000031), second (UO:0000010),"
+                    + " millisecond (UO:0000028) and hour (UO:0000032)");
+        };
     }
 }

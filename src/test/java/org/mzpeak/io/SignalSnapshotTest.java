@@ -38,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li><b>Legacy set</b> ({@link Fixtures#LEGACY}) through the public API,
  *       {@link MzPeakReader#open(java.nio.file.Path, boolean)}, for both {@code reconstructProfile} values: per
  *       spectrum its m/z, intensity, centroid m/z and centroid intensity (in {@link Spectrum#peaks()} order); per
- *       chromatogram its time and intensity; per wavelength spectrum its wavelength and intensity.
+ *       chromatogram its time and intensity; per wavelength spectrum its wavelength and intensity. A separate digest
+ *       per fixture holds each peak's {@link CentroidPeak#index()} as a double.
  *   <li><b>Current set</b> ({@link Fixtures#CURRENT}) without diaPASEF.grid, whose grid chunks RD-12 and RD-20 change
  *       on purpose. The reader cannot open this layout yet, so the spectrum data and peaks members go straight through
  *       {@link SpectrumArrayStore#load} with an empty delta-model map, for both {@code reconstructProfile} values.
@@ -251,6 +252,28 @@ class SignalSnapshotTest {
                     "member_rows=0 entries=9 absent=0-8 values=0",
                     "6d977585e8775ed96c4dd2e80bd485868cfe0baaa1ffa137f9673a4967d502f0"));
 
+    /**
+     * Key {@code legacy <fixture> peak_indices} to the digest of every peak's {@link CentroidPeak#index()} through the
+     * public API, the same in both reconstructProfile modes; recorded on base 978ef13. Kept apart from
+     * {@link #EXPECTED}, whose digests stay as recorded.
+     */
+    private static final Map<String, String> PEAK_INDICES = Map.ofEntries(
+            snap("legacy small.mzpeak peak_indices",
+                    "entries=48 absent=none values=25344",
+                    "7820963326e658bb58f148b84d92ddd51065eea61c7a7ef2a84200c955c28201"),
+            snap("legacy small.chunked.mzpeak peak_indices",
+                    "entries=48 absent=none values=50247",
+                    "eec1a8103a0fdf7bbb022bc6509978fc34aa3f5e66375a3e61af3cd1c08d4fae"),
+            snap("legacy small.numpress.mzpeak peak_indices",
+                    "entries=48 absent=none values=25344",
+                    "7820963326e658bb58f148b84d92ddd51065eea61c7a7ef2a84200c955c28201"),
+            snap("legacy small.unpacked.mzpeak peak_indices",
+                    "entries=48 absent=none values=25344",
+                    "7820963326e658bb58f148b84d92ddd51065eea61c7a7ef2a84200c955c28201"),
+            snap("legacy has_uv.mzpeak peak_indices",
+                    "entries=212 absent=none values=24310",
+                    "3fdb61181f762af7a3a0de781980070539b1f373312e5348ecc3324fa2f7cf75"));
+
     static Stream<Arguments> legacyCases() {
         return Fixtures.LEGACY_NAMES.stream()
                 .flatMap(name -> Stream.of(Arguments.of(name, false), Arguments.of(name, true)));
@@ -266,6 +289,26 @@ class SignalSnapshotTest {
     void legacyArraysThroughThePublicApi(String fixture, boolean reconstructProfile) {
         String prefix = "legacy " + fixture + " reconstructProfile=" + reconstructProfile + " ";
         assertThat(legacySnapshot(fixture, reconstructProfile)).containsExactlyInAnyOrderEntriesOf(expected(prefix));
+    }
+
+    /** Each peak's {@link CentroidPeak#index()}, its position in the stored peak list, is pinned like the arrays. */
+    @ParameterizedTest(name = "{0}, reconstructProfile={1}")
+    @MethodSource("legacyCases")
+    void legacyPeakIndicesThroughThePublicApi(String fixture, boolean reconstructProfile) {
+        SignalDigest digest = new SignalDigest("");
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy(fixture), reconstructProfile)) {
+            for (Spectrum s : reader) {
+                List<CentroidPeak> peaks = s.peaks();
+                double[] indices = new double[peaks.size()];
+                for (int i = 0; i < peaks.size(); i++) {
+                    indices[i] = peaks.get(i).index();
+                }
+                digest.entry(s.index(), indices);
+            }
+        }
+        String key = "legacy " + fixture + " peak_indices";
+        assertThat(PEAK_INDICES).containsKey(key);
+        assertThat(digest.summary()).isEqualTo(PEAK_INDICES.get(key));
     }
 
     @ParameterizedTest(name = "{0}, reconstructProfile={1}")
@@ -297,10 +340,13 @@ class SignalSnapshotTest {
         String original = digest(0, mz, intensity);
         assertThat(digest(0, mz.clone(), intensity.clone())).isEqualTo(original);
 
-        double[] flipped = mz.clone();
-        int middle = flipped.length / 2;
-        flipped[middle] = Double.longBitsToDouble(Double.doubleToRawLongBits(flipped[middle]) ^ 1L);
-        assertThat(digest(0, flipped, intensity)).isNotEqualTo(original);
+        assertThat(digest(0, flipped(mz, mz.length / 2), intensity)).isNotEqualTo(original);
+        // A flip in the first and in the last buffer window of a stream that spans several windows: the digest
+        // covers every window, the final partial one included. Stream: index, array count, then length and values.
+        long lastPosition = 3L + mz.length + 1 + intensity.length - 1;
+        assertThat(lastPosition / SignalDigest.BUFFER_LONGS).as("last buffer window").isGreaterThanOrEqualTo(2);
+        assertThat(digest(0, flipped(mz, 0), intensity)).isNotEqualTo(original);
+        assertThat(digest(0, mz, flipped(intensity, intensity.length - 1))).isNotEqualTo(original);
         // The length prefix tells arrays apart, the raw bits tell -0.0 from 0.0, and a marker is not an empty entry.
         assertThat(digest(0, new double[] {1, 2}, new double[] {3}))
                 .isNotEqualTo(digest(0, new double[] {1}, new double[] {2, 3}));
@@ -308,6 +354,13 @@ class SignalSnapshotTest {
         SignalDigest marker = new SignalDigest("");
         marker.marker(0);
         assertThat(sha256(marker)).isNotEqualTo(digest(0));
+    }
+
+    /** A copy of {@code values} with the lowest bit of element {@code i} flipped. */
+    private static double[] flipped(double[] values, int i) {
+        double[] out = values.clone();
+        out[i] = Double.longBitsToDouble(Double.doubleToRawLongBits(out[i]) ^ 1L);
+        return out;
     }
 
     private static String digest(long index, double[]... arrays) {
@@ -412,9 +465,13 @@ class SignalSnapshotTest {
      * indices as ranges and the total number of values.
      */
     static final class SignalDigest {
+        /** The int64 values the buffer holds before it is passed to the digest (a 32 KB window). */
+        static final int BUFFER_LONGS = 4096;
+
         private final String prefix;
         private final MessageDigest sha = sha256();
-        private final ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES * 4096).order(ByteOrder.LITTLE_ENDIAN);
+        private final ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES * BUFFER_LONGS)
+                .order(ByteOrder.LITTLE_ENDIAN);
         private final List<Long> absent = new ArrayList<>();
         private long entries;
         private long values;

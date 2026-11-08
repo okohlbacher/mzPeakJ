@@ -10,6 +10,7 @@ import org.apache.parquet.hadoop.example.ExampleParquetWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.io.LocalOutputFile;
+import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
@@ -32,8 +33,8 @@ import static org.assertj.core.api.Assertions.within;
 /**
  * RD-12: a spectrum chunk the reader cannot decode fails with a precise {@link MzPeakException} instead of being
  * dropped or misdecoded. Covered: grid chunks ({@code MS:1003826}) of a grid type RD-20 does not decode, or without
- * the grid encoding, unknown {@code chunk_encoding} CURIEs, Numpress intensity without a Numpress m/z source, and
- * unknown {@code *numpress*} columns that carry a value.
+ * the grid encoding, unknown {@code chunk_encoding} CURIEs, Numpress intensity without a Numpress m/z source, Numpress
+ * m/z without an intensity source, and unknown {@code *numpress*} columns (list or scalar) that carry a value.
  *
  * <p>The cases write constructed chunk rows whose values come from row 0 of the current small.numpress data member
  * (spectrum 0, chunk_encoding {@code MS:1002312}, Numpress linear m/z and SLOF intensity) or from row 0 of the
@@ -123,6 +124,29 @@ class UnsupportedEncodingTest {
         assertThat(arrays.intensity()).isEmpty();
     }
 
+    // ---- Numpress m/z without an intensity source -------------------------------------------------------------
+
+    @Test
+    void numpressMzWithoutAnyIntensityColumnFails() {
+        // On 1e400ed the decoded m/z was dropped and spectrum 0 read as empty.
+        ChunkRow row = Row0.INSTANCE.asStored();
+        row.slof = null;
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk: Numpress linear m/z without an intensity column (SLOF, PIC or"
+                        + " intensity) for spectrum_index 0");
+    }
+
+    @Test
+    void anEmptyNumpressMzPayloadWithoutAnIntensityColumnIsSkipped() {
+        ChunkRow row = Row0.INSTANCE.asStored();
+        row.mzLinear = new byte[0];
+        row.slof = null;
+        SpectrumArrayStore.Arrays arrays = read(row);
+        assertThat(arrays.mz()).isEmpty();
+        assertThat(arrays.intensity()).isEmpty();
+    }
+
     // ---- unknown Numpress columns -----------------------------------------------------------------------------
 
     @Test
@@ -145,6 +169,17 @@ class UnsupportedEncodingTest {
                 .isInstanceOf(MzPeakException.class)
                 .hasMessageContaining("intensity_f32_dc_numpress_slof_bytes")
                 .hasMessageContaining("spectrum_index 0");
+    }
+
+    @Test
+    void aScalarNumpressColumnWithAValueFailsNamingTheColumn() {
+        // A primitive BINARY column has no list level: any non-null cell carries a value.
+        ChunkRow row = Row0.INSTANCE.asStored();
+        row.scalarSlof = Row0.INSTANCE.slof;
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("unsupported Numpress column intensity_numpress_slof_binary for"
+                        + " spectrum_index 0");
     }
 
     @Test
@@ -354,12 +389,16 @@ class UnsupportedEncodingTest {
         byte[] slof;
         byte[] pic;
         byte[] extraSlof;
+        byte[] scalarSlof;
         String gridType;
         double[] gridParameters;
         double[] gridIndices;
     }
 
-    /** The chunk columns of the current fixtures, plus PIC, a dtype-suffixed SLOF column and an m/z grid. */
+    /**
+     * The chunk columns of the current fixtures, plus PIC, a dtype-suffixed SLOF column, a scalar BINARY Numpress
+     * column and an m/z grid.
+     */
     private static final MessageType SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
                     .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false))
@@ -373,6 +412,7 @@ class UnsupportedEncodingTest {
                     .addField(byteList("intensity_numpress_slof_bytes"))
                     .addField(byteList("intensity_numpress_pic_bytes"))
                     .addField(byteList("intensity_f32_dc_numpress_slof_bytes"))
+                    .optional(PrimitiveTypeName.BINARY).named("intensity_numpress_slof_binary")
                     .addField(Types.optionalGroup()
                             .required(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                             .named("grid_type")
@@ -435,6 +475,9 @@ class UnsupportedEncodingTest {
         addBytes(chunk, "intensity_numpress_slof_bytes", row.slof);
         addBytes(chunk, "intensity_numpress_pic_bytes", row.pic);
         addBytes(chunk, "intensity_f32_dc_numpress_slof_bytes", row.extraSlof);
+        if (row.scalarSlof != null) {
+            chunk.add("intensity_numpress_slof_binary", Binary.fromConstantByteArray(row.scalarSlof));
+        }
         if (row.gridType != null) {
             Group grid = chunk.addGroup("mz_grid");
             grid.add("grid_type", row.gridType);

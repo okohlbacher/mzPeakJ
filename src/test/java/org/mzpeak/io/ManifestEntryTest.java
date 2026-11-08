@@ -171,8 +171,9 @@ class ManifestEntryTest {
         assertThat(manifest(copy).files()).isEqualTo(manifest(original).files());
     }
 
+    /** A unit given as a JSON array is a unit-column path (Rust PathOrCURIE), kept apart from a unit CURIE. */
     @Test
-    void unitGivenAsArrayIsJoinedWithDots(@TempDir Path tmp) throws IOException {
+    void unitGivenAsArrayIsAUnitPathJoinedWithDots(@TempDir Path tmp) throws IOException {
         Path copy = copyDataset(Fixtures.current("small.unpacked.mzpeak"), tmp);
         ObjectNode index = rawIndex(copy);
         ObjectNode energy = (ObjectNode) mappingAt(rawEntry(index, "spectra_metadata_precursors.parquet"),
@@ -182,9 +183,12 @@ class ManifestEntryTest {
 
         Entry e = entry(manifest(copy), "spectra_metadata_precursors.parquet");
 
-        assertThat(e.columnForAccession("MS:1000045")).map(ColumnMapping::unit)
-                .contains("activation.opt_collision_energy_unit");
-        assertThat(e.columnForAccession("MS:1000827")).map(ColumnMapping::unit).contains("MS:1000040");
+        ColumnMapping parsedEnergy = e.columnForAccession("MS:1000045").orElseThrow();
+        assertThat(parsedEnergy.unit()).isNull();
+        assertThat(parsedEnergy.unitPath()).isEqualTo("activation.opt_collision_energy_unit");
+        ColumnMapping parsedTarget = e.columnForAccession("MS:1000827").orElseThrow();
+        assertThat(parsedTarget.unit()).isEqualTo("MS:1000040");
+        assertThat(parsedTarget.unitPath()).isNull();
     }
 
     @Test

@@ -225,7 +225,7 @@ final class MetadataColumns {
                     return Optional.empty();
                 }
                 scope = schema.getType(struct).asGroupType();
-                columns = ColumnResolver.packed(scope, facet);
+                columns = ColumnResolver.packed(scope, facet, member);
                 field = columns.resolve(accession);
                 if (field == null) {
                     field = uniqueWithPrefix(scope, accession.replace(':', '_') + "_");

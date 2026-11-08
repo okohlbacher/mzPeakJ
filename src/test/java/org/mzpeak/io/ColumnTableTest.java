@@ -296,7 +296,7 @@ class ColumnTableTest {
     @Test
     void structuralColumnsAreKeysAndBookkeeping() {
         assertThat(ColumnTable.structural(Facet.SPECTRUM)).contains("index", "id", "parameters",
-                "auxiliary_arrays", "number_of_auxiliary_arrays", "data_processing_id");
+                "auxiliary_arrays", "number_of_auxiliary_arrays", "data_processing_id", "data_processing_ref");
         assertThat(ColumnTable.structural(Facet.SPECTRUM_SCAN)).contains("source_index", "spectrum_index",
                 "scan_index", "parameters");
         assertThat(ColumnTable.structural(Facet.SPECTRUM_PRECURSOR)).contains("source_index", "precursor_index");

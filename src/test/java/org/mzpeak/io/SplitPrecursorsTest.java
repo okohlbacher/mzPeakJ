@@ -1,7 +1,11 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroup;
+import org.apache.parquet.io.InputFile;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
@@ -25,6 +29,7 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SpectrumDescription;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -239,6 +244,35 @@ class SplitPrecursorsTest {
                 new Param("ion mobility value", DEFAULT_ION_MOBILITY_TYPE, 0.75, null));
     }
 
+    /**
+     * Asymmetric isolation-window offsets keep their sides. Every fixture window is symmetric, so swapping the lower
+     * and upper offsets would otherwise go unnoticed; the packed layout has the same case in
+     * {@code PackedSpectrumMetadataCharacterizationTest}.
+     */
+    @Test
+    void asymmetricIsolationWindowOffsetsKeepTheirSides() {
+        Rows rows = Rows.load("split");
+        FacetRow original = rows.precursor(5, 1L);
+        ColumnResolver window = original.columns().child("isolation_window");
+        String lower = window.resolve("MS:1000828");
+        String upper = window.resolve("MS:1000829");
+        assertThat(lower).isEqualTo("isolation_window_lower_offset");
+        assertThat(upper).isEqualTo("isolation_window_upper_offset");
+
+        Group g = new SimpleGroup(original.group().getType());
+        copy(original.group(), g, Set.of("isolation_window"));
+        Group w = g.addGroup("isolation_window");
+        copy(original.group().getGroup("isolation_window", 0), w, Set.of(lower, upper));
+        addNumber(w, lower, 0.5);
+        addNumber(w, upper, 1.5);
+        FacetRow asymmetric = new FacetRow(original.facet(), g, original.columns());
+
+        Double target = rows.precursorOf(5).isolationWindow().targetMz();
+        assertThat(target).isNotNull();
+        assertThat(only(rows.assemble(5, List.of(asymmetric), List.of())).isolationWindow())
+                .isEqualTo(new IsolationWindow(target, 0.5, 1.5));
+    }
+
     // ---- leftovers and the column-over-list rule, on constructed split rows --------------------------------------
 
     /**
@@ -268,6 +302,37 @@ class SplitPrecursorsTest {
                 new Param("opt_activation_note", null, "pulsed", null),
                 new Param("activation energy", "MS:1000509", 2.0, ELECTRONVOLT),
                 new Param("free text", null, "kept", null));
+    }
+
+    /**
+     * A collision-energy unit given as a JSON array names a column of per-row unit CURIEs (Rust PathOrCURIE), which
+     * is not resolved yet: the energy keeps its value and gets no unit, rather than the column path as its unit.
+     */
+    @Test
+    void aCollisionEnergyUnitGivenAsAColumnPathGivesNoUnit() throws IOException {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            ObjectNode index = (ObjectNode) new ObjectMapper().readTree(source.readManifestBytes());
+            int edited = 0;
+            for (JsonNode file : index.path("files")) {
+                for (JsonNode m : file.path("column_mapping")) {
+                    if (file.path("name").asText().equals("spectra_metadata_precursors.parquet")
+                            && m.path("accession").asText().equals(COLLISION_ENERGY)) {
+                        ((ObjectNode) m).putArray("unit").add("collision_energy_unit");
+                        edited++;
+                    }
+                }
+            }
+            assertThat(edited).isEqualTo(1);
+            MzPeakSource view = withManifest(source, new ObjectMapper().writeValueAsBytes(index));
+            Entry entry = Facet.SPECTRUM_PRECURSOR.entry(MzPeakManifest.fromSource(view)).orElseThrow();
+            List<FacetRow> rows = new ArrayList<>();
+            MetadataTable.forEachRow(view, entry, Facet.SPECTRUM_PRECURSOR, rows::add);
+            FacetRow row = rows.stream().filter(r -> r.key() == 5).findFirst().orElseThrow();
+
+            assertThat(PrecursorRowDecoder.decode(row).activation().parameters())
+                    .filteredOn(p -> COLLISION_ENERGY.equals(p.accession()))
+                    .containsExactly(new Param("collision energy", COLLISION_ENERGY, 35.0, null));
+        }
     }
 
     /** A false boolean marker gives no Param, and a list entry is kept when its column is null. */
@@ -632,6 +697,30 @@ class SplitPrecursorsTest {
 
     // ---- helpers ---------------------------------------------------------------------------------------------
 
+    /** {@code source} with {@code manifest} in place of its own {@code mzpeak_index.json}. */
+    private static MzPeakSource withManifest(MzPeakSource source, byte[] manifest) {
+        return new MzPeakSource() {
+            @Override
+            public byte[] readManifestBytes() {
+                return manifest.clone();
+            }
+
+            @Override
+            public InputFile inputFile(String name) {
+                return source.inputFile(name);
+            }
+
+            @Override
+            public String describe() {
+                return source.describe();
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
     private static <T> T only(List<T> items) {
         assertThat(items).hasSize(1);
         return items.get(0);
@@ -703,6 +792,16 @@ class SplitPrecursorsTest {
         }
         if (unit != null) {
             item.add("unit", unit);
+        }
+    }
+
+    /** Adds {@code value} as the numeric field {@code field} of {@code g}, in the field's physical type. */
+    private static void addNumber(Group g, String field, double value) {
+        PrimitiveTypeName type = g.getType().getType(field).asPrimitiveType().getPrimitiveTypeName();
+        switch (type) {
+            case FLOAT -> g.add(field, (float) value);
+            case DOUBLE -> g.add(field, value);
+            default -> throw new AssertionError("unexpected " + type + " field " + field);
         }
     }
 

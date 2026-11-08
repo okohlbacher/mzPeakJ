@@ -55,13 +55,13 @@ final class WavelengthSpectrumStore {
      * Loads the members that {@code manifest} lists under the roles (wavelength spectrum, metadata) and (wavelength
      * spectrum, data arrays); error messages name the metadata member by its file name.
      *
-     * @return the store, or {@code null} when the manifest lacks either member or lists it without a name
+     * @return the store, or {@code null} when the manifest lacks either member
      */
     static WavelengthSpectrumStore load(MzPeakSource source, MzPeakManifest manifest) {
         Entry metadata = manifest.find(EntityType.WAVELENGTH_SPECTRUM, DataKind.METADATA).orElse(null);
         String dataName = manifest.find(EntityType.WAVELENGTH_SPECTRUM, DataKind.DATA_ARRAYS)
                 .map(Entry::name).orElse(null);
-        if (metadata == null || metadata.name() == null || dataName == null) {
+        if (metadata == null || dataName == null) {
             return null;
         }
         return load(WavelengthMetadataDecoder.decode(source, metadata), source.inputFile(dataName));

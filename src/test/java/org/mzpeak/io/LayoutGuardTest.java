@@ -1,6 +1,10 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.io.InputFile;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -149,6 +153,48 @@ class LayoutGuardTest {
                     .hasMessage(name + " has 217710 rows but neither the packed shape (top-level struct 'spectrum')"
                             + " nor the split shape (top-level column 'index'); columns found: [point]");
         }
+    }
+
+    // ---- detect on constructed schemas -------------------------------------------------------------------------
+
+    /** A primitive column named after the packed struct is no packed shape; the primitive key makes it split. */
+    @Test
+    void aScalarNamedAfterThePackedStructNextToAPrimitiveKeyIsSplit() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("spectrum")
+                .named("arrow_schema");
+        assertThat(MetadataShape.detect(new ParquetFooter(schema, 3, Map.of()), "spectrum", "index",
+                "constructed.parquet")).isEqualTo(MetadataShape.SPLIT);
+    }
+
+    /** A group-typed key column is no split shape: with rows and no packed struct, the member has neither shape. */
+    @Test
+    void aGroupTypedKeyWithoutThePackedStructThrows() {
+        MessageType schema = Types.buildMessage()
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("value")
+                    .named("index")
+                .optional(PrimitiveTypeName.DOUBLE).named("time")
+                .named("arrow_schema");
+        assertThatThrownBy(() -> MetadataShape.detect(new ParquetFooter(schema, 3, Map.of()), "spectrum", "index",
+                "constructed.parquet"))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("constructed.parquet has 3 rows but neither the packed shape (top-level struct 'spectrum')"
+                        + " nor the split shape (top-level column 'index'); columns found: [index, time]");
+    }
+
+    /** A schema with both a packed struct and a primitive key is packed (RD-3 note 6). */
+    @Test
+    void aSchemaWithBothShapesIsPacked() {
+        MessageType schema = Types.buildMessage()
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                    .named("spectrum")
+                .named("arrow_schema");
+        assertThat(MetadataShape.detect(new ParquetFooter(schema, 3, Map.of()), "spectrum", "index",
+                "constructed.parquet")).isEqualTo(MetadataShape.PACKED);
     }
 
     @Test
