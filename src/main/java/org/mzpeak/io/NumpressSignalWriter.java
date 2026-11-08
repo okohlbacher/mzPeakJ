@@ -9,6 +9,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
 import ms.numpress.MSNumpress;
+import org.mzpeak.io.ArrayIndex.BufferFormat;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Spectrum;
@@ -16,16 +17,19 @@ import org.mzpeak.model.Spectrum;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Map;
 
 import static org.mzpeak.io.ParquetOutput.UINT64;
 import static org.mzpeak.io.ParquetOutput.openWriter;
+import static org.mzpeak.io.ParquetOutput.signalFooter;
 
 /**
  * Writes the MS-Numpress chunk layout of {@link MzPeakWriter} for spectra_data and spectra_peaks: chunks of up to
  * 500 points, m/z encoded with Numpress linear and intensity with Numpress SLOF or PIC, each as a {@code list<uint8>}
  * byte list. A file has the column of its own intensity encoding only, and every row an empty {@code mz_chunk_values}
  * list. {@code mz_chunk_start} and {@code mz_chunk_end} are the chunk's first and last m/z, both inclusive, as the
- * reference writes them.
+ * reference writes them. Each file's footer holds the array index of its columns and the counts
+ * ({@link ParquetOutput#signalFooter}).
  */
 final class NumpressSignalWriter {
 
@@ -35,6 +39,9 @@ final class NumpressSignalWriter {
     /** Schemas of the Numpress chunk layout, one per intensity encoding: a file holds only its own transform column. */
     private static final MessageType SLOF_CHUNK_SCHEMA = chunkSchema(SLOF_COLUMN);
     private static final MessageType PIC_CHUNK_SCHEMA = chunkSchema(PIC_COLUMN);
+    /** The array indexes of the schemas above. */
+    private static final ArrayIndex SLOF_CHUNK_INDEX = chunkIndex(SLOF_COLUMN, MSNumpress.ACC_NUMPRESS_SLOF);
+    private static final ArrayIndex PIC_CHUNK_INDEX = chunkIndex(PIC_COLUMN, MSNumpress.ACC_NUMPRESS_PIC);
 
     /** Default number of m/z points per numpress chunk. */
     private static final int NUMPRESS_CHUNK_SIZE = 500;
@@ -73,6 +80,23 @@ final class NumpressSignalWriter {
                 .named("chunk_data");
     }
 
+    /**
+     * The array index of {@link #chunkSchema}, one entry per column in schema order: the spectrum index; the m/z
+     * axis columns, chunk start, end, values and encoding, and the linear bytes as the MS:1002312 transform; and the
+     * intensity, in detector counts, as {@code intensityTransform}.
+     */
+    private static ArrayIndex chunkIndex(String intensityColumn, String intensityTransform) {
+        return ArrayIndex.builder(ArrayIndex.CHUNK_PREFIX, SignalEntity.SPECTRUM)
+                .index("spectrum_index")
+                .axis("mz_chunk_start", BufferFormat.CHUNK_START, null)
+                .axis("mz_chunk_end", BufferFormat.CHUNK_END, null)
+                .axis("mz_chunk_values", BufferFormat.CHUNK_VALUES, null)
+                .axis("chunk_encoding", BufferFormat.CHUNK_ENCODING, null)
+                .axis("mz_numpress_linear_bytes", BufferFormat.CHUNK_TRANSFORM, MSNumpress.ACC_NUMPRESS_LINEAR)
+                .intensity(intensityColumn, BufferFormat.CHUNK_TRANSFORM, intensityTransform, ArrayIndex.COUNTS_UNIT)
+                .build();
+    }
+
     /** A {@code list<uint8>} column: repeated INT32 annotated as unsigned 8-bit inside a LIST group. */
     private static Type numpressByteListField(String name) {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
@@ -93,8 +117,10 @@ final class NumpressSignalWriter {
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
         MessageType schema = intensityEncoding == NumpressIntensityEncoding.PIC ? PIC_CHUNK_SCHEMA : SLOF_CHUNK_SCHEMA;
+        ArrayIndex index = intensityEncoding == NumpressIntensityEncoding.PIC ? PIC_CHUNK_INDEX : SLOF_CHUNK_INDEX;
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
-        try (ParquetWriter<Group> writer = openWriter(file, schema, plan.options())) {
+        Map<String, String> footer = signalFooter(index, plan.spectra().size(), plan.spectrumPoints(centroidFile));
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
                 if (centroidFile ? !entry.peaks() : !entry.data()) {

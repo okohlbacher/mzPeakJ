@@ -45,10 +45,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * RD-13: {@link SpectrumArrayStore} resolves the columns of a spectrum signal member through the member's
  * {@link SignalPlan}. The plan comes from the array index footer on every spectrum data and peaks member of both
- * fixture sets (current 2ee2589, legacy 29e59b2) and is inferred for mzPeakJ output, which has no array index. Members
- * whose footer names other columns than the conventional ones decode through the plan alone: the index statistics,
- * point rows, and delta and Numpress chunk rows. {@link SignalSnapshotTest} (CH-2) shows that the fixture output is
- * unchanged.
+ * fixture sets (current 2ee2589, legacy 29e59b2) and on mzPeakJ output, which carries one from WR-2 on; it is
+ * inferred for a member without an array index, such as mzPeakJ wrote up to 0.10.3. Members whose footer names other
+ * columns than the conventional ones decode through the plan alone: the index statistics, point rows, and delta and
+ * Numpress chunk rows. {@link SignalSnapshotTest} (CH-2) shows that the fixture output is unchanged.
  *
  * <p>The constructed members are written with parquet-java into a {@link TempDir}; their values are the first peaks of
  * spectra 2 and 4 of the current small.mzpeak peaks member and row 0 of the current small.numpress data member.
@@ -109,7 +109,7 @@ class SpectrumSignalPlanTest {
     }
 
     @Test
-    void mzPeakJOutputIsResolvedThroughAnInferredIndex() {
+    void mzPeakJOutputIsResolvedThroughItsFooterIndex() {
         List<Spectrum> spectra = new ArrayList<>();
         List<Chromatogram> chromatograms;
         List<WavelengthSpectrum> wavelength;
@@ -129,19 +129,19 @@ class SpectrumSignalPlanTest {
         MzPeakWriter.writeDirectoryNumpress(numpress, spectra, chromatograms, wavelength, List.of(),
                 FileMetadata.EMPTY, MzPeakWriter.NumpressIntensityEncoding.SLOF);
 
-        assertInferred(point, Layout.POINT, "point");
-        assertInferred(numpress, Layout.CHUNK, "chunk");
+        assertFooter(point, Layout.POINT, "point");
+        assertFooter(numpress, Layout.CHUNK, "chunk");
     }
 
-    private static void assertInferred(Path dataset, Layout layout, String prefix) {
+    private static void assertFooter(Path dataset, Layout layout, String prefix) {
         try (MzPeakSource source = MzPeakSource.open(dataset)) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
             for (DataKind kind : List.of(DataKind.DATA_ARRAYS, DataKind.PEAKS)) {
                 String name = manifest.find(EntityType.SPECTRUM, kind).orElseThrow().name();
-                assertThat(ParquetFooter.read(source.inputFile(name)).keyValue()).doesNotContainKey(INDEX_KEY);
+                assertThat(ParquetFooter.read(source.inputFile(name)).keyValue()).containsKey(INDEX_KEY);
                 try (SpectrumArrayStore store = SpectrumArrayStore.load(source.inputFile(name), false, Map.of())) {
                     SignalPlan plan = store.plan();
-                    assertThat(plan.source()).as("%s %s", dataset.getFileName(), name).isEqualTo(Source.INFERRED);
+                    assertThat(plan.source()).as("%s %s", dataset.getFileName(), name).isEqualTo(Source.FOOTER);
                     assertThat(plan.layout()).isEqualTo(layout);
                     assertThat(plan.prefix()).isEqualTo(prefix);
                     assertThat(plan.indexField()).isEqualTo("spectrum_index");

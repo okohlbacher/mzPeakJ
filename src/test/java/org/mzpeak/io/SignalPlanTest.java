@@ -202,14 +202,18 @@ class SignalPlanTest {
         SignalPlan footer = SignalPlan.of(ArrayIndex.of(f.keyValue(), f.schema(), role.signal()), f.schema(),
                 role.signal());
         SignalPlan inferred = SignalPlan.of(ArrayIndex.infer(f.schema(), role.signal()), f.schema(), role.signal());
+        assertPlansAgree(footer, inferred, role.signal());
+    }
 
+    /** A FOOTER and an INFERRED plan of one member resolve the same columns. */
+    private static void assertPlansAgree(SignalPlan footer, SignalPlan inferred, SignalEntity entity) {
         assertThat(footer.source()).isEqualTo(Source.FOOTER);
         assertThat(inferred.source()).isEqualTo(Source.INFERRED);
         assertThat(inferred.layout()).isEqualTo(footer.layout());
         assertThat(inferred.prefix()).isEqualTo(footer.prefix());
-        assertThat(inferred.indexField()).isEqualTo(footer.indexField()).isEqualTo(role.signal().indexField());
+        assertThat(inferred.indexField()).isEqualTo(footer.indexField()).isEqualTo(entity.indexField());
         assertThat(inferred.axis().arrayType()).isEqualTo(footer.axis().arrayType())
-                .isEqualTo(role.signal().defaultAxis());
+                .isEqualTo(entity.defaultAxis());
         assertThat(columnShape(inferred.axis().values())).isEqualTo(columnShape(footer.axis().values()))
                 .isNotNull();
         assertThat(columnShape(inferred.axis().start())).isEqualTo(columnShape(footer.axis().start()));
@@ -233,8 +237,12 @@ class SignalPlanTest {
 
     // ---- (d) mzPeakJ output ------------------------------------------------------------------------
 
+    /**
+     * mzPeakJ output carries an array index from WR-2 on, so its plans come from the footer; they resolve the same
+     * columns as the INFERRED plans that output without the index (mzPeakJ up to 0.10.3) gets.
+     */
     @Test
-    void mzPeakJOutputGivesInferredPlans() {
+    void mzPeakJOutputGivesFooterPlansThatAgreeWithTheInferredOnes() {
         List<Spectrum> spectra = new ArrayList<>();
         List<Chromatogram> chromatograms;
         List<WavelengthSpectrum> wavelength;
@@ -263,7 +271,7 @@ class SignalPlanTest {
                 "CHROMATOGRAM/DATA_ARRAYS", "WAVELENGTH_SPECTRUM/DATA_ARRAYS");
         assertThat(numpressPlans).containsOnlyKeys(pointPlans.keySet());
         Stream.concat(pointPlans.values().stream(), numpressPlans.values().stream()).forEach(p -> {
-            assertThat(p.source()).isEqualTo(Source.INFERRED);
+            assertThat(p.source()).isEqualTo(Source.FOOTER);
             assertThat(p.indexField()).isEqualTo(p.entity().indexField());
             assertThat(p.axis().arrayType()).isEqualTo(p.entity().defaultAxis());
             assertThat(p.extras()).isEmpty();
@@ -294,7 +302,10 @@ class SignalPlanTest {
         }
     }
 
-    /** The plan of every signal member of {@code dataset}, keyed by role. */
+    /**
+     * The plan of every signal member of {@code dataset}, keyed by role, after checking that it agrees with the
+     * INFERRED plan of the member's schema.
+     */
     private static Map<String, SignalPlan> plansOf(Path dataset) {
         try (MzPeakSource source = MzPeakSource.open(dataset)) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
@@ -303,9 +314,12 @@ class SignalPlanTest {
                     .collect(Collectors.toMap(r -> r.entity() + "/" + r.kind(), r -> {
                         ParquetFooter f = ParquetFooter.read(
                                 source.inputFile(manifest.find(r.entity(), r.kind()).orElseThrow().name()));
-                        assertThat(f.keyValue()).doesNotContainKey(r.signal().arrayIndexKey());
-                        return SignalPlan.of(ArrayIndex.of(f.keyValue(), f.schema(), r.signal()), f.schema(),
-                                r.signal());
+                        assertThat(f.keyValue()).containsKey(r.signal().arrayIndexKey());
+                        SignalPlan footer = SignalPlan.of(ArrayIndex.of(f.keyValue(), f.schema(), r.signal()),
+                                f.schema(), r.signal());
+                        assertPlansAgree(footer, SignalPlan.of(ArrayIndex.infer(f.schema(), r.signal()), f.schema(),
+                                r.signal()), r.signal());
+                        return footer;
                     }));
         }
     }

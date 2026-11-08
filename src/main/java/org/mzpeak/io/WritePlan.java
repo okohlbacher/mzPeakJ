@@ -98,6 +98,18 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
         }
     }
 
+    /**
+     * The points spectra_data holds, or spectra_peaks for {@code peaksFile}: the rows every spectrum writes there
+     * ({@link SpectrumEntry#dataRows()} or {@link SpectrumEntry#peakRows()}), summed.
+     */
+    long spectrumPoints(boolean peaksFile) {
+        long points = 0;
+        for (SpectrumEntry entry : spectra) {
+            points += peaksFile ? entry.peakRows() : entry.dataRows();
+        }
+        return points;
+    }
+
     /** Whether chromatograms_metadata and chromatograms_data are written. */
     boolean writesChromatograms() {
         return !chromatograms.isEmpty();

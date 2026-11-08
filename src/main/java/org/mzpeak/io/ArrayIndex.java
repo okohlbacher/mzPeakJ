@@ -3,6 +3,8 @@ package org.mzpeak.io;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import ms.numpress.MSNumpress;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
@@ -16,8 +18,9 @@ import java.util.Objects;
 
 /**
  * The array index of one signal member: the {@code <entity>_array_index} footer JSON, one {@link Entry} per Parquet
- * column that holds (part of) a signal array. Files without the footer, such as those mzPeakJ writes, get an
- * {@link Source#INFERRED INFERRED} index built from today's column-name rules, so they decode as before.
+ * column that holds (part of) a signal array. Files without the footer, such as those mzPeakJ wrote up to 0.10.3,
+ * get an {@link Source#INFERRED INFERRED} index built from today's column-name rules, so they decode as before. The
+ * writer builds the index of each signal file it writes with {@link #builder} and stores it with {@link #toJson}.
  *
  * @param entity  the entity the member stores arrays for
  * @param prefix  the top-level struct the entries live under, {@code point} or {@code chunk}
@@ -38,6 +41,12 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     static final String INTENSITY_ARRAY = "MS:1000515";
     /** MS:1003826, the coordinate-grid chunk transform. */
     static final String GRID_TRANSFORM = "MS:1003826";
+    /** MS:1000522, 64-bit integer: the data type of the {@code index} entry. */
+    static final String INT64_DATA = "MS:1000522";
+    /** MS:1000523, 64-bit float: the data type of every array mzPeakJ writes. */
+    static final String FLOAT64_DATA = "MS:1000523";
+    /** MS:1000131, number of detector counts: the unit of spectrum intensities. */
+    static final String COUNTS_UNIT = "MS:1000131";
 
     ArrayIndex {
         entries = List.copyOf(entries);
@@ -166,6 +175,97 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
 
     private static MzPeakException malformed(SignalEntity entity, String reason, Throwable cause) {
         return new MzPeakException("malformed " + entity.arrayIndexKey() + " footer: " + reason, cause);
+    }
+
+    /**
+     * This index as {@code <entity>_array_index} footer JSON (schema/array_index.json): the {@code prefix} and one
+     * object per entry with the keys the reference writer uses, in its order, and an absent value as JSON null. An
+     * {@link BufferFormat#UNKNOWN UNKNOWN} format is written as null. {@link #parse} reads the result back equal,
+     * with source {@link Source#FOOTER FOOTER}.
+     */
+    String toJson() {
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("prefix", prefix);
+        ArrayNode list = root.putArray("entries");
+        for (Entry e : entries) {
+            ObjectNode n = list.addObject();
+            n.put("context", e.context());
+            n.put("path", e.path());
+            n.put("data_type", e.dataType());
+            n.put("array_type", e.arrayType());
+            n.put("array_name", e.arrayName());
+            n.put("unit", e.unit());
+            n.put("buffer_format", e.format() == BufferFormat.UNKNOWN ? null
+                    : e.format().name().toLowerCase(Locale.ROOT));
+            n.put("transform", e.transform());
+            n.put("data_processing_id", e.dataProcessingId());
+            n.put("buffer_priority", e.bufferPriority());
+            n.put("sorting_rank", e.sortingRank());
+        }
+        return root.toString();
+    }
+
+    /**
+     * A builder of the index a writer records for one signal file whose columns live in the {@code prefix} struct
+     * (design §11.7, WR-2). Entries are listed in the order they are added, which is the column order; each has
+     * buffer priority primary, the {@code context} entity's key as context and no data processing. The built index
+     * has source {@link Source#FOOTER FOOTER}, as it reads back.
+     */
+    static Builder builder(String prefix, SignalEntity context) {
+        return new Builder(prefix, context);
+    }
+
+    /** Builds an {@link ArrayIndex}; see {@link #builder}. */
+    static final class Builder {
+
+        private final String prefix;
+        private final SignalEntity context;
+        private final List<Entry> entries = new ArrayList<>();
+
+        private Builder(String prefix, SignalEntity context) {
+            this.prefix = Objects.requireNonNull(prefix, "prefix");
+            this.context = Objects.requireNonNull(context, "context");
+        }
+
+        /** The entity index column, at sorting rank 0: MS:1003870, a 64-bit integer without unit. */
+        Builder index(String field) {
+            return add(field, INDEX_ARRAY, "index array", INT64_DATA, null, BufferFormat.INDEX, null, 0);
+        }
+
+        /**
+         * A column of the main axis, at sorting rank 1: the entity's axis as 64-bit floats in its unit, m/z
+         * (MS:1000514) in MS:1000040, time (MS:1000595) in minutes (UO:0000031) or wavelength (MS:1000617) in
+         * nanometers (UO:0000018).
+         */
+        Builder axis(String field, BufferFormat format, String transform) {
+            String name = switch (context) {
+                case SPECTRUM -> "m/z array";
+                case CHROMATOGRAM -> "time array";
+                case WAVELENGTH_SPECTRUM -> "wavelength array";
+            };
+            String unit = switch (context) {
+                case SPECTRUM -> "MS:1000040";
+                case CHROMATOGRAM -> "UO:0000031";
+                case WAVELENGTH_SPECTRUM -> "UO:0000018";
+            };
+            return add(field, context.defaultAxis(), name, FLOAT64_DATA, unit, format, transform, 1);
+        }
+
+        /** An intensity column, not sorted: MS:1000515 as 64-bit floats in {@code unit}, null when not known. */
+        Builder intensity(String field, BufferFormat format, String transform, String unit) {
+            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, transform, null);
+        }
+
+        private Builder add(String field, String arrayType, String arrayName, String dataType, String unit,
+                            BufferFormat format, String transform, Integer sortingRank) {
+            entries.add(new Entry(prefix + "." + field, field, arrayType, dataType, unit, format, transform,
+                    sortingRank, "primary", arrayName, context.key(), null));
+            return this;
+        }
+
+        ArrayIndex build() {
+            return new ArrayIndex(context, prefix, entries, Source.FOOTER);
+        }
     }
 
     /**

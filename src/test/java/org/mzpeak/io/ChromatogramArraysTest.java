@@ -276,8 +276,8 @@ class ChromatogramArraysTest {
     // ---- (c): mzPeakJ output ----------------------------------------------------------------------------------
 
     /**
-     * An archive mzPeakJ writes has no array index, so its INFERRED plan gives no unit and no extras; the writer
-     * does not store them yet (WR-11).
+     * An archive mzPeakJ writes declares no chromatogram intensity unit in its array index (WR-2) and stores no
+     * extras, so its FOOTER plan gives no unit and no extras; the writer does not store them yet (WR-11).
      */
     @Test
     void mzPeakJArchiveGivesNoUnitAndNoArrays() {
@@ -295,7 +295,7 @@ class ChromatogramArraysTest {
 
         try (MzPeakSource source = MzPeakSource.open(archive)) {
             assertThat(ChromatogramStore.load(source, MzPeakManifest.fromSource(source)).plan().source())
-                    .isEqualTo(ArrayIndex.Source.INFERRED);
+                    .isEqualTo(ArrayIndex.Source.FOOTER);
         }
         List<Chromatogram> readBack = chromatogramsOf(archive);
         assertThat(readBack).hasSize(2);
