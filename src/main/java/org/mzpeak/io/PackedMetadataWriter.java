@@ -43,7 +43,9 @@ import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
  * spectrum, primary scan, primary precursor and primary selected-ion facets, and one chromatograms_metadata and
  * wavelength_spectra_metadata row per chromatogram and wavelength spectrum. Its members are listed in the pin-era
  * dialect, {@link Dialect#PIN_29E59B2}. The wavelength schema is frozen without a {@code parameters} list, so the
- * Params of wavelength spectra are not written; {@link WritePlanner} warns about them.
+ * Params of wavelength spectra are not written; the chromatogram schema is frozen with its index, id, type and point
+ * count only, so the polarity, data processing reference, Params and precursors of chromatograms are not written
+ * either. {@link WritePlanner} warns about both.
  */
 final class PackedMetadataWriter implements MetadataTablesWriter {
 

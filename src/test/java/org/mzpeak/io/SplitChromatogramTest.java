@@ -22,6 +22,7 @@ import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Polarity;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -218,7 +219,7 @@ class SplitChromatogramTest {
             List<ChromatogramMetadataDecoder.Header> headers =
                     ChromatogramMetadataDecoder.decode(source.inputFile(entry.name()), entry);
             assertThat(headers).isNotEmpty();
-            assertThat(headers.get(0)).isEqualTo(new ChromatogramMetadataDecoder.Header(0, TIC, "MS:1000235"));
+            assertThat(headers.get(0)).isEqualTo(header(0, TIC, "MS:1000235"));
         }
     }
 
@@ -235,7 +236,7 @@ class SplitChromatogramTest {
                 List.of(new ColumnMapping("chromatogram type", "kind", "MS:1000626", null, true)), List.of(), null);
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(ChromatogramMetadataDecoder.decode(source.inputFile(entry.name()), entry))
-                    .containsExactly(new ChromatogramMetadataDecoder.Header(0, TIC, "MS:1000235"));
+                    .containsExactly(header(0, TIC, "MS:1000235"));
         }
     }
 
@@ -251,8 +252,8 @@ class SplitChromatogramTest {
         Entry entry = new Entry("chromatograms_metadata.parquet", "chromatogram", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(ChromatogramMetadataDecoder.decode(source.inputFile(entry.name()), entry)).containsExactly(
-                    new ChromatogramMetadataDecoder.Header(1, "last", null),
-                    new ChromatogramMetadataDecoder.Header(0, BPC, "MS:1000628"));
+                    header(1, "last", null),
+                    header(0, BPC, "MS:1000628"));
         }
     }
 
@@ -271,6 +272,11 @@ class SplitChromatogramTest {
     }
 
     // ---- helpers --------------------------------------------------------------------------------------------
+
+    /** The header of a chromatogram of unknown polarity, without data processing reference and without Params. */
+    private static ChromatogramMetadataDecoder.Header header(long index, String id, String typeCurie) {
+        return new ChromatogramMetadataDecoder.Header(index, id, typeCurie, Polarity.UNKNOWN, null, List.of());
+    }
 
     /** A split chromatogram table with {@code index}, {@code id} and the type column {@code typeColumn}. */
     private static MessageType splitTable(String typeColumn) {

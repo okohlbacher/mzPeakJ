@@ -12,6 +12,7 @@ import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
+import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -46,9 +47,11 @@ import static org.mzpeak.io.NumpressSignalWriter.NUMPRESS_LINEAR_FIXED_POINT;
  * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
  * directory exists. What the packed layout loses gets one warning in the report for each kind: the scans after a
  * spectrum's first, the precursors after its primary one and the selected ions other than the primary precursor's
- * first (one warning), and the Params of wavelength spectra (another). Each re-sorted main axis gets a warning of its
- * own, and so do, in the split layout, the scan settings without an id, which get one. With
- * {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs cannot encode is refused as a contract violation.
+ * first (one warning), the Params of wavelength spectra (another), and the polarities, data processing references,
+ * Params and precursors of chromatograms (a third). Each re-sorted main axis gets a warning of its own, and so do, in
+ * the split layout, the scan settings without an id, which get one, and the chromatogram precursors, which are not
+ * written yet. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs cannot encode is refused as a
+ * contract violation.
  */
 final class WritePlanner {
 
@@ -158,12 +161,17 @@ final class WritePlanner {
         Set<String> chromatogramColumns = new HashSet<>(CHROMATOGRAM_SIGNAL_COLUMNS);
         List<IntensityColumn> chromatogramIntensities = intensityColumns(chromatogramOrder, chromatogramColumns);
         Map<String, ExtraColumn> chromatogramExtras = new LinkedHashMap<>();
+        // What is not written of chromatograms: their precursors, and in the packed layout, whose schema is frozen,
+        // their polarities, data processing references and Params as well.
+        int[] chromatogramDrops = new int[5];
         for (int i = 0; i < chromatogramOrder.size(); i++) {
             Chromatogram c = chromatogramOrder.get(i);
             addExtraColumns(c, chromatogramExtras, chromatogramColumns);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
+            countChromatogramDrops(c, chromatogramDrops);
         }
+        warnChromatogramDrops(chromatogramDrops, options.metadataLayout(), report);
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
         // The packed wavelength schema is frozen without a parameters list: one warning for the Params it drops.
@@ -243,6 +251,46 @@ final class WritePlanner {
             ions += p.selectedIons().size();
         }
         drops[2] += precursors.isEmpty() || precursors.get(0).selectedIons().isEmpty() ? ions : ions - 1;
+    }
+
+    /**
+     * Adds to {@code drops} what may not be written of {@code c}: whether it has precursors ({@code drops[0]}), its
+     * precursors ({@code drops[1]}), whether its polarity is known ({@code drops[2]}), whether it has a data
+     * processing reference ({@code drops[3]}) and its Params ({@code drops[4]}).
+     */
+    private static void countChromatogramDrops(Chromatogram c, int[] drops) {
+        if (!c.precursors().isEmpty()) {
+            drops[0]++;
+        }
+        drops[1] += c.precursors().size();
+        if (c.polarity() != Polarity.UNKNOWN) {
+            drops[2]++;
+        }
+        if (c.dataProcessingRef() != null) {
+            drops[3]++;
+        }
+        drops[4] += c.parameters().size();
+    }
+
+    /**
+     * Records in {@code report} the one warning about what of the chromatograms counted in {@code drops}
+     * ({@link #countChromatogramDrops}) a write in {@code layout} does not write, if anything: the precursors, which
+     * no layout writes yet, and in the packed layout, whose schema is frozen, the polarities, data processing
+     * references and Params as well.
+     */
+    private static void warnChromatogramDrops(int[] drops, MetadataLayout layout, WriteReport report) {
+        if (layout == MetadataLayout.PACKED) {
+            if (drops[1] + drops[2] + drops[3] + drops[4] > 0) {
+                report.warn("the packed metadata layout writes no polarity, data processing reference, parameters"
+                        + " or precursors of a chromatogram: " + counted(drops[2], "polarity", "polarities") + ", "
+                        + counted(drops[3], "data processing reference", "data processing references") + ", "
+                        + counted(drops[4], "parameter", "parameters") + " and "
+                        + counted(drops[1], "precursor", "precursors") + " are not written");
+            }
+        } else if (drops[0] > 0) {
+            report.warn(counted(drops[0], "chromatogram carries", "chromatograms carry") + " precursors ("
+                    + drops[1] + " in all), which are not written yet");
+        }
     }
 
     /** {@code n} followed by {@code singular} or {@code plural}. */

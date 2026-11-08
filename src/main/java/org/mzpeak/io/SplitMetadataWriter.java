@@ -19,6 +19,7 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
@@ -94,10 +95,12 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * <p>Chromatograms and wavelength spectra (WR-6) get the same treatment, each member written only when the plan
  * has entities of its kind:
  * <ul>
- *   <li>chromatograms_metadata: one row per chromatogram with its index, id, {@code scan_polarity} (always null: the
- *       model has no chromatogram polarity), its type as a term marker, its point count and an empty
- *       {@code parameters} list; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have
- *       the schemas of the spectrum facets and no rows, since the model has no chromatogram precursors;
+ *   <li>chromatograms_metadata: one row per chromatogram with its index, id, {@code scan_polarity} (1, -1, or null
+ *       when unknown), its type as a term marker, its {@code data_processing_ref} (the spec's spelling; the column is
+ *       there only when some chromatogram has one), its point count and its {@code parameters}, none promoted to a
+ *       column; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the schemas of the
+ *       spectrum facets and no rows, since chromatogram precursors are not written yet ({@link WritePlanner} warns
+ *       about them);
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, point count, lambda
  *       max and its {@code parameters}, none promoted to a column; wavelength_spectra_metadata_scans: one row per
  *       wavelength spectrum, keyed by {@code source_index} with a global {@code scan_index}, whose
@@ -135,6 +138,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final String SELECTED_ION_INDEX = "selected_ion_index";
     private static final String ACTIVATION = "activation";
     private static final String PARAMETERS = "parameters";
+    private static final String DATA_PROCESSING_REF = "data_processing_ref";
 
     // CV-mapped spectrum columns
     private static final Column MS_LEVEL = column(Facet.SPECTRUM, "MS:1000511");
@@ -236,15 +240,6 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(field(PEAK_INTENSITY))
             .addField(paramListField())
             .named("spectra_metadata_selected_ions");
-
-    private static final MessageType CHROMATOGRAM_SCHEMA = Types.buildMessage()
-            .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
-            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
-            .optional(PrimitiveTypeName.INT32).named(field(CHROMATOGRAM_POLARITY))
-            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(CHROMATOGRAM_TYPE))
-            .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(CHROMATOGRAM_POINTS))
-            .addField(paramListField())
-            .named("chromatograms_metadata");
 
     /** The chromatogram precursor and selected-ion facets have the fields of the spectrum facets (design §11.8). */
     private static final MessageType CHROMATOGRAM_PRECURSOR_SCHEMA =
@@ -376,7 +371,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 if (Double.isFinite(d.retentionTime())) {
                     row.add(TIME, d.retentionTime());
                 }
-                Integer polarity = polarityCode(d);
+                Integer polarity = polarityCode(d.polarity());
                 if (polarity != null) {
                     row.add(field(SCAN_POLARITY), polarity);
                 }
@@ -589,11 +584,33 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     // ---- chromatograms_metadata and its facets ------------------------------------------------------------------
 
-    /** Writes one row per chromatogram; {@code scan_polarity} stays null, as the model has no polarity. */
+    /**
+     * Writes one row per chromatogram, with the {@code data_processing_ref} column after the type only when some
+     * chromatogram has a data processing reference, so that a write without one keeps the schema it had before the
+     * model had references. The precursors are not written.
+     */
     private static void writeChromatograms(Path file, WritePlan plan, Map<String, String> footer)
             throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(CHROMATOGRAM_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, CHROMATOGRAM_SCHEMA, footer, plan.options())) {
+        boolean dataProcessingRefs = false;
+        for (Entry<Chromatogram> entry : plan.chromatograms()) {
+            dataProcessingRefs |= entry.source().dataProcessingRef() != null;
+        }
+        Types.GroupBuilder<MessageType> builder = Types.buildMessage()
+                .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
+                .optional(PrimitiveTypeName.INT32).named(field(CHROMATOGRAM_POLARITY))
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                .named(field(CHROMATOGRAM_TYPE));
+        if (dataProcessingRefs) {
+            builder = builder.optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named(DATA_PROCESSING_REF);
+        }
+        MessageType schema = builder
+                .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(CHROMATOGRAM_POINTS))
+                .addField(paramListField())
+                .named("chromatograms_metadata");
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
                 Chromatogram c = entry.source();
                 Group row = factory.newGroup();
@@ -601,18 +618,24 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 if (c.id() != null) {
                     row.add(ID, c.id());
                 }
+                Integer polarity = polarityCode(c.polarity());
+                if (polarity != null) {
+                    row.add(field(CHROMATOGRAM_POLARITY), polarity);
+                }
                 if (c.typeCurie() != null) {
                     row.add(field(CHROMATOGRAM_TYPE), c.typeCurie());
                 }
+                if (c.dataProcessingRef() != null) {
+                    row.add(DATA_PROCESSING_REF, c.dataProcessingRef());
+                }
                 row.add(field(CHROMATOGRAM_POINTS), (long) c.size());
-                // The model has no chromatogram Params.
-                params(row, List.of());
+                params(row, c.parameters());
                 writer.write(row);
             }
         }
     }
 
-    /** Writes a member of {@code schema} without rows: the model has no chromatogram precursors or selected ions. */
+    /** Writes a member of {@code schema} without rows: chromatogram precursors and selected ions are not written. */
     private static void writeEmpty(Path file, MessageType schema, WritePlan plan, Map<String, String> footer)
             throws IOException {
         openWriter(file, schema, footer, plan.options()).close();
@@ -800,11 +823,11 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     }
 
     /** The scan polarity code: 1 positive, -1 negative, none when unknown. */
-    private static Integer polarityCode(SpectrumDescription d) {
-        if (d.polarity() == null) {
+    private static Integer polarityCode(Polarity polarity) {
+        if (polarity == null) {
             return null;
         }
-        return switch (d.polarity()) {
+        return switch (polarity) {
             case POSITIVE -> 1;
             case NEGATIVE -> -1;
             case UNKNOWN -> null;
