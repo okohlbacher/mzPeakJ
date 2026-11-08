@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.Entry;
 
 import java.util.LinkedHashMap;
@@ -35,16 +36,16 @@ final class WavelengthMetadataDecoder {
     }
 
     /**
-     * The headers of the member {@code entry} names, in the order their indices first occur. A repeated index keeps
-     * its first position and takes the values of its last row. Packed placeholder rows (a null struct or index) are
-     * skipped.
+     * The headers of the member {@code file}, whose manifest entry is {@code entry}, in the order their indices
+     * first occur. A repeated index keeps its first position and takes the values of its last row. Packed
+     * placeholder rows (a null struct or index) are skipped.
      *
      * @throws MzPeakException if the member has rows but neither metadata shape, or a split row's index is null, or
      *                         an index has the high bit set
      */
-    static List<Header> decode(MzPeakSource source, Entry entry) {
+    static List<Header> decode(InputFile file, Entry entry) {
         Map<Long, Header> byIndex = new LinkedHashMap<>();
-        MetadataTable.forEachRow(source, entry, Facet.WAVELENGTH_SPECTRUM, row -> {
+        MetadataTable.forEachRow(file, entry, Facet.WAVELENGTH_SPECTRUM, row -> {
             ColumnResolver columns = row.columns();
             Group g = row.group();
             long index = row.key();

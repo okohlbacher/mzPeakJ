@@ -68,7 +68,8 @@ final class WavelengthSpectrumStore {
         if (metadata == null || dataName == null) {
             return null;
         }
-        return load(WavelengthMetadataDecoder.decode(source, metadata), source.inputFile(dataName), dataName);
+        return load(WavelengthMetadataDecoder.decode(source.inputFile(metadata.name()), metadata),
+                source.inputFile(dataName), dataName);
     }
 
     /**
@@ -77,7 +78,7 @@ final class WavelengthSpectrumStore {
      */
     static WavelengthSpectrumStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.WAVELENGTH_SPECTRUM.canonical(), DataKind.METADATA.canonical());
-        return load(WavelengthMetadataDecoder.decode(singleMember(metadataFile), metadata), dataFile, DATA_MEMBER);
+        return load(WavelengthMetadataDecoder.decode(metadataFile, metadata), dataFile, DATA_MEMBER);
     }
 
     /**
@@ -121,29 +122,5 @@ final class WavelengthSpectrumStore {
         if (plan.plainIntensity().isEmpty()) {
             throw new MzPeakException(dataName + ": the signal plan names no value-bearing intensity column");
         }
-    }
-
-    /** A source whose every member is {@code file}; it has no manifest. */
-    private static MzPeakSource singleMember(InputFile file) {
-        return new MzPeakSource() {
-            @Override
-            public byte[] readManifestBytes() {
-                throw new UnsupportedOperationException(MEMBER + " given directly has no manifest");
-            }
-
-            @Override
-            public InputFile inputFile(String name) {
-                return file;
-            }
-
-            @Override
-            public String describe() {
-                return MEMBER;
-            }
-
-            @Override
-            public void close() {
-            }
-        };
     }
 }

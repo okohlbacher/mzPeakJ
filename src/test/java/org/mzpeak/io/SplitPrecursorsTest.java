@@ -333,7 +333,7 @@ class SplitPrecursorsTest {
             MzPeakSource view = withManifest(source, new ObjectMapper().writeValueAsBytes(index));
             Entry entry = Facet.SPECTRUM_PRECURSOR.entry(MzPeakManifest.fromSource(view)).orElseThrow();
             List<FacetRow> rows = new ArrayList<>();
-            MetadataTable.forEachRow(view, entry, Facet.SPECTRUM_PRECURSOR, rows::add);
+            MetadataTable.forEachRow(view.inputFile(entry.name()), entry, Facet.SPECTRUM_PRECURSOR, rows::add);
             FacetRow row = rows.stream().filter(r -> r.key() == 5).findFirst().orElseThrow();
 
             assertThat(PrecursorRowDecoder.decode(row).activation().parameters())
@@ -580,9 +580,12 @@ class SplitPrecursorsTest {
                 Entry metadata = Facet.SPECTRUM.entry(manifest).orElseThrow();
                 Entry precursors = split ? Facet.SPECTRUM_PRECURSOR.entry(manifest).orElseThrow() : metadata;
                 rows.ionEntry = split ? Facet.SPECTRUM_SELECTED_ION.entry(manifest).orElseThrow() : metadata;
-                MetadataTable.forEachRow(source, metadata, Facet.SPECTRUM, rows.spectra::add);
-                MetadataTable.forEachRow(source, precursors, Facet.SPECTRUM_PRECURSOR, rows.precursors::add);
-                MetadataTable.forEachRow(source, rows.ionEntry, Facet.SPECTRUM_SELECTED_ION, rows.ions::add);
+                MetadataTable.forEachRow(source.inputFile(metadata.name()), metadata, Facet.SPECTRUM,
+                        rows.spectra::add);
+                MetadataTable.forEachRow(source.inputFile(precursors.name()), precursors, Facet.SPECTRUM_PRECURSOR,
+                        rows.precursors::add);
+                MetadataTable.forEachRow(source.inputFile(rows.ionEntry.name()), rows.ionEntry,
+                        Facet.SPECTRUM_SELECTED_ION, rows.ions::add);
                 rows.decoded = SpectrumMetadataDecoder.decode(source, manifest).descriptions();
             }
             assertThat(rows.spectra).hasSize(48);

@@ -33,7 +33,8 @@ final class SplitMetadataReader {
             if (entry.isEmpty()) {
                 continue;
             }
-            MetadataTable.forEachRow(source, entry.get(), facet, row -> assembler.accept(row.key(), row));
+            MetadataTable.forEachRow(source.inputFile(entry.get().name()), entry.get(), facet,
+                    row -> assembler.accept(row.key(), row));
         }
     }
 }

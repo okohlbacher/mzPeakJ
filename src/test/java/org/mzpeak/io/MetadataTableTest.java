@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -95,7 +96,7 @@ class MetadataTableTest {
                 String key = facet.keyColumns().get(0);
                 List<Object> expected = meta.rows(entry.get().name()).stream().map(r -> r.get(key)).toList();
                 List<Object> keys = new ArrayList<>();
-                MetadataTable.forEachRow(src, entry.get(), facet, r -> {
+                forEachRow(src, entry.get(), facet, r -> {
                     assertThat(r.facet()).isEqualTo(facet);
                     keys.add(r.key());
                 });
@@ -115,7 +116,7 @@ class MetadataTableTest {
         write("keyless_scans.parquet", schema, row);
         Entry entry = new Entry("keyless_scans.parquet", "spectrum", "scans");
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
-            assertThatThrownBy(() -> MetadataTable.forEachRow(src, entry, Facet.SPECTRUM_SCAN, r -> { }))
+            assertThatThrownBy(() -> forEachRow(src, entry, Facet.SPECTRUM_SCAN, r -> { }))
                     .isInstanceOf(MzPeakException.class)
                     .hasMessageContaining("keyless_scans.parquet")
                     .hasMessageContaining("source_index")
@@ -137,7 +138,7 @@ class MetadataTableTest {
                 aliasedFactory.newGroup().append("spectrum_index", 7L).append("scan_start_time", 2.5));
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
             List<Long> seen = new ArrayList<>();
-            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+            assertThatThrownBy(() -> forEachRow(src,
                     new Entry("null_key_scans.parquet", "spectrum", "scans"), Facet.SPECTRUM_SCAN,
                     r -> seen.add(r.key())))
                     .isInstanceOf(MzPeakException.class)
@@ -160,7 +161,7 @@ class MetadataTableTest {
         write("high_bit_scans.parquet", schema, new SimpleGroupFactory(schema).newGroup()
                 .append("source_index", -1L).append("scan_start_time", 1.5));
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
-            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+            assertThatThrownBy(() -> forEachRow(src,
                     new Entry("high_bit_scans.parquet", "spectrum", "scans"), Facet.SPECTRUM_SCAN, r -> { }))
                     .isInstanceOf(MzPeakException.class)
                     .hasMessageContaining("high_bit_scans.parquet")
@@ -179,7 +180,7 @@ class MetadataTableTest {
         write("negative_key_scans.parquet", schema, new SimpleGroupFactory(schema).newGroup()
                 .append("source_index", -1L).append("scan_start_time", 1.5));
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
-            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+            assertThatThrownBy(() -> forEachRow(src,
                     new Entry("negative_key_scans.parquet", "spectrum", "scans"), Facet.SPECTRUM_SCAN, r -> { }))
                     .isInstanceOf(MzPeakException.class)
                     .hasMessageStartingWith("negative_key_scans.parquet: ")
@@ -327,7 +328,7 @@ class MetadataTableTest {
         write("boolean_key_scans.parquet", schema, new SimpleGroupFactory(schema).newGroup()
                 .append("source_index", true).append("scan_start_time", 1.5));
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
-            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+            assertThatThrownBy(() -> forEachRow(src,
                     new Entry("boolean_key_scans.parquet", "spectrum", "scans"), Facet.SPECTRUM_SCAN, r -> { }))
                     .isInstanceOf(MzPeakException.class)
                     .hasMessage("boolean_key_scans.parquet: source_index is not an integer: BOOLEAN");
@@ -389,7 +390,7 @@ class MetadataTableTest {
                     .isInstanceOf(MzPeakException.class)
                     .hasMessage("packed_spectra.parquet, packed struct 'spectrum': MS_1000511_ms_level is not an"
                             + " integer: BINARY");
-            assertThatThrownBy(() -> MetadataTable.forEachRow(src,
+            assertThatThrownBy(() -> forEachRow(src,
                     new Entry("packed_chromatograms.parquet", "chromatogram", "metadata"), Facet.CHROMATOGRAM,
                     r -> { }))
                     .isInstanceOf(MzPeakException.class)
@@ -429,8 +430,13 @@ class MetadataTableTest {
 
     private static List<FacetRow> rows(MzPeakSource src, Entry entry, Facet facet) {
         List<FacetRow> rows = new ArrayList<>();
-        MetadataTable.forEachRow(src, entry, facet, rows::add);
+        forEachRow(src, entry, facet, rows::add);
         return rows;
+    }
+
+    /** {@link MetadataTable#forEachRow} over the member of {@code src} that {@code entry} names. */
+    private static void forEachRow(MzPeakSource src, Entry entry, Facet facet, Consumer<FacetRow> handler) {
+        MetadataTable.forEachRow(src.inputFile(entry.name()), entry, facet, handler);
     }
 
     private static List<Group> groups(MzPeakSource src, Entry entry) {
