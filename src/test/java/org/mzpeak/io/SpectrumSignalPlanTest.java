@@ -684,6 +684,33 @@ class SpectrumSignalPlanTest {
         }
     }
 
+    /**
+     * A value in an undecoded intensity transform does not throw either when a SLOF (spectrum 9) or PIC (spectrum 10)
+     * column of the row carries the intensities: they are read, and the unknown transform is not.
+     */
+    @Test
+    void anUndecodedTransformNextToASlofOrPicColumnWithValuesIsNotRead() {
+        Row0 r = Row0.load();
+        byte[] pic = pic(r.intensity);
+        Group slofRecord = multiRecord(9);
+        addBytes(slofRecord.getGroup("chunk", 0), "mz_lin", r.mzLinear);
+        addBytes(slofRecord.getGroup("chunk", 0), "slof_b", r.slof);
+        addBytes(slofRecord.getGroup("chunk", 0), "lossy", r.slof);
+        Group picRecord = multiRecord(10);
+        addBytes(picRecord.getGroup("chunk", 0), "mz_lin", r.mzLinear);
+        addBytes(picRecord.getGroup("chunk", 0), "pic_b", pic);
+        addBytes(picRecord.getGroup("chunk", 0), "lossy", r.slof);
+
+        Path file = write(MULTI_INTENSITY_CHUNK, MULTI_INTENSITY_CHUNK_INDEX, 1, slofRecord, picRecord);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertExact("SLOF m/z", r.mz, store.get(9).mz());
+            assertExact("SLOF intensity", r.intensity, store.get(9).intensity());
+            assertExact("PIC m/z", r.mz, store.get(10).mz());
+            assertExact("PIC intensity", MSNumpress.decode(MSNumpress.ACC_NUMPRESS_PIC, pic, pic.length),
+                    store.get(10).intensity());
+        }
+    }
+
     // ---- fixtures and constructed members ----------------------------------------------------------------------
 
     /** The first 3 peaks of spectrum {@code index} of the current small.mzpeak peaks member, as {m/z, intensity}. */
