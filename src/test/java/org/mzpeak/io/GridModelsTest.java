@@ -150,6 +150,27 @@ class GridModelsTest {
         assertThat(Math.abs(s * s - p[4] - 916.2491700535076)).isGreaterThan(1.0);
     }
 
+    /**
+     * Newton stops where the derivative {@code beta + 2·c2·s + 3·c3·s²} vanishes, keeping its current root instead of
+     * dividing by zero: with c0 = 3, beta = -3, c3 = 1 and tof = 0, s0 = 1 is where the derivative is -3 + 3 = 0, so
+     * m/z = 1² - c4. Another step would give an infinite delta and a NaN m/z.
+     */
+    @Test
+    void theTimsTofMzNewtonBranchStopsWhereTheDerivativeVanishes() {
+        assertThat(model("MS:9999002", 3, -3, 0, 1, 0.5, 1, 0).fromIndex(0)).isEqualTo(0.5);
+    }
+
+    /**
+     * Newton takes at most 8 steps: s + s³ = 10⁶ (c0 = c2 = c4 = 0, beta = c3 = 1, tof = index) from s0 = 10⁶ shrinks
+     * s by about a third per step, so after 8 steps s is still 39018.44244207348, not the root 99.99666..., and m/z is
+     * its square (the 8th Newton iterate, computed in 60-digit decimal arithmetic). 7 or 9 steps give 3.4e9 or 6.8e8.
+     */
+    @Test
+    void theTimsTofMzNewtonBranchStopsAfterEightSteps() {
+        assertThat(model("MS:9999002", 0, 1, 0, 1, 0, 1, 0).fromIndex(1_000_000))
+                .isCloseTo(1_522_438_850.6054008, within(1e-3));
+    }
+
     // ---- parameters -------------------------------------------------------------------------------------------------
 
     @Test

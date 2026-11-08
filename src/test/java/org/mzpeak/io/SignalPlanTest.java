@@ -796,4 +796,169 @@ class SignalPlanTest {
         assertThatThrownBy(() -> plan.extras().get("MS:1003006").transformFields().put("x", "y"))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
+
+    // ---- CV-7: the other entity's index, PIC intensity, and the entries that are ignored with a log record ------
+
+    @Test
+    void theIndexOfAnotherEntityIsRejected() {
+        ParquetFooter f = ArrayIndexTest.footer(Fixtures.current("small.mzpeak"), EntityType.SPECTRUM,
+                DataKind.DATA_ARRAYS);
+        ArrayIndex spectrum = ArrayIndex.of(f.keyValue(), f.schema(), SignalEntity.SPECTRUM);
+
+        assertThatThrownBy(() -> SignalPlan.of(spectrum, f.schema(), SignalEntity.CHROMATOGRAM))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("array index of SPECTRUM used for CHROMATOGRAM");
+    }
+
+    /** Without a SLOF column, the PIC column is the Numpress intensity (mzPeakJ writes PIC on request). */
+    @Test
+    void aPicPlanTakesThePicColumnAsItsNumpressIntensity() {
+        List<Spectrum> spectra = new ArrayList<>();
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.mzpeak"))) {
+            reader.iterator().forEachRemaining(spectra::add);
+        }
+        Path pic = tmp.resolve("pic.mzpeak");
+        MzPeakWriter.writeDirectoryNumpress(pic, spectra, List.of(), FileMetadata.EMPTY,
+                MzPeakWriter.NumpressIntensityEncoding.PIC);
+
+        SignalPlan plan = plansOf(pic).get("SPECTRUM/DATA_ARRAYS");
+        assertThat(plan.intensities()).extracting(Column::field, Column::format, Column::transform)
+                .containsExactly(tuple("intensity_numpress_pic_bytes", BufferFormat.CHUNK_TRANSFORM, "MS:1002313"));
+        assertThat(plan.numpressIntensity()).map(Column::field).contains("intensity_numpress_pic_bytes");
+        assertThat(plan.plainIntensity()).isEmpty();
+    }
+
+    @Test
+    void anEntryWithoutAnArrayTypeIsIgnoredWithAWarningAndIsNoMainAxis() {
+        String untyped = "{\"path\": \"point.im_a\", \"buffer_format\": \"point\", \"sorting_rank\": 0}";
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(pointIndex(untyped), IM_SCHEMA, SignalEntity.SPECTRUM);
+            // ranked before point.mz, but an entry without an array type cannot be the main axis
+            assertThat(plan.axis().arrayType()).isEqualTo("MS:1000514");
+            assertThat(plan.axis().values().field()).isEqualTo("mz");
+            assertThat(plan.intensities()).extracting(Column::field).containsExactly("intensity");
+            assertThat(plan.extras()).isEmpty();
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(
+                Level.WARNING, "spectrum_array_index (FOOTER) entry point.im_a has no array_type; it is ignored"));
+    }
+
+    @Test
+    void aMainAxisEntryOfAnUnknownBufferFormatIsIgnoredAtDebugLevel() {
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(pointIndex(indexEntry("point.mz_a", "bespoke", "MS:1000514", "primary", null)),
+                    IM_SCHEMA, SignalEntity.SPECTRUM);
+            assertThat(plan.layout()).isEqualTo(Layout.POINT);
+            assertThat(plan.axis().values().field()).isEqualTo("mz");
+            assertThat(plan.extras()).isEmpty();
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(Level.FINE,
+                "spectrum_array_index (FOOTER) entry point.mz_a of the main axis has buffer format UNKNOWN; it is"
+                        + " ignored"));
+    }
+
+    @Test
+    void anExtraEntryOfAnUnknownBufferFormatIsIgnoredAtDebugLevel() {
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(pointIndex(indexEntry("point.im_a", "bespoke", "MS:1003006", "primary", null)),
+                    IM_SCHEMA, SignalEntity.SPECTRUM);
+            assertThat(plan.extras()).isEmpty();
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(Level.FINE,
+                "spectrum_array_index (FOOTER) extra entry point.im_a has buffer format UNKNOWN; it is ignored"));
+    }
+
+    private static final MessageType GRIDS_SCHEMA = MessageTypeParser.parseMessageType("""
+            message m {
+              optional group chunk {
+                optional int64 spectrum_index;
+                optional group mz_chunk_values (LIST) { repeated group list { optional double item; } }
+                optional group intensity (LIST) { repeated group list { optional float item; } }
+                optional group mz_grid { required binary grid_type (STRING); }
+                optional group mz_grid_b { required binary grid_type (STRING); }
+                optional group im_a (LIST) { repeated group list { optional double item; } }
+                optional group im_grid { required binary grid_type (STRING); }
+                optional group im_grid_b { required binary grid_type (STRING); }
+              }
+            }""");
+
+    /** A chunk transform entry of the m/z axis in {@code field}, with the JSON members {@code more}. */
+    private static String axisTransform(String field, String more) {
+        return "{\"path\": \"chunk." + field + "\", \"buffer_format\": \"chunk_transform\","
+                + " \"array_type\": \"MS:1000514\", \"sorting_rank\": 1" + more + "}";
+    }
+
+    @Test
+    void anAxisChunkTransformNamingNoTransformIsIgnoredWithAWarning() {
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(transformIndex(axisTransform("mz_grid", "")), GRIDS_SCHEMA,
+                    SignalEntity.SPECTRUM);
+            assertThat(plan.axis().values().field()).isEqualTo("mz_chunk_values");
+            assertThat(plan.axis().transformFields()).isEmpty();
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(
+                Level.WARNING, "spectrum_array_index (FOOTER) chunk transform chunk.mz_grid names no transform; it is"
+                        + " ignored"));
+    }
+
+    @Test
+    void aSecondAxisTransformOfOneKindIsIgnoredWithAWarning() {
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(transformIndex(axisTransform("mz_grid", GRID), axisTransform("mz_grid_b", GRID)),
+                    GRIDS_SCHEMA, SignalEntity.SPECTRUM);
+            assertThat(plan.axis().transformFields()).containsExactly(entry("MS:1003826", "mz_grid"));
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(
+                Level.WARNING, "spectrum_array_index (FOOTER) lists a second MS:1003826 column chunk.mz_grid_b for"
+                        + " MS:1000514; it is ignored"));
+    }
+
+    @Test
+    void aSecondExtraTransformOfOneKindCannotBePlacedAndIsIgnoredWithAWarning() {
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(transformIndex(
+                    imEntry("im_a", "chunk_secondary", "MS:1002814", "dp", PRIMARY),
+                    imEntry("im_grid", "chunk_transform", "MS:1002814", "dp", GRID),
+                    imEntry("im_grid_b", "chunk_transform", "MS:1002814", "dp", GRID)), GRIDS_SCHEMA,
+                    SignalEntity.SPECTRUM);
+            assertThat(plan.extras()).containsOnlyKeys("MS:1003006");
+            assertThat(plan.extras().get("MS:1003006").values().field()).isEqualTo("im_a");
+            assertThat(plan.extras().get("MS:1003006").transformFields())
+                    .containsExactly(entry("MS:1003826", "im_grid"));
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(
+                Level.WARNING, "spectrum_array_index (FOOTER) chunk transform chunk.im_grid_b of MS:1003006 cannot be"
+                        + " placed; it is ignored"));
+    }
+
+    /**
+     * Value columns of one key other than the plain-key one are keyed {@code <key>@<field>}; two of them in structs
+     * with the same field name get the same key, and the second is ignored with a warning.
+     */
+    @Test
+    void aSecondExtraColumnWithTheSameQualifiedKeyIsIgnoredWithAWarning() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 spectrum_index;
+                    optional double mz;
+                    optional float intensity;
+                    optional double im;
+                    optional group a { optional double im; }
+                    optional group b { optional double im; }
+                  }
+                }""");
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(pointIndex(
+                    indexEntry("point.im", "point", "MS:1003006", "primary", null),
+                    indexEntry("point.a.im", "point", "MS:1003006", "secondary", null),
+                    indexEntry("point.b.im", "point", "MS:1003006", "secondary", null)), schema,
+                    SignalEntity.SPECTRUM);
+            assertThat(plan.extras().entrySet()).extracting(Map.Entry::getKey, e -> e.getValue().values().path())
+                    .containsExactly(tuple("MS:1003006", "point.im"), tuple("MS:1003006@im", "point.a.im"));
+        });
+        assertThat(records).extracting(LogRecord::getLevel, LogRecord::getMessage).containsExactly(tuple(
+                Level.WARNING, "spectrum_array_index (FOOTER) lists the extra array MS:1003006@im twice (point.a.im"
+                        + " and point.b.im); point.b.im is ignored"));
+    }
 }

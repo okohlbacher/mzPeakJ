@@ -13,6 +13,7 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Handler;
@@ -369,6 +370,84 @@ class ArrayIndexTest {
                 .hasMessage("malformed spectrum_array_index footer: entry 0 has a non-integer 'sorting_rank'");
         assertThat(ArrayIndex.parse(json.replace("2147483648", "2147483647"), SignalEntity.SPECTRUM).entries()
                 .get(0).sortingRank()).isEqualTo(Integer.MAX_VALUE);
+    }
+
+    // ---- CV-7: value-bearing formats, an empty path, UNKNOWN written as null, and schemas without the structs -----
+
+    @Test
+    void onlyPointChunkValuesAndChunkSecondaryAreValueBearing() {
+        assertThat(Arrays.stream(BufferFormat.values()).filter(BufferFormat::valueBearing))
+                .containsExactly(BufferFormat.POINT, BufferFormat.CHUNK_VALUES, BufferFormat.CHUNK_SECONDARY);
+    }
+
+    @Test
+    void anEmptyPathIsMalformed() {
+        assertThatThrownBy(() -> ArrayIndex.parse("{\"prefix\": \"point\", \"entries\": [{\"path\": \"\"}]}",
+                SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("malformed spectrum_array_index footer: entry 0 has no 'path'");
+    }
+
+    @Test
+    void toJsonWritesAnUnknownBufferFormatAsNullAndReadsBackEqual() {
+        ArrayIndex index = ArrayIndex.parse("""
+                {"prefix": "point", "entries": [
+                  {"path": "point.mz", "array_type": "MS:1000514", "buffer_format": "point", "sorting_rank": 1},
+                  {"path": "point.extra", "array_type": "MS:1003006", "buffer_format": "bespoke"}
+                ]}""", SignalEntity.SPECTRUM);
+        assertThat(index.entries().get(1).format()).isEqualTo(BufferFormat.UNKNOWN);
+
+        String json = index.toJson();
+
+        assertThat(json).contains("\"path\":\"point.mz\"", "\"buffer_format\":\"point\"",
+                "\"path\":\"point.extra\"", "\"buffer_format\":null");
+        assertThat(ArrayIndex.parse(json, SignalEntity.SPECTRUM)).isEqualTo(index);
+    }
+
+    @Test
+    void inferWithoutPointOrChunkStructListsNothingUnderPoint() {
+        MessageType flat = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional int64 spectrum_index;
+                  optional double mz;
+                  optional float intensity;
+                }""");
+        ArrayIndex index = ArrayIndex.infer(flat, SignalEntity.SPECTRUM);
+        assertThat(index.prefix()).isEqualTo("point");
+        assertThat(index.entries()).isEmpty();
+        assertThat(index.source()).isEqualTo(Source.INFERRED);
+    }
+
+    @Test
+    void inferTakesAPrimitivePointColumnForNoPointStruct() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional double point;
+                  optional group chunk {
+                    optional int64 spectrum_index;
+                    optional double mz_chunk_start;
+                  }
+                }""");
+        ArrayIndex index = ArrayIndex.infer(schema, SignalEntity.SPECTRUM);
+        assertThat(index.prefix()).isEqualTo("chunk");
+        assertThat(index.entries()).extracting(Entry::path, Entry::format).containsExactly(
+                tuple("chunk.spectrum_index", BufferFormat.INDEX),
+                tuple("chunk.mz_chunk_start", BufferFormat.CHUNK_START));
+    }
+
+    @Test
+    void inferListsNoChromatogramIntensityFallbackForAGroupColumn() {
+        MessageType point = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index;
+                    optional double time;
+                    optional float intensity;
+                    optional group intensity_list (LIST) { repeated group list { optional float item; } }
+                  }
+                }""");
+        assertThat(ArrayIndex.infer(point, SignalEntity.CHROMATOGRAM).entries()).extracting(Entry::field)
+                .containsExactly("chromatogram_index", "time", "intensity");
     }
 
     static List<LogRecord> captureLog(Class<?> owner, Runnable action) {
