@@ -20,8 +20,8 @@ import java.util.regex.Pattern;
 /**
  * Term names, param value typing and formatting, and the id and XML rules of the mzML converter (mzML design 5.2,
  * 5.3, 12.2). The checks that stand in for XML Schema validation ({@link #ncName}, {@link #spectrumIdValid},
- * {@link #dateTimeValid}, {@link #anyUri}) judge as the JDK's schema validator judges, so a value they accept can be
- * written verbatim and the document still validates.
+ * {@link #dateTimeValid}, {@link #anyUri}) judge as the JDK's schema validator judges ({@link #anyUri} slightly more
+ * strictly, as stated there), so a value they accept can be written verbatim and the document still validates.
  */
 final class MzMLTerms {
 
@@ -437,14 +437,16 @@ final class MzMLTerms {
 
     private static final Pattern DATE_TIME = Pattern.compile(
             "(-?(?:[1-9][0-9]{3,9}|0[0-9]{3}))-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"
-                    + "T(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?|24:00:00(?:\\.0+)?)"
+                    + "T([01][0-9]|2[0-4]):([0-5][0-9]):([0-5][0-9](?:\\.[0-9]+)?)"
                     + "(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?");
     private static final int[] DAYS_IN_MONTH = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
     /**
      * Whether {@code text} is a valid xs:dateTime as the JDK's validator judges it: after whitespace collapsing, the
-     * lexical form of XML Schema 1.0 with a year in int range other than 0 and a day that exists in its month
-     * (Gregorian leap years, applied to negative years too).
+     * lexical form of XML Schema 1.0 with a year in int range other than 0, a day that exists in its month
+     * (Gregorian leap years, applied to negative years too), and the seconds read as a double, as that validator
+     * reads them: below 60 (so {@code 59.999999999999999} is rejected), and 0 when the hour is 24 (so
+     * {@code 24:00:00.} followed by enough zeros and a 1 is accepted).
      */
     static boolean dateTimeValid(String text) {
         Matcher m = DATE_TIME.matcher(collapse(text));
@@ -455,7 +457,9 @@ final class MzMLTerms {
         int month = Integer.parseInt(m.group(2));
         boolean leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
         int days = month == 2 && leap ? 29 : DAYS_IN_MONTH[month - 1];
-        return year != 0 && year == (int) year && Integer.parseInt(m.group(3)) <= days;
+        double seconds = Double.parseDouble(m.group(6));
+        return year != 0 && year == (int) year && Integer.parseInt(m.group(3)) <= days && seconds < 60
+                && (!m.group(4).equals("24") || m.group(5).equals("00") && seconds == 0);
     }
 
     private static final Pattern XML_SPACE_ENDS = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$");
@@ -497,16 +501,22 @@ final class MzMLTerms {
     private static final String URI_ESCAPED = "<>\"{}|\\^`~";
     private static final String UNRESERVED = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     private static final char[] HEX = "0123456789ABCDEF".toCharArray();
+    // a byte of more than three digits in the IPv4 part of a bracketed host (the only place such a host has a '.')
+    private static final Pattern LONG_IPV4_BYTE = Pattern.compile("[0-9]{4}\\.|\\.[0-9]{4}");
 
     /**
      * Rule URI (design 5.2) for an xs:anyURI value ({@code sourceFile@location}, {@code cv@URI}), to be applied to text
      * XML can carry ({@link #xmlSafe}): {@code text} unchanged when it is valid, judged as the JDK's validator judges
      * (whitespace collapsed; controls, space, DEL, {@code < > " { } | \ ^ `} and {@code ~} and every non-ASCII
-     * character percent-encoded as UTF-8; the result must parse as {@link URI}). Otherwise stage 1, if valid: every
-     * {@code %} not followed by two hex digits written {@code %25}, {@code [} and {@code ]} written {@code %5B} and
-     * {@code %5D}, every {@code #} after the first written {@code %23}. Otherwise stage 2, if valid: the UTF-8
-     * percent-encoding of every character except {@code A-Z a-z 0-9 - . _ ~ /}. Stage 2 fails only for {@code //}
-     * (an empty authority); then {@code /} is encoded too, which always gives a valid relative reference.
+     * character percent-encoded as UTF-8; the result must parse as {@link URI}, and a bracketed (IPv6) host must have
+     * no zone id, no IPv4 byte of more than three digits and a port of at most 65535, which {@link URI} allows and the
+     * validator does not). Stricter than the validator only for a bracketed host with a signed port ({@code :+80},
+     * {@code :-0}) or with an IPv4 part ending in {@code .}: these are repaired although the validator accepts them.
+     * Otherwise stage 1, if valid: every {@code %} not followed by two hex digits written {@code %25}, {@code [} and
+     * {@code ]} written {@code %5B} and {@code %5D}, every {@code #} after the first written {@code %23}. Otherwise
+     * stage 2, if valid: the UTF-8 percent-encoding of every character except {@code A-Z a-z 0-9 - . _ ~ /}. Stage 2
+     * fails only for {@code //} (an empty authority); then {@code /} is encoded too, which always gives a valid
+     * relative reference.
      */
     static Repaired anyUri(String text) {
         if (uriValid(text)) {
@@ -533,8 +543,10 @@ final class MzMLTerms {
             }
         }
         try {
-            new URI(escaped.toString());
-            return true;
+            URI uri = new URI(escaped.toString());
+            String host = uri.getHost();
+            return host == null || !host.startsWith("[") || host.indexOf('%') < 0
+                    && !LONG_IPV4_BYTE.matcher(host).find() && uri.getPort() <= 65535;
         } catch (URISyntaxException e) {
             return false;
         }

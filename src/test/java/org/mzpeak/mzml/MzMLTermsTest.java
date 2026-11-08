@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -435,6 +436,14 @@ class MzMLTermsTest {
         cases.put("2005-07-20T24:00:00", true);
         cases.put("2005-12-31T24:00:00.000", true);
         cases.put("2005-07-20T24:00:00.5", false);
+        cases.put("2005-07-20T24:01:00", false);
+        cases.put("2005-07-20T24:00:01", false);
+        // the validator reads the seconds as a double: below 60, and 0 for hour 24
+        cases.put("2005-07-20T19:44:59.99999999999999Z", true);
+        cases.put("2005-07-20T19:44:59.999999999999999Z", false);
+        cases.put("2005-07-20T19:44:59.9999999999999999999999999", false);
+        cases.put("2005-07-20T24:00:00." + "0".repeat(400) + "1", true);
+        cases.put("2005-07-20T24:00:00." + "0".repeat(300) + "1", false);
         cases.put("2005-07-20T19:44:60", false);
         cases.put("2005-07-20T19:44:22.", false);
         cases.put("2005-07-20T19:44", false);
@@ -617,7 +626,9 @@ class MzMLTermsTest {
     void validUrisAreReturnedUnchanged() {
         for (String uri : List.of("", "file:///unknown", "file:///unknown dir/x", WINDOWS_LOCATION,
                 "file://F:/data/Exp01", "file:///a|b", "http://[::1]/x", "file:///\u00e4", "a~b", "a\u007fb",
-                "  a  b  ", "a\tb", " http://x", "///", "%41", "tag:a,b:c", "file:///a%5Bb", "?", "#")) {
+                "  a  b  ", "a\tb", " http://x", "///", "%41", "tag:a,b:c", "file:///a%5Bb", "?", "#",
+                "http://[::1]:65535/", "http://[::1]:0065535/", "http://[::255.255.255.255]/",
+                "http://[::ffff:001.2.3.4]/", "http://u@[::1]:80/", "//[1:2:3:4:5:6:7:8]", "http://h:65536/")) {
             assertThat(jdkAccepts("uri", uri)).as("JDK " + uri).isTrue();
             assertThat(MzMLTerms.anyUri(uri)).as(uri).isEqualTo(new MzMLTerms.Repaired(uri, false));
         }
@@ -636,6 +647,18 @@ class MzMLTermsTest {
         cases.put("a%4", "a%254");
         cases.put("a%4g%41", "a%254g%41");
         cases.put("%%41", "%25%41");
+        // bracketed hosts java.net.URI accepts and the validator does not: a zone id (also one the escaping of '|',
+        // ' ' and '~' makes), an IPv4 byte of more than three digits, a port over 65535
+        cases.put("http://[fe80::1%25en0]/", "http://%5Bfe80::1%25en0%5D/");
+        cases.put("http://[::1%en0]/", "http://%5B::1%25en0%5D/");
+        cases.put("//[::1%en0]/", "//%5B::1%25en0%5D/");
+        cases.put("http://[::1|]", "http://%5B::1|%5D");
+        cases.put("http://[:: ]", "http://%5B:: %5D");
+        cases.put("http://[::~]", "http://%5B::~%5D");
+        cases.put("http://[::0001.2.3.4]/", "http://%5B::0001.2.3.4%5D/");
+        cases.put("http://[::ffff:1.2.3.0001]/", "http://%5B::ffff:1.2.3.0001%5D/");
+        cases.put("http://[::1]:65536/", "http://%5B::1%5D:65536/");
+        cases.put("http://u@[::1]:65536/", "http://u@%5B::1%5D:65536/");
         // stage 2
         cases.put(":abc", "%3Aabc");
         cases.put("1abc:x", "1abc%3Ax");
@@ -653,23 +676,59 @@ class MzMLTermsTest {
     }
 
     @Test
+    void bracketedHostsTheValidatorAcceptsButTheRuleDoesNotAreRepairedToValidUris() {
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put("http://[::1]:+80/", "http://%5B::1%5D:+80/");
+        cases.put("http://[::1]:-0/", "http://%5B::1%5D:-0/");
+        cases.put("http://[::1.2.3.]/", "http://%5B::1.2.3.%5D/");
+        for (Map.Entry<String, String> e : cases.entrySet()) {
+            assertThat(jdkAccepts("uri", e.getKey())).as("JDK " + e.getKey()).isTrue();
+            assertThat(MzMLTerms.anyUri(e.getKey())).as(e.getKey())
+                    .isEqualTo(new MzMLTerms.Repaired(e.getValue(), true));
+            assertThat(jdkAccepts("uri", e.getValue())).as("JDK " + e.getValue()).isTrue();
+        }
+    }
+
+    /** The inputs of {@link #bracketedHostsTheValidatorAcceptsButTheRuleDoesNotAreRepairedToValidUris}. */
+    private static final Pattern STRICTER = Pattern.compile("\\]:[+-]|\\.\\]");
+
+    @Test
     void anyUriAgreesWithTheJdkValidatorAndAlwaysGivesAValidUri() {
-        String alphabet = "aZ09:/?#[]@!$&'()*+,;=-._~% <>\"{}|\\^`\u00e4\t";
-        Random random = new Random(15);
+        assertThat(anyUriProblems(new Random(15), 3000, List.of(""),
+                "aZ09:/?#[]@!$&'()*+,;=-._~% <>\"{}|\\^`\u00e4\t", 6)).isEmpty();
+    }
+
+    @Test
+    void anyUriAgreesWithTheJdkValidatorOnBracketedHosts() {
+        assertThat(anyUriProblems(new Random(15), 4000,
+                List.of("http://[", "http://[::1]", "http://[::", "//[1::", "http://u@[::1]:", "http://[::ffff:"),
+                "0123456789abcdef:::...%]]|~ +-/", 10)).isEmpty();
+    }
+
+    /**
+     * Random inputs of a prefix and up to {@code maxLength} characters of {@code alphabet} for which {@code anyUri}
+     * disagrees with the JDK's validator (except as stated for {@link #STRICTER} inputs), gives a value that validator
+     * rejects, or reports a repair other than a change.
+     */
+    private static List<String> anyUriProblems(Random random, int count, List<String> prefixes, String alphabet,
+            int maxLength) {
         List<String> problems = new ArrayList<>();
-        for (int n = 0; n < 3000; n++) {
-            char[] chars = new char[random.nextInt(7)];
+        for (int n = 0; n < count; n++) {
+            char[] chars = new char[random.nextInt(maxLength + 1)];
             for (int k = 0; k < chars.length; k++) {
                 chars[k] = alphabet.charAt(random.nextInt(alphabet.length()));
             }
-            String uri = new String(chars);
+            // one prefix draws nothing, so a single empty prefix gives the inputs of the test before the prefixes
+            String prefix = prefixes.size() == 1 ? prefixes.get(0) : prefixes.get(random.nextInt(prefixes.size()));
+            String uri = prefix + new String(chars);
             MzMLTerms.Repaired repaired = MzMLTerms.anyUri(uri);
-            if (jdkAccepts("uri", uri) == repaired.repaired()
+            boolean accepted = jdkAccepts("uri", uri);
+            if (accepted == repaired.repaired() && !(accepted && STRICTER.matcher(uri).find())
                     || repaired.repaired() == repaired.value().equals(uri)
                     || !jdkAccepts("uri", repaired.value())) {
-                problems.add(Arrays.toString(chars) + " -> " + repaired);
+                problems.add(Arrays.toString(uri.toCharArray()) + " -> " + repaired);
             }
         }
-        assertThat(problems).isEmpty();
+        return problems;
     }
 }
