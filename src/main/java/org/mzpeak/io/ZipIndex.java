@@ -11,7 +11,8 @@ import java.util.Map;
 /**
  * A minimal ZIP central-directory reader: maps each member name to its compression method, size, and the byte
  * offset of its data within the archive. This lets STORED (uncompressed) members be read in place via
- * {@link org.mzpeak.io.parquet.FileSliceInputFile} rather than copied into memory.
+ * {@link org.mzpeak.io.parquet.FileSliceInputFile} rather than copied into memory. The archive is read through
+ * {@link RandomAccessBytes}, with positional reads only.
  *
  * <p>Members, offsets and the archive may exceed 4 GiB: per-entry zip64 extra fields and the zip64
  * end-of-central-directory record are read. The central directory itself must fit in 2 GiB.
@@ -39,11 +40,17 @@ final class ZipIndex {
     private ZipIndex() {
     }
 
+    /** {@link #read(RandomAccessBytes)} over {@code channel}. Does not close the channel. */
     static Map<String, Entry> read(FileChannel channel) throws IOException {
-        long fileSize = channel.size();
-        Directory directory = directory(channel, fileSize, locateEocd(channel, fileSize));
+        return read(RandomAccessBytes.of(channel));
+    }
 
-        ByteBuffer cd = readAt(channel, directory.offset(), (int) directory.size());
+    /** The entries of the archive {@code bytes}, in central-directory order. Does not close {@code bytes}. */
+    static Map<String, Entry> read(RandomAccessBytes bytes) throws IOException {
+        long fileSize = bytes.size();
+        Directory directory = directory(bytes, fileSize, locateEocd(bytes, fileSize));
+
+        ByteBuffer cd = readAt(bytes, directory.offset(), (int) directory.size());
         Map<String, Entry> entries = new LinkedHashMap<>();
         int p = 0;
         int limit = cd.limit();
@@ -89,7 +96,7 @@ final class ZipIndex {
             if (method == STORED && size != compressedSize) {
                 throw new MzPeakException("corrupt zip entry '" + name + "': STORED size mismatch");
             }
-            long dataOffset = dataOffset(channel, localHeaderOffset);
+            long dataOffset = dataOffset(bytes, localHeaderOffset);
             if (dataOffset > fileSize || compressedSize > fileSize - dataOffset) {
                 throw new MzPeakException("corrupt zip entry '" + name + "': data range past end of archive");
             }
@@ -147,8 +154,8 @@ final class ZipIndex {
     }
 
     /** Data starts after the local file header (whose name/extra lengths may differ from the central record). */
-    private static long dataOffset(FileChannel channel, long localHeaderOffset) throws IOException {
-        ByteBuffer lfh = readAt(channel, localHeaderOffset, 30);
+    private static long dataOffset(RandomAccessBytes bytes, long localHeaderOffset) throws IOException {
+        ByteBuffer lfh = readAt(bytes, localHeaderOffset, 30);
         if (lfh.getInt(0) != LFH_SIG) {
             throw new MzPeakException("corrupt zip local file header at offset " + localHeaderOffset);
         }
@@ -163,17 +170,17 @@ final class ZipIndex {
      * is taken from the zip64 end-of-central-directory record the locator points to. A sentinel without a locator
      * is accepted only as an entry count of exactly 65535 with the size and offset in range.
      */
-    private static Directory directory(FileChannel channel, long fileSize, long eocdOffset) throws IOException {
-        ByteBuffer eocd = readAt(channel, eocdOffset, 22);
+    private static Directory directory(RandomAccessBytes bytes, long fileSize, long eocdOffset) throws IOException {
+        ByteBuffer eocd = readAt(bytes, eocdOffset, 22);
         long totalEntries = eocd.getShort(10) & 0xFFFF;
         long cdSize = eocd.getInt(12) & U32_MAX;
         long cdOffset = eocd.getInt(16) & U32_MAX;
         boolean sizeOrOffsetSentinel = cdSize == U32_MAX || cdOffset == U32_MAX;
         if ((totalEntries == 0xFFFF || sizeOrOffsetSentinel) && eocdOffset >= 20) {
             long locatorOffset = eocdOffset - 20;
-            ByteBuffer locator = readAt(channel, locatorOffset, 20);
+            ByteBuffer locator = readAt(bytes, locatorOffset, 20);
             if (locator.getInt(0) == ZIP64_LOCATOR_SIG) {
-                return zip64Directory(channel, locatorOffset, locator.getLong(8));
+                return zip64Directory(bytes, locatorOffset, locator.getLong(8));
             }
         }
         if (sizeOrOffsetSentinel) {
@@ -187,13 +194,13 @@ final class ZipIndex {
     }
 
     /** The central directory named by the zip64 end-of-central-directory record at {@code recordOffset}. */
-    private static Directory zip64Directory(FileChannel channel, long locatorOffset, long recordOffset)
+    private static Directory zip64Directory(RandomAccessBytes bytes, long locatorOffset, long recordOffset)
             throws IOException {
         if (recordOffset < 0 || recordOffset > locatorOffset - 56) {
             throw new MzPeakException("corrupt zip64 end-of-central-directory locator: record offset "
                     + Long.toUnsignedString(recordOffset) + " out of bounds");
         }
-        ByteBuffer record = readAt(channel, recordOffset, 56);
+        ByteBuffer record = readAt(bytes, recordOffset, 56);
         if (record.getInt(0) != ZIP64_EOCD_SIG) {
             throw new MzPeakException("corrupt zip64 end-of-central-directory record at offset " + recordOffset);
         }
@@ -215,10 +222,10 @@ final class ZipIndex {
     }
 
     /** The offset of the end-of-central-directory record: the last one whose comment reaches the end of the file. */
-    private static long locateEocd(FileChannel channel, long fileSize) throws IOException {
+    private static long locateEocd(RandomAccessBytes bytes, long fileSize) throws IOException {
         int tailLen = (int) Math.min(fileSize, 22 + 0xFFFF); // EOCD record + max comment
         long start = fileSize - tailLen;
-        ByteBuffer tail = readAt(channel, start, tailLen);
+        ByteBuffer tail = readAt(bytes, start, tailLen);
         for (int i = tailLen - 22; i >= 0; i--) {
             if (tail.getInt(i) == EOCD_SIG && (tail.getShort(i + 20) & 0xFFFF) == tailLen - i - 22) {
                 return start + i;
@@ -227,11 +234,11 @@ final class ZipIndex {
         throw new MzPeakException("not a ZIP archive (no end-of-central-directory record found)");
     }
 
-    private static ByteBuffer readAt(FileChannel channel, long position, int length) throws IOException {
+    private static ByteBuffer readAt(RandomAccessBytes bytes, long position, int length) throws IOException {
         ByteBuffer buf = ByteBuffer.allocate(length);
         long pos = position;
         while (buf.hasRemaining()) {
-            int n = channel.read(buf, pos);
+            int n = bytes.read(buf, pos);
             if (n < 0) {
                 throw new MzPeakException("unexpected end of ZIP archive while reading " + length
                         + " bytes at " + position);
