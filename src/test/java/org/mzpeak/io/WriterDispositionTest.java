@@ -212,11 +212,12 @@ class WriterDispositionTest {
     }
 
     /**
-     * The point layout writes a peak copy from {@code mz()}/{@code intensity()} in stored order, not from the sorted
-     * {@code peaks()}, to spectra_peaks only, and the re-read arrays keep that order.
+     * The point layout writes a peak copy from {@code mz()}/{@code intensity()} to spectra_peaks only. Arrays whose m/z
+     * is not ascending are re-sorted on the way (WR-14), each intensity with its m/z, so the re-read peaks equal the
+     * source's apart from {@link CentroidPeak#index()}, which is the sorted position.
      */
     @Test
-    void pointLayoutWritesAnUnsortedPeakCopyInStoredOrder(@TempDir Path tmp) {
+    void pointLayoutWritesAnUnsortedPeakCopyReSorted(@TempDir Path tmp) {
         double[] mz = {300.0, 100.0, 200.0};
         double[] intensity = {3.0, 1.0, 2.0};
         Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, copyOf(mz, intensity));
@@ -227,26 +228,27 @@ class WriterDispositionTest {
         assertThat(out.resolve(DATA)).doesNotExist();
         assertThat(route(out, 0)).isEqualTo("data=- peaks=3 number_of_data_points=- number_of_peaks=3");
         double[][] peaks = storedRows(out.resolve(PEAKS), 0);
-        assertThat(Arrays.equals(peaks[0], mz)).as("stored m/z %s", Arrays.toString(peaks[0])).isTrue();
-        assertThat(Arrays.equals(peaks[1], intensity)).as("stored intensity %s", Arrays.toString(peaks[1])).isTrue();
+        assertThat(peaks[0]).containsExactly(100.0, 200.0, 300.0);
+        assertThat(peaks[1]).containsExactly(1.0, 2.0, 3.0);
         try (MzPeakReader r = MzPeakReader.open(out)) {
             Spectrum back = r.getSpectrum(0).orElseThrow();
-            assertThat(Arrays.equals(back.mz(), mz)).as("re-read m/z %s", Arrays.toString(back.mz())).isTrue();
-            assertThat(Arrays.equals(back.intensity(), intensity))
-                    .as("re-read intensity %s", Arrays.toString(back.intensity())).isTrue();
-            assertThat(back.peaks()).isEqualTo(s.peaks());
+            assertThat(back.mz()).containsExactly(100.0, 200.0, 300.0);
+            assertThat(back.intensity()).containsExactly(1.0, 2.0, 3.0);
+            assertThat(mzs(back.peaks())).containsExactly(mzs(s.peaks()));
+            assertThat(intensities(back.peaks())).containsExactly(intensities(s.peaks()));
+            assertThat(back.peaks()).extracting(CentroidPeak::index).containsExactly(0, 1, 2);
         }
     }
 
     // ---- Numpress -----------------------------------------------------------------------------------------------
 
     /**
-     * Numpress writes a peak copy from {@code mz()}/{@code intensity()} in stored order, not from the sorted
-     * {@code peaks()}, to spectra_peaks only; number_of_peaks is the rows decoded from it.
+     * Numpress writes a peak copy from {@code mz()}/{@code intensity()} to spectra_peaks only, re-sorted by m/z when it
+     * is not ascending (WR-14); number_of_peaks is the rows decoded from it.
      */
     @ParameterizedTest
     @EnumSource(NumpressIntensityEncoding.class)
-    void numpressWritesAnUnsortedPeakCopyInStoredOrder(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+    void numpressWritesAnUnsortedPeakCopyReSorted(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
         double[] mz = {300.0, 100.0, 200.0};
         double[] intensity = {5e8, 3e8, 4e8};
         Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, copyOf(mz, intensity));
@@ -256,8 +258,8 @@ class WriterDispositionTest {
 
         assertThat(decoded(out.resolve(DATA), 0)).isNull();
         SpectrumArrayStore.Arrays peaks = decoded(out.resolve(PEAKS), 0);
-        assertThat(peaks.mz()).containsExactly(mz);
-        assertNumpressIntensities(peaks.intensity(), intensity);
+        assertThat(peaks.mz()).containsExactly(100.0, 200.0, 300.0);
+        assertNumpressIntensities(peaks.intensity(), 3e8, 4e8, 5e8);
         Group spectrum = metadataRows(out).get(0L);
         assertThat(ParquetGroups.optLong(spectrum, DATA_POINTS)).isNull();
         assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isEqualTo((long) peaks.mz().length);

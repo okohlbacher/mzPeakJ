@@ -227,8 +227,9 @@ class WriterComponentsCharacterizationTest {
                         ParquetGroups.optDouble(p, "intensity")});
             }
         }
+        // WR-14: arrays whose m/z is not ascending are written re-sorted, each intensity with its m/z.
         assertThat(centroidPoints).containsExactly(
-                new double[] {100.0, 5.0}, new double[] {200.0, 1.0}, new double[] {150.0, 7.0});
+                new double[] {100.0, 5.0}, new double[] {150.0, 7.0}, new double[] {200.0, 1.0});
 
         List<Group> chunks = new ArrayList<>();
         for (Group row : rows(numpress.resolve("spectra_peaks.parquet"))) {
@@ -242,13 +243,14 @@ class WriterComponentsCharacterizationTest {
         assertThat(chunks).hasSize(1);
         Group chunk = chunks.get(0);
         assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_start")).isEqualTo(100.0);
-        assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_end")).as("last value, not the maximum").isEqualTo(150.0);
+        assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_end")).as("last value of the re-sorted chunk")
+                .isEqualTo(200.0);
         assertThat(ParquetGroups.optString(chunk, "chunk_encoding")).isEqualTo("MS:1002312");
         assertThat(fieldsPresent(chunk)).containsExactly("spectrum_index", "mz_chunk_start", "mz_chunk_end",
                 "chunk_encoding", "mz_numpress_linear_bytes", "intensity_numpress_pic_bytes");
         byte[] mzBytes = ParquetGroups.byteList(chunk, "mz_numpress_linear_bytes");
         assertThat(MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, mzBytes, mzBytes.length))
-                .containsExactly(new double[] {100.0, 200.0, 150.0}, offset(1e-5));
+                .containsExactly(new double[] {100.0, 150.0, 200.0}, offset(1e-5));
     }
 
     // ---- row-group size -----------------------------------------------------------------------------------------

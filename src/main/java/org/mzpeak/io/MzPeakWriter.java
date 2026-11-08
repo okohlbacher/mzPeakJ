@@ -82,6 +82,8 @@ public final class MzPeakWriter {
      * {@code writeDirectoryNumpress} overload.
      *
      * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
+     * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
+     * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified).
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative. The primary
      * precursor's precursor_index, the only one written, must be non-negative; several spectra may share it.
      * Otherwise an {@link MzPeakException} is thrown before anything is written.
