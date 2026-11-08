@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
+import org.mzpeak.model.meta.FileMetadata.Contact;
 import org.mzpeak.model.meta.FileMetadata.DataProcessing;
 import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
 import org.mzpeak.model.Param;
@@ -152,6 +153,16 @@ final class FooterMetadataWriter {
                 sn.put("name", "unknown");
                 sn.put("location", "file:///unknown");
                 sn.putArray("parameters");
+            }
+            // Left out when empty, as the reference serialises FileDescription.contacts (skip_serializing_if empty).
+            if (!meta.fileDescription().contacts().isEmpty()) {
+                ArrayNode contacts = fd.putArray("contacts");
+                for (Contact c : meta.fileDescription().contacts()) {
+                    ObjectNode cn = contacts.addObject();
+                    putText(cn, "contact_name", c.name());
+                    putText(cn, "contact_affiliation", c.affiliation());
+                    putParams(cn, c.parameters());
+                }
             }
             kv.put("file_description", fd.toString());
         }

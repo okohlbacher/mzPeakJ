@@ -12,6 +12,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
+import org.mzpeak.model.meta.FileMetadata.Contact;
 import org.mzpeak.model.meta.FileMetadata.DataProcessing;
 import org.mzpeak.model.meta.FileMetadata.FileDescription;
 import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
@@ -400,8 +401,9 @@ class IndexMetadataTest {
     void canonicalFormCoversEveryRecordComponent() {
         assertThat(components(FileMetadata.class)).containsExactly("fileDescription", "instrumentConfigurations",
                 "dataProcessingMethods", "samples", "software", "run");
-        assertThat(components(FileDescription.class)).containsExactly("contents", "sourceFiles");
+        assertThat(components(FileDescription.class)).containsExactly("contents", "sourceFiles", "contacts");
         assertThat(components(SourceFile.class)).containsExactly("id", "name", "location", "parameters");
+        assertThat(components(Contact.class)).containsExactly("name", "affiliation", "parameters");
         assertThat(components(InstrumentConfiguration.class)).containsExactly("id", "components",
                 "softwareReference", "parameters");
         assertThat(components(Component.class)).containsExactly("componentType", "order", "parameters");
@@ -411,7 +413,20 @@ class IndexMetadataTest {
         assertThat(components(Software.class)).containsExactly("id", "version", "parameters");
         assertThat(components(MsRun.class)).containsExactly("id", "defaultInstrumentId", "defaultDataProcessingId",
                 "defaultSourceFileId", "startTime", "parameters");
-        assertThat(components(ScanSettings.class)).containsExactly("id", "parameters");
+        assertThat(components(ScanSettings.class)).containsExactly("id", "parameters", "sourceFileRefs", "targets");
+    }
+
+    /** Contacts, source file refs and targets show in the canonical form when there are any (MZ-7). */
+    @Test
+    void canonicalFormWritesContactsRefsAndTargets() {
+        Param p = new Param("n", "MS:1", 1L, null);
+        assertThat(fileDescription(new FileDescription(List.of(), List.of(),
+                List.of(new Contact("name", "affiliation", List.of(p)))))).isEqualTo(
+                "([]|[]|[(name|affiliation|[(n|MS:1|Long:1|␀)])])");
+        assertThat(scanSettings(new ScanSettings("s", List.of(), List.of("sf1", "sf2"), List.of(List.of(p),
+                List.of())))).isEqualTo("(s|[]|[sf1;sf2]|[[(n|MS:1|Long:1|␀)];[]])");
+        assertThat(scanSettings(new ScanSettings("s", List.of(), List.of(), List.of(List.of()))))
+                .isEqualTo("(s|[]|[]|[[]])");
     }
 
     // ---- canonical form ---------------------------------------------------------------------------
@@ -451,12 +466,18 @@ class IndexMetadataTest {
                         + "|" + params(s.parameters()) + ")"));
     }
 
+    /**
+     * The contacts are appended only when there are any (MZ-7), so the digests of the fixtures, which have none,
+     * stay as they were.
+     */
     static String fileDescription(FileDescription d) {
         if (d == null) {
             return "null";
         }
+        String contacts = d.contacts().isEmpty() ? "" : "|" + list(d.contacts(), c -> "(" + c.name() + "|"
+                + c.affiliation() + "|" + params(c.parameters()) + ")");
         return "(" + params(d.contents()) + "|" + list(d.sourceFiles(), f -> "(" + f.id() + "|" + f.name()
-                + "|" + f.location() + "|" + params(f.parameters()) + ")") + ")";
+                + "|" + f.location() + "|" + params(f.parameters()) + ")") + contacts + ")";
     }
 
     static String instrument(InstrumentConfiguration ic) {
@@ -470,8 +491,11 @@ class IndexMetadataTest {
                 + "|" + params(pm.parameters()) + ")") + ")";
     }
 
+    /** The source file refs and targets are appended only when there are any (MZ-7), as the fixtures have none. */
     static String scanSettings(ScanSettings s) {
-        return "(" + s.id() + "|" + params(s.parameters()) + ")";
+        String extra = s.sourceFileRefs().isEmpty() && s.targets().isEmpty() ? ""
+                : "|" + list(s.sourceFileRefs(), ref -> ref) + "|" + list(s.targets(), IndexMetadataTest::params);
+        return "(" + s.id() + "|" + params(s.parameters()) + extra + ")";
     }
 
     static String params(List<Param> params) {

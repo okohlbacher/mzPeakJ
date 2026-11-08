@@ -179,9 +179,10 @@ final class WritePlanner {
     /**
      * {@code scanSettings} as the split layout writes them, {@code null} when they are: each one without an id gets
      * {@code scan_settings_<position>}, with {@code _1}, {@code _2}, ... appended while another entry has that id,
-     * and its params, and one warning in {@code report} names the positions and the ids given. The current manifest
-     * needs an id: the reference's ScanSettings.id is a String (param.rs:458-460), so the Rust reader rejects a null
-     * one. The caller's list is returned when every entry has an id. The packed layout leaves the key out instead.
+     * and keeps its params, source file references and targets, and one warning in {@code report} names the positions
+     * and the ids given. The current manifest needs an id: the reference's ScanSettings.id is a String
+     * (param.rs:458-460), so the Rust reader rejects a null one. The caller's list is returned when every entry has
+     * an id. The packed layout leaves the key out instead.
      */
     private static List<ScanSettings> withIds(List<ScanSettings> scanSettings, WriteReport report) {
         if (scanSettings == null || scanSettings.stream().allMatch(s -> s.id() != null)) {
@@ -206,7 +207,7 @@ final class WritePlanner {
             for (int suffix = 1; !taken.add(id); suffix++) {
                 id = "scan_settings_" + i + "_" + suffix;
             }
-            out.add(new ScanSettings(id, s.parameters()));
+            out.add(new ScanSettings(id, s.parameters(), s.sourceFileRefs(), s.targets()));
             positions.add(Integer.toString(i));
             ids.add(id);
         }

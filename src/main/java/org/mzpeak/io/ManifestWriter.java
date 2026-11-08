@@ -50,8 +50,9 @@ final class ManifestWriter {
         /**
          * The spellings of the 29e59b2 pin, {@code data arrays} and {@code wavelength spectrum}: the pin-era
          * reference deserialises only these, and mzPeakJ 0.10.3 and earlier match roles by exact string. A scan
-         * settings param names its unit {@code unit_accession}, and absent values are left out. Written with the
-         * packed metadata layout.
+         * settings param names its unit {@code unit_accession}, and absent values are left out, as are a scan
+         * settings entry's absent id and empty {@code source_file_refs} and {@code targets}. Written with the packed
+         * metadata layout.
          */
         PIN_29E59B2,
         /**
@@ -113,8 +114,8 @@ final class ManifestWriter {
     }
 
     /**
-     * Serialize imaging scan settings into the manifest in {@code dialect}'s form, matching
-     * {@code MzPeakManifest.parseParamArray}, which reads either.
+     * Serialize imaging scan settings, with their source file references and targets, into the manifest in
+     * {@code dialect}'s form, matching {@code MzPeakManifest.parseScanSettings}, which reads either.
      */
     private static void writeScanSettingsList(ArrayNode arr, List<ScanSettings> scanSettings, Dialect dialect) {
         if (scanSettings == null) {
@@ -123,36 +124,49 @@ final class ManifestWriter {
         boolean current = dialect == Dialect.CURRENT;
         for (ScanSettings ss : scanSettings) {
             ObjectNode n = arr.addObject();
-            if (current) {
-                // The reference's ScanSettings has no serde defaults: it needs all four keys to read the entry.
-                n.put("id", ss.id());
-                n.putArray("source_file_refs");
-                n.putArray("targets");
-            } else if (ss.id() != null) {
+            // The reference's ScanSettings has no serde defaults: it needs all four keys to read the entry. The pin
+            // dialect leaves out an absent id and an empty list.
+            if (current || ss.id() != null) {
                 n.put("id", ss.id());
             }
-            ArrayNode params = n.putArray("parameters");
-            for (Param p : ss.parameters()) {
-                ObjectNode pn = params.addObject();
-                if (current) {
-                    pn.put("name", p.name());
-                    pn.put("accession", p.accession());
-                    pn.putNull("value");
-                } else {
-                    if (p.name() != null) pn.put("name", p.name());
-                    if (p.accession() != null) pn.put("accession", p.accession());
+            if (current || !ss.sourceFileRefs().isEmpty()) {
+                ArrayNode refs = n.putArray("source_file_refs");
+                for (String ref : ss.sourceFileRefs()) {
+                    refs.add(ref);
                 }
-                Object v = p.value();
-                if (v instanceof Long l) pn.put("value", l);
-                else if (v instanceof Integer i) pn.put("value", i.longValue());
-                else if (v instanceof Double dd) pn.put("value", dd);
-                else if (v instanceof Boolean b) pn.put("value", b);
-                else if (v != null) pn.put("value", v.toString());
-                if (current) {
-                    pn.put("unit", p.unit());
-                } else if (p.unit() != null) {
-                    pn.put("unit_accession", p.unit());
+            }
+            if (current || !ss.targets().isEmpty()) {
+                ArrayNode targets = n.putArray("targets");
+                for (List<Param> target : ss.targets()) {
+                    writeScanSettingsParams(targets.addArray(), target, current);
                 }
+            }
+            writeScanSettingsParams(n.putArray("parameters"), ss.parameters(), current);
+        }
+    }
+
+    /** Adds {@code params} to {@code arr} in the form of the current dialect or, if not {@code current}, the pin's. */
+    private static void writeScanSettingsParams(ArrayNode arr, List<Param> params, boolean current) {
+        for (Param p : params) {
+            ObjectNode pn = arr.addObject();
+            if (current) {
+                pn.put("name", p.name());
+                pn.put("accession", p.accession());
+                pn.putNull("value");
+            } else {
+                if (p.name() != null) pn.put("name", p.name());
+                if (p.accession() != null) pn.put("accession", p.accession());
+            }
+            Object v = p.value();
+            if (v instanceof Long l) pn.put("value", l);
+            else if (v instanceof Integer i) pn.put("value", i.longValue());
+            else if (v instanceof Double dd) pn.put("value", dd);
+            else if (v instanceof Boolean b) pn.put("value", b);
+            else if (v != null) pn.put("value", v.toString());
+            if (current) {
+                pn.put("unit", p.unit());
+            } else if (p.unit() != null) {
+                pn.put("unit_accession", p.unit());
             }
         }
     }
