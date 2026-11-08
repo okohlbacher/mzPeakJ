@@ -204,6 +204,15 @@ public final class MzPeakManifest {
 
     /** A controlled-vocabulary ontology reference from {@code metadata.cv_list}. */
     public record CvEntry(String id, String fullName, String uri, String version) {
+
+        /**
+         * The controlled vocabularies {@link MzPeakWriter} knows, with the entries it declares for them unless the
+         * caller gives its own ({@link MzPeakWriter.Options#withCvList}): MS, UO, EFO, OBI, HANCESTRO, BFO, NCIT, BTO,
+         * PRIDE and IMS, in this order, which is the reference implementation's. Unmodifiable.
+         */
+        public static List<CvEntry> known() {
+            return KnownCvs.ALL;
+        }
     }
 
     private final List<Entry> files;

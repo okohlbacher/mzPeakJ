@@ -11,8 +11,8 @@ import java.util.List;
  * packed metadata layout, one for the scans, precursors and selected ions that layout does not write, one for the
  * Params of wavelength spectra and one for the polarities, data processing references, Params and precursors of
  * chromatograms; in the split layout, one for the scan settings it gives an id and one for the chromatogram
- * precursors, which are not written yet. {@link ManifestWriter} records a CV prefix that {@link KnownCvs} does not
- * know.
+ * precursors, which are not written yet. {@link ManifestWriter} records a CV prefix that neither {@link KnownCvs}
+ * nor the caller's cv list knows.
  */
 final class WriteReport {
 

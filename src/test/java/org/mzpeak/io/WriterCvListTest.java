@@ -31,6 +31,7 @@ import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
@@ -51,6 +52,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The {@code metadata.cv_list} the writer declares (WR-4, design §11.6). conformance.md requires an archive to
@@ -58,7 +60,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The known CVs are those of the reference's {@code ControlledVocabularyEntry} table (param.rs:272-336 at 2ee2589),
  * pinned here as literal JSON: MS and UO are always declared, as the reference writer does, and every other known
  * CV only when the written dataset uses it, in the table's order. A prefix outside the table is written as it is,
- * left undeclared and reported once as a warning.
+ * left undeclared and reported once as a warning. A caller's cv list ({@link MzPeakWriter.Options#withCvList}, MZ-8)
+ * gives the entry of each declared CV it lists, and declares a prefix in use outside the table, after the known CVs
+ * and without the warning.
  *
  * <p>{@link #assertEveryWrittenPrefixIsDeclared} reads the written files, not the model: the CURIEs of the
  * manifest, of every Parquet footer document, of the CV-coded names of the columns that hold a value, and of the
@@ -103,6 +107,20 @@ class WriterCvListTest {
     private static final String MS = REFERENCE_TABLE.get(0);
     private static final String UO = REFERENCE_TABLE.get(1);
     private static final String IMS = REFERENCE_TABLE.get(9);
+
+    /** The MS and UO of an mzML source's cv list: other releases than the writer's, under other URIs. */
+    private static final CvEntry CALLER_MS = new CvEntry("MS",
+            "Proteomics Standards Initiative Mass Spectrometry Ontology",
+            "https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/master/psi-ms.obo", "4.1.117");
+    private static final CvEntry CALLER_UO = new CvEntry("UO", "Unit Ontology",
+            "https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/master/unit.obo",
+            "09:04:2014");
+    /** A known CV in a caller's own release. */
+    private static final CvEntry CALLER_BTO = new CvEntry("BTO", "The BRENDA Tissue Ontology (BTO)",
+            "https://example.org/bto.owl", "caller-1");
+    /** A CV mzPeakJ does not know. */
+    private static final CvEntry XYZ = new CvEntry("XYZ", "An ontology mzPeakJ does not know",
+            "https://example.org/xyz.obo", "1.2");
 
     /** A CURIE as a whole cell value: prefix, colon, local id. */
     private static final Pattern CURIE = Pattern.compile("([A-Za-z][A-Za-z0-9_.-]*):([A-Za-z0-9_]+)");
@@ -435,6 +453,149 @@ class WriterCvListTest {
         }
     }
 
+    // ---- the known CVs and the caller's cv list (MZ-8) ---------------------------------------------------------
+
+    @Test
+    void theKnownCvsAreTheReferenceTableInItsOrder() {
+        List<CvEntry> known = CvEntry.known();
+
+        assertThat(known).extracting(CvEntry::id).containsExactly("MS", "UO", "EFO", "OBI", "HANCESTRO", "BFO", "NCIT",
+                "BTO", "PRIDE", "IMS");
+        assertThat(known).extracting(WriterCvListTest::json).containsExactlyElementsOf(REFERENCE_TABLE);
+        assertThat(known.get(0)).isEqualTo(new CvEntry("MS", "Proteomics Standards Initiative Mass Spectrometry "
+                + "Ontology", "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo", "4.1.249"));
+        assertThat(known.get(known.size() - 1).id()).isEqualTo("IMS");
+        assertThatThrownBy(() -> known.add(XYZ)).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> known.set(0, CALLER_MS)).isInstanceOf(UnsupportedOperationException.class);
+        assertThat(CvEntry.known()).containsExactlyElementsOf(known);
+    }
+
+    /** The cv list of an mzML source, with releases of MS and UO other than the writer's: both are kept. */
+    @Test
+    void theCallersMsAndUoEntriesReplaceTheBuiltInOnes(@TempDir Path tmp) {
+        Source s = source(Fixtures.current("small.unpacked.mzpeak"));
+        Path out = tmp.resolve("small.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(List.of(CALLER_MS, CALLER_UO))));
+
+        assertThat(cvList(out)).containsExactly(
+                "{\"id\":\"MS\",\"full_name\":\"Proteomics Standards Initiative Mass Spectrometry Ontology\","
+                        + "\"uri\":\"https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/master/psi-ms.obo\","
+                        + "\"version\":\"4.1.117\"}",
+                "{\"id\":\"UO\",\"full_name\":\"Unit Ontology\",\"uri\":\"https://raw.githubusercontent.com/"
+                        + "bio-ontology-research-group/unit-ontology/master/unit.obo\",\"version\":\"09:04:2014\"}");
+        assertThat(warnings).isEmpty();
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.manifest().cvList()).containsExactly(CALLER_MS, CALLER_UO);
+        }
+    }
+
+    /**
+     * A prefix in use that mzPeakJ does not know is declared by the caller's entry for it, without the warning, and
+     * still reported when the caller's list lacks it; caller entries for prefixes not in use, known or not, are not
+     * declared.
+     */
+    @Test
+    void aCallerEntryForAnUnknownPrefixInUseIsDeclaredAndAnUnusedOneIsNot(@TempDir Path tmp) {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        spectra.set(0, withParam(spectra.get(0), new Param("odd", "XYZ:0000001", null, null)));
+        spectra.set(1, withParam(spectra.get(1), new Param("quality", "PATO:0000001", null, null)));
+        CvEntry unused = new CvEntry("ABC", "An ontology nothing uses", "https://example.org/abc.obo", "3");
+        Path plain = tmp.resolve("plain.mzpeak");
+        Path out = tmp.resolve("caller.mzpeak");
+
+        List<LogRecord> plainWarnings = writerWarnings(() -> MzPeakWriter.writeDirectory(plain, spectra,
+                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(List.of(unused, CALLER_BTO, XYZ))));
+
+        assertThat(plainWarnings).extracting(LogRecord::getMessage).hasSize(2)
+                .anySatisfy(m -> assertThat(m).contains("XYZ:0000001"))
+                .anySatisfy(m -> assertThat(m).contains("PATO:0000001"));
+        assertThat(cvList(plain)).containsExactly(MS, UO);
+        assertThat(cvList(out)).containsExactly(MS, UO, json(XYZ));
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.get(0).getMessage()).contains("PATO:0000001").doesNotContain("XYZ");
+        assertThat(writtenPrefixes(out)).containsEntry("XYZ", "XYZ:0000001").doesNotContainKeys("ABC", "BTO");
+    }
+
+    /**
+     * MS and UO, then the known CVs in use in the table's order, then the caller's entries for the unknown ones in
+     * the caller's order; a caller entry replaces the built-in one of its id, and of two caller entries with one id
+     * the first counts.
+     */
+    @Test
+    void theCallersEntriesFollowTheKnownCvsInTheCallersOrder(@TempDir Path tmp) {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        // Used in the order XYZ, BTO, QRS, NCIT.
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        spectra.set(0, withParam(withParam(spectra.get(0), new Param("odd", "XYZ:0000001", null, null)),
+                new Param("brain", "BTO:0000142", null, null)));
+        spectra.set(1, withParam(withParam(spectra.get(1), new Param("other", "QRS:0000001", null, null)),
+                new Param("concept", "NCIT:C25330", null, null)));
+        CvEntry qrs = new CvEntry("QRS", "Another ontology mzPeakJ does not know", "https://example.org/qrs.obo", "7");
+        List<CvEntry> caller = List.of(qrs, CALLER_BTO, CALLER_MS, XYZ,
+                new CvEntry("XYZ", "A second XYZ", "https://example.org/xyz-2.obo", "2.0"),
+                new CvEntry("MS", "A second MS", "https://example.org/ms-2.obo", "9.9.9"));
+        Path out = tmp.resolve("order.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(caller)));
+
+        assertThat(cvList(out)).containsExactly(json(CALLER_MS), UO, REFERENCE_TABLE.get(6), json(CALLER_BTO),
+                json(qrs), json(XYZ));
+        assertThat(warnings).isEmpty();
+        assertEveryWrittenPrefixIsDeclared(out);
+    }
+
+    static Stream<Arguments> callerEntriesForCvsUsedOnlyInWavelengthOrChromatogramParams() {
+        return Stream.of(
+                Arguments.of("wavelength spectrum", new Param("odd", "XYZ:0000001", null, null), XYZ, List.of()),
+                Arguments.of("chromatogram", new Param("odd", "XYZ:0000001", null, null), XYZ, List.of()),
+                Arguments.of("chromatogram", new Param("brain", "BTO:0000142", null, null), CALLER_BTO,
+                        List.of(REFERENCE_TABLE.get(7))));
+    }
+
+    /**
+     * A CV that only a param of has_uv's first wavelength spectrum or first chromatogram uses is declared by the
+     * caller's entry, without a warning; without that entry, an unknown one is left undeclared and a known one is
+     * declared by the built-in entry.
+     */
+    @ParameterizedTest(name = "{1} on a {0}")
+    @MethodSource("callerEntriesForCvsUsedOnlyInWavelengthOrChromatogramParams")
+    void aCallerEntryForACvUsedOnlyInAWavelengthOrChromatogramParamIsDeclared(String where, Param param,
+                                                                               CvEntry entry, List<String> builtIn,
+                                                                               @TempDir Path tmp) {
+        Source s = source(Fixtures.current("has_uv.mzpeak"));
+        List<Chromatogram> chromatograms = new ArrayList<>(s.chromatograms);
+        List<WavelengthSpectrum> waves = new ArrayList<>(s.wavelengthSpectra);
+        if (where.equals("chromatogram")) {
+            chromatograms.set(0, withParam(chromatograms.get(0), param));
+        } else {
+            waves.set(0, withParam(waves.get(0), param));
+        }
+        Path plain = tmp.resolve("plain.mzpeak");
+        Path out = tmp.resolve("caller.mzpeak");
+
+        List<LogRecord> plainWarnings = writerWarnings(() -> MzPeakWriter.writeDirectory(plain, s.spectra,
+                chromatograms, waves, s.scanSettings, s.fileMetadata));
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra, chromatograms,
+                waves, s.scanSettings, s.fileMetadata, MzPeakWriter.Options.defaults().withCvList(List.of(entry))));
+
+        List<String> plainCvs = new ArrayList<>(List.of(MS, UO));
+        plainCvs.addAll(builtIn);
+        assertThat(cvList(plain)).containsExactlyElementsOf(plainCvs);
+        assertThat(plainWarnings).hasSize(builtIn.isEmpty() ? 1 : 0);
+        assertThat(cvList(out)).containsExactly(MS, UO, json(entry));
+        assertThat(warnings).isEmpty();
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry(entry.id(), param.accession());
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
 
     /**
@@ -587,6 +748,32 @@ class WriterCvListTest {
                 d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
                 d.precursors(), params);
         return new Spectrum(changed, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+    }
+
+    /** {@code w} with {@code param} added to its Params. */
+    private static WavelengthSpectrum withParam(WavelengthSpectrum w, Param param) {
+        List<Param> params = new ArrayList<>(w.parameters());
+        params.add(param);
+        return new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(), w.wavelength(), w.intensity(),
+                params);
+    }
+
+    /** {@code c} with {@code param} added to its Params. */
+    private static Chromatogram withParam(Chromatogram c, Param param) {
+        List<Param> params = new ArrayList<>(c.parameters());
+        params.add(param);
+        return new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(), c.intensityUnit(),
+                c.arrays(), c.polarity(), c.dataProcessingRef(), params, c.precursors());
+    }
+
+    /** {@code cv} as one compact JSON object, with the keys in the order the writer writes them. */
+    private static String json(CvEntry cv) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("id", cv.id());
+        node.put("full_name", cv.fullName());
+        node.put("uri", cv.uri());
+        node.put("version", cv.version());
+        return node.toString();
     }
 
     /** {@code s} with {@code param} added to its first scan. */

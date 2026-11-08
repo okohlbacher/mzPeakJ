@@ -33,7 +33,7 @@ import java.util.Map;
  * the CV list, the scan settings and the file-level metadata. Every member entry carries its role in the
  * {@link Dialect}'s spelling, its {@code column_mapping}, an empty {@code parameters} list and the SHA-512
  * {@code checksum} of the member's bytes. The CV list declares every CV prefix the dataset uses that
- * {@link KnownCvs} knows.
+ * {@link KnownCvs} knows or the caller's cv list ({@link MzPeakWriter.Options#cvList()}) holds.
  */
 final class ManifestWriter {
 
@@ -86,8 +86,10 @@ final class ManifestWriter {
      *
      * <p>The CV list holds MS and UO, then every other CV of {@link KnownCvs} that a written CURIE uses (design
      * §11.6): a CURIE of the plan's spectra, chromatograms and wavelength spectra ({@link #prefixesOf}) or one of
-     * this manifest, that is of a column mapping, a scan-settings param or a file-metadata document. A prefix
-     * {@link KnownCvs} does not know is not declared and gets one warning in the plan's report.
+     * this manifest, that is of a column mapping, a scan-settings param or a file-metadata document; then every other
+     * CV in use that the caller's cv list of the plan's options holds, in that list's order. A CV the caller's list
+     * holds is declared with the list's entry ({@link KnownCvs#declare}). A prefix neither {@link KnownCvs} nor the
+     * caller's list knows is not declared and gets one warning in the plan's report.
      */
     static void writeManifest(Path directory, List<WrittenMember> members, WritePlan plan, Dialect dialect)
             throws IOException {
@@ -108,7 +110,7 @@ final class ManifestWriter {
         }
         Map<String, String> used = prefixesOf(plan);
         addJsonPrefixes(root, used);
-        for (CvEntry cv : KnownCvs.declare(used, plan.report())) {
+        for (CvEntry cv : KnownCvs.declare(used, plan.options().cvList(), plan.report())) {
             addCvEntry(cvList, cv);
         }
         Files.write(directory.resolve(INDEX), mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
