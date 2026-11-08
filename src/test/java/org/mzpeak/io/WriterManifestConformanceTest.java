@@ -60,12 +60,6 @@ class WriterManifestConformanceTest {
     private static final List<String> HAS_UV_ROLES = Stream.concat(SMALL_ROLES.stream(), Stream.of(
             "wavelength_spectra_metadata.parquet|wavelength spectrum|metadata",
             "wavelength_spectra_data.parquet|wavelength spectrum|data arrays")).toList();
-    /**
-     * Every has_uv spectrum is a CENTROID peak copy, which WR-3 writes to spectra_peaks only: the point layout writes
-     * no spectra_data (Numpress always writes it).
-     */
-    private static final List<String> HAS_UV_POINT_ROLES = HAS_UV_ROLES.stream()
-            .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
 
     /** The full form of each legacy writer family. */
     enum Form {
@@ -161,9 +155,10 @@ class WriterManifestConformanceTest {
             roles.add(entry.path("name").asText() + "|" + entry.path("entity_type").asText() + "|"
                     + entry.path("data_kind").asText());
         }
-        List<String> hasUvRoles = form.label.contains("Numpress") ? HAS_UV_ROLES : HAS_UV_POINT_ROLES;
+        // every has_uv spectrum is a CENTROID peak copy, which WR-3 writes to spectra_peaks only; spectra_data is
+        // still written, without a row (FN-10)
         assertThat(roles).as("roles of %s via %s", fixture, form)
-                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? hasUvRoles : SMALL_ROLES);
+                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? HAS_UV_ROLES : SMALL_ROLES);
     }
 
     @ParameterizedTest(name = "{0} via {1}")

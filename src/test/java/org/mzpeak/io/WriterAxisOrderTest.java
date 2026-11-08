@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.apache.parquet.io.LocalInputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -156,7 +157,8 @@ class WriterAxisOrderTest {
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, List.of(s), List.of(), List.of(), List.of(), FileMetadata.EMPTY);
 
-        assertThat(out.resolve(DATA)).doesNotExist();
+        // FN-10: spectra_data is written without a row
+        assertThat(ParquetFooter.read(new LocalInputFile(out.resolve(DATA))).rowCount()).isZero();
         double[][] stored = storedRows(out.resolve(PEAKS), "spectrum_index", "mz", 4);
         assertThat(stored[0]).containsExactly(100, 200, 300);
         assertThat(stored[1]).containsExactly(1, 2, 3);

@@ -643,9 +643,11 @@ role.
 `MzPeakWriter`'s public overloads delegate to one pipeline. `WritePlanner` validates the input before any
 I/O (non-negative, unique indices), puts the spectra in index order and decides which members are written;
 spectrum arrays are routed by container: `mz()`/`intensity()` to `spectra_data`, `peaks()` to
-`spectra_peaks`. `DatasetWriter` then writes the metadata, the signal members (point layout, or MS-Numpress
-chunks of up to 500 points with linear m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in
-point layout, and the manifest last; `ArchivePacker` packs a directory into a STORED ZIP.
+`spectra_peaks`. `spectra_data` is always written, without a row when every spectrum is centroid, because both
+Rust reference readers open it unconditionally. `DatasetWriter` then writes the metadata, the signal members
+(point layout, or MS-Numpress chunks of up to 500 points with linear m/z and SLOF or PIC intensity),
+chromatograms and wavelength spectra in point layout, and the manifest last; `ArchivePacker` packs a directory
+into a STORED ZIP.
 
 The output is the **legacy** pin-era dialect: packed metadata structs (§2.4), the role spellings
 `data arrays` and `wavelength spectrum`, no `column_mapping`, no array index, no checksums, format version

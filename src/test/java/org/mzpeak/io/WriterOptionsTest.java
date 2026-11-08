@@ -269,7 +269,8 @@ class WriterOptionsTest {
                                 tmp.resolve("default").resolve("out.mzpeak")));
                 continue;
             }
-            assertThat(rowGroups(before)).as("default row groups of %s", name).isEqualTo(1);
+            // every has_uv spectrum is a CENTROID peak copy: spectra_data has no row (FN-10)
+            assertThat(rowGroups(before)).as("default row groups of %s", name).isEqualTo(name.equals(DATA) ? 0 : 1);
             assertThat(withoutRowGroups(e.getValue().detail())).as("detail of %s", name)
                     .isEqualTo(withoutRowGroups(before.detail()));
         }
