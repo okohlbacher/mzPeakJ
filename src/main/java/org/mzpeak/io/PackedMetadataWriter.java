@@ -18,7 +18,6 @@ import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
-import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
@@ -170,8 +169,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         footer.put(countKey(SignalEntity.SPECTRUM), Long.toString(plan.spectra().size()));
         try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                Spectrum s = entry.source();
-                SpectrumDescription d = s.description();
+                SpectrumDescription d = entry.description();
                 Group row = factory.newGroup();
 
                 Group spectrum = row.addGroup("spectrum");
@@ -189,7 +187,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 }
                 spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
                 spectrum.add("MS_1000559_spectrum_type", d.msLevel() > 1 ? "MS:1000580" : "MS:1000579");
-                writeDerivedColumns(spectrum, s);
+                writeDerivedColumns(spectrum, entry.summary());
                 // Each count is the rows written to its file, and only for a file the spectrum is written to; a
                 // spectrum may go to both spectra_data and spectra_peaks, so both counts can be present.
                 if (entry.data()) {

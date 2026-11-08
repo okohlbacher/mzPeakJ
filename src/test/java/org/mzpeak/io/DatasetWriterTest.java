@@ -41,10 +41,10 @@ class DatasetWriterTest {
         WritePlan plan = WritePlanner.plan(centroids, small.chromatograms, List.of(), List.of(), small.fileMetadata,
                 Options.defaults());
         assertThat(plan.spectra()).noneMatch(WritePlan.SpectrumEntry::data);
+        assertThat(plan.spectra()).anyMatch(WritePlan.SpectrumEntry::peaks);
         assertThat(plan.writesSpectraData()).isTrue();
-        assertThat(plan.writesSpectraPeaks()).isTrue();
-        WritePlan withoutData = new WritePlan(plan.options(), plan.spectra(), plan.chromatograms(),
-                plan.wavelengthSpectra(), false, plan.writesSpectraPeaks(), plan.spectrumExtras(),
+        WritePlan withoutData = new WritePlan(plan.options(), plan.spectra(), plan.spectrumSignals(),
+                plan.chromatograms(), plan.wavelengthSpectra(), false, plan.spectrumExtras(),
                 plan.chromatogramIntensities(), plan.chromatogramExtras(), plan.scanSettings(), plan.footer(),
                 plan.report());
 
