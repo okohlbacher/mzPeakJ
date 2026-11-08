@@ -14,21 +14,28 @@ import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import static org.mzpeak.io.DatasetWriter.member;
 import static org.mzpeak.io.ParquetOutput.UINT64;
@@ -45,21 +52,27 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *
  * <ul>
  *   <li>spectra_metadata: one row per spectrum with its typed columns (index, id, ms level, time, polarity,
- *       representation, the point counts of the files written) and its {@code parameters};
+ *       representation, spectrum type, the five summary values, the point counts of the files written) and its
+ *       {@code parameters};
  *   <li>spectra_metadata_scans: one row per scan of every spectrum, keyed by {@code source_index} with a global
- *       {@code scan_index}, with its typed columns, {@code parameters} and {@code scan_windows};
+ *       {@code scan_index}, with its typed columns, {@code parameters}, {@code scan_windows} and, when some scan has
+ *       one, the imaging positions;
  *   <li>spectra_metadata_precursors: one row per precursor of every spectrum, in the spectrum's order, keyed by
  *       {@code source_index} and the precursor's {@code precursor_index}, with its {@code precursor_id}, its
- *       {@code isolation_window} and its {@code activation} {@code parameters};
+ *       {@code isolation_window} and its {@code activation} (dissociation method, collision energy,
+ *       {@code parameters});
  *   <li>spectra_metadata_selected_ions: one row per selected ion of every precursor, keyed by {@code source_index}
  *       and the {@code precursor_index} of its precursor, with a global {@code selected_ion_index}, its typed columns
  *       and {@code parameters}.
  * </ul>
  *
- * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param stays in its
- * {@code parameters} list, including ion mobility and the activation's dissociation method and collision energy;
- * nothing is derived. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is
- * nothing in them, as in the reference's output; the isolation window's {@code parameters} list is always empty.
+ * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param moves to its standardized
+ * column only if the reader rebuilds it equal apart from its name ({@link Promotion}, WR-5c): a summary value, the
+ * spectrum type, an imaging position, the dissociation method or the collision energy. Every other Param stays in
+ * its {@code parameters} list, ion mobility included. The summary values are derived from the payload only when the
+ * spectrum's Params have none of the five, and the spectrum type from the MS level only when they have no spectrum
+ * type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
+ * as in the reference's output; the isolation window's {@code parameters} list is always empty.
  *
  * <p>Every precursor is written as given, its {@code precursor_index} included. Both readers attach a selected ion
  * to the first precursor of its spectrum whose key {@code (source_index, precursor_index)} equals the ion's, so the
@@ -98,8 +111,18 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column MS_LEVEL = column(Facet.SPECTRUM, "MS:1000511");
     private static final Column SCAN_POLARITY = column(Facet.SPECTRUM, "MS:1000465");
     private static final Column REPRESENTATION = column(Facet.SPECTRUM, "MS:1000525");
+    private static final Column SPECTRUM_TYPE = column(Facet.SPECTRUM, "MS:1000559");
+    private static final Column LOWEST_MZ = column(Facet.SPECTRUM, "MS:1000528");
+    private static final Column HIGHEST_MZ = column(Facet.SPECTRUM, "MS:1000527");
     private static final Column N_POINTS = column(Facet.SPECTRUM, "MS:1003060");
     private static final Column N_PEAKS = column(Facet.SPECTRUM, "MS:1003059");
+    private static final Column BASE_PEAK_MZ = column(Facet.SPECTRUM, "MS:1000504");
+    private static final Column BASE_PEAK_INTENSITY = column(Facet.SPECTRUM, "MS:1000505");
+    private static final Column TIC = column(Facet.SPECTRUM, "MS:1000285");
+
+    /** The summary columns, in the order of {@link SpectrumSummary.Values}. */
+    private static final List<Column> SUMMARY = List.of(LOWEST_MZ, HIGHEST_MZ, BASE_PEAK_MZ, BASE_PEAK_INTENSITY, TIC);
+    private static final Set<String> SUMMARY_ACCESSIONS = Set.copyOf(SUMMARY.stream().map(Column::accession).toList());
 
     // CV-mapped scan columns
     private static final Column SCAN_START_TIME = column(Facet.SPECTRUM_SCAN, "MS:1000016");
@@ -108,6 +131,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column ION_INJECTION_TIME = column(Facet.SPECTRUM_SCAN, "MS:1000927");
     private static final Column WINDOW_LOWER = column(Facet.SPECTRUM_SCAN, "MS:1000501");
     private static final Column WINDOW_UPPER = column(Facet.SPECTRUM_SCAN, "MS:1000500");
+    private static final Column POSITION_X = column(Facet.SPECTRUM_SCAN, "IMS:1000050");
+    private static final Column POSITION_Y = column(Facet.SPECTRUM_SCAN, "IMS:1000051");
 
     /** The struct list holding the scan windows, the parent of {@link #WINDOW_LOWER} and {@link #WINDOW_UPPER}. */
     private static final String SCAN_WINDOWS = parent(WINDOW_LOWER);
@@ -116,6 +141,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column ISOLATION_TARGET = column(Facet.SPECTRUM_PRECURSOR, "MS:1000827");
     private static final Column ISOLATION_LOWER = column(Facet.SPECTRUM_PRECURSOR, "MS:1000828");
     private static final Column ISOLATION_UPPER = column(Facet.SPECTRUM_PRECURSOR, "MS:1000829");
+    private static final Column DISSOCIATION_METHOD = column(Facet.SPECTRUM_PRECURSOR, CvTerms.DISSOCIATION_METHOD);
+    private static final Column COLLISION_ENERGY = column(Facet.SPECTRUM_PRECURSOR, CvTerms.COLLISION_ENERGY);
 
     /** The struct holding the isolation window, the parent of {@link #ISOLATION_TARGET} and its offsets. */
     private static final String ISOLATION_WINDOW = parent(ISOLATION_TARGET);
@@ -132,23 +159,16 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(TIME)
             .optional(PrimitiveTypeName.INT32).named(field(SCAN_POLARITY))
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(REPRESENTATION))
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(SPECTRUM_TYPE))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(LOWEST_MZ))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(HIGHEST_MZ))
             .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(N_POINTS))
             .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(N_PEAKS))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(BASE_PEAK_MZ))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(BASE_PEAK_INTENSITY))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(TIC))
             .addField(paramListField())
             .named("spectra_metadata");
-
-    private static final MessageType SCAN_SCHEMA = Types.buildMessage()
-            .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
-            .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
-            .optional(PrimitiveTypeName.DOUBLE).named(field(SCAN_START_TIME))
-            .optional(PrimitiveTypeName.INT32).named(field(PRESET_SCAN_CONFIGURATION))
-            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(FILTER_STRING))
-            .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME))
-            .optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID)
-            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(SPECTRUM_REFERENCE)
-            .addField(paramListField())
-            .addField(scanWindowListField())
-            .named("spectra_metadata_scans");
 
     private static final MessageType PRECURSOR_SCHEMA = Types.buildMessage()
             .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
@@ -161,6 +181,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     .addField(paramListField())
                     .named(ISOLATION_WINDOW))
             .addField(Types.optionalGroup()
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named(field(DISSOCIATION_METHOD))
+                    .optional(PrimitiveTypeName.DOUBLE).named(field(COLLISION_ENERGY))
                     .addField(paramListField())
                     .named(ACTIVATION))
             .named("spectra_metadata_precursors");
@@ -176,12 +199,13 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .named("spectra_metadata_selected_ions");
 
     private static final List<ColumnMapping> SPECTRUM_MAPPING = mapping(Facet.SPECTRUM,
-            Set.of(MS_LEVEL, SCAN_POLARITY, REPRESENTATION, N_POINTS, N_PEAKS));
-    private static final List<ColumnMapping> SCAN_MAPPING = mapping(Facet.SPECTRUM_SCAN,
-            Set.of(SCAN_START_TIME, PRESET_SCAN_CONFIGURATION, FILTER_STRING, ION_INJECTION_TIME, WINDOW_LOWER,
-                    WINDOW_UPPER));
+            Set.of(MS_LEVEL, SCAN_POLARITY, REPRESENTATION, SPECTRUM_TYPE, LOWEST_MZ, HIGHEST_MZ, N_POINTS, N_PEAKS,
+                    BASE_PEAK_MZ, BASE_PEAK_INTENSITY, TIC));
+    /** The scan columns always written; the position columns are added when some scan has a position. */
+    private static final Set<Column> SCAN_COLUMNS = Set.of(SCAN_START_TIME, PRESET_SCAN_CONFIGURATION, FILTER_STRING,
+            ION_INJECTION_TIME, WINDOW_LOWER, WINDOW_UPPER);
     private static final List<ColumnMapping> PRECURSOR_MAPPING = mapping(Facet.SPECTRUM_PRECURSOR,
-            Set.of(ISOLATION_TARGET, ISOLATION_LOWER, ISOLATION_UPPER));
+            Set.of(ISOLATION_TARGET, ISOLATION_LOWER, ISOLATION_UPPER, DISSOCIATION_METHOD, COLLISION_ENERGY));
     private static final List<ColumnMapping> SELECTED_ION_MAPPING = mapping(Facet.SPECTRUM_SELECTED_ION,
             Set.of(SELECTED_ION_MZ, CHARGE_STATE, PEAK_INTENSITY));
 
@@ -205,8 +229,11 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         footer.put(countKey(SignalEntity.SPECTRUM), Long.toString(plan.spectra().size()));
         writeSpectra(member(directory, members, SPECTRA_METADATA, EntityType.SPECTRUM, DataKind.METADATA,
                 SPECTRUM_MAPPING), plan, footer);
-        writeScans(member(directory, members, SPECTRA_SCANS, EntityType.SPECTRUM, DataKind.SCANS, SCAN_MAPPING),
-                plan, footer);
+        List<Column> positions = positionColumns(plan);
+        Set<Column> scanColumns = new HashSet<>(SCAN_COLUMNS);
+        scanColumns.addAll(positions);
+        writeScans(member(directory, members, SPECTRA_SCANS, EntityType.SPECTRUM, DataKind.SCANS,
+                mapping(Facet.SPECTRUM_SCAN, scanColumns)), plan, footer, positions);
         writePrecursors(member(directory, members, SPECTRA_PRECURSORS, EntityType.SPECTRUM, DataKind.PRECURSORS,
                 PRECURSOR_MAPPING), plan, footer);
         writeSelectedIons(member(directory, members, SPECTRA_SELECTED_IONS, EntityType.SPECTRUM,
@@ -251,6 +278,17 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 if (representation != null) {
                     row.add(field(REPRESENTATION), representation);
                 }
+                Promotion params = new Promotion(d.parameters());
+                Param type = params.promote(termOf(SpectrumSummary.SPECTRUM_TYPES));
+                if (type != null) {
+                    row.add(field(SPECTRUM_TYPE), type.accession());
+                } else if (!params.hasAny(SpectrumSummary.SPECTRUM_TYPES)) {
+                    row.add(field(SPECTRUM_TYPE), SpectrumSummary.spectrumType(d.msLevel()));
+                }
+                List<Double> summary = summary(entry.source(), params);
+                for (int i = 0; i < SUMMARY.size(); i++) {
+                    addIfPresent(row, field(SUMMARY.get(i)), summary.get(i));
+                }
                 // Each count is the rows written to its file, and only for a file the spectrum is written to.
                 if (entry.data()) {
                     row.add(field(N_POINTS), (long) entry.dataRows());
@@ -258,18 +296,55 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 if (entry.peaks()) {
                     row.add(field(N_PEAKS), (long) entry.peakRows());
                 }
-                params(row, d.parameters());
+                params(row, params.rest());
                 writer.write(row);
             }
         }
     }
 
+    /**
+     * The five summary values of {@code s}, in {@link #SUMMARY} order, each {@code null} when absent: derived from the
+     * payload when its Params have none of the five, else the Params promoted to their columns.
+     */
+    private static List<Double> summary(Spectrum s, Promotion params) {
+        if (!params.hasAny(SUMMARY_ACCESSIONS)) {
+            SpectrumSummary.Values v = SpectrumSummary.derive(s);
+            return Arrays.asList(v.lowestMz(), v.highestMz(), v.basePeakMz(), v.basePeakIntensity(), v.tic());
+        }
+        List<Double> out = new ArrayList<>(SUMMARY.size());
+        for (Column column : SUMMARY) {
+            Param p = params.promote(doubleIn(column));
+            out.add(p == null ? null : (Double) p.value());
+        }
+        return out;
+    }
+
     // ---- spectra_metadata_scans ---------------------------------------------------------------------------------
 
-    private static void writeScans(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(SCAN_SCHEMA);
+    /**
+     * Writes the scans, with the {@code positions} columns, those of {@link #positionColumns}, after the
+     * {@code scan_windows}, as the reference does.
+     */
+    private static void writeScans(Path file, WritePlan plan, Map<String, String> footer, List<Column> positions)
+            throws IOException {
+        Types.GroupBuilder<MessageType> builder = Types.buildMessage()
+                .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
+                .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
+                .optional(PrimitiveTypeName.DOUBLE).named(field(SCAN_START_TIME))
+                .optional(PrimitiveTypeName.INT32).named(field(PRESET_SCAN_CONFIGURATION))
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(FILTER_STRING))
+                .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME))
+                .optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID)
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(SPECTRUM_REFERENCE)
+                .addField(paramListField())
+                .addField(scanWindowListField());
+        for (Column position : positions) {
+            builder = builder.optional(PrimitiveTypeName.INT32).named(field(position));
+        }
+        MessageType schema = builder.named("spectra_metadata_scans");
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         long scanIndex = 0;
-        try (ParquetWriter<Group> writer = openWriter(file, SCAN_SCHEMA, footer, plan.options())) {
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 for (ScanEvent scan : entry.source().description().scans()) {
                     Group row = factory.newGroup();
@@ -293,7 +368,14 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     if (scan.spectrumReference() != null) {
                         row.add(SPECTRUM_REFERENCE, scan.spectrumReference());
                     }
-                    params(row, scan.parameters());
+                    Promotion params = new Promotion(scan.parameters());
+                    for (Column position : positions) {
+                        Param p = params.promote(positionIn(position));
+                        if (p != null) {
+                            row.add(field(position), ((Long) p.value()).intValue());
+                        }
+                    }
+                    params(row, params.rest());
                     Group windows = row.addGroup(SCAN_WINDOWS);
                     for (ScanWindow w : scan.scanWindows()) {
                         Group item = windows.addGroup("list").addGroup("item");
@@ -330,7 +412,17 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                         // The model has no isolation-window Params yet.
                         params(iso, List.of());
                     }
-                    params(row.addGroup(ACTIVATION), precursor.activation().parameters());
+                    Group activation = row.addGroup(ACTIVATION);
+                    Promotion params = new Promotion(precursor.activation().parameters());
+                    Param method = params.promote(termOf(CvTerms.DISSOCIATION_METHODS.keySet()));
+                    if (method != null) {
+                        activation.add(field(DISSOCIATION_METHOD), method.accession());
+                    }
+                    Param energy = params.promote(doubleIn(COLLISION_ENERGY));
+                    if (energy != null) {
+                        activation.add(field(COLLISION_ENERGY), (Double) energy.value());
+                    }
+                    params(activation, params.rest());
                     writer.write(row);
                 }
             }
@@ -375,6 +467,109 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                                 .named("item"))
                         .named("list"))
                 .named(SCAN_WINDOWS);
+    }
+
+    /** The position columns, in table order, that some scan of the plan has a position to promote to. */
+    private static List<Column> positionColumns(WritePlan plan) {
+        List<Column> out = new ArrayList<>();
+        for (Column position : List.of(POSITION_X, POSITION_Y)) {
+            boolean promoted = false;
+            for (SpectrumEntry entry : plan.spectra()) {
+                for (ScanEvent scan : entry.source().description().scans()) {
+                    promoted |= new Promotion(scan.parameters()).promote(positionIn(position)) != null;
+                }
+            }
+            if (promoted) {
+                out.add(position);
+            }
+        }
+        return out;
+    }
+
+    // ---- promotion ----------------------------------------------------------------------------------------------
+
+    /**
+     * The Params of one scope as they are written (WR-5c, design §11.8). A Param moves to its column, and leaves the
+     * {@code parameters} list, only if the reader rebuilds it equal apart from its name. Per column only the first
+     * Param that qualifies is promoted, and only when no other Param of the list has its accession, so no accession
+     * is ever both a column and a parameter of the scope.
+     */
+    private static final class Promotion {
+
+        private final List<Param> params;
+        private final boolean[] promoted;
+
+        Promotion(List<Param> params) {
+            this.params = params;
+            this.promoted = new boolean[params.size()];
+        }
+
+        /**
+         * Promotes the first Param that {@code qualifies} and returns it; {@code null} when there is none or another
+         * Param of the list has its accession.
+         */
+        Param promote(Predicate<Param> qualifies) {
+            for (int i = 0; i < params.size(); i++) {
+                Param p = params.get(i);
+                if (!promoted[i] && p.accession() != null && qualifies.test(p)) {
+                    for (int j = 0; j < params.size(); j++) {
+                        if (j != i && p.accession().equals(params.get(j).accession())) {
+                            return null;
+                        }
+                    }
+                    promoted[i] = true;
+                    return p;
+                }
+            }
+            return null;
+        }
+
+        /** Whether a Param of the list, promoted or not, has one of {@code accessions}. */
+        boolean hasAny(Collection<String> accessions) {
+            for (Param p : params) {
+                if (p.accession() != null && accessions.contains(p.accession())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** The Params not promoted, in list order: the scope's {@code parameters} list. */
+        List<Param> rest() {
+            List<Param> out = new ArrayList<>(params.size());
+            for (int i = 0; i < params.size(); i++) {
+                if (!promoted[i]) {
+                    out.add(params.get(i));
+                }
+            }
+            return out;
+        }
+    }
+
+    /**
+     * A term the reader rebuilds from a term-marker cell as {@code Param(name, cell)}: one of {@code terms}, without
+     * value or unit.
+     */
+    private static Predicate<Param> termOf(Collection<String> terms) {
+        return p -> terms.contains(p.accession()) && p.value() == null && p.unit() == null;
+    }
+
+    /**
+     * A value the reader rebuilds from the DOUBLE {@code column} with its mapping's accession and unit: a finite
+     * Double with the column's unit.
+     */
+    private static Predicate<Param> doubleIn(Column column) {
+        return p -> column.accession().equals(p.accession()) && p.value() instanceof Double v && Double.isFinite(v)
+                && Objects.equals(column.unit(), p.unit());
+    }
+
+    /**
+     * An imaging position the reader rebuilds from the INT32 {@code column}: a Long in [0, 2^31) without unit. A
+     * negative one stays a Param, as the reference types the column UInt32.
+     */
+    private static Predicate<Param> positionIn(Column column) {
+        return p -> column.accession().equals(p.accession()) && p.value() instanceof Long v && v >= 0
+                && v <= Integer.MAX_VALUE && p.unit() == null;
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

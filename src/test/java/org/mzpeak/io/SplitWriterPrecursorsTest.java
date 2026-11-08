@@ -38,8 +38,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * WR-5b: the precursors and selected ions of the split metadata layout written by {@link SplitMetadataWriter} (design
  * §11.8). spectra_metadata_precursors has one row per precursor, in the spectrum's order, keyed by
  * {@code (source_index, precursor_index)}; spectra_metadata_selected_ions has one row per selected ion with the
- * {@code precursor_index} of its precursor and a global {@code selected_ion_index}. Activation and selected-ion Params,
- * ion mobility included, stay in the {@code parameters} lists. The full round trips of the WR-5a fixtures are in
+ * {@code precursor_index} of its precursor and a global {@code selected_ion_index}. Selected-ion Params, ion mobility
+ * included, stay in the {@code parameters} lists; the activation's dissociation method and collision energy move to
+ * their columns ({@link SplitWriterPromotionTest}, WR-5c). The full round trips of the WR-5a fixtures are in
  * {@link SplitWriterSpectraTest}.
  *
  * <p>Oracles: current small.unpacked (34 MS2 spectra with one precursor and one selected ion each), diaPASEF.ref
@@ -68,7 +69,8 @@ class SplitWriterPrecursorsTest {
                 "isolation_window.isolation_window_lower_offset optional DOUBLE -",
                 "isolation_window.isolation_window_upper_offset optional DOUBLE -",
                 "isolation_window.parameters optional group list",
-                "activation optional group", "activation.parameters optional group list");
+                "activation optional group", "activation.dissociation_method optional BINARY string",
+                "activation.collision_energy optional DOUBLE -", "activation.parameters optional group list");
         assertThat(columns(schema(out, SELECTED_IONS))).containsExactly(
                 "source_index required INT64 uint64", "precursor_index optional INT64 uint64",
                 "selected_ion_index required INT64 uint64", "selected_ion_mz optional DOUBLE -",
@@ -97,9 +99,14 @@ class SplitWriterPrecursorsTest {
                         .isEqualTo(precursor.isolationWindow().upperOffset());
                 assertThat(ParquetGroups.has(iso, "parameters")).as(where + ": isolation_window.parameters").isTrue();
                 assertThat(ParquetGroups.groupList(iso, "parameters")).as(where).isEmpty();
-                // The activation's dissociation method and collision energy stay Params (WR-5c promotes them).
-                assertThat(ParquetGroups.readParams(ParquetGroups.optGroup(row, "activation"), "parameters"))
-                        .as(where).hasSize(2).isEqualTo(precursor.activation().parameters());
+                // The activation's dissociation method and collision energy are columns since WR-5c.
+                Group activation = ParquetGroups.optGroup(row, "activation");
+                assertThat(precursor.activation().parameters()).as(where).hasSize(2);
+                assertThat(ParquetGroups.optString(activation, "dissociation_method")).as(where)
+                        .isEqualTo(precursor.activation().parameters().get(0).accession());
+                assertThat(ParquetGroups.optDouble(activation, "collision_energy")).as(where)
+                        .isEqualTo(precursor.activation().parameters().get(1).value());
+                assertThat(ParquetGroups.readParams(activation, "parameters")).as(where).isEmpty();
                 for (SelectedIon ion : precursor.selectedIons()) {
                     String at = "selected-ion row " + i + " (spectrum " + s.index() + ")";
                     Group ionRow = ionRows.get(i);
@@ -268,8 +275,8 @@ class SplitWriterPrecursorsTest {
     }
 
     /**
-     * The precursor member maps the three isolation-window columns and the selected-ion member its three typed
-     * columns, each row exactly as current small.unpacked maps it; the activation columns are not written yet (WR-5c).
+     * The precursor member maps the three isolation-window columns and, since WR-5c, the two activation columns, and
+     * the selected-ion member its three typed columns, each row exactly as current small.unpacked maps it.
      */
     @Test
     void theMappingRowsAreThoseOfTheCurrentManifests(@TempDir Path tmp) throws IOException {
@@ -278,13 +285,8 @@ class SplitWriterPrecursorsTest {
         JsonNode current = manifest(fixture);
         JsonNode written = manifest(out);
 
-        List<JsonNode> currentPrecursorRows = new ArrayList<>();
-        for (JsonNode row : entry(current, PRECURSORS).path("column_mapping")) {
-            if (row.path("path").asText().startsWith("isolation_window.")) {
-                currentPrecursorRows.add(row);
-            }
-        }
-        assertThat(currentPrecursorRows).hasSize(3);
+        List<JsonNode> currentPrecursorRows = list(entry(current, PRECURSORS).path("column_mapping"));
+        assertThat(currentPrecursorRows).hasSize(5);
         assertThat(list(entry(written, PRECURSORS).path("column_mapping")))
                 .containsExactlyElementsOf(currentPrecursorRows);
         assertThat(entry(written, SELECTED_IONS).path("column_mapping"))
