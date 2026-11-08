@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WritePlan.Entry;
@@ -37,7 +38,8 @@ final class WritePlanner {
     static WritePlan plan(List<Spectrum> spectra, List<Chromatogram> chromatograms,
                           List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                           FileMetadata fileMetadata, Options options) {
-        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra);
+        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra,
+                options.metadataLayout());
         WriteReport report = new WriteReport();
         List<SpectrumEntry> spectrumEntries = new ArrayList<>(ordered.size());
         // Numpress always writes spectra_data, if need be without a single row; point layout only when it has rows.
@@ -174,19 +176,25 @@ final class WritePlanner {
     /**
      * Enforce the reader's index contract before anything is written. Spectrum, precursor_index, chromatogram
      * and wavelength-spectrum indices must be non-negative (they are stored as uint64), and spectrum, chromatogram
-     * and wavelength-spectrum indices must be unique. The reader finds a spectrum's data rows through the index
-     * range of each row group, so spectra are written in index order: this returns the caller's list when it is
-     * already in index order, and otherwise a stable-sorted copy. The caller's list is never modified.
+     * and wavelength-spectrum indices must be unique. The precursor_index checked is that of every precursor
+     * {@code layout} writes: the primary precursor's for {@link MetadataLayout#PACKED}, every precursor's for
+     * {@link MetadataLayout#SPLIT}. The reader finds a spectrum's data rows through the index range of each row
+     * group, so spectra are written in index order: this returns the caller's list when it is already in index
+     * order, and otherwise a stable-sorted copy. The caller's list is never modified.
      */
     private static List<Spectrum> validateAndOrder(List<Spectrum> spectra, List<Chromatogram> chromatograms,
-                                                   List<WavelengthSpectrum> wavelengthSpectra) {
+                                                   List<WavelengthSpectrum> wavelengthSpectra,
+                                                   MetadataLayout layout) {
         boolean inIndexOrder = true;
         long previous = -1;
         for (Spectrum s : spectra) {
             requireNonNegative(s.index(), "spectrum index");
-            Precursor p = s.description().primaryPrecursor();
-            if (p != null && p.precursorIndex() != null) {
-                requireNonNegative(p.precursorIndex(), "precursor_index");
+            if (layout == MetadataLayout.SPLIT) {
+                for (Precursor p : s.description().precursors()) {
+                    requireNonNegativePrecursorIndex(p);
+                }
+            } else {
+                requireNonNegativePrecursorIndex(s.description().primaryPrecursor());
             }
             inIndexOrder &= s.index() >= previous;
             previous = s.index();
@@ -219,6 +227,12 @@ final class WritePlanner {
     private static void requireNonNegative(long value, String what) {
         if (value < 0) {
             throw new MzPeakException(what + " must be non-negative (mzPeak indices are uint64): " + value);
+        }
+    }
+
+    private static void requireNonNegativePrecursorIndex(Precursor p) {
+        if (p != null && p.precursorIndex() != null) {
+            requireNonNegative(p.precursorIndex(), "precursor_index");
         }
     }
 

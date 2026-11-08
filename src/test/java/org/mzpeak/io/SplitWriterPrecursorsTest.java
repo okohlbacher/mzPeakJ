@@ -22,14 +22,17 @@ import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * WR-5b: the precursors and selected ions of the split metadata layout written by {@link SplitMetadataWriter} (design
@@ -171,6 +174,48 @@ class SplitWriterPrecursorsTest {
         List<Precursor> secondBack = back.spectra.get(second).description().precursors();
         assertThat(secondBack).containsExactly(keyless, seventh);
         assertThat(secondBack.get(0).precursorIndex()).isNull();
+    }
+
+    /**
+     * SPLIT writes the precursor_index of every precursor as UINT64, so a negative one after the first is rejected
+     * before any I/O, as a directory and as an archive (no output, no {@code .mzpeak-write-*} temp entry). PACKED
+     * writes the primary precursor only and still writes the same input.
+     */
+    @Test
+    void aNegativePrecursorIndexAfterTheFirstIsRejectedBeforeWritingWithSplitOnly(@TempDir Path tmp)
+            throws IOException {
+        Source small = source(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        int msn = nextMsn(spectra, 0);
+        Precursor original = spectra.get(msn).description().primaryPrecursor();
+        assertThat(original.precursorIndex()).as("fixture precursor_index").isNotNull().isNotNegative();
+        Precursor negative = new Precursor(-1L, "scan=0", null,
+                List.of(new SelectedIon(401.5, 2, null, List.of())), Activation.EMPTY);
+        spectra.set(msn, withPrecursors(spectra.get(msn), List.of(original, negative)));
+        String message = "precursor_index must be non-negative (mzPeak indices are uint64): -1";
+
+        Path dir = tmp.resolve("split.mzpeak");
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(dir, spectra, small.chromatograms,
+                small.wavelengthSpectra, small.scanSettings, small.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class).hasMessage(message);
+        assertThat(dir).as("output directory after a rejected write").doesNotExist();
+
+        Path parent = Files.createDirectories(tmp.resolve("archive"));
+        Path archive = parent.resolve("split.mzpeak");
+        assertThatThrownBy(() -> MzPeakWriter.writeArchive(archive, spectra, small.chromatograms,
+                small.wavelengthSpectra, small.scanSettings, small.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class).hasMessage(message);
+        try (Stream<Path> entries = Files.list(parent)) {
+            assertThat(entries).as("entries next to %s after a rejected write", archive).isEmpty();
+        }
+
+        Path packed = tmp.resolve("packed.mzpeak");
+        MzPeakWriter.writeDirectory(packed, spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, Options.defaults());
+        Source back = ForwardBackwardCorpusTest.readSource(packed);
+        assertThat(back.spectra).hasSameSizeAs(spectra);
+        assertThat(back.spectra.get(msn).description().precursors()).as("PACKED precursors of the spectrum")
+                .containsExactly(original);
     }
 
     @Test
