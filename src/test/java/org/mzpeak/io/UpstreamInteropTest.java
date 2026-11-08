@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
@@ -51,10 +52,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <ul>
  *   <li>{@code generate_golden.py <output>} prints the summary lines of the Python reader's read, and they pass the
  *       golden rules ({@link Golden.Comparator}, {@link Golden.Tolerance#DEFAULT}) against mzPeakJ's read of the
- *       source: one S line per spectrum written, keyed 0..n-1; a P line for each spectrum with peaks; a C line per
- *       chromatogram and a W line per wavelength spectrum; R lines without a null cell; and no X line, because the
- *       writer drops extra arrays until WR-11. Numpress is lossy, so for its spectra only the number of points is
- *       compared;
+ *       source: one S line per spectrum written, keyed 0..n-1; a P line for each spectrum with peaks; an X line for
+ *       each extra array of a spectrum ({@link Spectrum#arrays()}) and of a peak list ({@link Spectrum#peakArrays()}),
+ *       which the writer keeps (MZ-1), and none for a chromatogram, whose extra arrays the writer drops until WR-11; a
+ *       C line per chromatogram and a W line per wavelength spectrum; and R lines without a null cell. Numpress is
+ *       lossy, so for its spectra only the number of points is compared;
  *   <li>a probe script reports what the Python reader counts (spectra and their indices, precursors, selected ions,
  *       chromatograms, wavelength spectra) and {@code check_archive_integrity()}, which must be {@code (True, [])};
  *   <li>the counts of the unit's acceptance are pinned: 48 spectra, 34 precursors, 34 selected ions and one
@@ -189,13 +191,26 @@ class UpstreamInteropTest {
         List<Spectrum> spectra = output.spectra();
         expectKeys(out, golden, Kind.S, IntStream.range(0, spectra.size()).mapToObj(Integer::toString).toList());
         List<String> withPeaks = new ArrayList<>();
+        // the generator writes the X lines of every spectrum, then those of every peak list
+        List<String> extras = new ArrayList<>();
+        List<String> peakExtras = new ArrayList<>();
         for (int i = 0; i < spectra.size(); i++) {
             Spectrum s = spectra.get(i);
             String key = Integer.toString(i);
             golden.line(Kind.S, key).ifPresent(line -> spectrum(out, output, line, s.mz(), s.intensity()));
+            for (Map.Entry<String, double[]> extra : s.arrays().entrySet()) {
+                extras.add("S:" + key + " [" + extra.getKey() + "]");
+                golden.line(Kind.X, "S:" + key, extra.getKey()).ifPresent(line ->
+                        spectrum(out, output, line, s.mz(), extra.getValue()));
+            }
             if (!s.peaks().isEmpty()) {
                 withPeaks.add(key);
                 golden.line(Kind.P, key).ifPresent(line -> spectrum(out, output, line, peakMz(s), peakIntensity(s)));
+                for (String extra : s.peakArrays().keySet()) {
+                    peakExtras.add("P:" + key + " [" + extra + "]");
+                    golden.line(Kind.X, "P:" + key, extra).ifPresent(line ->
+                            spectrum(out, output, line, peakMz(s), peakExtra(s, extra)));
+                }
             }
             golden.line(Kind.R, key).ifPresent(line ->
                     out.addAll(Golden.Comparator.compare(line, s.mz(), s.intensity(), tolerance)));
@@ -218,8 +233,11 @@ class UpstreamInteropTest {
             golden.line(Kind.W, Integer.toString(i)).ifPresent(line ->
                     out.addAll(Golden.Comparator.compare(line, w.wavelength(), w.intensity(), tolerance)));
         }
-        for (Line line : golden.lines(Kind.X)) {
-            out.add("X " + line.key() + " [" + line.arrayType() + "]: an extra array was written");
+        // The spectra's extra arrays are written (MZ-1), the chromatograms' not yet (WR-11).
+        extras.addAll(peakExtras);
+        List<String> xKeys = golden.lines(Kind.X).stream().map(l -> l.key() + " [" + l.arrayType() + "]").toList();
+        if (!xKeys.equals(extras)) {
+            out.add("X lines: expected " + extras + " but were " + xKeys);
         }
         return out;
     }
@@ -372,5 +390,11 @@ class UpstreamInteropTest {
 
     private static double[] peakIntensity(Spectrum s) {
         return s.peaks().stream().mapToDouble(CentroidPeak::intensity).toArray();
+    }
+
+    /** The peak array {@code key} of {@code s} in the order of {@link Spectrum#peaks()}. */
+    private static double[] peakExtra(Spectrum s, String key) {
+        double[] values = s.peakArrays().get(key);
+        return s.peaks().stream().mapToDouble(p -> values[p.index()]).toArray();
     }
 }

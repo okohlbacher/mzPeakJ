@@ -60,11 +60,12 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * </ul>
  *
  * <p>Extra signal arrays ({@link Spectrum#arrays()}, {@link Spectrum#peakArrays()}, such as diaPASEF's ion mobility)
- * are not written yet (WR-11 writes them): every re-read spectrum has none, and the write's report carries exactly one
- * warning about them when the source has any, and none otherwise. The same holds for the extra arrays of
- * chromatograms ({@link Chromatogram#arrays()}, the TIC's {@code ms level}) and for their intensity unit
- * ({@link Chromatogram#intensityUnit()}), with one warning each, in both metadata layouts. The packed layout warns
- * once about the scans, precursors and selected ions it drops.
+ * are written (MZ-1): every re-read spectrum has the extra arrays of its source, value for value in both layouts,
+ * since Numpress leaves them uncompressed, and the write's report carries no warning about them. The extra arrays of
+ * chromatograms ({@link Chromatogram#arrays()}, the TIC's {@code ms level}) and their intensity unit
+ * ({@link Chromatogram#intensityUnit()}) are not written yet (WR-11): every re-read chromatogram has none, and the
+ * report carries one warning each, in both metadata layouts. The packed layout warns once about the scans, precursors
+ * and selected ions it drops.
  */
 class FixtureRoundTripTest {
 
@@ -72,7 +73,7 @@ class FixtureRoundTripTest {
     private static final double NUMPRESS_PEAK_MZ_ABS_TOL = 1e-4;
     /** Numpress SLOF intensity tolerance, relative to {@code max(|x|, 1)} of the source value. */
     private static final double NUMPRESS_INTENSITY_REL_TOL = 1e-3;
-    /** The fragment that identifies the report's warning about extra signal arrays. */
+    /** The fragment of the report's former warning about extra signal arrays, which MZ-1 removed. */
     private static final String EXTRAS_WARNING = "extra signal arrays";
     /** The fragment that identifies the report's warning about the extra arrays of chromatograms. */
     private static final String CHROMATOGRAM_ARRAYS_WARNING = "; their time and intensity are written";
@@ -139,7 +140,7 @@ class FixtureRoundTripTest {
             }
         }
 
-        assertExtrasDroppedWithOneWarning(what, source, back, options(layout, metadata));
+        assertExtrasKeptWithoutWarning(what, source, back, options(layout, metadata));
         assertChromatogramExtrasDroppedWithOneWarningEach(what, fixture, source, back, options(layout, metadata));
         assertThat(spectrumMetadataShape(out)).as("spectrum metadata layout of %s", what)
                 .isEqualTo(metadata == MetadataLayout.SPLIT ? MetadataShape.SPLIT : MetadataShape.PACKED);
@@ -262,35 +263,32 @@ class FixtureRoundTripTest {
     }
 
     /**
-     * No re-read spectrum has an extra signal array, and the report of the write carries one warning about them, naming
-     * every extra key of the source and the number of spectra that had one, if the source has any; otherwise none.
+     * Every re-read spectrum has the extra signal arrays of its source under the same keys, in the same order and
+     * with equal values ({@link Double#compare}), its peak arrays too, and the report of the write carries no warning
+     * about extra signal arrays. diaPASEF.ref and diaPASEF.grid have an ion mobility array in every spectrum.
      */
-    private static void assertExtrasDroppedWithOneWarning(String what, Source source, Source back, Options options) {
-        for (Spectrum b : back.spectra) {
-            assertThat(b.arrays()).as("%s spectrum %d extra arrays after the round trip", what, b.index()).isEmpty();
-            assertThat(b.peakArrays()).as("%s spectrum %d extra peak arrays after the round trip", what, b.index())
-                    .isEmpty();
-        }
-        Set<String> keys = new LinkedHashSet<>();
+    private static void assertExtrasKeptWithoutWarning(String what, Source source, Source back, Options options) {
         int withExtras = 0;
-        for (Spectrum s : source.spectra) {
-            if (!s.arrays().isEmpty() || !s.peakArrays().isEmpty()) {
-                withExtras++;
-                keys.addAll(s.arrays().keySet());
-                keys.addAll(s.peakArrays().keySet());
-            }
+        for (int i = 0; i < source.spectra.size(); i++) {
+            Spectrum a = source.spectra.get(i);
+            Spectrum b = back.spectra.get(i);
+            assertSameArrays(what + " spectrum " + i + " extra arrays", a.arrays(), b.arrays());
+            assertSameArrays(what + " spectrum " + i + " extra peak arrays", a.peakArrays(), b.peakArrays());
+            withExtras += a.arrays().isEmpty() && a.peakArrays().isEmpty() ? 0 : 1;
+        }
+        if (what.contains("diaPASEF")) {
+            assertThat(withExtras).as("%s: spectra with an extra array", what).isEqualTo(source.spectra.size());
         }
         List<String> warnings = WritePlanner.plan(source.spectra, source.chromatograms, source.wavelengthSpectra,
                 source.scanSettings, source.fileMetadata, options).report().warnings().stream()
                 .filter(w -> w.contains(EXTRAS_WARNING)).toList();
-        if (withExtras == 0) {
-            assertThat(warnings).as("%s: warnings about extra signal arrays", what).isEmpty();
-            return;
-        }
-        String count = withExtras + (withExtras == 1 ? " spectrum " : " spectra ");
-        assertThat(warnings).as("%s: warnings about extra signal arrays", what).singleElement().asString()
-                .startsWith(count).contains(String.join(", ", keys))
-                .endsWith("which are not written; their m/z and intensity are written");
+        assertThat(warnings).as("%s: warnings about extra signal arrays", what).isEmpty();
+    }
+
+    /** {@code actual} has the keys of {@code expected} in its order, each with an equal array. */
+    private static void assertSameArrays(String what, Map<String, double[]> expected, Map<String, double[]> actual) {
+        assertThat(actual.keySet()).as("%s keys", what).containsExactlyElementsOf(expected.keySet());
+        expected.forEach((key, values) -> assertThat(actual.get(key)).as("%s %s", what, key).isEqualTo(values));
     }
 
     /**

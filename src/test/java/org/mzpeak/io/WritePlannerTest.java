@@ -21,9 +21,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * What {@link WritePlanner} decides for the inputs the other writer tests leave out: the warnings for the extra
- * arrays of one spectrum, which has extra peak arrays only, and of several chromatograms, the packed layout's count
- * of dropped selected ions when the primary precursor has none, the message for precursors that share the written key
- * without naming parents, and scan settings that are {@code null} in the split layout.
+ * arrays of several chromatograms, while a spectrum's extra peak arrays are written without one (MZ-1), the packed
+ * layout's count of dropped selected ions when the primary precursor has none, the message for precursors that share
+ * the written key without naming parents, and scan settings that are {@code null} in the split layout.
  *
  * <p>Oracle: legacy small.unpacked, changed where a test says so.
  */
@@ -35,17 +35,22 @@ class WritePlannerTest {
 
     /**
      * One spectrum with an extra array in {@code peakArrays()} only, and two chromatograms with an extra array and an
-     * intensity unit: one warning for each kind, the spectrum's in the singular, the chromatograms' in the plural,
-     * each naming every key and unit once; the dataset reads back without them.
+     * intensity unit: one warning for each kind of chromatogram drop, in the plural, each naming every key and unit
+     * once, and none for the spectrum (MZ-1). The dataset reads back with the spectrum's peak array, its values at
+     * the peaks' positions, and without the chromatograms' arrays.
      */
     @Test
-    void extraArraysOfOneSpectrumAndOfSeveralChromatogramsGetOneWarningEach(@TempDir Path tmp) {
+    void extraArraysOfSeveralChromatogramsGetOneWarningEachWhileASpectrumKeepsItsPeakArray(@TempDir Path tmp) {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
         List<Spectrum> spectra = new ArrayList<>(small.spectra);
         Spectrum centroid = spectra.get(2);
         assertThat(centroid.peaks()).isNotEmpty();
+        double[] peakWidth = new double[centroid.peaks().size()];
+        for (int i = 0; i < peakWidth.length; i++) {
+            peakWidth[i] = 0.01 * (i + 1);
+        }
         spectra.set(2, new Spectrum(centroid.description(), centroid.mz(), centroid.intensity(), centroid.peaks(),
-                Map.of(), Map.of("peak width", new double[centroid.peaks().size()])));
+                Map.of(), Map.of("peak width", peakWidth)));
         Chromatogram tic = small.chromatograms.get(0);
         assertThat(tic.arrays()).containsOnlyKeys("ms level");
         Chromatogram copy = new Chromatogram(1, "TIC copy", tic.typeCurie(), tic.time(), tic.intensity(),
@@ -56,16 +61,19 @@ class WritePlannerTest {
                 SPLIT).report().warnings();
 
         assertThat(warnings).containsExactly(
-                "1 spectrum carries extra signal arrays (peak width), which are not written; their m/z and"
-                        + " intensity are written",
                 "2 chromatograms carry extra arrays (ms level), which are not written; their time and intensity are"
                         + " written",
                 "2 chromatograms declare an intensity unit (MS:1000131), which is not written");
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, spectra, chromatograms, List.of(), List.of(), small.fileMetadata, SPLIT);
         Source back = ForwardBackwardCorpusTest.readSource(out);
-        assertThat(back.spectra.get(2).peakArrays()).isEmpty();
-        assertThat(back.spectra.get(2).peaks()).hasSameSizeAs(centroid.peaks());
+        Spectrum b = back.spectra.get(2);
+        assertThat(b.peaks()).hasSameSizeAs(centroid.peaks());
+        assertThat(b.peakArrays()).containsOnlyKeys("peak width");
+        for (int i = 0; i < b.peaks().size(); i++) {
+            assertThat(b.peakArrays().get("peak width")[b.peaks().get(i).index()]).as("peak %d", i)
+                    .isEqualTo(peakWidth[centroid.peaks().get(i).index()]);
+        }
         assertThat(back.chromatograms).extracting(Chromatogram::id).containsExactly("TIC", "TIC copy");
         assertThat(back.chromatograms).allSatisfy(c -> assertThat(c.arrays()).isEmpty());
     }

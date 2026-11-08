@@ -9,6 +9,7 @@ import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.WritePlan.Entry;
+import org.mzpeak.io.WritePlan.ExtraColumn;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
@@ -191,7 +192,9 @@ final class ManifestWriter {
     /**
      * Every CURIE prefix of the plan's spectra and chromatograms, mapped to the first CURIE that uses it: the
      * accession and unit of every param of a spectrum, of each of its scans, and of each precursor's isolation
-     * window, activation and selected ions, and the chromatogram types. The packed layout writes only a spectrum's
+     * window, activation and selected ions; the array type and unit of every extra column of the spectrum signal
+     * files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key that is
+     * not a CURIE is written as MS:1000786); and the chromatogram types. The packed layout writes only a spectrum's
      * first scan and primary precursor and selected ion, but the prefixes of the others count too. The other CURIEs
      * the writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params
      * give rise to.
@@ -213,6 +216,10 @@ final class ManifestWriter {
                     addParamPrefixes(ion.parameters(), used);
                 }
             }
+        }
+        for (ExtraColumn extra : plan.spectrumExtras()) {
+            addPrefix(extra.arrayType(), used);
+            addPrefix(extra.unit(), used);
         }
         for (Entry<Chromatogram> entry : plan.chromatograms()) {
             addPrefix(entry.source().typeCurie(), used);
