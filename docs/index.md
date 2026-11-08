@@ -121,7 +121,7 @@ All tools share `--ms-level`, `--rt-min`, `--rt-max` filter options.
 ## Bundled fixtures
 
 Two sets of HUPO-PSI example datasets are included. The current set, from upstream commit `2ee2589`, lies under
-`src/test/resources/mzpeak/` and uses split metadata tables, an array index and SHA-512 checksums:
+`mzpeakj/src/test/resources/mzpeak/` and uses split metadata tables, an array index and SHA-512 checksums:
 
 | Fixture | Layout | Contents |
 |---|---|---|
@@ -134,8 +134,8 @@ Two sets of HUPO-PSI example datasets are included. The current set, from upstre
 | `diaPASEF.grid.mzpeak` | coordinate-grid chunk, STORED ZIP | same run, grid-encoded (provisional timsTOF grid models); decodes to the same arrays |
 | `Example_Processed.img.mzpeak` | point, STORED ZIP | 9 profile spectra of an imzML imaging run |
 
-The legacy set, from upstream commit `29e59b2`, lies under `src/test/resources/mzpeak-legacy/` and uses the
-packed metadata layout, which mzPeakJ also reads. It writes that layout only on request, as an opt-in
+The legacy set, from upstream commit `29e59b2`, lies under `mzpeakj/src/test/resources/mzpeak-legacy/` and uses
+the packed metadata layout, which mzPeakJ also reads. It writes that layout only on request, as an opt-in
 compatibility layout (`MetadataLayout.PACKED`); by default it writes the split layout:
 
 | Fixture | Layout | Contents |

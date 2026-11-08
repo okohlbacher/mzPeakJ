@@ -6,8 +6,8 @@ Licensed under the MIT License (see LICENSE).
 This product bundles the following third-party software:
 
 MS-Numpress (ms-numpress)
-  Files: src/main/java/ms/numpress/MSNumpress.java
-         src/main/java/ms/numpress/IntDecoder.java
+  Files: mzpeakj/src/main/java/ms/numpress/MSNumpress.java
+         mzpeakj/src/main/java/ms/numpress/IntDecoder.java
   Source: https://github.com/ms-numpress/ms-numpress
   Copyright 2013 Johan Teleman
   Licensed under the Apache License, Version 2.0
@@ -15,39 +15,39 @@ MS-Numpress (ms-numpress)
   The original Apache-2.0 license headers are retained in those files.
 
 HUPO-PSI mzPeak example data (current set)
-  Files: src/test/resources/mzpeak/**
+  Files: mzpeakj/src/test/resources/mzpeak/**
   Source: https://github.com/HUPO-PSI/mzPeak (commit 2ee2589)
   Licensed under Apache License, Version 2.0.
 
 HUPO-PSI mzPeak example data (legacy set)
-  Files: src/test/resources/mzpeak-legacy/**
+  Files: mzpeakj/src/test/resources/mzpeak-legacy/**
   Source: https://github.com/HUPO-PSI/mzPeak (commit 29e59b2)
   Licensed under Apache License, Version 2.0.
 
 ProteoWizard example mzML (test data)
-  Files: src/test/resources/mzml/tiny.pwiz.1.1.mzML
+  Files: mzpeakj-mzml/src/test/resources/mzml/tiny.pwiz.1.1.mzML
   Source: https://github.com/ProteoWizard/pwiz (example_data/tiny.pwiz.1.1.mzML)
   Licensed under Apache License, Version 2.0.
 
 HUPO-PSI mzPeak example mzML (test data)
-  Files: src/test/resources/mzml/small.mzML.gz (small.mzML, gzip-compressed)
+  Files: mzpeakj-mzml/src/test/resources/mzml/small.mzML.gz (small.mzML, gzip-compressed)
   Source: https://github.com/HUPO-PSI/mzPeak (commit 2ee2589)
   Licensed under Apache License, Version 2.0.
 
 HUPO-PSI mzPeak test mzML (test data; ProteoWizard Agilent test data)
-  Files: src/test/resources/mzml/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML.gz
+  Files: mzpeakj-mzml/src/test/resources/mzml/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML.gz
          (gzip-compressed)
   Source: https://github.com/HUPO-PSI/mzPeak (commit 2ee2589, test/data/)
   Licensed under Apache License, Version 2.0.
 
 mzdata test mzML (test data)
-  Files: src/test/resources/mzml/diaPASEF.mzML.gz (diaPASEF.mzML, gzip-compressed)
+  Files: mzpeakj-mzml/src/test/resources/mzml/diaPASEF.mzML.gz (diaPASEF.mzML, gzip-compressed)
   Source: https://github.com/mobiusklein/mzdata (test/data/diaPASEF.mzML)
   Licensed under Apache License, Version 2.0.
 
 HUPO-PSI mzML XML schemas (test resources, unmodified)
-  Files: src/test/resources/mzml/xsd/mzML1.1.0.xsd
-         src/test/resources/mzml/xsd/mzML1.1.2_idx.xsd
+  Files: mzpeakj-mzml/src/test/resources/mzml/xsd/mzML1.1.0.xsd
+         mzpeakj-mzml/src/test/resources/mzml/xsd/mzML1.1.2_idx.xsd
   Source: https://github.com/HUPO-PSI/mzML (copies distributed with psims 1.3.6)
   The schemas carry no licence file of their own. They are redistributed unmodified under the copyright notice of
   the mzML 1.1.0 specification document, reproduced here:
@@ -72,7 +72,7 @@ HUPO-PSI mzML XML schemas (test resources, unmodified)
     MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 
 PSI-MS controlled vocabulary (instrument-model accessions, test resource)
-  Files: src/test/resources/mzml/ms-instrument-models.txt
+  Files: mzpeakj-mzml/src/test/resources/mzml/ms-instrument-models.txt
   Source: psi-ms.obo data-version 4.2.11 (https://github.com/HUPO-PSI/psi-ms-CV), derived: the accessions of the
           non-obsolete is_a descendants of MS:1000031 'instrument model'
   Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0,

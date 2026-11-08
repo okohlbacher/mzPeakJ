@@ -1,6 +1,6 @@
 # Golden output of the HEAD Python reader
 
-The oracle for reading the current fixtures in `src/test/resources/mzpeak` (HUPO-PSI/mzPeak 2ee2589).
+The oracle for reading the current fixtures in `mzpeakj/src/test/resources/mzpeak` (HUPO-PSI/mzPeak 2ee2589).
 `generate_golden.py` runs the Python reader of that commit (`python/mzpeak`) over one dataset and records
 what it returns. The test helper `org.mzpeak.io.Golden` parses the files and compares mzPeakJ's arrays
 against them; `GoldenComparatorTest` checks the files and the comparator. With `--meta` it also dumps the raw
@@ -51,12 +51,12 @@ From the repository root, with `REF` pointing at a checkout of HUPO-PSI/mzPeak t
 ```sh
 REF=../mzPeak-reference
 COMMIT=2ee2589facddea6de6c1e7c6cfa77e56895420ec
-GOLDEN=src/test/resources/mzpeak/golden
+GOLDEN=mzpeakj/src/test/resources/mzpeak/golden
 TMP=$(mktemp -d)
 git -C "$REF" archive "$COMMIT" python | tar -x -C "$TMP"
 for f in small small.chunked small.numpress small.unpacked has_uv diaPASEF.ref diaPASEF.grid Example_Processed.img; do
   uv run --no-project --python 3.13.12 --with "$TMP/python" --with-requirements "$GOLDEN/uv-requirements.txt" \
-    python -I "$GOLDEN/generate_golden.py" "src/test/resources/mzpeak/$f.mzpeak" --out "$GOLDEN" --meta --reader-commit "$COMMIT"
+    python -I "$GOLDEN/generate_golden.py" "mzpeakj/src/test/resources/mzpeak/$f.mzpeak" --out "$GOLDEN" --meta --reader-commit "$COMMIT"
 done
 rm -rf "$TMP"
 git -C "$REF" status --porcelain   # prints nothing

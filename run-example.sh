@@ -5,10 +5,10 @@
 # Usage:
 #   ./run-example.sh <fully.qualified.MainClass> [args...]
 #
-# Examples (bundled fixtures: src/test/resources/mzpeak/ holds the current upstream set;
-# src/test/resources/mzpeak-legacy/ holds the legacy packed-layout set, which mzPeakJ also reads):
-#   ./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak -s
-#   ./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/small.unpacked.mzpeak
+# Examples (bundled fixtures: mzpeakj/src/test/resources/mzpeak/ holds the current upstream set;
+# mzpeakj/src/test/resources/mzpeak-legacy/ holds the legacy packed-layout set, which mzPeakJ also reads):
+#   ./run-example.sh org.mzpeak.examples.MzPeakFileInfo mzpeakj/src/test/resources/mzpeak/small.mzpeak -s
+#   ./run-example.sh org.mzpeak.cli.MzPeakInfo mzpeakj/src/test/resources/mzpeak/small.unpacked.mzpeak
 #
 set -euo pipefail
 
@@ -42,19 +42,19 @@ fi
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <fully.qualified.MainClass> [args...]" >&2
-  echo "  e.g. $0 org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak -s" >&2
+  echo "  e.g. $0 org.mzpeak.examples.MzPeakFileInfo mzpeakj/src/test/resources/mzpeak/small.mzpeak -s" >&2
   exit 2
 fi
 
-# Build the self-contained shaded jar if it's missing, then run from it.
-SHADED="$(ls "$DIR"/target/mzpeakj-*-all.jar 2>/dev/null | head -1 || true)"
+# Build the library's self-contained shaded jar (module mzpeakj only) if it's missing, then run from it.
+SHADED="$(ls "$DIR"/mzpeakj/target/mzpeakj-[0-9]*-all.jar 2>/dev/null | head -1 || true)"
 if [[ -z "$SHADED" ]]; then
   echo "Building mzPeakJ (one-time)..." >&2
-  mvn -q -f "$DIR/pom.xml" -DskipTests package
-  SHADED="$(ls "$DIR"/target/mzpeakj-*-all.jar 2>/dev/null | head -1 || true)"
+  mvn -q -f "$DIR/pom.xml" -DskipTests -pl mzpeakj -am package
+  SHADED="$(ls "$DIR"/mzpeakj/target/mzpeakj-[0-9]*-all.jar 2>/dev/null | head -1 || true)"
 fi
 if [[ -z "$SHADED" ]]; then
-  echo "error: shaded jar not found after build (expected target/mzpeakj-*-all.jar)." >&2
+  echo "error: shaded jar not found after build (expected mzpeakj/target/mzpeakj-<version>-all.jar)." >&2
   exit 1
 fi
 

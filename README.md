@@ -47,10 +47,21 @@ Python, and R. mzPeakJ is an unofficial demonstrator; an official Java implement
   ```bash
   export JAVA_HOME=/opt/homebrew/opt/openjdk@25   # adjust to your JDK
   ```
-- Build and test:
+- Build and test (from the repository root, both modules):
   ```bash
   mvn verify
   ```
+
+The repository is a Maven reactor (parent `pom.xml`) with two modules:
+
+| Module | Artifact | Contents | Jars in `<module>/target/` |
+|---|---|---|---|
+| `mzpeakj/` | `org.mzpeak:mzpeakj` | the mzPeak library (reader, writer, CLI, examples) | `mzpeakj-<version>.jar`, `mzpeakj-<version>-all.jar` (self-contained), `mzpeakj-<version>-tests.jar` (test helpers) |
+| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | the mzML converter (`org.mzpeak.mzml`), on top of the library | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library and converter, self-contained) |
+
+`mvn -pl mzpeakj verify` builds and tests the library alone. The converter needs the library from the same
+build: select it with `-pl mzpeakj-mzml -am`, never with `-pl mzpeakj-mzml` alone (Maven would then look for
+`org.mzpeak:mzpeakj` in a repository).
 
 The build is self-contained: it never calls Hadoop FileSystem, Configuration, native libraries, or any
 cluster setup (see [DESIGN.md](DESIGN.md) §6).
@@ -58,18 +69,26 @@ cluster setup (see [DESIGN.md](DESIGN.md) §6).
 ### Test coverage
 
 `mvn verify` also measures test coverage with [JaCoCo](https://www.jacoco.org/) (only the project's own
-`org.mzpeak` and `ms.numpress` classes are instrumented) and enforces it: `jacoco:check` fails the build
-unless every `org.mzpeak` class has 100% line, branch and method coverage. No `org.mzpeak` class is excluded.
-The vendored `ms.numpress` codec, which stays unchanged, is held at the coverage it reaches (207 of 208
-lines, 131 of 132 branches, all methods): the one gap, `MSNumpress.java` line 73-74, is a `Corrupt numPic
-data!` throw for a negative count that `decodePic` never returns.
+`org.mzpeak` and `ms.numpress` classes are instrumented) and enforces it in each module: `jacoco:check` fails
+the build unless every `org.mzpeak` class of the module has 100% line, branch and method coverage. No
+`org.mzpeak` class is excluded. The vendored `ms.numpress` codec of the library, which stays unchanged, is held
+at the coverage it reaches (207 of 208 lines, 131 of 132 branches, all methods): the one gap,
+`MSNumpress.java` line 73-74, is a `Corrupt numPic data!` throw for a negative count that `decodePic` never
+returns.
 
-The report is written to `target/site/jacoco/` before the check runs, so it is there when the check fails:
-open `index.html` and follow the package and class to the source, where red lines were never run and yellow
-lines have a branch that was never taken; `jacoco.csv` has one row per class with the missed and covered
-counts, and `jacoco.xml` the same per line for tools. The gate needs the whole test suite: pass
-`-Djacoco.skip=true` for quick local runs, such as a single test with `-Dtest=...`. See
-[DESIGN.md](DESIGN.md) §9.5.
+Each module has its own report, in `mzpeakj/target/site/jacoco/` and `mzpeakj-mzml/target/site/jacoco/`. It is
+written before the check runs, so it is there when the check fails: open `index.html` and follow the package
+and class to the source, where red lines were never run and yellow lines have a branch that was never taken;
+`jacoco.csv` has one row per class with the missed and covered counts, and `jacoco.xml` the same per line for
+tools. JaCoCo appends to `target/jacoco.exec`, so a run without `clean` can report an earlier run's coverage:
+take coverage evidence only from `mvn clean verify`. The gate needs the whole test suite: pass
+`-Djacoco.skip=true` for quick local runs, such as a single test:
+
+```bash
+mvn -pl mzpeakj-mzml -am -Djacoco.skip=true -Dsurefire.failIfNoSpecifiedTests=false -Dtest=MzMLTermsTest test
+```
+
+(`-pl mzpeakj -am` for a library test). See [DESIGN.md](DESIGN.md) §9.5.
 
 ## Library usage
 
@@ -279,8 +298,8 @@ Writer notes:
 The repository ships two sets of HUPO-PSI example datasets; each directory records its upstream commit in
 `UPSTREAM_COMMIT.txt`. The commands below use the current set.
 
-**Current set** — `src/test/resources/mzpeak/`, the 8 examples of upstream commit `2ee2589` (split metadata
-tables, array index, SHA-512 checksums):
+**Current set** — `mzpeakj/src/test/resources/mzpeak/`, the 8 examples of upstream commit `2ee2589` (split
+metadata tables, array index, SHA-512 checksums):
 
 | Fixture | Form | Contents |
 |---|---|---|
@@ -293,8 +312,8 @@ tables, array index, SHA-512 checksums):
 | `diaPASEF.grid.mzpeak` | single-file STORED ZIP | the same run with grid-encoded peaks (provisional timsTOF grid models); decodes to the same arrays |
 | `Example_Processed.img.mzpeak` | single-file STORED ZIP | 9 profile spectra of an imzML imaging run with pixel positions |
 
-**Legacy set** — `src/test/resources/mzpeak-legacy/`, the 5 examples of upstream commit `29e59b2` in the
-packed metadata layout, which mzPeakJ also reads and writes on request (`MetadataLayout.PACKED`):
+**Legacy set** — `mzpeakj/src/test/resources/mzpeak-legacy/`, the 5 examples of upstream commit `29e59b2` in
+the packed metadata layout, which mzPeakJ also reads and writes on request (`MetadataLayout.PACKED`):
 
 | Fixture | Form | Contents |
 |---|---|---|
@@ -315,21 +334,21 @@ distribution, activation methods, instrument configuration, and software. `-s` a
 summary.
 
 ```bash
-./mzpeak-fileinfo.sh src/test/resources/mzpeak/small.mzpeak -s
-./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/has_uv.mzpeak
+./mzpeak-fileinfo.sh mzpeakj/src/test/resources/mzpeak/small.mzpeak -s
+./run-example.sh org.mzpeak.examples.MzPeakFileInfo mzpeakj/src/test/resources/mzpeak/has_uv.mzpeak
 ```
 
 #### `MzPeakInfo` — quick per-spectrum dump
 
 ```bash
-./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/small.mzpeak 6
+./run-example.sh org.mzpeak.cli.MzPeakInfo mzpeakj/src/test/resources/mzpeak/small.mzpeak 6
 ```
 
 #### `ExtractSpectra` — filter into a new mzPeak file (reads + writes)
 
 ```bash
 ./run-example.sh org.mzpeak.examples.ExtractSpectra \
-    src/test/resources/mzpeak/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
+    mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
 ```
 Produces an unpacked directory or STORED ZIP depending on the output name.
 
@@ -337,7 +356,7 @@ Produces an unpacked directory or STORED ZIP depending on the output name.
 
 ```bash
 ./run-example.sh org.mzpeak.examples.ConvertToDta \
-    src/test/resources/mzpeak/small.mzpeak /tmp/dta --ms-level 2 --default-charge 2
+    mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/dta --ms-level 2 --default-charge 2
 ```
 One `.dta` per spectrum (`<base>.<scan>.<scan>.<charge>.dta`); first line `<MH+> <charge>`.
 
@@ -345,7 +364,7 @@ One `.dta` per spectrum (`<base>.<scan>.<scan>.<charge>.dta`); first line `<MH+>
 
 ```bash
 ./run-example.sh org.mzpeak.examples.ExtractXic \
-    src/test/resources/mzpeak/small.mzpeak /tmp/xic.csv --mz 810.79 --tol-ppm 20
+    mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/xic.csv --mz 810.79 --tol-ppm 20
 ```
 Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--tol-ppm` or `--tol-da`.
 
@@ -403,8 +422,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   `spectrum` / `scan` / `precursor` / `selected_ion` struct columns joined by `source_index`, where rows with a
   null struct or `source_index` are placeholders. mzPeakJ reads both layouts.
 - Tested against both vendored HUPO-PSI example sets: the current set from upstream commit `2ee2589`
-  (`src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`), checked against golden outputs of the upstream Python
-  reader, and the legacy set from upstream commit `29e59b2` (`src/test/resources/mzpeak-legacy/UPSTREAM_COMMIT.txt`).
+  (`mzpeakj/src/test/resources/mzpeak/UPSTREAM_COMMIT.txt`), checked against golden outputs of the upstream
+  Python reader, and the legacy set from upstream commit `29e59b2`
+  (`mzpeakj/src/test/resources/mzpeak-legacy/UPSTREAM_COMMIT.txt`).
 
 ## Scope & limitations
 
@@ -449,8 +469,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
   (`CorpusTest`, `ValidatedRoundTripTest`, `ForwardBackwardCorpusTest`, enabled with
   `-Dmzpeak.roundtrip=true`) expand to hundreds of cases over the local HUPO-PSI + vendor corpus
-  (539 `.mzpeak` files); cross-validated against the Rust `mzpeak_prototyping` reference fixtures and
-  independently verified with pyarrow. The forward-backward test reads each corpus file, re-writes it, runs
+  (539 `.mzpeak` files; `-Dmzpeak.corpus.dir=<dir>` names it; pass an absolute path, since a relative one
+  resolves against the module directory, `mzpeakj/`); cross-validated against the Rust `mzpeak_prototyping`
+  reference fixtures and independently verified with pyarrow. The forward-backward test reads each corpus file, re-writes it, runs
   `mzpeak-validate`, and re-reads to assert field-by-field fidelity.
 
 **Deferred / known limitations:**
@@ -476,14 +497,15 @@ hardening of the zip parser, ZSTD codec, the null-aware delta-chunk decoder, boo
 facet-join, and write↔read fidelity. The `ForwardBackwardCorpusTest` closes the loop end-to-end: it reads
 every corpus file, re-writes it in each layout, validates the output with the independent
 [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) tool, and re-reads to assert
-field-by-field fidelity, aggregating all findings into `target/forward-backward-report.jsonl`.
+field-by-field fidelity, aggregating all findings into `mzpeakj/target/forward-backward-report.jsonl`.
 
 Project site: <https://okohlbacher.github.io/mzPeakJ/>
 
 ## License
 
 [MIT](LICENSE) © 2026 Oliver Kohlbacher. Bundles:
-- Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders (`src/main/java/ms/numpress/`)
-- Apache-2.0 HUPO-PSI mzPeak example fixtures (`src/test/resources/`)
+- Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders (`mzpeakj/src/main/java/ms/numpress/`)
+- Apache-2.0 HUPO-PSI mzPeak example fixtures (`mzpeakj/src/test/resources/`)
+- mzML test fixtures and the PSI mzML schemas (`mzpeakj-mzml/src/test/resources/mzml/`)
 
 See [NOTICE](NOTICE).
