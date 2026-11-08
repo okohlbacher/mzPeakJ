@@ -58,9 +58,18 @@ cluster setup (see [DESIGN.md](DESIGN.md) §6).
 ### Test coverage
 
 `mvn verify` also measures test coverage with [JaCoCo](https://www.jacoco.org/) (only the project's own
-`org.mzpeak` and `ms.numpress` classes are instrumented). The report is written to `target/site/jacoco/`:
-`index.html` to browse, plus `jacoco.xml` and `jacoco.csv` for tools. There is no coverage threshold; pass
-`-Djacoco.skip=true` to build without it.
+`org.mzpeak` and `ms.numpress` classes are instrumented) and enforces it: `jacoco:check` fails the build
+unless every `org.mzpeak` class has 100% line, branch and method coverage. No `org.mzpeak` class is excluded.
+The vendored `ms.numpress` codec, which stays unchanged, is held at the coverage it reaches (207 of 208
+lines, 131 of 132 branches, all methods): the one gap, `MSNumpress.java` line 73-74, is a `Corrupt numPic
+data!` throw for a negative count that `decodePic` never returns.
+
+The report is written to `target/site/jacoco/` before the check runs, so it is there when the check fails:
+open `index.html` and follow the package and class to the source, where red lines were never run and yellow
+lines have a branch that was never taken; `jacoco.csv` has one row per class with the missed and covered
+counts, and `jacoco.xml` the same per line for tools. The gate needs the whole test suite: pass
+`-Djacoco.skip=true` for quick local runs, such as a single test with `-Dtest=...`. See
+[DESIGN.md](DESIGN.md) §9.5.
 
 ## Library usage
 
