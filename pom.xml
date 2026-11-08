@@ -28,6 +28,9 @@
     <jackson.version>2.18.2</jackson.version>
     <junit.version>5.11.4</junit.version>
     <assertj.version>3.26.3</assertj.version>
+    <jacoco.version>0.8.16</jacoco.version>
+    <!-- Set by jacoco:prepare-agent; empty so surefire's @{argLine} still resolves with -Djacoco.skip=true. -->
+    <argLine/>
   </properties>
 
   <dependencies>
@@ -105,9 +108,42 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
         <configuration>
-          <!-- zstd-jni loads a bundled native library; opt in to silence the JDK 25 warning. -->
-          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+          <!-- zstd-jni loads a bundled native library; opt in to silence the JDK 25 warning.
+               @{argLine} carries the JaCoCo agent set by jacoco:prepare-agent. -->
+          <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
         </configuration>
+      </plugin>
+      <!-- Test coverage (report only, no gate): instruments only the project's own classes, so no JDK class
+           is touched, and writes target/site/jacoco/ (index.html, jacoco.xml, jacoco.csv) during verify. -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.version}</version>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+            <configuration>
+              <!-- agent class-name patterns (the report goal's includes are file paths, so not set there) -->
+              <includes>
+                <include>org.mzpeak.*</include>
+                <include>ms.numpress.*</include>
+              </includes>
+            </configuration>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+            <configuration>
+              <formats>
+                <format>HTML</format>
+                <format>XML</format>
+                <format>CSV</format>
+              </formats>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <!-- Self-contained runnable jar: mzpeakj-<version>-all.jar, so examples/CLI run with
            `java -cp target/mzpeakj-<version>-all.jar org.mzpeak.cli.MzPeakInfo ...` (no classpath assembly). -->
