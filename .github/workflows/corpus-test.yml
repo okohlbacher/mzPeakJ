@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           CORPUS_DIR="${RUNNER_TEMP}/mzpeak-corpus"
-          MANIFEST="src/test/resources/ci-corpus-manifest.txt"
+          MANIFEST="mzpeakj/src/test/resources/ci-corpus-manifest.txt"
           SUBDIR=""
 
           while IFS= read -r line || [[ -n "$line" ]]; do

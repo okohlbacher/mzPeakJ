@@ -15,7 +15,7 @@ import java.util.function.IntConsumer;
  * Tiny demo CLI: prints a summary of an mzPeak dataset.
  *
  * <pre>{@code
- *   java -cp target/classes:<deps> org.mzpeak.cli.MzPeakInfo path/to/run.mzpeak
+ *   java -cp mzpeakj/target/classes:<deps> org.mzpeak.cli.MzPeakInfo path/to/run.mzpeak
  * }</pre>
  */
 public final class MzPeakInfo {

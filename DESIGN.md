@@ -9,9 +9,9 @@ anyone extending mzPeakJ or porting the format to a new language.
 > HUPO-PSI spec. Ground truth is the spec **plus the actual example Parquet files** (the published paper
 > [doi:10.1021/acs.jproteome.5c00435](https://doi.org/10.1021/acs.jproteome.5c00435) does not include
 > schema detail). mzPeak is an unstable prototype. mzPeakJ reads the current layout of upstream commit
-> `2ee2589` (spec snapshot `0220201`), whose examples are vendored in `src/test/resources/mzpeak/`, and the
-> pin-era layout of upstream commit `29e59b2`, vendored as the legacy set in `src/test/resources/mzpeak-legacy/`.
-> Each directory names its commit in `UPSTREAM_COMMIT.txt`.
+> `2ee2589` (spec snapshot `0220201`), whose examples are vendored in `mzpeakj/src/test/resources/mzpeak/`, and
+> the pin-era layout of upstream commit `29e59b2`, vendored as the legacy set in
+> `mzpeakj/src/test/resources/mzpeak-legacy/`. Each directory names its commit in `UPSTREAM_COMMIT.txt`.
 
 **Legacy** marks the pin-era layout of upstream `29e59b2` and earlier, which mzPeakJ still writes (§8.1) and
 the mzML2mzPeak corpus uses. Sections and paragraphs marked legacy describe it; everything else describes the
@@ -917,8 +917,8 @@ CI runs `mvn verify` on JDK 17 and 21 via GitHub Actions.
 `Fixtures` names both sets (`CURRENT`, `LEGACY`, `current(name)`, `legacy(name)`). The current files are
 byte-identical to upstream `2ee2589`.
 
-**Current set** — `src/test/resources/mzpeak/`, upstream `2ee2589` (split metadata, array index, SHA-512
-checksums):
+**Current set** — `mzpeakj/src/test/resources/mzpeak/`, upstream `2ee2589` (split metadata, array index,
+SHA-512 checksums):
 
 | Fixture | Form | Signal layout | Contents |
 |---|---|---|---|
@@ -931,16 +931,16 @@ checksums):
 | `diaPASEF.grid.mzpeak` | STORED ZIP | coordinate-grid chunks (timsTOF m/z and 1/K0 grids, provisional) | the same run; its spectra decode to those of diaPASEF.ref bit for bit (§3.3) |
 | `Example_Processed.img.mzpeak` | STORED ZIP | point | 9 profile spectra of an imzML imaging run with pixel positions; no chromatograms |
 
-**Legacy set** — `src/test/resources/mzpeak-legacy/`, upstream `29e59b2` (packed metadata): `small`,
+**Legacy set** — `mzpeakj/src/test/resources/mzpeak-legacy/`, upstream `29e59b2` (packed metadata): `small`,
 `small.chunked`, `small.numpress`, `small.unpacked` (the same 48-spectrum run) and `has_uv` (212 MS spectra,
 520 UV/DAD spectra, 2 chromatograms). It guards the packed layout that mzPeakJ reads, writes on request
 (`PACKED`, §8.1) and the corpus uses. `small.mzML` is not vendored.
 
 ### 9.2 Oracles and tolerances
 
-**FX-1b — HEAD Python golden** (`src/test/resources/mzpeak/golden/`). `generate_golden.py <dataset> [--out DIR]
-[--meta]` runs the Python reader of `2ee2589` with pinned packages (`uv-requirements.txt`, CPython 3.13.12)
-and writes per fixture:
+**FX-1b — HEAD Python golden** (`mzpeakj/src/test/resources/mzpeak/golden/`). `generate_golden.py <dataset>
+[--out DIR] [--meta]` runs the Python reader of `2ee2589` with pinned packages (`uv-requirements.txt`, CPython
+3.13.12) and writes per fixture:
 
 - `<name>.tsv`: one summary line per entity — S (spectra), P (peak lists), X (extra arrays, keyed by
   array_type), C (chromatograms), W (wavelength spectra), R (raw pyarrow cells of point-layout data members) —
@@ -959,8 +959,8 @@ how either reader interprets them. `GoldenMeta` reads them; `GoldenMetaTest` che
 independent parquet-java read.
 
 **Regeneration.** The command, the pinned environment and the regeneration loop are in
-`src/test/resources/mzpeak/golden/README.md`. The loop reproduces the committed files byte for byte on the
-same platform; the build never runs Python, and the reference checkout is never written to.
+`mzpeakj/src/test/resources/mzpeak/golden/README.md`. The loop reproduces the committed files byte for byte on
+the same platform; the build never runs Python, and the reference checkout is never written to.
 
 **Tolerances** (`Golden.Tolerance.DEFAULT`):
 
@@ -986,7 +986,7 @@ expected values and says why.
 | `LegacyMetadataSnapshotTest` (CH-1) | SHA-256 of the canonical lines of every spectrum description, chromatogram and wavelength header of the legacy set |
 | `SignalSnapshotTest` (CH-2) | SHA-256 over the raw bits of decoded arrays: for the legacy set, through the public API, every spectrum's m/z, intensity and centroids, every chromatogram and every wavelength spectrum; for the current set except diaPASEF.grid, only the m/z and intensity of each spectrum in the data arrays and peaks members, read through `SpectrumArrayStore.load` with an empty delta-model map. No extra array is pinned |
 | `ContainerNegativePathTest` (CH-3) | stable message fragments of the ZIP and directory error paths, on corrupted copies of legacy fixtures |
-| `WriterSnapshotTest` | content digests of every member the writer produces from legacy fixtures (`src/test/resources/writer-snapshots/`); on a mismatch the actual TSV is written to `target/writer-snapshots/` |
+| `WriterSnapshotTest` | content digests of every member the writer produces from legacy fixtures (`mzpeakj/src/test/resources/writer-snapshots/`); on a mismatch the actual TSV is written to `mzpeakj/target/writer-snapshots/` |
 
 ### 9.4 Reference ports and opt-in harnesses
 
@@ -1008,7 +1008,8 @@ expected values and says why.
 ### 9.5 Coverage gate
 
 `mvn verify` runs the tests under the JaCoCo agent, which instruments only `org.mzpeak.*` and
-`ms.numpress.*`, writes the report and then runs `jacoco:check` (`pom.xml`, execution `check`):
+`ms.numpress.*`, writes the report and then runs `jacoco:check` (root `pom.xml`, execution `check`, inherited by
+both modules, `mzpeakj` and `mzpeakj-mzml`):
 
 | Rule | Lines | Branches | Methods |
 |---|---|---|---|
@@ -1021,17 +1022,17 @@ the coverage reached: the only gap is `MSNumpress.java` line 73-74 in `decode(St
 true branch of `if (nbrOfDoubles < 0)` and its `Corrupt numPic data!` throw. `decodePic` returns its output
 count, which starts at 0 and only grows, so no input reaches the throw.
 
-The report is written before the check, so a failing build leaves it in `target/site/jacoco/`. The log names
-each package that breaks a rule and the ratio it reached; `index.html` leads from package to class to the
-source, where red lines were never run and yellow lines have a branch that was never taken (the diamond in
-the margin gives the count); `jacoco.csv` has a row per class with `LINE_MISSED`, `BRANCH_MISSED` and
+The report is written before the check, so a failing build leaves it in `mzpeakj/target/site/jacoco/` (the
+converter's in `mzpeakj-mzml/target/site/jacoco/`). The log names each package that breaks a rule and the
+ratio it reached; `index.html` leads from package to class to the source, where red lines were never run and
+yellow lines have a branch that was never taken (the diamond in the margin gives the count); `jacoco.csv` has a row per class with `LINE_MISSED`, `BRANCH_MISSED` and
 `METHOD_MISSED`, and `jacoco.xml` has the counts per line. A new gap is closed with a test that asserts
 behaviour on a fixture (or a constructed input where no fixture reaches the path), or, if no input can reach
 it, by removing the dead code and saying why in the commit message; never by an exclusion.
 
-The gate needs the whole suite. For quick local runs, such as one test with `-Dtest=...`, pass
-`-Djacoco.skip=true`, which skips the agent, the report and the check. `mvn test` and `mvn package` stop
-before `verify` and never run the check.
+The gate needs the whole suite. For quick local runs, such as one test with
+`-pl mzpeakj -am -Dsurefire.failIfNoSpecifiedTests=false -Dtest=...`, pass `-Djacoco.skip=true`, which skips
+the agent, the report and the check. `mvn test` and `mvn package` stop before `verify` and never run the check.
 
 ---
 
@@ -1068,8 +1069,8 @@ before `verify` and never run the check.
 ## 11. Tooling notes
 
 - Build: `export JAVA_HOME=/opt/homebrew/opt/openjdk@25 && mvn verify`
-- Run an example: `./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak`
-- Inspect a fixture: `./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/has_uv.mzpeak`
-- Re-deriving golden values: see `src/test/resources/mzpeak/golden/README.md` (§9.2)
-- Javadoc: `mvn javadoc:javadoc -Ddoclint=none` → `target/reports/apidocs`. Without `-Ddoclint=none` the goal
+- Run an example: `./run-example.sh org.mzpeak.examples.MzPeakFileInfo mzpeakj/src/test/resources/mzpeak/small.mzpeak`
+- Inspect a fixture: `./run-example.sh org.mzpeak.cli.MzPeakInfo mzpeakj/src/test/resources/mzpeak/has_uv.mzpeak`
+- Re-deriving golden values: see `mzpeakj/src/test/resources/mzpeak/golden/README.md` (§9.2)
+- Javadoc: `mvn -pl mzpeakj javadoc:javadoc -Ddoclint=none` → `mzpeakj/target/reports/apidocs`. Without `-Ddoclint=none` the goal
   writes the pages but fails on doclint errors in the vendored `ms.numpress` sources and in `ScanSettings`.
