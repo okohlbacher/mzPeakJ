@@ -81,12 +81,20 @@ public final class MzPeakWriter {
      * metadata, with the given {@link Options}. This is the full form behind every other {@code writeDirectory} and
      * {@code writeDirectoryNumpress} overload.
      *
-     * <p>Spectra may come in any order; they are written in index order (the caller's list is not modified).
+     * <p>Spectra, chromatograms and wavelength spectra may come in any order. Each kind is written in the order of
+     * its indices and numbered 0..n-1 in that order, as the mzPeak spec requires: a subset, such as the MS2 spectra
+     * of a run, is written as 0..n-1, and input already numbered 0..n-1 keeps its indices. Each precursor_index is
+     * written as the new index of the spectrum it names, or as null when that spectrum is not written; the
+     * precursor_id is kept. The caller's lists and objects are not modified.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
      * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified).
-     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative. The primary
-     * precursor's precursor_index, the only one written, must be non-negative; several spectra may share it.
-     * Otherwise an {@link MzPeakException} is thrown before anything is written.
+     * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
+     * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
+     * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum
+     * that would be written with the same precursor_index (null equal to null) are allowed only when none after the
+     * first of them carries selected ions, since readers attach those ions to the first. The typical violation is a
+     * spectrum with several precursors written without its parent spectra; writing the parents as well avoids it.
+     * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}
      */

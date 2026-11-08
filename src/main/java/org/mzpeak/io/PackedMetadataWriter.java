@@ -200,7 +200,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 populateScan(row.addGroup("scan"), entry.sourceIndex(), scanIndexCounter++, d.retentionTime(),
                         firstScan);
 
-                writePrecursor(row, entry.sourceIndex(), d);
+                writePrecursor(row, entry.sourceIndex(), entry.primaryPrecursor());
                 writer.write(row);
                 // NOTE: multiple scans / selected ions per spectrum (e.g. Bruker PASEF combineIMS frames carry
                 // ~25 mobility scans) are NOT yet written as additional packed-facet rows — only the primary
@@ -270,8 +270,8 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         }
     }
 
-    private static void writePrecursor(Group row, long sourceIndex, SpectrumDescription d) {
-        Precursor precursor = d.primaryPrecursor();
+    /** Populate the {@code precursor} and {@code selected_ion} facet groups; {@code precursor} may be {@code null}. */
+    private static void writePrecursor(Group row, long sourceIndex, Precursor precursor) {
         if (precursor == null) {
             return;
         }

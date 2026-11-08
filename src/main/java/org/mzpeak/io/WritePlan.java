@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.ScanSettings;
@@ -11,13 +12,15 @@ import java.util.Map;
 
 /**
  * Everything {@link DatasetWriter} writes, decided by {@link WritePlanner} before any I/O: the entities in the order
- * they are written, the signal files each spectrum goes to, the order of each entity's rows, which members exist, the
- * footer key-values of spectra_metadata and the manifest, and the report that collects the write's warnings.
+ * they are written and the index each is written with, the precursors as written, the signal files each spectrum goes
+ * to, the order of each entity's rows, which members exist, the footer key-values of spectra_metadata and the
+ * manifest, and the report that collects the write's warnings. The entities of each kind are in the order of the
+ * caller's indices and are written as 0..n-1 in that order (design §11.5, WR-8).
  *
  * @param options            the settings of the write
  * @param spectra            the spectra in index order
- * @param chromatograms      the chromatograms in the caller's order
- * @param wavelengthSpectra  the wavelength spectra in the caller's order
+ * @param chromatograms      the chromatograms in index order
+ * @param wavelengthSpectra  the wavelength spectra in index order
  * @param writesSpectraData  whether spectra_data is written
  * @param writesSpectraPeaks whether spectra_peaks is written
  * @param scanSettings       the caller's scan settings for the manifest, possibly {@code null}
@@ -30,23 +33,38 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
                  WriteReport report) {
 
     /**
-     * A spectrum to write: the caller's spectrum, its index, and where its rows go (design §11.5): {@code data} sends
+     * A spectrum to write: the caller's spectrum, the index it is written with (the {@code source_index} of its facet
+     * rows), its precursors as written, and where its rows go (design §11.5): {@code data} sends
      * {@code mz()}/{@code intensity()} to spectra_data; {@code peaks} sends to spectra_peaks either
-     * {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}. {@code arrays} holds
-     * {@code mz()}/{@code intensity()} in the order they are written.
+     * {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}. {@code precursors} are those of
+     * the caller's description, in its order, each with the precursor_index it is written with (WR-8).
+     * {@code arrays} holds {@code mz()}/{@code intensity()} in the order they are written.
      */
-    record SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays,
-                         SignalArrays arrays) {
+    record SpectrumEntry(Spectrum source, long sourceIndex, List<Precursor> precursors, boolean data, boolean peaks,
+                         boolean peaksFromArrays, SignalArrays arrays) {
 
-        /** An entry that writes {@code mz()}/{@code intensity()} in the caller's order. */
+        /**
+         * An entry that writes the caller's precursors as given and {@code mz()}/{@code intensity()} in the caller's
+         * order.
+         */
         SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
-            this(source, sourceIndex, data, peaks, peaksFromArrays,
+            this(source, sourceIndex, source.description().precursors(), data, peaks, peaksFromArrays,
                     SignalArrays.asGiven(source.mz(), source.intensity()));
         }
 
         /** This entry with {@code arrays} written in place of its own. */
         SpectrumEntry withArrays(SignalArrays arrays) {
-            return new SpectrumEntry(source, sourceIndex, data, peaks, peaksFromArrays, arrays);
+            return new SpectrumEntry(source, sourceIndex, precursors, data, peaks, peaksFromArrays, arrays);
+        }
+
+        /** This entry written as {@code index}, with {@code precursors} written in place of its own. */
+        SpectrumEntry renumbered(long index, List<Precursor> precursors) {
+            return new SpectrumEntry(source, index, precursors, data, peaks, peaksFromArrays, arrays);
+        }
+
+        /** The first of {@link #precursors()}, the only one the packed layout writes, or {@code null}. */
+        Precursor primaryPrecursor() {
+            return precursors.isEmpty() ? null : precursors.get(0);
         }
 
         /** The rows this spectrum writes to spectra_data, its number_of_data_points. */
@@ -64,8 +82,8 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
     }
 
     /**
-     * A chromatogram or wavelength spectrum to write: the caller's object, its index, and its time or wavelength axis
-     * with the intensity in the order they are written.
+     * A chromatogram or wavelength spectrum to write: the caller's object, the index it is written with, and its time
+     * or wavelength axis with the intensity in the order they are written.
      */
     record Entry<T>(T source, long sourceIndex, SignalArrays arrays) {
     }

@@ -77,11 +77,12 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
  * as in the reference's output; the isolation window's {@code parameters} list is always empty.
  *
- * <p>Every precursor is written as given, its {@code precursor_index} included. Both readers attach a selected ion
- * to the first precursor of its spectrum whose key {@code (source_index, precursor_index)} equals the ion's, so the
- * ions of a precursor that shares its key with an earlier one of the same spectrum read back on that earlier one
- * (WR-8 adds a planner check that refuses such input). The precursor and selected-ion members are written even
- * when no spectrum has a precursor, as the reference does.
+ * <p>Every precursor is written as the plan gives it ({@link WritePlan.SpectrumEntry#precursors()}): as the caller
+ * gave it, with the {@code precursor_index} the planner maps to the new index of its parent, or null (WR-8). Both
+ * readers attach a selected ion to the first precursor of its spectrum whose key {@code (source_index,
+ * precursor_index)} equals the ion's, so the ions of a precursor that shares its key with an earlier one of the same
+ * spectrum would read back on that earlier one; the planner refuses such input before any I/O. The precursor and
+ * selected-ion members are written even when no spectrum has a precursor, as the reference does.
  *
  * <p>Chromatograms and wavelength spectra (WR-6) get the same treatment, each member written only when the plan
  * has entities of its kind:
@@ -488,7 +489,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         SimpleGroupFactory factory = new SimpleGroupFactory(PRECURSOR_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, PRECURSOR_SCHEMA, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                for (Precursor precursor : entry.source().description().precursors()) {
+                for (Precursor precursor : entry.precursors()) {
                     Group row = factory.newGroup();
                     row.add(SOURCE_INDEX, entry.sourceIndex());
                     if (precursor.precursorIndex() != null) {
@@ -530,7 +531,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         long selectedIonIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, SELECTED_ION_SCHEMA, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                for (Precursor precursor : entry.source().description().precursors()) {
+                for (Precursor precursor : entry.precursors()) {
                     for (SelectedIon ion : precursor.selectedIons()) {
                         Group row = factory.newGroup();
                         row.add(SOURCE_INDEX, entry.sourceIndex());
