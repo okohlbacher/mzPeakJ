@@ -15,8 +15,9 @@ import java.util.Optional;
 /**
  * Reads {@code chromatograms_metadata.parquet} + {@code chromatograms_data.parquet} into {@link Chromatogram}s.
  * The metadata member, packed or split, is decoded by {@link ChromatogramMetadataDecoder}, which gives each
- * chromatogram its polarity, data processing reference and Params (its precursors are not read); chromatograms keep
- * its order, and an index without data rows reads as empty arrays, without intensity unit or extra arrays.
+ * chromatogram its polarity, data processing reference, Params and precursors (in the split layout from the precursor
+ * and selected-ion members the manifest lists); chromatograms keep its order, and an index without data rows reads as
+ * empty arrays, without intensity unit or extra arrays.
  * The data member, in {@code point} or {@code chunk} layout, is decoded by {@link ChromatogramDataDecoder} through
  * its {@link SignalPlan}: from the member's {@code chromatogram_array_index} footer, else inferred from its column
  * names. The decoder also gives each chromatogram's intensity unit and extra arrays.
@@ -55,7 +56,8 @@ final class ChromatogramStore {
 
     /**
      * Loads the members that {@code manifest} lists under the roles (chromatogram, metadata) and (chromatogram, data
-     * arrays); error messages name the members by their file names.
+     * arrays), and in the split layout those it lists under (chromatogram, precursors) and (chromatogram,
+     * selected_ions); error messages name the members by their file names.
      *
      * @return the store, or {@code null} when the manifest lacks either member
      */
@@ -66,13 +68,13 @@ final class ChromatogramStore {
         if (metadata == null || dataName == null) {
             return null;
         }
-        return load(ChromatogramMetadataDecoder.decode(source.inputFile(metadata.name()), metadata),
-                source.inputFile(dataName), dataName);
+        return load(ChromatogramMetadataDecoder.decode(source, manifest, metadata), source.inputFile(dataName),
+                dataName);
     }
 
     /**
      * Loads a metadata member of either layout and a data member given directly; error messages name the members by
-     * their roles.
+     * their roles. The precursors of a split member are in members only a manifest names, so they are not read.
      */
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.CHROMATOGRAM.canonical(), DataKind.METADATA.canonical());
@@ -96,14 +98,13 @@ final class ChromatogramStore {
         List<Chromatogram> all = new ArrayList<>(headers.size());
         for (ChromatogramMetadataDecoder.Header h : headers) {
             ChromatogramDataDecoder.Decoded d = data.get(h.index());
-            // Chromatogram precursors are not decoded.
             if (d == null) {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), new double[0], new double[0], null,
-                        Map.of(), h.polarity(), h.dataProcessingRef(), h.parameters(), List.of()));
+                        Map.of(), h.polarity(), h.dataProcessingRef(), h.parameters(), h.precursors()));
             } else {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), d.time(), d.intensity(),
                         d.intensityUnit(), d.arrays(), h.polarity(), h.dataProcessingRef(), h.parameters(),
-                        List.of()));
+                        h.precursors()));
             }
         }
         return new ChromatogramStore(all, plan);

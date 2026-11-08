@@ -99,8 +99,10 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       when unknown), its type as a term marker, its {@code data_processing_ref} (the spec's spelling; the column is
  *       there only when some chromatogram has one), its point count and its {@code parameters}, none promoted to a
  *       column; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the schemas of the
- *       spectrum facets and no rows, since chromatogram precursors are not written yet ({@link WritePlanner} warns
- *       about them);
+ *       spectrum facets and are written as those are, keyed by the chromatogram's index: one row per precursor of
+ *       every chromatogram, with the {@code precursor_index} the planner maps through the chromatogram numbering,
+ *       and one row per selected ion, in the same order and with the same promotions. Chromatogram products are not
+ *       modelled, and no products member is written;
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, point count, lambda
  *       max and its {@code parameters}, none promoted to a column; wavelength_spectra_metadata_scans: one row per
  *       wavelength spectrum, keyed by {@code source_index} with a global {@code scan_index}, whose
@@ -315,16 +317,19 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         scanColumns.addAll(positions);
         writeScans(member(directory, members, SPECTRA_SCANS, EntityType.SPECTRUM, DataKind.SCANS,
                 mapping(Facet.SPECTRUM_SCAN, scanColumns)), plan, footer, positions);
+        List<Owner> owners = new ArrayList<>(plan.spectra().size());
+        for (SpectrumEntry entry : plan.spectra()) {
+            owners.add(new Owner(entry.sourceIndex(), entry.precursors()));
+        }
         writePrecursors(member(directory, members, SPECTRA_PRECURSORS, EntityType.SPECTRUM, DataKind.PRECURSORS,
-                PRECURSOR_MAPPING), plan, footer);
+                PRECURSOR_MAPPING), PRECURSOR_SCHEMA, owners, plan, footer);
         writeSelectedIons(member(directory, members, SPECTRA_SELECTED_IONS, EntityType.SPECTRUM,
-                DataKind.SELECTED_IONS, SELECTED_ION_MAPPING), plan, footer);
+                DataKind.SELECTED_IONS, SELECTED_ION_MAPPING), SELECTED_ION_SCHEMA, owners, plan, footer);
     }
 
     /**
-     * Writes chromatograms_metadata and the empty chromatograms_metadata_precursors and
-     * chromatograms_metadata_selected_ions. Each carries {@code chromatogram_count}, the chromatograms in the archive,
-     * as its only footer key-value.
+     * Writes chromatograms_metadata, chromatograms_metadata_precursors and chromatograms_metadata_selected_ions. Each
+     * carries {@code chromatogram_count}, the chromatograms in the archive, as its only footer key-value.
      */
     @Override
     public void writeChromatogramMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
@@ -333,11 +338,16 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 Long.toString(plan.chromatograms().size()));
         writeChromatograms(member(directory, members, CHROMATOGRAMS_METADATA, EntityType.CHROMATOGRAM,
                 DataKind.METADATA, CHROMATOGRAM_MAPPING), plan, footer);
-        writeEmpty(member(directory, members, CHROMATOGRAMS_PRECURSORS, EntityType.CHROMATOGRAM,
-                DataKind.PRECURSORS, CHROMATOGRAM_PRECURSOR_MAPPING), CHROMATOGRAM_PRECURSOR_SCHEMA, plan, footer);
-        writeEmpty(member(directory, members, CHROMATOGRAMS_SELECTED_IONS, EntityType.CHROMATOGRAM,
-                DataKind.SELECTED_IONS, CHROMATOGRAM_SELECTED_ION_MAPPING), CHROMATOGRAM_SELECTED_ION_SCHEMA, plan,
+        List<Owner> owners = new ArrayList<>(plan.chromatograms().size());
+        for (Entry<Chromatogram> entry : plan.chromatograms()) {
+            owners.add(new Owner(entry.sourceIndex(), entry.source().precursors()));
+        }
+        writePrecursors(member(directory, members, CHROMATOGRAMS_PRECURSORS, EntityType.CHROMATOGRAM,
+                DataKind.PRECURSORS, CHROMATOGRAM_PRECURSOR_MAPPING), CHROMATOGRAM_PRECURSOR_SCHEMA, owners, plan,
                 footer);
+        writeSelectedIons(member(directory, members, CHROMATOGRAMS_SELECTED_IONS, EntityType.CHROMATOGRAM,
+                DataKind.SELECTED_IONS, CHROMATOGRAM_SELECTED_ION_MAPPING), CHROMATOGRAM_SELECTED_ION_SCHEMA, owners,
+                plan, footer);
     }
 
     /**
@@ -505,15 +515,24 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
     }
 
-    // ---- spectra_metadata_precursors ----------------------------------------------------------------------------
+    // ---- spectra_metadata_precursors and chromatograms_metadata_precursors -------------------------------------
 
-    private static void writePrecursors(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(PRECURSOR_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, PRECURSOR_SCHEMA, footer, plan.options())) {
-            for (SpectrumEntry entry : plan.spectra()) {
-                for (Precursor precursor : entry.precursors()) {
+    /**
+     * The precursors of one spectrum or chromatogram as written, and the index it is written with, the
+     * {@code source_index} of their rows.
+     */
+    private record Owner(long sourceIndex, List<Precursor> precursors) {
+    }
+
+    /** Writes the precursors of {@code owners}, in their order, as rows of {@code schema}. */
+    private static void writePrecursors(Path file, MessageType schema, List<Owner> owners, WritePlan plan,
+                                        Map<String, String> footer) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
+            for (Owner owner : owners) {
+                for (Precursor precursor : owner.precursors()) {
                     Group row = factory.newGroup();
-                    row.add(SOURCE_INDEX, entry.sourceIndex());
+                    row.add(SOURCE_INDEX, owner.sourceIndex());
                     if (precursor.precursorIndex() != null) {
                         row.add(PRECURSOR_INDEX, precursor.precursorIndex());
                     }
@@ -545,26 +564,28 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
     }
 
-    // ---- spectra_metadata_selected_ions -------------------------------------------------------------------------
+    // ---- spectra_metadata_selected_ions and chromatograms_metadata_selected_ions -------------------------------
 
     /**
-     * Writes the selected ions of each spectrum in the order of the precursor_index of their precursor, null first,
-     * by a stable sort that keeps each precursor's ions, and precursors that share a key, in their order. The Rust
-     * reader needs that order (metadata.rs:1156-1219): it sorts the precursors by key and walks the ions in file order
-     * with a cursor that only moves forward, so an ion whose key is lower than the one before it would go to the last
-     * precursor of its spectrum. {@code selected_ion_index} counts the rows in the order written.
+     * Writes the selected ions of each of {@code owners}, as rows of {@code schema}, in the order of the
+     * precursor_index of their precursor, null first, by a stable sort that keeps each precursor's ions, and
+     * precursors that share a key, in their order. The Rust reader needs that order (metadata.rs:1156-1219): it sorts
+     * the precursors by key and walks the ions in file order with a cursor that only moves forward, so an ion whose
+     * key is lower than the one before it would go to the last precursor of its spectrum. {@code selected_ion_index}
+     * counts the rows in the order written.
      */
-    private static void writeSelectedIons(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(SELECTED_ION_SCHEMA);
+    private static void writeSelectedIons(Path file, MessageType schema, List<Owner> owners, WritePlan plan,
+                                          Map<String, String> footer) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         long selectedIonIndex = 0;
-        try (ParquetWriter<Group> writer = openWriter(file, SELECTED_ION_SCHEMA, footer, plan.options())) {
-            for (SpectrumEntry entry : plan.spectra()) {
-                List<Precursor> byKey = new ArrayList<>(entry.precursors());
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
+            for (Owner owner : owners) {
+                List<Precursor> byKey = new ArrayList<>(owner.precursors());
                 byKey.sort(PRECURSOR_KEY_ORDER); // List.sort is stable
                 for (Precursor precursor : byKey) {
                     for (SelectedIon ion : precursor.selectedIons()) {
                         Group row = factory.newGroup();
-                        row.add(SOURCE_INDEX, entry.sourceIndex());
+                        row.add(SOURCE_INDEX, owner.sourceIndex());
                         if (precursor.precursorIndex() != null) {
                             row.add(PRECURSOR_INDEX, precursor.precursorIndex());
                         }
@@ -587,7 +608,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     /**
      * Writes one row per chromatogram, with the {@code data_processing_ref} column after the type only when some
      * chromatogram has a data processing reference, so that a write without one keeps the schema it had before the
-     * model had references. The precursors are not written.
+     * model had references. The precursors go to their own members.
      */
     private static void writeChromatograms(Path file, WritePlan plan, Map<String, String> footer)
             throws IOException {
@@ -633,12 +654,6 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 writer.write(row);
             }
         }
-    }
-
-    /** Writes a member of {@code schema} without rows: chromatogram precursors and selected ions are not written. */
-    private static void writeEmpty(Path file, MessageType schema, WritePlan plan, Map<String, String> footer)
-            throws IOException {
-        openWriter(file, schema, footer, plan.options()).close();
     }
 
     // ---- wavelength_spectra_metadata and its scans --------------------------------------------------------------

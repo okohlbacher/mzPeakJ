@@ -9,9 +9,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Builds one spectrum's {@link Precursor}s from its precursor and selected-ion rows, in both layouts. The rows of one
- * spectrum already share their {@code source_index}, so the join key {@code (source_index, precursor_index)} comes
- * down to {@code precursor_index}, with null equal to null:
+ * Builds one spectrum's or chromatogram's {@link Precursor}s from its precursor and selected-ion rows, in both
+ * layouts. The rows of one entity already share their {@code source_index}, so the join key {@code (source_index,
+ * precursor_index)} comes down to {@code precursor_index}, with null equal to null:
  * <ul>
  *   <li>precursors keep their file order, as in the Python reader (the Rust reference pushes a spectrum's
  *       precursors in reverse, so its first precursor is the one with the highest {@code precursor_index});
@@ -31,7 +31,9 @@ final class PrecursorJoin {
     private PrecursorJoin() {
     }
 
-    /** The precursors of one spectrum; either list is {@code null} when the spectrum has no such row. */
+    /**
+     * The precursors of one spectrum or chromatogram; either list is {@code null} when the entity has no such row.
+     */
     static List<Precursor> join(List<FacetRow> precursorRows, List<FacetRow> selectedIonRows) {
         if (precursorRows == null && selectedIonRows == null) {
             return List.of();

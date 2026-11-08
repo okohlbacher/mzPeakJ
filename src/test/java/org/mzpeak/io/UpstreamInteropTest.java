@@ -67,7 +67,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       spectra each for Example_Processed.img and diaPASEF.ref, 48 spectra for the Numpress archives and the archive
  *       without scans, and 34 spectra indexed 0..33 for the MS2 subset.
  * </ul>
- * An archive in the packed metadata layout is rejected by the Python reader.
+ * An archive in the packed metadata layout is rejected by the Python reader. The archive with chromatogram precursors
+ * of {@link ChromatogramPrecursorTest#writeSrmArchive} (MZ-6) is read by the Python reader, and its
+ * chromatograms_metadata_precursors member by pyarrow.
  */
 @EnabledIfSystemProperty(named = UpstreamInteropTest.PYTHON_PROPERTY, matches = ".+")
 class UpstreamInteropTest {
@@ -103,6 +105,51 @@ class UpstreamInteropTest {
             "    \"wavelength_spectra\": None if wavelength is None else len(wavelength),",
             "    \"integrity\": None if integrity is None",
             "    else [integrity[0], [entry.name for entry, _ in integrity[1]]],",
+            "}))",
+            "");
+
+    /**
+     * MZ-6: the Python reader's read of every spectrum of an archive and of its chromatograms (the metadata frames,
+     * the precursor and selected-ion frames and the data arrays), the error of its {@code read_chromatogram}, if any,
+     * and pyarrow's raw read of the chromatograms_metadata_precursors member.
+     */
+    private static final String CHROMATOGRAM_PRECURSOR_PROBE = String.join("\n",
+            "\"\"\"Chromatogram precursors of one archive (mzPeakJ UpstreamInteropTest, MZ-6).\"\"\"",
+            "import io",
+            "import json",
+            "import sys",
+            "import zipfile",
+            "",
+            "import numpy as np",
+            "import pandas as pd",
+            "import pyarrow.parquet as pq",
+            "from mzpeak import MzPeakFile",
+            "",
+            "reader = MzPeakFile(sys.argv[1])",
+            "spectra = [reader[i] for i in range(len(reader))]",
+            "metadata = reader.chromatogram_metadata",
+            "points = []",
+            "for i in reader.chromatograms.index:",
+            "    data = reader.chromatogram_data[int(i)]",
+            "    points.append(sorted({len(v) for v in data.values() if isinstance(v, np.ndarray)}))",
+            "try:",
+            "    reader.read_chromatogram(int(reader.chromatograms.index[0]))",
+            "    error = None",
+            "except Exception as e:",
+            "    error = type(e).__name__ + ': ' + str(e)",
+            "with zipfile.ZipFile(sys.argv[1]) as archive:",
+            "    table = pq.read_table(io.BytesIO(archive.read('chromatograms_metadata_precursors.parquet')))",
+            "windows = table.column('isolation_window').to_pylist()",
+            "print(json.dumps({",
+            "    \"spectra\": len(spectra),",
+            "    \"chromatogram_ids\": [str(v) for v in reader.chromatograms['id']],",
+            "    \"chromatogram_points\": points,",
+            "    \"precursor_sources\": [int(v) for v in metadata.precursors.index],",
+            "    \"precursor_ids\": [None if pd.isna(v) else str(v) for v in metadata.precursors['precursor_id']],",
+            "    \"selected_ion_sources\": [int(v) for v in metadata.selected_ions.index],",
+            "    \"read_chromatogram_error\": error,",
+            "    \"precursor_rows\": table.num_rows,",
+            "    \"targets\": [w['isolation_window_target'] for w in windows],",
             "}))",
             "");
 
@@ -169,6 +216,43 @@ class UpstreamInteropTest {
                     .isEqualTo(output.wavelengthSpectra().size());
         }
         assertAcceptanceCounts(output, golden, counts);
+    }
+
+    /**
+     * MZ-6 (g): the HEAD Python reader opens the archive of {@link ChromatogramPrecursorTest#writeSrmArchive}, has_uv
+     * with the SRM chromatogram 'sic' and its two precursors, and reads every spectrum and the chromatogram: its
+     * metadata row, its arrays, both precursor rows and the selected-ion row, keyed by its index 0. pyarrow reads the
+     * archive's chromatograms_metadata_precursors member raw: two rows, with the isolation-window targets 456.7 and
+     * 445.3.
+     *
+     * <p>The reader's {@code read_chromatogram}, which also attaches the selected ions to the precursors, fails on
+     * this chromatogram, and the failure is pinned: its frames drop a column without a single value
+     * ({@code _clean_frame}, reader.py:159-164), so when no precursor row of the member has a {@code precursor_index}
+     * it gives all of an entity's selected ions to one list and assigns that to the frame of the entity's precursors,
+     * which fails for two precursors (reader.py:420-424). Its spectra share that code.
+     */
+    @Test
+    void thePythonReaderReadsChromatogramPrecursors() throws IOException {
+        Path archive = Files.createDirectories(tmp.resolve("srm")).resolve("srm.mzpeak");
+        Chromatogram sic = ChromatogramPrecursorTest.writeSrmArchive(archive);
+        Path script = Files.writeString(tmp.resolve("chromatogram_precursors.py"), CHROMATOGRAM_PRECURSOR_PROBE,
+                StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "srm.json");
+
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(read.path("spectra").asInt()).isEqualTo(
+                ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak")).spectra.size());
+        assertThat(read.path("chromatogram_ids").toString()).isEqualTo("[\"sic\"]");
+        assertThat(read.path("chromatogram_points").toString()).isEqualTo("[[" + sic.size() + "]]");
+        assertThat(read.path("precursor_sources").toString()).isEqualTo("[0,0]");
+        assertThat(read.path("precursor_ids").toString()).isEqualTo("[\"scan=19\",null]");
+        assertThat(read.path("selected_ion_sources").toString()).isEqualTo("[0]");
+        assertThat(read.path("read_chromatogram_error").asText())
+                .isEqualTo("ValueError: Length of values (1) does not match length of index (2)");
+        assertThat(read.path("precursor_rows").asInt()).isEqualTo(2);
+        assertThat(read.path("targets").toString()).isEqualTo("[456.7,445.3]");
     }
 
     @Test
