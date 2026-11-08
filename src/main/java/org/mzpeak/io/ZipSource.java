@@ -111,9 +111,7 @@ final class ZipSource implements MzPeakSource {
             while (total < out.length) {
                 int n = inflater.inflate(out, total, out.length - total);
                 if (n == 0) {
-                    if (inflater.finished() || inflater.needsInput() || inflater.needsDictionary()) {
-                        break; // no further progress possible
-                    }
+                    break; // no further progress possible: the stream finished or its input ran out
                 }
                 total += n;
             }
