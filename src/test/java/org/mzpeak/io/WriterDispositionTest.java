@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.SignalContinuity;
@@ -18,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -44,7 +46,8 @@ class WriterDispositionTest {
 
     /**
      * Every spectrum of legacy small is read back with its centroids in both {@code mz()}/{@code intensity()} and
-     * {@code peaks()}; the counts are rows/spectra of each file.
+     * {@code peaks()}. Its 34 CENTROID spectra are peak copies and go to spectra_peaks only; its 14 PROFILE spectra
+     * go to spectra_data. The counts are rows/spectra of each file.
      */
     @ParameterizedTest
     @ValueSource(strings = {"small.unpacked.mzpeak", "small.mzpeak"})
@@ -54,7 +57,7 @@ class WriterDispositionTest {
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata);
 
-        assertThat(summary(rowsPerSpectrum(out.resolve(DATA), "point"))).isEqualTo("243054/48");
+        assertThat(summary(rowsPerSpectrum(out.resolve(DATA), "point"))).isEqualTo("217710/14");
         assertThat(summary(rowsPerSpectrum(out.resolve(PEAKS), "point"))).isEqualTo("25344/34");
         assertCountsMatchTheRowsWritten(out, "point");
     }
@@ -66,10 +69,11 @@ class WriterDispositionTest {
         MzPeakWriter.writeDirectoryNumpress(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.SLOF);
 
-        assertThat(rowsPerSpectrum(out.resolve(DATA), "chunk")).hasSize(48);
+        assertThat(rowsPerSpectrum(out.resolve(DATA), "chunk")).hasSize(14);
         assertThat(rowsPerSpectrum(out.resolve(PEAKS), "chunk")).hasSize(34);
     }
 
+    /** Every spectrum of has_uv is a CENTROID peak copy: the point layout writes 212 peak lists and no spectra_data. */
     @Test
     void hasUvRowsPerFile(@TempDir Path tmp) {
         Source s = ForwardBackwardCorpusTest.readSource(HAS_UV);
@@ -77,14 +81,17 @@ class WriterDispositionTest {
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata);
 
-        assertThat(summary(rowsPerSpectrum(out.resolve(DATA), "point"))).isEqualTo("24310/212");
+        assertThat(out.resolve(DATA)).doesNotExist();
         assertThat(summary(rowsPerSpectrum(out.resolve(PEAKS), "point"))).isEqualTo("24310/212");
         assertCountsMatchTheRowsWritten(out, "point");
     }
 
     // ---- spectra built by hand ----------------------------------------------------------------------------------
 
-    /** Spectrum 4 of small.unpacked is CENTROID; here it keeps its arrays and loses its peak list. */
+    /**
+     * Spectrum 4 of small.unpacked is CENTROID; here it keeps its arrays and loses its peak list (the SRM shape). Its
+     * arrays go to spectra_peaks, and the reader builds the peak list from them.
+     */
     @Test
     void arrayOnlyCentroidSpectrum(@TempDir Path tmp) {
         Spectrum four = spectrum(ForwardBackwardCorpusTest.readSource(SMALL), 4);
@@ -95,13 +102,12 @@ class WriterDispositionTest {
 
         Path out = write(tmp, srm);
 
-        assertThat(route(out, 4)).isEqualTo("data=" + n + " peaks=- number_of_data_points=" + n
-                + " number_of_peaks=-");
+        assertThat(route(out, 4)).isEqualTo("data=- peaks=" + n + " number_of_data_points=- number_of_peaks=" + n);
         try (MzPeakReader r = MzPeakReader.open(out)) {
             Spectrum back = r.getSpectrum(4).orElseThrow();
             assertThat(back.mz()).isEqualTo(srm.mz());
             assertThat(back.intensity()).isEqualTo(srm.intensity());
-            assertThat(back.peaks()).isEmpty();
+            assertThat(back.peaks()).isEqualTo(copyOf(srm.mz(), srm.intensity()));
         }
     }
 
@@ -132,7 +138,13 @@ class WriterDispositionTest {
         assertThat(route(out, 3)).isEqualTo("data=3 peaks=3 number_of_data_points=3 number_of_peaks=3");
     }
 
-    /** The peak list matches every row but the one whose m/z is NaN, which {@link Spectrum} filters out. */
+    /**
+     * The peak list matches every row but the one whose m/z is NaN, which {@link Spectrum} filters out: still a peak
+     * copy, so the arrays go to spectra_peaks only, NaN row included, in stored order. Re-read through the Parquet
+     * rows they are {@code Arrays.equals} to the source. {@link MzPeakReader} returns the same intensities and finite
+     * m/z values, but its null fill (design §8.3, unchanged) interpolates the NaN m/z, as it did when this row went
+     * to spectra_data.
+     */
     @Test
     void centroidPeakCopyWithANonFiniteMzRow(@TempDir Path tmp) {
         double[] mz = {100.0, Double.NaN, 300.0};
@@ -142,10 +154,18 @@ class WriterDispositionTest {
 
         Path out = write(tmp, s);
 
-        assertThat(route(out, 0)).isEqualTo("data=3 peaks=2 number_of_data_points=3 number_of_peaks=2");
-        double[][] stored = storedRows(out.resolve(DATA), 0);
+        assertThat(route(out, 0)).isEqualTo("data=- peaks=3 number_of_data_points=- number_of_peaks=3");
+        double[][] stored = storedRows(out.resolve(PEAKS), 0);
         assertThat(Arrays.equals(stored[0], mz)).as("stored m/z %s", Arrays.toString(stored[0])).isTrue();
-        assertThat(Arrays.equals(stored[1], intensity)).isTrue();
+        assertThat(Arrays.equals(stored[1], intensity)).as("stored intensity %s", Arrays.toString(stored[1]))
+                .isTrue();
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            Spectrum back = r.getSpectrum(0).orElseThrow();
+            assertThat(back.intensity()).isEqualTo(intensity);
+            assertThat(back.mz()).hasSize(3);
+            assertThat(back.mz()[0]).isEqualTo(100.0);
+            assertThat(back.mz()[2]).isEqualTo(300.0);
+        }
     }
 
     /**
@@ -182,7 +202,90 @@ class WriterDispositionTest {
         }
     }
 
+    /** A CENTROID spectrum whose peak list is not a copy of its arrays keeps both files, so nothing is dropped. */
+    @Test
+    void centroidSpectrumThatIsNotAPeakCopyKeepsBothFiles(@TempDir Path tmp) {
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), new double[] {100.0, 200.0, 300.0},
+                new double[] {1.0, 2.0, 3.0}, List.of(peak(150.0, 4.0, 0), peak(250.0, 5.0, 1)));
+
+        assertThat(route(write(tmp, s), 0)).isEqualTo("data=3 peaks=2 number_of_data_points=3 number_of_peaks=2");
+    }
+
+    // ---- isPeakCopy and the disposition table -------------------------------------------------------------------
+
+    /** {@link Spectrum} sorts {@code peaks()} by m/z, so a copy of unsorted arrays is matched through its indices. */
+    @Test
+    void aCopyOfUnsortedArraysIsAPeakCopy() {
+        double[] mz = {300.0, 100.0, 200.0};
+        double[] intensity = {3.0, 1.0, 2.0};
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, copyOf(mz, intensity));
+        assertThat(s.peaks()).extracting(CentroidPeak::index).containsExactly(1, 2, 0);
+
+        assertThat(WritePlanner.isPeakCopy(s)).isTrue();
+        assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, false, true, true));
+        assertThat(WritePlanner.disposition(s).peakRows()).isEqualTo(3);
+        assertThat(WritePlanner.disposition(s).dataRows()).isZero();
+    }
+
+    @Test
+    void onlyCentroidContinuityMakesAPeakCopy() {
+        double[] mz = {100.0, 200.0, 300.0};
+        double[] intensity = {1.0, 2.0, 3.0};
+        for (SignalContinuity continuity : Arrays.asList(SignalContinuity.PROFILE, SignalContinuity.UNKNOWN, null)) {
+            Spectrum s = new Spectrum(description(0, continuity), mz, intensity, copyOf(mz, intensity));
+            assertThat(WritePlanner.isPeakCopy(s)).as("%s", continuity).isFalse();
+            assertThat(WritePlanner.disposition(s)).as("%s", continuity)
+                    .isEqualTo(new SpectrumEntry(s, 0, true, true, false));
+        }
+    }
+
+    @Test
+    void peakListsThatAreNotACopyOfTheArrays() {
+        double[] mz = {100.0, 200.0, 300.0};
+        double[] intensity = {1.0, 2.0, 3.0};
+        Map<String, List<CentroidPeak>> cases = new LinkedHashMap<>();
+        cases.put("an intensity differs", List.of(peak(100.0, 1.0, 0), peak(200.0, 2.5, 1), peak(300.0, 3.0, 2)));
+        cases.put("an m/z differs", List.of(peak(100.0, 1.0, 0), peak(200.5, 2.0, 1), peak(300.0, 3.0, 2)));
+        cases.put("a finite row has no peak", List.of(peak(100.0, 1.0, 0), peak(300.0, 3.0, 2)));
+        cases.put("two peaks name one row", List.of(peak(100.0, 1.0, 0), peak(100.0, 1.0, 0), peak(200.0, 2.0, 1),
+                peak(300.0, 3.0, 2)));
+        cases.put("an index is unset", List.of(peak(100.0, 1.0, -1), peak(200.0, 2.0, 1), peak(300.0, 3.0, 2)));
+        cases.put("an index is past the arrays", List.of(peak(100.0, 1.0, 0), peak(200.0, 2.0, 1),
+                peak(300.0, 3.0, 2), peak(400.0, 4.0, 3)));
+        cases.forEach((what, peaks) -> {
+            Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, peaks);
+            assertThat(WritePlanner.isPeakCopy(s)).as(what).isFalse();
+            assertThat(WritePlanner.disposition(s)).as(what).isEqualTo(new SpectrumEntry(s, 0, true, true, false));
+        });
+
+        // Values are compared exactly: 0.0 and -0.0 would be written differently.
+        Spectrum signedZero = new Spectrum(description(0, SignalContinuity.CENTROID), mz, new double[] {1.0, 0.0, 3.0},
+                List.of(peak(100.0, 1.0, 0), peak(200.0, -0.0, 1), peak(300.0, 3.0, 2)));
+        assertThat(WritePlanner.isPeakCopy(signedZero)).isFalse();
+    }
+
+    /** CENTROID peaks without arrays are written from {@code peaks()}, arrays without peaks from the arrays. */
+    @Test
+    void centroidSpectraWithOnlyOneOfTheTwo() {
+        double[] mz = {100.0, 200.0};
+        double[] intensity = {1.0, 2.0};
+        Spectrum peaksOnly = new Spectrum(description(0, SignalContinuity.CENTROID), new double[0], new double[0],
+                copyOf(mz, intensity));
+        Spectrum arraysOnly = new Spectrum(description(1, SignalContinuity.CENTROID), mz, intensity, List.of());
+        Spectrum empty = new Spectrum(description(2, SignalContinuity.CENTROID), new double[0], new double[0],
+                List.of());
+
+        assertThat(WritePlanner.disposition(peaksOnly)).isEqualTo(new SpectrumEntry(peaksOnly, 0, false, true, false));
+        assertThat(WritePlanner.disposition(arraysOnly)).isEqualTo(new SpectrumEntry(arraysOnly, 1, false, true, true));
+        assertThat(WritePlanner.disposition(empty).data()).isFalse();
+        assertThat(WritePlanner.disposition(empty).peaks()).isFalse();
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
+
+    private static CentroidPeak peak(double mz, double intensity, int index) {
+        return new CentroidPeak(mz, intensity, index);
+    }
 
     private static SpectrumDescription description(long index, SignalContinuity continuity) {
         return new SpectrumDescription(index, "synthetic=" + index, 1, 1.0, null, continuity, 0, 0, List.of(),

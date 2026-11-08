@@ -194,8 +194,9 @@ class WriterComponentsCharacterizationTest {
                     .isEqualTo(7.0);
             assertThat(ParquetGroups.optDouble(centroid, "MS_1000285_total_ion_current_unit_MS_1000131"))
                     .isEqualTo(13.0);
-            assertThat(ParquetGroups.optLong(centroid, "MS_1003060_number_of_data_points")).isEqualTo(3L);
-            assertThat(ParquetGroups.has(centroid, "MS_1003059_number_of_peaks")).isFalse();
+            // WR-3: an array-only CENTROID spectrum is written to spectra_peaks and counted as peaks.
+            assertThat(ParquetGroups.optLong(centroid, "MS_1003059_number_of_peaks")).isEqualTo(3L);
+            assertThat(ParquetGroups.has(centroid, "MS_1003060_number_of_data_points")).isFalse();
             Group centroidScan = ParquetGroups.optGroup(meta.get(48L), "scan");
             assertThat(fieldsPresent(centroidScan))
                     .containsExactly("source_index", "scan_index", "MS_1000016_scan_start_time_unit_UO_0000031");
@@ -211,11 +212,11 @@ class WriterComponentsCharacterizationTest {
             assertThat(fieldsPresent(ParquetGroups.optGroup(meta.get(49L), "scan")))
                     .containsExactly("source_index", "scan_index");
 
-            assertThat(indexValues(out.resolve("spectra_peaks.parquet"), out == point ? "point" : "chunk"))
+            assertThat(indexValues(out.resolve("spectra_data.parquet"), out == point ? "point" : "chunk"))
                     .doesNotContain(48L, 49L);
         }
 
-        List<Group> pointRows = rows(point.resolve("spectra_data.parquet"));
+        List<Group> pointRows = rows(point.resolve("spectra_peaks.parquet"));
         List<double[]> centroidPoints = new ArrayList<>();
         for (Group row : pointRows) {
             Group p = ParquetGroups.optGroup(row, "point");
@@ -230,7 +231,7 @@ class WriterComponentsCharacterizationTest {
                 new double[] {100.0, 5.0}, new double[] {200.0, 1.0}, new double[] {150.0, 7.0});
 
         List<Group> chunks = new ArrayList<>();
-        for (Group row : rows(numpress.resolve("spectra_data.parquet"))) {
+        for (Group row : rows(numpress.resolve("spectra_peaks.parquet"))) {
             Group chunk = ParquetGroups.optGroup(row, "chunk");
             long index = ParquetGroups.optLong(chunk, "spectrum_index");
             assertThat(index).isNotEqualTo(49L);
@@ -270,10 +271,10 @@ class WriterComponentsCharacterizationTest {
         Map<String, String> numpressGroups = compareWithSmallRowGroups(tmp.resolve("numpress"), numpressWrite,
                 "32768");
 
+        // WR-3: every has_uv spectrum is a CENTROID peak copy, so the point layout writes no spectra_data.
         assertThat(pointGroups).isEqualTo(new TreeMap<>(Map.of(
                 "chromatograms_data.parquet", "row_groups=5",
                 "chromatograms_metadata.parquet", "row_groups=1",
-                "spectra_data.parquet", "row_groups=144",
                 "spectra_metadata.parquet", "row_groups=3",
                 "spectra_peaks.parquet", "row_groups=144",
                 "wavelength_spectra_data.parquet", "row_groups=296",
@@ -281,7 +282,7 @@ class WriterComponentsCharacterizationTest {
         assertThat(numpressGroups).isEqualTo(new TreeMap<>(Map.of(
                 "chromatograms_data.parquet", "row_groups=1",
                 "chromatograms_metadata.parquet", "row_groups=1",
-                "spectra_data.parquet", "row_groups=6",
+                "spectra_data.parquet", "row_groups=5",
                 "spectra_metadata.parquet", "row_groups=1",
                 "spectra_peaks.parquet", "row_groups=1")));
     }

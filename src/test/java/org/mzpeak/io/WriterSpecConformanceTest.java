@@ -106,8 +106,9 @@ class WriterSpecConformanceTest {
         MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata);
 
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64, POINT_SPECTRUM_DATA_UINT64, CHROMATOGRAM_UINT64,
-                WAVELENGTH_UINT64));
+        // has_uv's spectra are all CENTROID peak copies, so WR-3 writes them to spectra_peaks only.
+        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
+                List.of("spectra_peaks.parquet: point.spectrum_index"), CHROMATOGRAM_UINT64, WAVELENGTH_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 

@@ -63,10 +63,10 @@ final class NumpressSignalWriter {
 
     /**
      * Write spectra as MS-Numpress chunk rows: the plan's spectra_data rows ({@code mz()}/{@code intensity()} of
-     * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code peaks()} of every entry
-     * routed there). Each spectrum is split into fixed-size chunks; m/z is encoded with Numpress linear and
-     * intensity with the plan's Numpress intensity encoding. Output is compatible with
-     * {@code SpectrumArrayStore.acceptNumpressChunk}.
+     * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()}
+     * or {@code peaks()} of every entry routed there, as the entry says). Each spectrum is split into fixed-size
+     * chunks; m/z is encoded with Numpress linear and intensity with the plan's Numpress intensity encoding. Output
+     * is compatible with {@code SpectrumArrayStore.acceptNumpressChunk}.
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
@@ -74,12 +74,12 @@ final class NumpressSignalWriter {
         try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
+                if (centroidFile ? !entry.peaks() : !entry.data()) {
+                    continue;
+                }
                 double[] mz;
                 double[] intensity;
-                if (centroidFile) {
-                    if (!entry.peaks()) {
-                        continue;
-                    }
+                if (centroidFile && !entry.peaksFromArrays()) {
                     mz = new double[s.peaks().size()];
                     intensity = new double[s.peaks().size()];
                     for (int i = 0; i < mz.length; i++) {
@@ -87,9 +87,6 @@ final class NumpressSignalWriter {
                         intensity[i] = s.peaks().get(i).intensity();
                     }
                 } else {
-                    if (!entry.data()) {
-                        continue;
-                    }
                     mz = s.mz();
                     intensity = s.intensity();
                 }

@@ -4,8 +4,10 @@ import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
@@ -39,7 +41,7 @@ final class WritePlanner {
         boolean writesSpectraData = options.signalEncoding() == SignalEncoding.NUMPRESS;
         boolean writesSpectraPeaks = false;
         for (Spectrum s : ordered) {
-            SpectrumEntry entry = new SpectrumEntry(s, s.index(), profileRows(s) > 0, peakRows(s) > 0);
+            SpectrumEntry entry = disposition(s);
             writesSpectraData |= entry.data();
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
@@ -58,20 +60,52 @@ final class WritePlanner {
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), new WriteReport());
     }
 
-    // Facet routing is by *container*, not by signal continuity: the mz/intensity point arrays go to
-    // spectra_data and the explicit centroid peak list goes to spectra_peaks. This preserves the source
-    // layout exactly — including centroid spectra whose centroids are stored in spectra_data (e.g. SRM/MRM
-    // transitions, which the reference also stores there), which a continuity-based rule would wrongly
-    // flip into spectra_peaks on write.
+    // Disposition (design §11.5). Spec spectra.md:7-9 and 40-46 (d7bb25b): profile data goes to spectra_data and
+    // centroid data to spectra_peaks, always; centroid spectra MUST NOT be written to spectra_data. The reference
+    // writer (base.rs:1016-1058) writes both files only for a PROFILE spectrum that also has peaks, and sends the
+    // raw arrays of a CENTROID or UNKNOWN spectrum to the peaks writer. A spectrum read from mzPeak carries its
+    // centroids twice, in mz()/intensity() and in peaks(), so a CENTROID spectrum whose arrays are that copy, or
+    // that has arrays but no peak list (the SRM shape), writes its arrays to spectra_peaks only. Every other
+    // spectrum writes its arrays to spectra_data and its peak list to spectra_peaks: UNKNOWN and null continuity
+    // stay in spectra_data, and a CENTROID spectrum whose arrays are not a peak copy keeps both files instead of
+    // losing its arrays (both deviate from the reference).
 
-    /** Rows this spectrum contributes to {@code spectra_data} (the point/profile arrays). */
-    static int profileRows(Spectrum s) {
-        return s.mz().length;
+    /** Where the rows of {@code s} go, by the disposition table of design §11.5. */
+    static SpectrumEntry disposition(Spectrum s) {
+        boolean centroid = s.description().signalContinuity() == SignalContinuity.CENTROID;
+        if (centroid && (s.peaks().isEmpty() || isPeakCopy(s))) {
+            return new SpectrumEntry(s, s.index(), false, s.mz().length > 0, true);
+        }
+        return new SpectrumEntry(s, s.index(), s.mz().length > 0, !s.peaks().isEmpty(), false);
     }
 
-    /** Rows this spectrum contributes to {@code spectra_peaks} (the explicit centroid peak list). */
-    static int peakRows(Spectrum s) {
-        return s.peaks().size();
+    /**
+     * Whether the arrays of {@code s} are a copy of its peak list: its continuity is CENTROID, every peak's
+     * {@link CentroidPeak#index()} names a distinct row of {@code mz()}/{@code intensity()} holding exactly the
+     * peak's values, and every row no peak names has a non-finite m/z (the rows {@link Spectrum} drops from
+     * {@code peaks()}). The match goes through {@code index()} because {@code peaks()} is sorted by m/z.
+     */
+    static boolean isPeakCopy(Spectrum s) {
+        if (s.description().signalContinuity() != SignalContinuity.CENTROID) {
+            return false;
+        }
+        double[] mz = s.mz();
+        double[] intensity = s.intensity();
+        boolean[] matched = new boolean[mz.length];
+        for (CentroidPeak p : s.peaks()) {
+            int row = p.index();
+            if (row < 0 || row >= mz.length || matched[row] || Double.compare(mz[row], p.mz()) != 0
+                    || Double.compare(intensity[row], p.intensity()) != 0) {
+                return false;
+            }
+            matched[row] = true;
+        }
+        for (int row = 0; row < mz.length; row++) {
+            if (!matched[row] && Double.isFinite(mz[row])) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

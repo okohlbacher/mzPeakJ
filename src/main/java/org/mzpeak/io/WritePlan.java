@@ -30,10 +30,24 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
                  WriteReport report) {
 
     /**
-     * A spectrum to write: the caller's spectrum, its index, and whether its rows go to spectra_data
-     * ({@code mz()}/{@code intensity()}) and to spectra_peaks ({@code peaks()}).
+     * A spectrum to write: the caller's spectrum, its index, and where its rows go (design §11.5): {@code data} sends
+     * {@code mz()}/{@code intensity()} to spectra_data; {@code peaks} sends to spectra_peaks either
+     * {@code mz()}/{@code intensity()} in stored order ({@code peaksFromArrays}) or {@code peaks()}.
      */
-    record SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks) {
+    record SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
+
+        /** The rows this spectrum writes to spectra_data, its number_of_data_points. */
+        int dataRows() {
+            return data ? source.mz().length : 0;
+        }
+
+        /** The rows this spectrum writes to spectra_peaks, its number_of_peaks. */
+        int peakRows() {
+            if (!peaks) {
+                return 0;
+            }
+            return peaksFromArrays ? source.mz().length : source.peaks().size();
+        }
     }
 
     /** A chromatogram or wavelength spectrum to write: the caller's object and its index. */

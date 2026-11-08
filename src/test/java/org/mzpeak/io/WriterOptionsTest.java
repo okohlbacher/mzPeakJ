@@ -48,6 +48,8 @@ class WriterOptionsTest {
     private static final Path IMAGING = Fixtures.current("Example_Processed.img.mzpeak");
     private static final String ROW_GROUP_SIZE = "mzpeak.writer.rowGroupSize";
     private static final String DATA = "spectra_data.parquet";
+    /** Where WR-3 writes the has_uv spectra, all CENTROID peak copies: no spectra_data in point layout. */
+    private static final String PEAKS = "spectra_peaks.parquet";
     private static final String INDEX = "mzpeak_index.json";
     private static final FileMetadata EMPTY = FileMetadata.EMPTY;
     private static final Options DEFAULTS = Options.defaults();
@@ -138,7 +140,7 @@ class WriterOptionsTest {
         Snapshot actual = snapshot(tmp.resolve("legacy"), archive, legacy, s);
 
         assertThat(actual).as("%s against its Options form", label).isEqualTo(expected);
-        assertThat(actual.members()).as("members written by %s", label).containsKeys("spectra_metadata.parquet", DATA);
+        assertThat(actual.members()).as("members written by %s", label).containsKeys("spectra_metadata.parquet", PEAKS);
         assertThat(actual.zipEntries().isEmpty()).as("%s wrote an archive", label).isEqualTo(!archive);
     }
 
@@ -151,8 +153,8 @@ class WriterOptionsTest {
         Snapshot slof = snapshot(tmp.resolve("slof"), false, options(NUMPRESS), s);
         Snapshot pic = snapshot(tmp.resolve("pic"), false, options(NUMPRESS_PIC), s);
 
-        assertThat(slof.members().get(DATA)).isNotEqualTo(point.members().get(DATA));
-        assertThat(pic.members().get(DATA)).isNotEqualTo(slof.members().get(DATA));
+        assertThat(slof.members().get(PEAKS)).isNotEqualTo(point.members().get(PEAKS));
+        assertThat(pic.members().get(PEAKS)).isNotEqualTo(slof.members().get(PEAKS));
         assertThat(point.members()).containsKey("wavelength_spectra_data.parquet");
     }
 
@@ -271,7 +273,7 @@ class WriterOptionsTest {
             assertThat(withoutRowGroups(e.getValue().detail())).as("detail of %s", name)
                     .isEqualTo(withoutRowGroups(before.detail()));
         }
-        for (String name : List.of(DATA, "spectra_peaks.parquet", "wavelength_spectra_data.parquet")) {
+        for (String name : List.of(PEAKS, "wavelength_spectra_data.parquet")) {
             assertThat(rowGroups(split.members().get(name))).as("row groups of %s", name).isGreaterThan(1);
         }
         assertThat(rowGroups(split.members().get("chromatograms_metadata.parquet"))).isEqualTo(1);
@@ -295,7 +297,7 @@ class WriterOptionsTest {
 
         assertThat(option).isEqualTo(property);
         assertThat(rowGroups(plain.members().get(DATA))).as("default row groups of %s", DATA).isEqualTo(1);
-        assertThat(rowGroups(option.members().get(DATA))).as("row groups of %s", DATA).isEqualTo(6);
+        assertThat(rowGroups(option.members().get(DATA))).as("row groups of %s", DATA).isEqualTo(5);
     }
 
     @Test
@@ -316,9 +318,9 @@ class WriterOptionsTest {
         }
 
         assertThat(both).isEqualTo(optionOnly);
-        assertThat(rowGroups(propertyOnly.members().get(DATA))).as("row groups with the property alone")
-                .isGreaterThan(rowGroups(optionOnly.members().get(DATA)));
-        assertThat(rowGroups(optionOnly.members().get(DATA))).as("row groups with the option").isGreaterThan(1);
+        assertThat(rowGroups(propertyOnly.members().get(PEAKS))).as("row groups with the property alone")
+                .isGreaterThan(rowGroups(optionOnly.members().get(PEAKS)));
+        assertThat(rowGroups(optionOnly.members().get(PEAKS))).as("row groups with the option").isGreaterThan(1);
     }
 
     @Test

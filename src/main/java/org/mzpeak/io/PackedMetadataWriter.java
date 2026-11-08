@@ -30,8 +30,6 @@ import static org.mzpeak.io.ParquetOutput.paramListField;
 import static org.mzpeak.io.ParquetOutput.scanWindowListField;
 import static org.mzpeak.io.ParquetOutput.writeParams;
 import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
-import static org.mzpeak.io.WritePlanner.peakRows;
-import static org.mzpeak.io.WritePlanner.profileRows;
 
 /**
  * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
@@ -145,13 +143,13 @@ final class PackedMetadataWriter {
                 spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
                 spectrum.add("MS_1000559_spectrum_type", d.msLevel() > 1 ? "MS:1000580" : "MS:1000579");
                 writeDerivedColumns(spectrum, s);
-                // Declare each facet's count independently; a spectrum may carry profile points AND a
-                // centroid peak list (both facets), so both counts can be present.
+                // Each count is the rows written to its file, and only for a file the spectrum is written to; a
+                // spectrum may go to both spectra_data and spectra_peaks, so both counts can be present.
                 if (entry.data()) {
-                    spectrum.add("MS_1003060_number_of_data_points", (long) profileRows(s));
+                    spectrum.add("MS_1003060_number_of_data_points", (long) entry.dataRows());
                 }
                 if (entry.peaks()) {
-                    spectrum.add("MS_1003059_number_of_peaks", (long) peakRows(s));
+                    spectrum.add("MS_1003059_number_of_peaks", (long) entry.peakRows());
                 }
                 writeParams(spectrum, d.parameters());
 

@@ -15,7 +15,9 @@ import org.mzpeak.io.SignalPlan.Column;
 import org.mzpeak.io.SignalPlan.Extra;
 import org.mzpeak.io.SignalPlan.Layout;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 
@@ -244,6 +246,11 @@ class SignalPlanTest {
         assertThat(spectra).isNotEmpty();
         assertThat(chromatograms).isNotEmpty();
         assertThat(wavelength).isNotEmpty();
+        // WR-3 writes the CENTROID peak copies of has_uv to spectra_peaks only; a PROFILE spectrum keeps spectra_data.
+        Spectrum last = spectra.get(spectra.size() - 1);
+        spectra.add(new Spectrum(new SpectrumDescription(last.index() + 1, "profile", 1, 1.0, null,
+                SignalContinuity.PROFILE, 0, 0, List.of(), List.of(), List.of()), last.mz(), last.intensity(),
+                List.of()));
         Path point = tmp.resolve("point.mzpeak");
         Path numpress = tmp.resolve("numpress.mzpeak");
         MzPeakWriter.writeDirectory(point, spectra, chromatograms, wavelength, List.of(), FileMetadata.EMPTY);
