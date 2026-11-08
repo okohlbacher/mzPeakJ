@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 
@@ -390,6 +391,55 @@ class GridDecodeTest {
                 .hasMessageContaining(Integer.toString(row.intensity.length))
                 .hasMessageContaining(Integer.toString(row.mzIndices.length))
                 .hasMessageContaining("spectrum_index 0");
+    }
+
+    /** One surplus intensity fails too (kills C5, which checked the grid lengths in one direction only). */
+    @Test
+    void aGridWithOneSurplusIntensityFails() {
+        GridRow row = Row0.INSTANCE.copy();
+        row.intensity = Arrays.copyOf(row.intensity, row.intensity.length + 1);
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid chunk intensity length (" + row.intensity.length + ") must equal its " + MZ_GRID
+                        + " indices (" + row.mzIndices.length + ") for spectrum_index 0");
+    }
+
+    /** An INT64 index list holding 2^32 is outside the uint32 range (kills G2). */
+    @Test
+    void anInt64GridIndexOfTwoToThe32Fails() {
+        Group chunk = gridCell("required int64 element;", indices -> indices.addGroup("list")
+                .add("element", 4_294_967_296L));
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid " + MZ_GRID + " has the index 4294967296 at position 0, outside 0..4294967295,"
+                        + " for spectrum_index 0");
+    }
+
+    /** A DOUBLE index list holding 1.5 is not an integer (kills G3, which truncated it to 1). */
+    @Test
+    void aDoubleGridIndexOfOnePointFiveFails() {
+        Group chunk = gridCell("required double element;", indices -> {
+            indices.addGroup("list").add("element", 2.0);
+            indices.addGroup("list").add("element", 1.5);
+        });
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid " + MZ_GRID + " has the index 1.5 at position 1, not an unsigned 32-bit integer,"
+                        + " for spectrum_index 0");
+    }
+
+    /** The chunk struct of a row whose {@code mz_grid} indices are {@code element}s, added by {@code fill}. */
+    private static Group gridCell(String element, Consumer<Group> fill) {
+        MessageType schema = MessageTypeParser.parseMessageType("message m { optional group chunk { "
+                + grid(MZ_GRID, element) + " } }");
+        Group record = new SimpleGroupFactory(schema).newGroup();
+        Group grid = record.addGroup("chunk").addGroup(MZ_GRID);
+        grid.add("grid_type", GridModels.LINEAR);
+        Group parameters = grid.addGroup("parameters");
+        parameters.addGroup("list").add("element", 95.0);
+        parameters.addGroup("list").add("element", 3.75e-7);
+        fill.accept(grid.addGroup("indices"));
+        return record.getGroup("chunk", 0);
     }
 
     @Test
