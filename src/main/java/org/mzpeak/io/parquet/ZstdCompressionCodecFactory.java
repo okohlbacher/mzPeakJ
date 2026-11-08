@@ -130,10 +130,8 @@ public final class ZstdCompressionCodecFactory implements CompressionCodecFactor
         }
     };
 
+    /** {@code Zstd.decompressByteArray} throws {@code ZstdException} on a decoding error; a short frame remains. */
     private static void checkSize(long actual, int expected) throws IOException {
-        if (Zstd.isError(actual)) {
-            throw new IOException("ZSTD decompression failed: " + Zstd.getErrorName(actual));
-        }
         if (actual != expected) {
             throw new IOException("ZSTD decompressed size mismatch: got " + actual + ", expected " + expected);
         }
