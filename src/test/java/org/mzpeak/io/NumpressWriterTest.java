@@ -87,7 +87,7 @@ class NumpressWriterTest {
         try (MzPeakReader orig = MzPeakReader.open(FIXTURE);
              MzPeakReader enc  = MzPeakReader.open(tmp.resolve("n.mzpeak"))) {
             Spectrum a = orig.getSpectrum(5).orElseThrow();
-            Spectrum b = enc.getSpectrum(5).orElseThrow();
+            Spectrum b = enc.getSpectrum(0).orElseThrow(); // written alone, spectrum 5 is spectrum 0 (WR-8)
             assertThat(b.mz()).hasSize(a.mz().length);
             double sumA = 0, sumB = 0;
             for (int i = 0; i < a.mz().length; i++) {

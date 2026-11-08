@@ -19,15 +19,22 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.ToLongFunction;
 
 /**
- * Plans a {@link MzPeakWriter} write without any I/O: enforces the reader's index contract, puts the spectra in
- * index order, routes each spectrum's payload to spectra_data and spectra_peaks, puts each entity's rows in main-axis
- * order, decides which members are written and serializes the footer key-values once. A contract violation throws
- * {@link MzPeakException} before any file or temp directory exists.
+ * Plans a {@link MzPeakWriter} write without any I/O: enforces the reader's index contract, puts every entity in
+ * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent, refuses in the split
+ * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
+ * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, decides which members are written and
+ * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
+ * directory exists.
  */
 final class WritePlanner {
 
@@ -40,27 +47,40 @@ final class WritePlanner {
                           FileMetadata fileMetadata, Options options) {
         List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra,
                 options.metadataLayout());
+        Map<Long, Long> writtenIndex = new HashMap<>();
+        for (int i = 0; i < ordered.size(); i++) {
+            writtenIndex.put(ordered.get(i).index(), (long) i);
+        }
         WriteReport report = new WriteReport();
         List<SpectrumEntry> spectrumEntries = new ArrayList<>(ordered.size());
         // Numpress always writes spectra_data, if need be without a single row; point layout only when it has rows.
         boolean writesSpectraData = options.signalEncoding() == SignalEncoding.NUMPRESS;
         boolean writesSpectraPeaks = false;
-        for (Spectrum s : ordered) {
+        for (int i = 0; i < ordered.size(); i++) {
+            Spectrum s = ordered.get(i);
+            List<Precursor> precursors = writtenPrecursors(s.description().precursors(), writtenIndex);
+            if (options.metadataLayout() == MetadataLayout.SPLIT) {
+                requireOwnKeys(s, i, precursors);
+            }
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
-            SpectrumEntry entry = disposition(s)
+            SpectrumEntry entry = disposition(s).renumbered(i, precursors)
                     .withArrays(mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
             writesSpectraData |= entry.data();
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
         }
-        List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatograms.size());
-        for (Chromatogram c : chromatograms) {
-            chromatogramEntries.add(new Entry<>(c, c.index(),
+        List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
+        List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());
+        for (int i = 0; i < chromatogramOrder.size(); i++) {
+            Chromatogram c = chromatogramOrder.get(i);
+            chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
         }
-        List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthSpectra.size());
-        for (WavelengthSpectrum w : wavelengthSpectra) {
-            wavelengthEntries.add(new Entry<>(w, w.index(),
+        List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
+        List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
+        for (int i = 0; i < wavelengthOrder.size(); i++) {
+            WavelengthSpectrum w = wavelengthOrder.get(i);
+            wavelengthEntries.add(new Entry<>(w, i,
                     mainAxisOrder("wavelength spectrum", w.index(), w.wavelength(), w.intensity(), report)));
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
@@ -171,6 +191,121 @@ final class WritePlanner {
             }
         }
         return true;
+    }
+
+    // Renumbering (design §11.5, WR-8). Spec spectra.md:91-93 and chromatograms.md:40: the indices of each entity
+    // run 0..n-1, and a precursor_index names a spectrum of the file. The Rust reader indexes its count vectors by
+    // spectrum index, and a filtered subset (ExtractSpectra) is sparse, so every entity is written as 0..n-1 in the
+    // order of the caller's indices, and each precursor_index as the new index of its parent, null when the parent
+    // is not written. Input numbered 0..n-1 in index order is written as given.
+
+    /**
+     * {@code entities} in the order of their {@code index}: the caller's list when it is already in that order,
+     * otherwise a stable-sorted copy. The caller's list is never modified.
+     */
+    private static <T> List<T> inIndexOrder(List<T> entities, ToLongFunction<T> index) {
+        for (int i = 1; i < entities.size(); i++) {
+            if (index.applyAsLong(entities.get(i)) < index.applyAsLong(entities.get(i - 1))) {
+                List<T> sorted = new ArrayList<>(entities);
+                sorted.sort(Comparator.comparingLong(index)); // List.sort is stable
+                return sorted;
+            }
+        }
+        return entities;
+    }
+
+    /**
+     * {@code precursors} as they are written: each precursor_index replaced by the index {@code writtenIndex} gives
+     * its parent, or by null when the parent is not written. A precursor whose precursor_index changes is replaced by
+     * a new {@link Precursor}; the caller's are never modified, and the caller's list is returned when nothing
+     * changes.
+     */
+    private static List<Precursor> writtenPrecursors(List<Precursor> precursors, Map<Long, Long> writtenIndex) {
+        List<Precursor> out = null;
+        for (int i = 0; i < precursors.size(); i++) {
+            Precursor p = precursors.get(i);
+            Long written = p.precursorIndex() == null ? null : writtenIndex.get(p.precursorIndex());
+            if (!Objects.equals(written, p.precursorIndex())) {
+                if (out == null) {
+                    out = new ArrayList<>(precursors);
+                }
+                out.set(i, new Precursor(written, p.precursorId(), p.isolationWindow(), p.selectedIons(),
+                        p.activation()));
+            }
+        }
+        return out == null ? precursors : Collections.unmodifiableList(out);
+    }
+
+    // Attribution check (design §11.5, WR-8). Both readers attach a selected ion to the first precursor of its
+    // spectrum whose key (source_index, precursor_index) equals the ion's, null equal to null (PrecursorJoin; reference
+    // metadata.rs:1157-1185). When precursors of one spectrum share their written key, the selected ions of every
+    // one after the first would silently move to the first. The split layout writes every precursor and refuses
+    // exactly that input; a shared key whose later precursors carry no selected ion loses nothing and is written.
+    // The typical cause is a multi-precursor spectrum written without its parents: every precursor_index is null.
+    // The packed layout writes the primary precursor only and is not checked.
+
+    /**
+     * Throws {@link MzPeakException} when a precursor of {@code precursors}, those of {@code s} as written with
+     * {@code index}, carries selected ions and an earlier one has its precursor_index (null equal to null).
+     */
+    private static void requireOwnKeys(Spectrum s, long index, List<Precursor> precursors) {
+        for (int i = 1; i < precursors.size(); i++) {
+            Long key = precursors.get(i).precursorIndex();
+            if (!precursors.get(i).selectedIons().isEmpty() && firstWithKey(precursors, key) < i) {
+                throw new MzPeakException(sharedKeyMessage(s, index, precursors, key));
+            }
+        }
+    }
+
+    /** The position of the first of {@code precursors} whose precursor_index equals {@code key}, else -1. */
+    private static int firstWithKey(List<Precursor> precursors, Long key) {
+        for (int i = 0; i < precursors.size(); i++) {
+            if (Objects.equals(precursors.get(i).precursorIndex(), key)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The message for the precursors of {@code s} that share the written precursor_index {@code key}: the spectrum
+     * index, the positions and precursor ids of those precursors, the precursors whose selected ions would move to
+     * the first of them, and a remedy. When each of them names a different parent that is not written, the remedy is
+     * to write the parent spectra as well; otherwise it is to give each precursor a precursor_index of its own.
+     */
+    private static String sharedKeyMessage(Spectrum s, long index, List<Precursor> precursors, Long key) {
+        List<Precursor> given = s.description().precursors();
+        List<String> sharing = new ArrayList<>();
+        List<String> moved = new ArrayList<>();
+        Set<Long> parents = new LinkedHashSet<>();
+        boolean everyOneNamesAParent = true;
+        int first = firstWithKey(precursors, key);
+        for (int i = first; i < precursors.size(); i++) {
+            Precursor p = precursors.get(i);
+            if (!Objects.equals(p.precursorIndex(), key)) {
+                continue;
+            }
+            sharing.add(i + (p.precursorId() == null ? " (no precursor_id)"
+                    : " (precursor_id '" + p.precursorId() + "')"));
+            if (i > first && !p.selectedIons().isEmpty()) {
+                moved.add(Integer.toString(i));
+            }
+            Long parent = given.get(i).precursorIndex();
+            everyOneNamesAParent &= parent != null && parents.add(parent);
+        }
+        String remedy = key == null && everyOneNamesAParent
+                ? "write their parent spectra (index " + joined(parents.stream().map(String::valueOf).toList())
+                + ") as well, so that each precursor keeps a precursor_index of its own"
+                : "give each precursor of the spectrum a precursor_index of its own";
+        return "spectrum " + s.index() + ": precursors " + joined(sharing) + " share the written key (source_index "
+                + index + ", precursor_index " + key + "), so readers would attach the selected ions of precursor "
+                + joined(moved) + " to precursor " + first + "; " + remedy;
+    }
+
+    /** {@code parts} as {@code a}, {@code a and b} or {@code a, b and c}. */
+    private static String joined(List<String> parts) {
+        int last = parts.size() - 1;
+        return last == 0 ? parts.get(0) : String.join(", ", parts.subList(0, last)) + " and " + parts.get(last);
     }
 
     /**

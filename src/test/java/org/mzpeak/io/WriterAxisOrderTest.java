@@ -33,7 +33,8 @@ import static org.assertj.core.api.Assertions.withinPercentage;
  * unsorted ranked arrays"): the m/z of a spectrum, the time of a chromatogram and the wavelength axis. One stable
  * permutation, by {@link Double#compare} (NaN last), orders the axis and its intensity, the caller's arrays are left
  * alone, and the plan's {@link WriteReport} gets one warning per re-sorted entity. An axis whose finite values are
- * non-decreasing is written as given, non-finite rows in place.
+ * non-decreasing is written as given, non-finite rows in place. The warning names the caller's index; the only entity
+ * of its kind is written as index 0 (WR-8), where the stored rows are read back.
  */
 class WriterAxisOrderTest {
 
@@ -55,11 +56,11 @@ class WriterAxisOrderTest {
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, List.of(s), List.of(), List.of(), List.of(), FileMetadata.EMPTY);
 
-        double[][] stored = storedRows(out.resolve(DATA), "spectrum_index", "mz", 7);
+        double[][] stored = storedRows(out.resolve(DATA), "spectrum_index", "mz", 0);
         assertThat(stored[0]).containsExactly(1, 2, 3, 4, 5);
         assertThat(stored[1]).containsExactly(10, 20, 30, 40, 50);
         try (MzPeakReader r = MzPeakReader.open(out)) {
-            Spectrum back = r.getSpectrum(7).orElseThrow();
+            Spectrum back = r.getSpectrum(0).orElseThrow();
             assertThat(back.mz()).containsExactly(1, 2, 3, 4, 5);
             assertThat(back.intensity()).containsExactly(10, 20, 30, 40, 50);
         }
@@ -77,7 +78,7 @@ class WriterAxisOrderTest {
                 NumpressIntensityEncoding.SLOF);
 
         try (MzPeakReader r = MzPeakReader.open(out)) {
-            Spectrum back = r.getSpectrum(7).orElseThrow();
+            Spectrum back = r.getSpectrum(0).orElseThrow();
             assertThat(back.mz()).hasSize(5);
             assertThat(back.intensity()).hasSize(5);
             for (int i = 0; i < 5; i++) {
@@ -102,17 +103,17 @@ class WriterAxisOrderTest {
         MzPeakWriter.writeDirectory(out, List.of(ascending), List.of(tic), List.of(uv), List.of(),
                 FileMetadata.EMPTY);
 
-        double[][] time = storedRows(out.resolve(CHROMATOGRAMS), "chromatogram_index", "time", 3);
+        double[][] time = storedRows(out.resolve(CHROMATOGRAMS), "chromatogram_index", "time", 0);
         assertThat(time[0]).containsExactly(1.0, 2.0, 3.0);
         assertThat(time[1]).containsExactly(10, 20, 30);
-        double[][] wavelength = storedRows(out.resolve(WAVELENGTH), "wavelength_spectrum_index", "wavelength", 2);
+        double[][] wavelength = storedRows(out.resolve(WAVELENGTH), "wavelength_spectrum_index", "wavelength", 0);
         assertThat(wavelength[0]).containsExactly(200, 250, 300);
         assertThat(wavelength[1]).containsExactly(0.2, -0.1, 0.3);
         try (MzPeakReader r = MzPeakReader.open(out)) {
-            Chromatogram c = r.getChromatogram(3).orElseThrow();
+            Chromatogram c = r.getChromatogram(0).orElseThrow();
             assertThat(c.time()).containsExactly(1.0, 2.0, 3.0);
             assertThat(c.intensity()).containsExactly(10, 20, 30);
-            WavelengthSpectrum w = r.getWavelengthSpectrum(2).orElseThrow();
+            WavelengthSpectrum w = r.getWavelengthSpectrum(0).orElseThrow();
             assertThat(w.wavelength()).containsExactly(200, 250, 300);
             assertThat(w.intensity()).containsExactly(0.2, -0.1, 0.3);
             Spectrum back = r.getSpectrum(0).orElseThrow();
@@ -157,11 +158,11 @@ class WriterAxisOrderTest {
         MzPeakWriter.writeDirectory(out, List.of(s), List.of(), List.of(), List.of(), FileMetadata.EMPTY);
 
         assertThat(out.resolve(DATA)).doesNotExist();
-        double[][] stored = storedRows(out.resolve(PEAKS), "spectrum_index", "mz", 4);
+        double[][] stored = storedRows(out.resolve(PEAKS), "spectrum_index", "mz", 0);
         assertThat(stored[0]).containsExactly(100, 200, 300);
         assertThat(stored[1]).containsExactly(1, 2, 3);
         try (MzPeakReader r = MzPeakReader.open(out)) {
-            Spectrum back = r.getSpectrum(4).orElseThrow();
+            Spectrum back = r.getSpectrum(0).orElseThrow();
             assertThat(back.mz()).containsExactly(100, 200, 300);
             assertThat(back.intensity()).containsExactly(1, 2, 3);
             assertThat(back.peaks()).containsExactly(new CentroidPeak(100, 1, 0), new CentroidPeak(200, 2, 1),

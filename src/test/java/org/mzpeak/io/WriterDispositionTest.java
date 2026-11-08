@@ -96,7 +96,8 @@ class WriterDispositionTest {
 
     /**
      * Spectrum 4 of small.unpacked is CENTROID; here it keeps its arrays and loses its peak list (the SRM shape). Its
-     * arrays go to spectra_peaks, and the reader builds the peak list from them.
+     * arrays go to spectra_peaks, and the reader builds the peak list from them. Written alone, it is spectrum 0
+     * (WR-8).
      */
     @Test
     void arrayOnlyCentroidSpectrum(@TempDir Path tmp) {
@@ -108,9 +109,9 @@ class WriterDispositionTest {
 
         Path out = write(tmp, srm);
 
-        assertThat(route(out, 4)).isEqualTo("data=- peaks=" + n + " number_of_data_points=- number_of_peaks=" + n);
+        assertThat(route(out, 0)).isEqualTo("data=- peaks=" + n + " number_of_data_points=- number_of_peaks=" + n);
         try (MzPeakReader r = MzPeakReader.open(out)) {
-            Spectrum back = r.getSpectrum(4).orElseThrow();
+            Spectrum back = r.getSpectrum(0).orElseThrow();
             assertThat(back.mz()).isEqualTo(srm.mz());
             assertThat(back.intensity()).isEqualTo(srm.intensity());
             assertThat(back.peaks()).isEqualTo(copyOf(srm.mz(), srm.intensity()));
