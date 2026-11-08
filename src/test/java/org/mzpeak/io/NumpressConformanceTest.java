@@ -185,6 +185,35 @@ class NumpressConformanceTest {
         }
     }
 
+    /**
+     * A spectrum whose 1200 points come in descending m/z order is re-sorted as a whole before it is cut into chunks:
+     * the decoded m/z ascend across all three chunks, each chunk is bounded by its first and last m/z of the sorted
+     * input, and the read-back is the sorted input within the Numpress tolerances, in both intensity encodings.
+     * Sorting each chunk on its own would leave the chunks in descending order.
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void aReversedSpectrumIsReSortedAcrossItsChunks(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        Spectrum sorted = profile(0, 1200);
+        Spectrum reversed = new Spectrum(sorted.description(), reversed(sorted.mz()), reversed(sorted.intensity()),
+                List.of());
+        Path out = writeConstructed(List.of(reversed), encoding, tmp.resolve("reversed-" + encoding + ".mzpeak"));
+
+        List<Group> chunks = chunksBySpectrum(out.resolve("spectra_data.parquet")).get(0L);
+        assertThat(assertChunkBounds(sorted, chunks, encoding)).as("%s chunk sizes", encoding)
+                .containsExactly(500, 500, 200);
+        double previous = Double.NEGATIVE_INFINITY;
+        int point = 0;
+        for (Group chunk : chunks) {
+            byte[] bytes = ParquetGroups.byteList(chunk, LINEAR_COLUMN);
+            for (double mz : MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, bytes, bytes.length)) {
+                assertThat(mz).as("%s m/z of point %d", encoding, point++).isGreaterThan(previous);
+                previous = mz;
+            }
+        }
+        assertReadBackWithinTolerance(out, List.of(sorted), encoding);
+    }
+
     // ---- schema conformance (WR-10) -------------------------------------------------------------------------------
 
     /** The reference accepts Numpress bytes only as UInt8 (chunk_series.rs:430-464): pyarrow list<uint8>. */
@@ -282,6 +311,15 @@ class NumpressConformanceTest {
             sizes.add(n % CHUNK_SIZE);
         }
         return sizes;
+    }
+
+    /** A copy of {@code values} in reverse order. */
+    private static double[] reversed(double[] values) {
+        double[] out = new double[values.length];
+        for (int i = 0; i < values.length; i++) {
+            out[i] = values[values.length - 1 - i];
+        }
+        return out;
     }
 
     /** One {@link #profile} spectrum of each of {@code sizes} points, indexed 0..n-1 in that order. */

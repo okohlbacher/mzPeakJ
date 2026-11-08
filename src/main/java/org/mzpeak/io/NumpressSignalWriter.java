@@ -59,7 +59,7 @@ final class NumpressSignalWriter {
     }
 
     /**
-     * The chunk schema (compatible with SpectrumArrayStore.acceptNumpressChunk) with {@code intensityColumn} as the
+     * The chunk schema (read by the Numpress path of {@link ChunkRowDecoder}) with {@code intensityColumn} as the
      * only intensity transform. {@code mz_chunk_values} is the spec's chunk values column, present once in every
      * chunk layout; the m/z of a Numpress row are in {@code mz_numpress_linear_bytes}, so it is written empty.
      */
@@ -113,9 +113,9 @@ final class NumpressSignalWriter {
      * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()}
      * or {@code peaks()} of every entry routed there, as the entry says). Each spectrum is split into chunks of up to
      * 500 points, the last two 499 + 2 where a single point would be left over; m/z is encoded with Numpress linear
-     * and intensity with the plan's Numpress intensity encoding. Output is compatible with
-     * {@code SpectrumArrayStore.acceptNumpressChunk}. {@code mz()}/{@code intensity()} are written in the order of the
-     * entry's {@link WritePlan.SignalArrays}.
+     * and intensity with the plan's Numpress intensity encoding. The rows are read by the Numpress path of
+     * {@link ChunkRowDecoder}. {@code mz()}/{@code intensity()} are written in the order of the entry's
+     * {@link WritePlan.SignalArrays}.
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
