@@ -2,15 +2,21 @@ package org.mzpeak.io;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.parquet.io.SeekableInputStream;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.Type;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.ManifestWriter.Dialect;
+import org.mzpeak.io.MzPeakManifest.ColumnMapping;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -322,6 +328,42 @@ class WriterManifestConformanceTest {
         List<String> expected = new ArrayList<>(new TreeSet<>(membersBesidesIndex(out, true)));
         expected.add(INDEX);
         assertThat(local).as("ZIP entries of %s via %s", fixture, form).containsExactlyElementsOf(expected);
+    }
+
+    // ---- column mapping units -----------------------------------------------------------------------------------
+
+    /**
+     * A column mapping whose unit is the column {@code scan.ion_mobility_unit} is written as the reference serializes a
+     * PathOrCURIE path, a JSON array of the path's segments, and {@link MzPeakManifest} parses it back into
+     * {@code unitPath} with no {@code unit}. A mapping without a unit path keeps its unit as a string, or null; no
+     * current output has a unit path, since the split writer maps every unit as a CURIE.
+     */
+    @Test
+    void aColumnMappingUnitPathIsWrittenAsAnArrayOfSegments(@TempDir Path dir) throws IOException {
+        ColumnMapping byPath = new ColumnMapping("ion mobility value", "scan.ion_mobility_value", "MS:1002476",
+                null, null, "scan.ion_mobility_unit");
+        ColumnMapping byCurie = new ColumnMapping("scan start time", "scan_start_time", "MS:1000016", "UO:0000031",
+                null);
+        ColumnMapping unitless = new ColumnMapping("filter string", "filter_string", "MS:1000512", null, null);
+        ArrayNode files = MAPPER.createArrayNode();
+        ManifestWriter.addManifestEntry(files, new WrittenMember("spectra_metadata_scans.parquet",
+                EntityType.SPECTRUM, DataKind.SCANS, List.of(byPath, byCurie, unitless)), Dialect.CURRENT,
+                "0".repeat(128));
+
+        JsonNode mapping = files.get(0).path("column_mapping");
+        assertThat(mapping.get(0).get("unit").toString()).isEqualTo("[\"scan\",\"ion_mobility_unit\"]");
+        assertThat(mapping.get(1).get("unit").toString()).isEqualTo("\"UO:0000031\"");
+        assertThat(mapping.get(2).get("unit").isNull()).as("the unit of %s", mapping.get(2)).isTrue();
+
+        ObjectNode root = MAPPER.createObjectNode();
+        root.set("files", files);
+        Files.write(dir.resolve(INDEX), MAPPER.writeValueAsBytes(root));
+        try (MzPeakSource source = MzPeakSource.open(dir)) {
+            List<ColumnMapping> back = MzPeakManifest.fromSource(source).files().get(0).columnMapping();
+            assertThat(back).containsExactly(byPath, byCurie, unitless);
+            assertThat(back.get(0).unitPath()).isEqualTo("scan.ion_mobility_unit");
+            assertThat(back.get(0).unit()).isNull();
+        }
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

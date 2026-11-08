@@ -157,10 +157,11 @@ final class ManifestWriter {
 
     /**
      * One {@code files} entry, with its keys in the reference's order. A column mapping item is written as the
-     * reference serialises it: {@code path} as a dotted string, a missing accession or unit as {@code null}, and
-     * {@code term_marker} only when it is set.
+     * reference serialises it: {@code path} as a dotted string, a missing accession or unit as {@code null}, a
+     * {@link ColumnMapping#unitPath() unit path} as the JSON array of its segments (a Rust {@code PathOrCURIE} path),
+     * and {@code term_marker} only when it is set.
      */
-    private static void addManifestEntry(ArrayNode files, WrittenMember member, Dialect dialect, String checksum) {
+    static void addManifestEntry(ArrayNode files, WrittenMember member, Dialect dialect, String checksum) {
         ObjectNode e = files.addObject();
         e.put("name", member.name());
         e.put("entity_type", dialect.entityType(member.entity()));
@@ -171,7 +172,14 @@ final class ManifestWriter {
             m.put("name", c.name());
             m.put("path", c.path());
             m.put("accession", c.accession());
-            m.put("unit", c.unit());
+            if (c.unitPath() != null) {
+                ArrayNode unitPath = m.putArray("unit");
+                for (String segment : c.unitPath().split("\\.")) {
+                    unitPath.add(segment);
+                }
+            } else {
+                m.put("unit", c.unit());
+            }
             if (Boolean.TRUE.equals(c.termMarker())) {
                 m.put("term_marker", true);
             }
