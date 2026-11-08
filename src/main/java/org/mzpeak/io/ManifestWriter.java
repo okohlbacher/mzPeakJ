@@ -1,29 +1,44 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mzpeak.io.MzPeakManifest.ColumnMapping;
+import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.WritePlan.Entry;
+import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Writes the {@code mzpeak_index.json} manifest of a dataset written by {@link MzPeakWriter}: the member list,
  * the CV list, the scan settings and the file-level metadata. Every member entry carries its role in the
  * {@link Dialect}'s spelling, its {@code column_mapping}, an empty {@code parameters} list and the SHA-512
- * {@code checksum} of the member's bytes.
+ * {@code checksum} of the member's bytes. The CV list declares every CV prefix the dataset uses that
+ * {@link KnownCvs} knows.
  */
 final class ManifestWriter {
 
     /** The name of the manifest at the dataset root. */
     static final String INDEX = "mzpeak_index.json";
+
+    /** The manifest keys whose values are CURIEs: the accessions and units of params and column mappings. */
+    private static final List<String> CURIE_KEYS = List.of("accession", "unit", "unit_accession");
 
     /**
      * How the manifest spells the roles of its members. Only the spelling of {@code entity_type} and
@@ -56,8 +71,13 @@ final class ManifestWriter {
 
     /**
      * Write {@link #INDEX} into {@code directory}: the {@code members} in the given order, each of which must already
-     * be written and closed in {@code directory} because its checksum is computed from its file here, then the plan's
-     * scan settings and file metadata (the footer key-values).
+     * be written and closed in {@code directory} because its checksum is computed from its file here, then the CV
+     * list, the plan's scan settings and file metadata (the footer key-values).
+     *
+     * <p>The CV list holds MS and UO, then every other CV of {@link KnownCvs} that a written CURIE uses (design
+     * §11.6): a CURIE of the plan's spectra and chromatograms ({@link #prefixesOf}) or one of this manifest, that is
+     * of a column mapping, a scan-settings param or a file-metadata document. A prefix {@link KnownCvs} does not
+     * know is not declared and gets one warning in the plan's report.
      */
     static void writeManifest(Path directory, List<WrittenMember> members, WritePlan plan, Dialect dialect)
             throws IOException {
@@ -70,19 +90,16 @@ final class ManifestWriter {
         ObjectNode meta = root.putObject("metadata");
         // Match the reference writer: the spec example declares version 0.9.0.
         meta.put("version", "0.9.0");
-        // Always declare the standard CV ontologies; every mzPeak file uses at minimum MS + UO.
-        // Including IMS is harmless for non-imaging files (extra declarations are not errors).
+        // Filled once the rest of the manifest is built, so that the manifest's own CURIEs count.
         ArrayNode cvList = meta.putArray("cv_list");
-        addCvEntry(cvList, "MS", "PSI-MS controlled vocabulary",
-                "https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/master/psi-ms.obo", "4.1.x");
-        addCvEntry(cvList, "IMS", "Mass Spectrometry Imaging controlled vocabulary",
-                "https://raw.githubusercontent.com/imzML/imzML/master/imagingMS.obo", "1.1.x");
-        addCvEntry(cvList, "UO", "Unit Ontology",
-                "https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/master/unit.obo",
-                "2024-01-01");
         writeScanSettingsList(meta.putArray("scan_settings_list"), plan.scanSettings());
         for (var kv : plan.footer().entrySet()) {
             meta.set(kv.getKey(), mapper.readTree(kv.getValue()));
+        }
+        Map<String, String> used = prefixesOf(plan);
+        addJsonPrefixes(root, used);
+        for (CvEntry cv : KnownCvs.declare(used, plan.report())) {
+            addCvEntry(cvList, cv);
         }
         Files.write(directory.resolve(INDEX), mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
     }
@@ -138,11 +155,70 @@ final class ManifestWriter {
         e.put("checksum", checksum);
     }
 
-    private static void addCvEntry(ArrayNode cvList, String id, String fullName, String uri, String version) {
+    /**
+     * Every CURIE prefix of the plan's spectra and chromatograms, mapped to the first CURIE that uses it: the
+     * accession and unit of every param of a spectrum, of each of its scans, and of each precursor's activation and
+     * selected ions, and the chromatogram types. The packed layout writes only a spectrum's first scan and primary
+     * precursor and selected ion, but the prefixes of the others count too. The other CURIEs the writer puts into a
+     * member are MS and UO terms, and the IMS position columns, which only a scan's IMS params give rise to.
+     */
+    private static Map<String, String> prefixesOf(WritePlan plan) {
+        Map<String, String> used = new LinkedHashMap<>();
+        for (SpectrumEntry entry : plan.spectra()) {
+            SpectrumDescription d = entry.source().description();
+            addParamPrefixes(d.parameters(), used);
+            for (ScanEvent scan : d.scans()) {
+                addParamPrefixes(scan.parameters(), used);
+            }
+            for (Precursor precursor : d.precursors()) {
+                addParamPrefixes(precursor.activation().parameters(), used);
+                for (SelectedIon ion : precursor.selectedIons()) {
+                    addParamPrefixes(ion.parameters(), used);
+                }
+            }
+        }
+        for (Entry<Chromatogram> entry : plan.chromatograms()) {
+            addPrefix(entry.source().typeCurie(), used);
+        }
+        return used;
+    }
+
+    private static void addParamPrefixes(List<Param> params, Map<String, String> used) {
+        for (Param p : params) {
+            addPrefix(p.accession(), used);
+            addPrefix(p.unit(), used);
+        }
+    }
+
+    /** Adds the prefix of every {@link #CURIE_KEYS} value in {@code node}, at any depth. */
+    private static void addJsonPrefixes(JsonNode node, Map<String, String> used) {
+        if (node.isObject()) {
+            for (Map.Entry<String, JsonNode> field : node.properties()) {
+                if (CURIE_KEYS.contains(field.getKey()) && field.getValue().isTextual()) {
+                    addPrefix(field.getValue().textValue(), used);
+                } else {
+                    addJsonPrefixes(field.getValue(), used);
+                }
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                addJsonPrefixes(child, used);
+            }
+        }
+    }
+
+    private static void addPrefix(String curie, Map<String, String> used) {
+        String prefix = KnownCvs.prefix(curie);
+        if (prefix != null) {
+            used.putIfAbsent(prefix, curie);
+        }
+    }
+
+    private static void addCvEntry(ArrayNode cvList, CvEntry entry) {
         ObjectNode cv = cvList.addObject();
-        cv.put("id", id);
-        cv.put("full_name", fullName);
-        cv.put("uri", uri);
-        cv.put("version", version);
+        cv.put("id", entry.id());
+        cv.put("full_name", entry.fullName());
+        cv.put("uri", entry.uri());
+        cv.put("version", entry.version());
     }
 }
