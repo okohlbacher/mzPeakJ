@@ -66,6 +66,7 @@ class ChromatogramMetadataTest {
     private static final String HAS_UV = "has_uv.mzpeak";
     private static final String METADATA = "chromatograms_metadata.parquet";
     private static final String PRECURSORS = "chromatograms_metadata_precursors.parquet";
+    private static final String DATA = "chromatograms_data.parquet";
     private static final String DATA_PROCESSING = "pwiz_Reader_conversion";
     private static final Param SOURCE_PARAM = new Param("source", null, "has_uv", null);
     private static final Param MS_LEVEL = new Param("ms level", "MS:1000511", 1L, null);
@@ -141,6 +142,37 @@ class ChromatogramMetadataTest {
         assertThat(ParquetGroups.has(rows.get(1), "scan_polarity")).isFalse();
         assertThat(chromatograms(out)).extracting(Chromatogram::polarity)
                 .containsExactly(Polarity.NEGATIVE, Polarity.UNKNOWN);
+    }
+
+    /**
+     * A chromatogram without points (an empty SRM or SIC trace in mzML) has a metadata row but no data rows; the
+     * reader builds it from the row alone, and a split write keeps its polarity, reference and Params. The
+     * chromatograms around it, with points, keep their defaults.
+     */
+    @Test
+    void aChromatogramWithoutPointsKeepsThePolarityTheDataProcessingRefAndTheParams() {
+        Chromatogram empty = new Chromatogram(1, "SIC empty", "MS:1000627", new double[0], new double[0], null,
+                Map.of(), Polarity.POSITIVE, DATA_PROCESSING, List.of(SOURCE_PARAM, MS_LEVEL), List.of());
+        List<Chromatogram> chromatograms = List.of(chromatogram(0, null, null, List.of(), List.of()), empty,
+                chromatogram(2, null, null, List.of(), List.of()));
+        Path out = tmp.resolve("empty.mzpeak");
+        List<String> warnings = chromatogramWarnings(() -> writeChromatograms(out, chromatograms, SPLIT));
+        assertThat(warnings).isEmpty();
+
+        List<Long> dataIndices = new ArrayList<>();
+        ParquetGroups.forEach(out.resolve(DATA), row -> dataIndices.add(
+                ParquetGroups.optLong(ParquetGroups.optGroup(row, "point"), "chromatogram_index")));
+        assertThat(dataIndices).containsExactly(0L, 2L);
+
+        List<Chromatogram> back = chromatograms(out);
+        assertThat(back).hasSize(3);
+        assertChromatogramEqual(empty, back.get(1));
+        assertThat(back.get(1).size()).isZero();
+        assertThat(back.get(1).polarity()).isEqualTo(Polarity.POSITIVE);
+        assertThat(back.get(1).dataProcessingRef()).isEqualTo(DATA_PROCESSING);
+        assertThat(back.get(1).parameters()).containsExactly(SOURCE_PARAM, MS_LEVEL);
+        assertDefaults(back.get(0));
+        assertDefaults(back.get(2));
     }
 
     // ---- (b) the fixtures --------------------------------------------------------------------------------------
