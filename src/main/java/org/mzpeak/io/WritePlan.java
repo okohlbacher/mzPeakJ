@@ -23,7 +23,8 @@ import java.util.Map;
  * @param wavelengthSpectra  the wavelength spectra in index order
  * @param writesSpectraData  whether spectra_data is written
  * @param writesSpectraPeaks whether spectra_peaks is written
- * @param scanSettings       the caller's scan settings for the manifest, possibly {@code null}
+ * @param scanSettings       the scan settings for the manifest, possibly {@code null}: the caller's, in the split
+ *                           layout with an id given to each one without
  * @param footer             the file metadata serialized once, for the spectra_metadata footer and the manifest
  * @param report             the warnings of the write
  */

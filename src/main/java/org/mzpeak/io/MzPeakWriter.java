@@ -96,7 +96,9 @@ public final class MzPeakWriter {
      * written as the new index of the spectrum it names, or as null when that spectrum is not written; the
      * precursor_id is kept. The caller's lists and objects are not modified.
      * A spectrum without scans is written, in both metadata layouts, with one scan that holds only its retention
-     * time, and reads back with that scan.
+     * time, and reads back with that scan. In the split metadata layout, a scan setting without an id is written with
+     * the id {@code scan_settings_<position>}, made unique, and a WARNING is logged, since the current manifest needs
+     * one; the packed layout leaves the id out.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
      * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified).
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every

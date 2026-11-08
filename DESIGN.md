@@ -708,8 +708,9 @@ into a STORED ZIP whose last entry is the manifest.
   `spectra_metadata` comes with its `_scans`, `_precursors` and `_selected_ions` tables,
   `chromatograms_metadata` with empty precursor and selected-ion tables, and `wavelength_spectra_metadata` with
   its `_scans` table. The manifest is in the current dialect: underscore roles, a `column_mapping` for every
-  CV-mapped column, scan settings with `unit`. Every scan, precursor and selected ion is written, and a Param
-  moves to its standardized column only where the reader rebuilds it unchanged.
+  CV-mapped column, scan settings with `unit` and an `id` (one without gets `scan_settings_<position>`, made
+  unique, with a WARNING, since the Rust reader needs it). Every scan, precursor and selected ion is written, and
+  a Param moves to its standardized column only where the reader rebuilds it unchanged.
 - `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
   `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
   `wavelength spectrum`, empty column mappings, and only the first scan and the primary precursor of a spectrum.

@@ -36,7 +36,8 @@ import java.util.function.ToLongFunction;
  * directory exists. What the write loses gets one warning in the report for each kind: the extra signal arrays of
  * spectra, the extra arrays of chromatograms and their intensity units, none of which are written yet (WR-11), and, in
  * the packed layout, the scans after a spectrum's first, the precursors after its primary one and the selected ions
- * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own.
+ * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own, and so do, in the
+ * split layout, the scan settings without an id, which get one.
  */
 final class WritePlanner {
 
@@ -133,8 +134,48 @@ final class WritePlanner {
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
-                writesSpectraData, writesSpectraPeaks, scanSettings,
+                writesSpectraData, writesSpectraPeaks,
+                options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
+    }
+
+    /**
+     * {@code scanSettings} as the split layout writes them, {@code null} when they are: each one without an id gets
+     * {@code scan_settings_<position>}, with {@code _1}, {@code _2}, ... appended while another entry has that id,
+     * and its params, and one warning in {@code report} names the positions and the ids given. The current manifest
+     * needs an id: the reference's ScanSettings.id is a String (param.rs:458-460), so the Rust reader rejects a null
+     * one. The caller's list is returned when every entry has an id. The packed layout leaves the key out instead.
+     */
+    private static List<ScanSettings> withIds(List<ScanSettings> scanSettings, WriteReport report) {
+        if (scanSettings == null || scanSettings.stream().allMatch(s -> s.id() != null)) {
+            return scanSettings;
+        }
+        Set<String> taken = new HashSet<>();
+        for (ScanSettings s : scanSettings) {
+            if (s.id() != null) {
+                taken.add(s.id());
+            }
+        }
+        List<ScanSettings> out = new ArrayList<>(scanSettings.size());
+        List<String> positions = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < scanSettings.size(); i++) {
+            ScanSettings s = scanSettings.get(i);
+            if (s.id() != null) {
+                out.add(s);
+                continue;
+            }
+            String id = "scan_settings_" + i;
+            for (int suffix = 1; !taken.add(id); suffix++) {
+                id = "scan_settings_" + i + "_" + suffix;
+            }
+            out.add(new ScanSettings(id, s.parameters()));
+            positions.add(Integer.toString(i));
+            ids.add(id);
+        }
+        report.warn("scan settings " + joined(positions) + (positions.size() == 1 ? " has" : " have")
+                + " no id, which the current manifest requires; written as " + joined(ids));
+        return Collections.unmodifiableList(out);
     }
 
     /**

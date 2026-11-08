@@ -308,24 +308,77 @@ class SplitWriterSpectraTest {
         }
     }
 
+    /**
+     * A scan setting without an id or values keeps every key, and gets the id {@code scan_settings_<position>} with
+     * one warning: the reference's ScanSettings.id is a String (param.rs:458-460), so the Rust reader rejects a
+     * manifest whose id is null. A nameless param's name stays null, as the reference writes its Option. The packed
+     * layout leaves the key out and warns about nothing.
+     */
     @Test
     void scanSettingsWithoutIdOrValuesKeepEveryKey(@TempDir Path tmp) throws IOException {
         Source source = source(Fixtures.legacy("small.unpacked.mzpeak"));
-        List<ScanSettings> settings = List.of(new ScanSettings(null, List.of(
-                new Param(null, "IMS:1000401", null, null))));
+        List<Param> params = List.of(new Param(null, "IMS:1000401", null, null));
+        List<ScanSettings> settings = List.of(new ScanSettings(null, params));
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, List.of(), settings,
                 source.fileMetadata, SPLIT);
 
-        JsonNode list;
-        try (MzPeakSource dataset = MzPeakSource.open(out)) {
-            list = MAPPER.readTree(dataset.readManifestBytes()).path("metadata").path("scan_settings_list");
-        }
-        assertThat(list.toString()).isEqualTo("[{\"id\":null,\"source_file_refs\":[],\"targets\":[],"
-                + "\"parameters\":[{\"name\":null,\"accession\":\"IMS:1000401\",\"value\":null,\"unit\":null}]}]");
+        assertThat(scanSettingsList(out).toString()).isEqualTo("[{\"id\":\"scan_settings_0\",\"source_file_refs\":[],"
+                + "\"targets\":[],\"parameters\":[{\"name\":null,\"accession\":\"IMS:1000401\",\"value\":null,"
+                + "\"unit\":null}]}]");
+        assertThat(scanSettingsWarnings(source, settings, SPLIT)).containsExactly(
+                "scan settings 0 has no id, which the current manifest requires; written as scan_settings_0");
         try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.scanSettings()).containsExactly(new ScanSettings("scan_settings_0", params));
+        }
+        assertThat(scanSettingsWarnings(source, settings, SPLIT.withMetadataLayout(MetadataLayout.PACKED))).isEmpty();
+    }
+
+    /**
+     * Two scan settings without an id next to one whose id is {@code scan_settings_0}: the first gets
+     * {@code scan_settings_0_1}, since {@code scan_settings_0} is taken, the third {@code scan_settings_2}, with one
+     * warning naming both, and each keeps its params. The packed layout writes them as given.
+     */
+    @Test
+    void scanSettingsIdsGivenToEntriesWithoutOneAreUnique(@TempDir Path tmp) throws IOException {
+        Source source = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        Param topDown = new Param("top down", "IMS:1000401", null, null);
+        Param pixelSize = new Param("pixel size (x)", "IMS:1000046", 100.0, "UO:0000017");
+        List<ScanSettings> settings = List.of(new ScanSettings(null, List.of(topDown)),
+                new ScanSettings("scan_settings_0", List.of(pixelSize)), new ScanSettings(null, List.of()));
+        Path out = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, List.of(), List.of(), settings, source.fileMetadata, SPLIT);
+
+        assertThat(scanSettingsList(out).findValuesAsText("id")).containsExactly("scan_settings_0_1",
+                "scan_settings_0", "scan_settings_2");
+        assertThat(scanSettingsWarnings(source, settings, SPLIT)).containsExactly("scan settings 0 and 2 have no id,"
+                + " which the current manifest requires; written as scan_settings_0_1 and scan_settings_2");
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.scanSettings()).containsExactly(new ScanSettings("scan_settings_0_1", List.of(topDown)),
+                    settings.get(1), new ScanSettings("scan_settings_2", List.of()));
+        }
+
+        Options packed = SPLIT.withMetadataLayout(MetadataLayout.PACKED);
+        Path packedOut = tmp.resolve("packed.mzpeak");
+        MzPeakWriter.writeDirectory(packedOut, source.spectra, List.of(), List.of(), settings, source.fileMetadata,
+                packed);
+        assertThat(scanSettingsWarnings(source, settings, packed)).isEmpty();
+        try (MzPeakReader reader = MzPeakReader.open(packedOut)) {
             assertThat(reader.scanSettings()).isEqualTo(settings);
         }
+    }
+
+    /** The manifest's {@code metadata.scan_settings_list}. */
+    private static JsonNode scanSettingsList(Path out) throws IOException {
+        try (MzPeakSource dataset = MzPeakSource.open(out)) {
+            return MAPPER.readTree(dataset.readManifestBytes()).path("metadata").path("scan_settings_list");
+        }
+    }
+
+    /** The warnings about scan settings of a write of {@code source}'s spectra with {@code settings}. */
+    private static List<String> scanSettingsWarnings(Source source, List<ScanSettings> settings, Options options) {
+        return WritePlanner.plan(source.spectra, List.of(), List.of(), settings, source.fileMetadata, options)
+                .report().warnings().stream().filter(w -> w.startsWith("scan settings")).toList();
     }
 
     /** WR-7 made the split layout the default; naming it explicitly changes nothing. */
