@@ -260,7 +260,11 @@ class WriterOptionsTest {
             String name = e.getKey();
             ContentDigest before = plain.members().get(name);
             if (name.equals(INDEX)) {
-                assertThat(e.getValue()).isEqualTo(before);
+                // Only the checksums of the re-grouped members differ (WR-1).
+                assertThat(WriterManifestConformanceTest.indexWithoutChecksums(
+                        tmp.resolve("split").resolve("out.mzpeak")))
+                        .isEqualTo(WriterManifestConformanceTest.indexWithoutChecksums(
+                                tmp.resolve("default").resolve("out.mzpeak")));
                 continue;
             }
             assertThat(rowGroups(before)).as("default row groups of %s", name).isEqualTo(1);

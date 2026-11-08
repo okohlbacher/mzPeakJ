@@ -16,13 +16,18 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -38,7 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Each case reads a legacy fixture with {@link ForwardBackwardCorpusTest#readSource}, writes it with one of the
  * full-form overloads (wavelength spectra, scan settings and file metadata included), and digests every member of the
  * output with {@link ContentDigest}, which ignores ZSTD bytes and ZIP timestamps. The archive case also records the
- * ZIP entries in file order with their method. The expected lines live in
+ * ZIP entries in file order with their method. The pinned line of the manifest digests it with every member checksum
+ * masked ({@link #maskedIndex}). The expected lines live in
  * {@code src/test/resources/writer-snapshots/<fixture>.<overload>.tsv}. On a mismatch the test prints the full actual
  * TSV and writes it to {@code target/writer-snapshots/}; a unit that changes writer output on purpose copies it over
  * the expected file and explains the change.
@@ -52,6 +58,8 @@ class WriterSnapshotTest {
     private static final String DATA = "spectra_data.parquet";
     private static final String HEADER = "member\tkind\tdetail\tsha256";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** A member checksum in the manifest; group 1 is the key and the opening quote of the value. */
+    private static final Pattern CHECKSUM = Pattern.compile("(\"checksum\"\\s*:\\s*\")[0-9a-f]{128}\"");
 
     /** Fixtures read once per class; the tests never modify a source in place. */
     private static final Map<String, Source> SOURCES = new ConcurrentHashMap<>();
@@ -100,7 +108,7 @@ class WriterSnapshotTest {
                 .containsExactlyInAnyOrderElementsOf(manifestMembers(out));
 
         String name = fixture.substring(0, fixture.length() - ".mzpeak".length()) + "." + overload.label + ".tsv";
-        List<String> actualLines = tsv(fixture, overload, actual);
+        List<String> actualLines = tsv(fixture, overload, actual, maskedIndex(out));
         Path expectedFile = SNAPSHOTS.resolve(name);
         List<String> expectedLines = Files.isRegularFile(expectedFile)
                 ? Files.readAllLines(expectedFile, StandardCharsets.UTF_8) : List.of();
@@ -266,12 +274,43 @@ class WriterSnapshotTest {
         return names;
     }
 
-    private static List<String> tsv(String fixture, Overload overload, Snapshot snapshot) {
+    /**
+     * The manifest's digest over its raw bytes with every {@code checksum} value replaced by 128 zeros; the detail
+     * also counts the masked values. The checksums cannot be pinned: parquet-java writes the encodings of each column
+     * chunk in the iteration order of a {@code HashSet} of enum constants, which changes from one JVM run to the
+     * next, and with it the footer bytes and the SHA-512 of every Parquet member. The Parquet members are pinned by
+     * their content digests, and {@link WriterManifestConformanceTest} checks every checksum against its member.
+     */
+    private static ContentDigest maskedIndex(Path out) {
+        byte[] bytes;
+        try (MzPeakSource source = MzPeakSource.open(out)) {
+            bytes = source.readManifestBytes();
+        }
+        Matcher m = CHECKSUM.matcher(new String(bytes, StandardCharsets.UTF_8));
+        StringBuilder masked = new StringBuilder();
+        int count = 0;
+        while (m.find()) {
+            m.appendReplacement(masked, "$1" + "0".repeat(128) + "\"");
+            count++;
+        }
+        m.appendTail(masked);
+        MessageDigest sha256;
+        try {
+            sha256 = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+        byte[] digest = sha256.digest(masked.toString().getBytes(StandardCharsets.UTF_8));
+        return new ContentDigest(INDEX, "bytes", "size=" + bytes.length + " masked_checksums=" + count,
+                HexFormat.of().formatHex(digest));
+    }
+
+    private static List<String> tsv(String fixture, Overload overload, Snapshot snapshot, ContentDigest index) {
         List<String> lines = new ArrayList<>();
         lines.add("# WriterSnapshotTest (WR-0a): legacy " + fixture + " written by MzPeakWriter."
                 + overload.label.replace('-', ' '));
         lines.add(HEADER);
-        snapshot.members().values().forEach(d -> lines.add(d.tsvLine()));
+        snapshot.members().values().forEach(d -> lines.add(d.member().equals(INDEX) ? index.tsvLine() : d.tsvLine()));
         if (overload.archive) {
             lines.add("(zip entries)\tzip\t" + String.join(",", snapshot.zipEntries()) + "\t-");
         }

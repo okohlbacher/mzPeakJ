@@ -302,22 +302,23 @@ class WriterComponentsCharacterizationTest {
         Snapshot fromDirectory = WriterSnapshotTest.snapshot(dir, false);
         Snapshot fromArchive = WriterSnapshotTest.snapshot(archive, true);
         assertThat(fromArchive.members()).isEqualTo(fromDirectory.members());
+        // The index is the last entry (WR-1).
         assertThat(fromArchive.zipEntries()).containsExactly(
                 "chromatograms_data.parquet:STORED",
                 "chromatograms_metadata.parquet:STORED",
-                "mzpeak_index.json:STORED",
                 "spectra_data.parquet:STORED",
                 "spectra_metadata.parquet:STORED",
-                "spectra_peaks.parquet:STORED");
+                "spectra_peaks.parquet:STORED",
+                "mzpeak_index.json:STORED");
         assertThat(memberNames(parent)).as("the archive's directory after the write").containsExactly("out.mzpeak");
 
         // Writing again replaces the archive.
         MzPeakWriter.writeArchiveNumpress(archive, s.spectra.subList(0, 3), List.of());
         assertThat(WriterSnapshotTest.snapshot(archive, true).zipEntries()).containsExactly(
-                "mzpeak_index.json:STORED",
                 "spectra_data.parquet:STORED",
                 "spectra_metadata.parquet:STORED",
-                "spectra_peaks.parquet:STORED");
+                "spectra_peaks.parquet:STORED",
+                "mzpeak_index.json:STORED");
         assertThat(memberNames(parent)).containsExactly("out.mzpeak");
     }
 
@@ -397,7 +398,9 @@ class WriterComponentsCharacterizationTest {
         for (Map.Entry<String, ContentDigest> e : after.entrySet()) {
             String name = e.getKey();
             if (name.equals("mzpeak_index.json")) {
-                assertThat(e.getValue()).isEqualTo(before.get(name));
+                // Only the checksums of the re-grouped members differ (WR-1).
+                assertThat(WriterManifestConformanceTest.indexWithoutChecksums(split))
+                        .isEqualTo(WriterManifestConformanceTest.indexWithoutChecksums(plain));
                 continue;
             }
             assertThat(withoutRowGroups(e.getValue().detail())).as("detail of %s", name)
