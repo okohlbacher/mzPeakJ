@@ -256,6 +256,14 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
             return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, transform, null);
         }
 
+        /**
+         * An extra array's column, not sorted and without a transform (design §11.7, WR-11): {@code arrayType} named
+         * {@code arrayName} as 64-bit floats in {@code unit}, null when it has none.
+         */
+        Builder extra(String field, String arrayType, String arrayName, String unit, BufferFormat format) {
+            return add(field, arrayType, arrayName, FLOAT64_DATA, unit, format, null, null);
+        }
+
         private Builder add(String field, String arrayType, String arrayName, String dataType, String unit,
                             BufferFormat format, String transform, Integer sortingRank) {
             entries.add(new Entry(prefix + "." + field, field, arrayType, dataType, unit, format, transform,

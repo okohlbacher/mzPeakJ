@@ -31,10 +31,12 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
  * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
  * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
- * imaging-position columns, scan settings, and wavelength facets. A read &rarr; write cycle keeps everything
- * {@link MzPeakReader} exposes except {@link Spectrum#arrays()}, {@link Spectrum#peakArrays()},
- * {@link Chromatogram#arrays()} and {@link Chromatogram#intensityUnit()}, which are not written yet (WR-11); each
- * kind of drop logs one WARNING. Chromatogram time is written as given and declared in minutes (UO:0000031).
+ * imaging-position columns, scan settings, and wavelength facets. The extra signal arrays of spectra,
+ * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} (such as the ion mobility of a diaPASEF spectrum), are
+ * written as extra columns of spectra_data and spectra_peaks, in both signal encodings. A read &rarr; write cycle keeps
+ * everything {@link MzPeakReader} exposes except {@link Chromatogram#arrays()} and
+ * {@link Chromatogram#intensityUnit()}, which are not written yet (WR-11); each kind of drop logs one WARNING.
+ * Chromatogram time is written as given and declared in minutes (UO:0000031).
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -100,11 +102,22 @@ public final class MzPeakWriter {
      * the id {@code scan_settings_<position>}, made unique, and a WARNING is logged, since the current manifest needs
      * one; the packed layout leaves the id out.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
-     * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified). The sort
-     * orders the rows by {@link Double#compare}, so rows with a NaN move to the end.
-     * A CENTROID spectrum whose arrays are its peak list is written to spectra_peaks only, unless one of its m/z is
-     * not finite: then its arrays go to spectra_data and its peak list to spectra_peaks, since spectra_peaks would
-     * read such a row back as an invented peak.
+     * intensities and extra arrays with it, and a WARNING is logged for that entity (the caller's arrays are not
+     * modified). The sort orders the rows by {@link Double#compare}, so rows with a NaN move to the end.
+     * A CENTROID spectrum whose arrays are its peak list, peak arrays included, is written to spectra_peaks only,
+     * unless one of its m/z is not finite: then its arrays go to spectra_data and its peak list to spectra_peaks, since
+     * spectra_peaks would read such a row back as an invented peak.
+     * Every key of the spectra's {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} becomes one extra column
+     * of both spectra_data and spectra_peaks, as 64-bit floats in the unit
+     * {@link org.mzpeak.model.CvTerms#DEFAULT_ARRAY_UNITS} gives the key, or without a unit. A row holds the value of
+     * {@code arrays()} where {@code mz()}/{@code intensity()} are written, and of {@code peakArrays()} at the peak's
+     * {@link org.mzpeak.model.CentroidPeak#index()} where {@code peaks()} are; a spectrum without the key writes null
+     * cells, which read back as no array. The column is named by the spec's short name for the array type
+     * ({@code mean_inverse_reduced_ion_mobility}), else after the {@link org.mzpeak.model.CvTerms#ARRAY_TYPES} name,
+     * the CURIE or the array name, made unique; a key that is not a CURIE is written as a non-standard data array
+     * (MS:1000786) with the key as its name. A key MS:1000514 or MS:1000515 is rejected, since a spectrum holds those
+     * arrays in {@code mz()} and {@code intensity()}, and so is a peak whose {@code index()} is not a position of its
+     * spectrum's peak arrays when those are written.
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum

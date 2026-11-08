@@ -10,8 +10,8 @@ import java.util.Set;
 /**
  * PSI-MS controlled-vocabulary accession constants used throughout mzPeakJ. Only accessions that are
  * actively referenced in code or tests are listed here; this is not a full CV mirror. The term tables
- * {@link #ION_MOBILITY_TYPES}, {@link #ION_MOBILITY_ARRAYS} and {@link #DISSOCIATION_METHODS} are generated
- * subsets of psi-ms 4.2.11.
+ * {@link #ION_MOBILITY_TYPES}, {@link #ION_MOBILITY_ARRAYS}, {@link #DISSOCIATION_METHODS} and {@link #ARRAY_TYPES}
+ * are generated subsets of psi-ms 4.2.11; {@link #DEFAULT_ARRAY_UNITS} is chosen by mzPeakJ.
  */
 public final class CvTerms {
 
@@ -80,7 +80,9 @@ public final class CvTerms {
     // each table is in accession order. Recorded rule for the dissociation methods: the descendants of MS:1000044
     // only, as the reference writer (children_of_recursive(MS:1000044)) and mzdata's DissociationMethodTerm use;
     // MS:1002631 (EThcD) is_a MS:1003181 'combined dissociation method' is_a MS:1000510 and is not listed.
-    // IonMobilityAndActivationTermsTest regenerates the three tables from the OBO file that
+    // Recorded rule for the array types: the transitive is_a descendants of MS:1000513 'binary data array' (31
+    // non-obsolete terms), without MS:1000513 itself.
+    // IonMobilityAndActivationTermsTest regenerates the four tables from the OBO file that
     // -Dmzpeak.psims.obo=<path> names and compares them with these.
 
     /**
@@ -144,11 +146,89 @@ public final class CvTerms {
             "MS:1003294", "electron activated dissociation"
     );
 
+    /**
+     * Binary data array types: the descendants of MS:1000513 'binary data array' (31 terms), mapped to their PSI-MS
+     * names. MS:1000513 itself is not listed. Unmodifiable, in accession order; {@code containsKey(null)} is false.
+     */
+    public static final Map<String, String> ARRAY_TYPES = orderedMap(
+            "MS:1000514", "m/z array",
+            "MS:1000515", "intensity array",
+            "MS:1000516", "charge array",
+            "MS:1000517", "signal to noise array",
+            "MS:1000595", "time array",
+            "MS:1000617", "wavelength array",
+            "MS:1000786", "non-standard data array",
+            "MS:1000820", "flow rate array",
+            "MS:1000821", "pressure array",
+            "MS:1000822", "temperature array",
+            "MS:1002477", "mean ion mobility drift time array",
+            "MS:1002478", "mean charge array",
+            "MS:1002529", "resolution array",
+            "MS:1002530", "baseline array",
+            "MS:1002742", "noise array",
+            "MS:1002743", "sampled noise m/z array",
+            "MS:1002744", "sampled noise intensity array",
+            "MS:1002745", "sampled noise baseline array",
+            "MS:1002816", "mean ion mobility array",
+            "MS:1002893", "ion mobility array",
+            "MS:1003006", "mean inverse reduced ion mobility array",
+            "MS:1003007", "raw ion mobility array",
+            "MS:1003008", "raw inverse reduced ion mobility array",
+            "MS:1003143", "mass array",
+            "MS:1003153", "raw ion mobility drift time array",
+            "MS:1003154", "deconvoluted ion mobility array",
+            "MS:1003155", "deconvoluted inverse reduced ion mobility array",
+            "MS:1003156", "deconvoluted ion mobility drift time array",
+            "MS:1003157", "scanning quadrupole position lower bound m/z array",
+            "MS:1003158", "scanning quadrupole position upper bound m/z array",
+            "MS:1003870", "index array"
+    );
+
+    /**
+     * The unit of each array that has one, keyed like {@link Spectrum#arrays()}: by array type CURIE, and by array
+     * name for a non-standard data array (MS:1000786). The values of {@link Spectrum#arrays()} and
+     * {@link Spectrum#peakArrays()} are in these units, and mzPeakJ writes them with these units. The table has exactly
+     * these 14 entries, chosen by mzPeakJ rather than read from the CV:
+     * <ul>
+     *   <li>MS:1000514 m/z array: MS:1000040 m/z;
+     *   <li>MS:1000515 intensity array: MS:1000131 number of detector counts;
+     *   <li>MS:1000595 time array: UO:0000031 minute;
+     *   <li>MS:1000617 wavelength array: UO:0000018 nanometer;
+     *   <li>the drift-time ion mobility arrays MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154 and
+     *       MS:1003156: UO:0000028 millisecond. psi-ms lists both UO:0000028 and UO:0000010 (second) for them, so the
+     *       table chooses milliseconds, the unit of the scan-level drift time MS:1002476;
+     *   <li>the inverse reduced ion mobility arrays MS:1003006, MS:1003008 and MS:1003155: MS:1002814
+     *       volt-second per square centimeter;
+     *   <li>{@code ms level}, a non-standard data array: UO:0000186 dimensionless unit.
+     * </ul>
+     * MS:1002893 'ion mobility array' and every other key (charge, signal to noise, other non-standard arrays) have
+     * no unit. Unmodifiable, in the order above; {@code containsKey(null)} is false.
+     */
+    public static final Map<String, String> DEFAULT_ARRAY_UNITS = orderedMap(
+            "MS:1000514", "MS:1000040",
+            "MS:1000515", "MS:1000131",
+            "MS:1000595", "UO:0000031",
+            "MS:1000617", "UO:0000018",
+            "MS:1002477", "UO:0000028",
+            "MS:1002816", "UO:0000028",
+            "MS:1003007", "UO:0000028",
+            "MS:1003153", "UO:0000028",
+            "MS:1003154", "UO:0000028",
+            "MS:1003156", "UO:0000028",
+            "MS:1003006", "MS:1002814",
+            "MS:1003008", "MS:1002814",
+            "MS:1003155", "MS:1002814",
+            "ms level", "UO:0000186"
+    );
+
     private static Set<String> orderedSet(String... accessions) {
         return Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(accessions)));
     }
 
-    /** An unmodifiable map from alternating accession/name pairs, in argument order. */
+    /**
+     * An unmodifiable map from alternating accession/name pairs (or key/unit pairs, for
+     * {@link #DEFAULT_ARRAY_UNITS}), in argument order.
+     */
     private static Map<String, String> orderedMap(String... accessionNamePairs) {
         Map<String, String> out = new LinkedHashMap<>();
         for (int i = 0; i < accessionNamePairs.length; i += 2) {

@@ -3,10 +3,12 @@ package org.mzpeak.io;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.WritePlan.Entry;
+import org.mzpeak.io.WritePlan.ExtraColumn;
 import org.mzpeak.io.WritePlan.SignalArrays;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -20,26 +22,56 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.ToLongFunction;
+import java.util.regex.Pattern;
 
 /**
  * Plans a {@link MzPeakWriter} write without any I/O: enforces the reader's index contract, puts every entity in
  * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent, refuses in the split
  * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
- * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, decides which members are written and
- * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
- * directory exists. What the write loses gets one warning in the report for each kind: the extra signal arrays of
- * spectra, the extra arrays of chromatograms and their intensity units, none of which are written yet (WR-11), and, in
- * the packed layout, the scans after a spectrum's first, the precursors after its primary one and the selected ions
- * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own, and so do, in the
- * split layout, the scan settings without an id, which get one.
+ * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, names the extra columns of the spectrum
+ * signal files, decides which members are written and serializes the footer key-values once. A contract
+ * violation throws {@link MzPeakException} before any file or temp directory exists. What the write loses gets one
+ * warning in the report for each kind: the extra arrays of chromatograms and their intensity units, neither of which
+ * is written yet (WR-11), and, in the packed layout, the scans after a spectrum's first, the precursors after its
+ * primary one and the selected ions other than the primary precursor's first. Each re-sorted main axis gets a warning
+ * of its own, and so do, in the split layout, the scan settings without an id, which get one.
  */
 final class WritePlanner {
+
+    /** MS:1000786, non-standard data array: the array type of an extra key that is not a CURIE. */
+    private static final String NON_STANDARD_ARRAY = "MS:1000786";
+    /** An extra key that is a CURIE, {@code PREFIX:local}; any other key names a non-standard data array. */
+    private static final Pattern CURIE = Pattern.compile("[A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_]+");
+    /** The columns of the spectrum signal files in either encoding, which no extra column may take. */
+    private static final Set<String> SPECTRUM_SIGNAL_COLUMNS = Set.of("spectrum_index", "mz", "intensity",
+            "mz_chunk_start", "mz_chunk_end", "mz_chunk_values", "chunk_encoding", "mz_numpress_linear_bytes",
+            "intensity_numpress_slof_bytes", "intensity_numpress_pic_bytes");
+    /** The column names signal-data.md:119-139 recommends, for the array types an extra column may have. */
+    private static final Map<String, String> SHORT_NAMES = Map.ofEntries(
+            Map.entry("MS:1000516", "charge"),
+            Map.entry("MS:1000517", "signal_to_noise"),
+            Map.entry("MS:1000595", "time"),
+            Map.entry("MS:1000617", "wavelength"),
+            Map.entry("MS:1002530", "baseline"),
+            Map.entry("MS:1002529", "resolution"),
+            Map.entry("MS:1002893", "ion_mobility"),
+            Map.entry("MS:1003007", "raw_ion_mobility"),
+            Map.entry("MS:1002816", "mean_ion_mobility"),
+            Map.entry("MS:1003154", "deconvoluted_ion_mobility"),
+            Map.entry("MS:1003008", "raw_inverse_reduced_ion_mobility"),
+            Map.entry("MS:1003006", "mean_inverse_reduced_ion_mobility"),
+            Map.entry("MS:1003155", "deconvoluted_inverse_reduced_ion_mobility"),
+            Map.entry("MS:1003153", "raw_drift_time"),
+            Map.entry("MS:1002477", "mean_drift_time"),
+            Map.entry("MS:1003156", "deconvoluted_ion_mobility_drift_time"));
 
     private WritePlanner() {
     }
@@ -60,8 +92,8 @@ final class WritePlanner {
         // reference readers open it unconditionally (load_indices_from begins with spectrum_data()?).
         boolean writesSpectraData = true;
         boolean writesSpectraPeaks = false;
-        Set<String> droppedExtras = new LinkedHashSet<>();
-        int withDroppedExtras = 0;
+        Map<String, ExtraColumn> extras = new LinkedHashMap<>();
+        Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
         // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
         // other than the primary precursor's first.
         int[] packedDrops = new int[3];
@@ -73,22 +105,15 @@ final class WritePlanner {
             } else {
                 countPackedDrops(s, precursors, packedDrops);
             }
+            addExtraColumns(s, extras, columns);
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumEntry entry = disposition(s).renumbered(i, precursors)
                     .withArrays(mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
+            if (entry.peaks() && !entry.peaksFromArrays() && !s.peakArrays().isEmpty()) {
+                requirePeakPositions(s);
+            }
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
-            if (!s.arrays().isEmpty() || !s.peakArrays().isEmpty()) {
-                withDroppedExtras++;
-                droppedExtras.addAll(s.arrays().keySet());
-                droppedExtras.addAll(s.peakArrays().keySet());
-            }
-        }
-        // Extra signal arrays (Spectrum.arrays(), peakArrays()) are not written yet: one warning for the whole write.
-        if (withDroppedExtras > 0) {
-            report.warn(withDroppedExtras + (withDroppedExtras == 1 ? " spectrum carries" : " spectra carry")
-                    + " extra signal arrays (" + String.join(", ", droppedExtras) + "), which are not written; "
-                    + "their m/z and intensity are written");
         }
         if (packedDrops[0] + packedDrops[1] + packedDrops[2] > 0) {
             report.warn("the packed metadata layout writes only the first scan, the primary precursor and its first"
@@ -134,7 +159,7 @@ final class WritePlanner {
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
-                writesSpectraData, writesSpectraPeaks,
+                writesSpectraData, writesSpectraPeaks, List.copyOf(extras.values()),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
     }
@@ -232,12 +257,16 @@ final class WritePlanner {
     /**
      * Whether the arrays of {@code s} are a copy of its peak list: its continuity is CENTROID, every peak's
      * {@link CentroidPeak#index()} names a distinct row of {@code mz()}/{@code intensity()} holding exactly the
-     * peak's values, and every row no peak names has a non-finite m/z (the rows {@link Spectrum} drops from
-     * {@code peaks()}). The match goes through {@code index()} because {@code peaks()} is sorted by m/z.
-     * {@link #disposition} still writes a peak copy with such a row to both files.
+     * peak's values, extra values included, and every row no peak names has a non-finite m/z (the rows
+     * {@link Spectrum} drops from {@code peaks()}). The match goes through {@code index()} because {@code peaks()} is
+     * sorted by m/z. Extra values match when {@code arrays()} and {@code peakArrays()} have the same keys and, for
+     * each key, the peak array's value at the peak's {@code index()} equals the array's value at that row, so a peak
+     * copy loses no peak array when only its arrays are written. {@link #disposition} still writes a peak copy with
+     * such a row to both files.
      */
     static boolean isPeakCopy(Spectrum s) {
-        if (s.description().signalContinuity() != SignalContinuity.CENTROID) {
+        if (s.description().signalContinuity() != SignalContinuity.CENTROID
+                || !s.arrays().keySet().equals(s.peakArrays().keySet())) {
             return false;
         }
         double[] mz = s.mz();
@@ -246,7 +275,7 @@ final class WritePlanner {
         for (CentroidPeak p : s.peaks()) {
             int row = p.index();
             if (row < 0 || row >= mz.length || matched[row] || Double.compare(mz[row], p.mz()) != 0
-                    || Double.compare(intensity[row], p.intensity()) != 0) {
+                    || Double.compare(intensity[row], p.intensity()) != 0 || !sameExtraValues(s, row)) {
                 return false;
             }
             matched[row] = true;
@@ -257,6 +286,102 @@ final class WritePlanner {
             }
         }
         return true;
+    }
+
+    /**
+     * Whether every peak array of {@code s} has a value at {@code row} equal to that of the array with its key, which
+     * {@code arrays()} has; {@code row} is a row of {@code mz()}.
+     */
+    private static boolean sameExtraValues(Spectrum s, int row) {
+        for (Map.Entry<String, double[]> peakArray : s.peakArrays().entrySet()) {
+            double[] values = peakArray.getValue();
+            if (row >= values.length || Double.compare(values[row], s.arrays().get(peakArray.getKey())[row]) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Extra arrays (design §11.7, WR-11; spec signal-data.md:119-139). spectra_data and spectra_peaks get one column
+    // for each key of the written spectra's arrays() and peakArrays(), in first-seen order, with the spec's short
+    // name where it recommends one. A spectrum's row holds the value of the map parallel to what the row writes, and
+    // null where the spectrum has no such array; the reader reads a null cell as NaN and drops an all-NaN array.
+
+    /**
+     * Adds to {@code extras} a column for every key of {@code s}'s arrays, then of its peak arrays, that it does not
+     * hold yet, named so that it takes none of {@code columns}, to which the name is added.
+     *
+     * @throws MzPeakException when a key is MS:1000514 or MS:1000515: a spectrum holds those arrays in
+     *                         {@code mz()} and {@code intensity()}, and a reader would take such a column for the
+     *                         main axis or the intensity
+     */
+    private static void addExtraColumns(Spectrum s, Map<String, ExtraColumn> extras, Set<String> columns) {
+        for (Map<String, double[]> arrays : List.of(s.arrays(), s.peakArrays())) {
+            for (String key : arrays.keySet()) {
+                if (!extras.containsKey(key)) {
+                    if (key.equals(ArrayIndex.INTENSITY_ARRAY) || key.equals(SignalEntity.SPECTRUM.defaultAxis())) {
+                        throw new MzPeakException("spectrum " + s.index() + ": the extra array " + key + " ("
+                                + CvTerms.ARRAY_TYPES.get(key) + ") is a main array of a spectrum, which mz() and"
+                                + " intensity() hold; it cannot be written as an extra column");
+                    }
+                    extras.put(key, extraColumn(key, columns));
+                }
+            }
+        }
+    }
+
+    /**
+     * The extra column of {@code key}, its name made unique among {@code columns} by appending {@code _2},
+     * {@code _3}, ... and added to them. Its array type is the key when the key is a CURIE, else MS:1000786; its
+     * array name the {@link CvTerms#ARRAY_TYPES} name of the key, else the key; its unit
+     * {@link CvTerms#DEFAULT_ARRAY_UNITS} of the key, else null.
+     */
+    private static ExtraColumn extraColumn(String key, Set<String> columns) {
+        String base = columnName(key);
+        String column = base;
+        for (int n = 2; !columns.add(column); n++) {
+            column = base + "_" + n;
+        }
+        return new ExtraColumn(key, column, CURIE.matcher(key).matches() ? key : NON_STANDARD_ARRAY,
+                CvTerms.ARRAY_TYPES.getOrDefault(key, key), CvTerms.DEFAULT_ARRAY_UNITS.get(key));
+    }
+
+    /**
+     * The column name of {@code key} before it is made unique: for a {@code <key>@<field>} key its field, for any
+     * other key that is not a CURIE the key; for a CURIE the short name of signal-data.md, else its
+     * {@link CvTerms#ARRAY_TYPES} name without {@code array}, else the CURIE in lower case. Every character other
+     * than an ASCII letter or digit becomes {@code _}. A key that leaves no name, such as an empty one, gets the name
+     * of a non-standard data array, {@code non_standard_data}.
+     */
+    private static String columnName(String key) {
+        int at = key.lastIndexOf('@');
+        String name;
+        if (at >= 0) {
+            name = key.substring(at + 1);
+        } else if (!CURIE.matcher(key).matches()) {
+            name = key;
+        } else if (SHORT_NAMES.containsKey(key)) {
+            return SHORT_NAMES.get(key);
+        } else {
+            name = CvTerms.ARRAY_TYPES.getOrDefault(key, key).replaceFirst(" array$", "").toLowerCase(Locale.ROOT);
+        }
+        String column = name.replaceAll("[^A-Za-z0-9]", "_");
+        return column.isEmpty() ? "non_standard_data" : column;
+    }
+
+    /**
+     * Throws {@link MzPeakException} when a peak of {@code s}, whose {@code peaks()} are written with its non-empty
+     * {@code peakArrays()}, has an {@link CentroidPeak#index()} that is not a position of those arrays.
+     */
+    private static void requirePeakPositions(Spectrum s) {
+        int positions = s.peakArrays().values().iterator().next().length;
+        for (CentroidPeak p : s.peaks()) {
+            if (p.index() < 0 || p.index() >= positions) {
+                throw new MzPeakException("spectrum " + s.index() + ": the peak at m/z " + p.mz() + " has index "
+                        + p.index() + ", which is not a position of its peak arrays (" + positions + " values); a"
+                        + " peak's index() is its position in the list the spectrum was built from");
+            }
+        }
     }
 
     // Main-axis order (design §11.5, WR-14). Spec signal-data.md:26-34: an array with a sorting_rank is sorted, and a
