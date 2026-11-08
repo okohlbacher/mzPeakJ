@@ -71,8 +71,9 @@ public final class MzMLFixtures {
         }
         boolean raw = name.equals(TINY);
         Path out = dir.resolve(name);
-        try (InputStream in = open(raw ? name : name + ".gz")) {
-            Files.copy(raw ? in : new GZIPInputStream(in), out, StandardCopyOption.REPLACE_EXISTING);
+        try (InputStream in = open(raw ? name : name + ".gz");
+             InputStream data = raw ? in : new GZIPInputStream(in)) {
+            Files.copy(data, out, StandardCopyOption.REPLACE_EXISTING);
         }
         return out;
     }

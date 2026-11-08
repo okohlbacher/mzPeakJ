@@ -137,6 +137,43 @@ class ModelAssertRulesTest {
                 .isInstanceOf(AssertionError.class).hasMessageContaining("no rule for ModelAssertRulesTest.Unruled");
     }
 
+    /** A record whose component is a list of records without rules. */
+    record ListHolder(List<Unruled> items) {
+    }
+
+    @Test
+    void aComponentWithoutARuleFailsAlsoWhereBothSidesAreEqual() {
+        Unruled value = new Unruled(1, "a");
+        String noRule = "ModelAssert has no rule for ModelAssertRulesTest.Unruled.ruled";
+        Map<String, Rule> holderRules = Map.of("ModelAssertRulesTest.Holder.name", Rule.EXACT,
+                "ModelAssertRulesTest.Holder.inner", Rule.RECORD);
+        Map<String, Rule> listHolderRules = Map.of("ModelAssertRulesTest.ListHolder.items", Rule.list(Rule.RECORD));
+
+        // a nested record, a list element, a record in a list in a record: identical values on both sides
+        assertThatThrownBy(() -> ModelAssert.compareValues("holder", Rule.RECORD, new Holder("h", value),
+                new Holder("h", value), holderRules)).isInstanceOf(AssertionError.class).hasMessage(noRule);
+        assertThatThrownBy(() -> ModelAssert.compareValues("list", Rule.list(Rule.RECORD), List.of(value),
+                List.of(value), Map.of())).isInstanceOf(AssertionError.class).hasMessage(noRule);
+        assertThatThrownBy(() -> ModelAssert.compareValues("lists", Rule.list(Rule.list(Rule.RECORD)),
+                List.of(List.of(value)), List.of(List.of(value)), Map.of()))
+                .isInstanceOf(AssertionError.class).hasMessage(noRule);
+        assertThatThrownBy(() -> ModelAssert.compareValues("listHolder", Rule.RECORD,
+                new ListHolder(List.of(value)), new ListHolder(List.of(value)), listHolderRules))
+                .isInstanceOf(AssertionError.class).hasMessage(noRule);
+
+        // with a rule for every component, the same values are equal; a null nested record and a list of
+        // strings hold no record
+        Map<String, Rule> all = new LinkedHashMap<>(holderRules);
+        all.put("ModelAssertRulesTest.Unruled.ruled", Rule.EXACT);
+        all.put("ModelAssertRulesTest.Unruled.unruled", Rule.EXACT);
+        assertThat(ModelAssert.compareValues("holder", Rule.RECORD, new Holder("h", value), new Holder("h", value),
+                all).equal()).isTrue();
+        assertThat(ModelAssert.compareValues("holder", Rule.RECORD, new Holder("h", null), new Holder("h", null),
+                holderRules).equal()).isTrue();
+        assertThat(ModelAssert.compareValues("strings", Rule.list(Rule.EXACT), List.of("a"), List.of("a"), Map.of())
+                .equal()).isTrue();
+    }
+
     @Test
     void aRecordWithARuleForEveryComponentIsComparedByThem() {
         Map<String, Rule> rules = Map.of("ModelAssertRulesTest.Unruled.ruled", Rule.EXACT,

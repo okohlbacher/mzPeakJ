@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.model.CvTerms;
@@ -16,6 +17,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,19 +34,24 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.UnaryOperator;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
  * MZ-12: the vendored mzML fixtures and the test oracles every converter unit uses ({@link MzMLFixtures},
- * {@link MzMLSchema}, {@link IndexedMzMLVerifier}, {@link MzMLMappingCheck}, {@link MzMLAssert}). Each oracle is
- * run on the four inputs, which it accepts (small.mzML apart, whose stored checksum is stale), and on mutated copies
- * of tiny, which it must reject with a message naming the line, offset, count or element at fault. The facts of
- * mzML design 12.1 that later units rely on are pinned at the end.
+ * {@link MzMLSchema}, {@link IndexedMzMLVerifier}, {@link MzMLMappingCheck}, {@link MzMLCountCheck},
+ * {@link MzMLAssert}). Each oracle is run on the four inputs, which it accepts (small.mzML apart, whose stored
+ * checksum is stale), and on mutated copies of tiny, which it must reject with a message naming the line, offset,
+ * count or element at fault. MJ-4 adds the hardening of the MZ-12 notes (real start tags, any whitespace after an
+ * element name, a non-ASCII document, the chromatogram precursor control) and the count check. The facts of mzML
+ * design 12.1 that later units rely on are pinned at the end.
  */
 class MzMLFixturesTest {
 
@@ -53,6 +60,15 @@ class MzMLFixturesTest {
             "<cvParam cvRef=\"MS\" accession=\"MS:1000133\" name=\"collision-induced dissociation\" value=\"\"/>";
     private static final String NO_COMBINATION_PARAM =
             "<cvParam cvRef=\"MS\" accession=\"MS:1000795\" name=\"no combination\" value=\"\"/>";
+    /** The start of tiny's first spectrum, at byte 6883, and the start tag there. */
+    private static final String FIRST_SPECTRUM = "<spectrum index=\"0\"";
+    private static final int FIRST_SPECTRUM_OFFSET = 6883;
+    private static final String FIRST_SPECTRUM_TAG = "<spectrum index=\"0\" id=\"scan=19\" defaultArrayLength=\"15\">";
+    /** The end of tiny's contact affiliation, MS:1000590 "Higglesworth University". */
+    private static final String AFFILIATION = "University\"/>";
+    private static final String NOT_A_START_TAG = " (not a start tag: it lies in a comment, CDATA section, processing"
+            + " instruction or declaration)";
+    private static final Pattern OFFSET = Pattern.compile("(<offset [^>]*>|<indexListOffset>)(\\d+)(<)");
 
     static Stream<String> fixtures() {
         return MzMLFixtures.NAMES.stream();
@@ -321,6 +337,106 @@ class MzMLFixturesTest {
         assertThat(IndexedMzMLVerifier.attribute("<spectrum index=\"0\">", "id")).isNull();
     }
 
+    @Test
+    void anOffsetOnASpectrumStartTagInACommentIsReported(@TempDir Path dir) throws IOException {
+        String comment = "<!-- " + FIRST_SPECTRUM_TAG + " -->";
+        int fake = FIRST_SPECTRUM_OFFSET + "<!-- ".length();
+        Path clean = tinyWith(dir, s -> insertBefore(s, FIRST_SPECTRUM, comment));
+        Path pointed = tinyWith(dir, s -> withChecksum(replaceOnce(insertBefore(s, FIRST_SPECTRUM, comment),
+                ">" + (FIRST_SPECTRUM_OFFSET + comment.length()) + "</offset>", ">" + fake + "</offset>")));
+
+        assertThat(IndexedMzMLVerifier.verify(clean)).isEmpty();
+        assertThat(IndexedMzMLVerifier.verify(pointed)).containsExactly("spectrum offset " + fake
+                + " for idRef 'scan=19' does not land on '<spectrum ' but on '" + FIRST_SPECTRUM_TAG.substring(0, 40)
+                + "'" + NOT_A_START_TAG);
+    }
+
+    @Test
+    void aStartTagInAProcessingInstructionOrCdataSectionSatisfiesNoOffset(@TempDir Path dir) throws IOException {
+        for (String wrapped : List.of("<?fake " + FIRST_SPECTRUM_TAG + "?>",
+                "<![CDATA[" + FIRST_SPECTRUM_TAG + "]]>", "<![CDATA[]" + FIRST_SPECTRUM_TAG + "]]]>")) {
+            int fake = FIRST_SPECTRUM_OFFSET + wrapped.indexOf('<', 1);
+            Path clean = tinyWith(dir, s -> insertBefore(s, FIRST_SPECTRUM, wrapped));
+            Path pointed = tinyWith(dir, s -> withChecksum(replaceOnce(insertBefore(s, FIRST_SPECTRUM, wrapped),
+                    ">" + (FIRST_SPECTRUM_OFFSET + wrapped.length()) + "</offset>", ">" + fake + "</offset>")));
+
+            assertThat(IndexedMzMLVerifier.verify(clean)).as(wrapped).isEmpty();
+            assertThat(IndexedMzMLVerifier.verify(pointed)).as(wrapped).singleElement().asString()
+                    .startsWith("spectrum offset " + fake + " for idRef 'scan=19' does not land on '<spectrum '")
+                    .endsWith(NOT_A_START_TAG);
+        }
+    }
+
+    @Test
+    void aGreaterThanSignInAnAttributeValueDoesNotEndTheStartTag(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> insertBefore(s, " id=\"scan=19\"", " note=\"1 > 0\""));
+
+        assertThat(IndexedMzMLVerifier.verify(file)).isEmpty();
+    }
+
+    @Test
+    void theChecksumRangeEndsAtTheRealFileChecksumStartTag(@TempDir Path dir) throws IOException {
+        Path spaced = tinyWith(dir, s -> withChecksum(replaceOnce(s, "<fileChecksum>", "<fileChecksum >")));
+        Path trailingComment = tinyWith(dir, s -> replaceOnce(s, "</indexedmzML>\n",
+                "</indexedmzML>\n<!-- <fileChecksum> -->\n"));
+        Path changed = tinyWith(dir, s -> replaceOnce(replaceOnce(s, "<fileChecksum>", "<fileChecksum >"),
+                "spectrum with no data", "spectrum with no Data"));
+
+        assertThat(IndexedMzMLVerifier.verify(spaced)).isEmpty();
+        assertThat(IndexedMzMLVerifier.verify(trailingComment)).isEmpty();
+        assertThat(IndexedMzMLVerifier.verify(changed)).singleElement().asString()
+                .startsWith("fileChecksum: stored 8a908dc1c5c31c43adca79dbe1a5b72e76686cb4, computed ")
+                .endsWith(" (SHA-1 of the bytes up to the end of the <fileChecksum> start tag)");
+    }
+
+    @Test
+    void anyXmlWhitespaceMayFollowTheElementName(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> withChecksum(s.replace("<spectrum index=", "<spectrum\tindex=")
+                .replace("<chromatogram index=", "<chromatogram\nindex=")
+                .replace("<indexList count=", "<indexList\r\ncount=")));
+
+        assertThat(Files.readString(file, StandardCharsets.ISO_8859_1)).contains("<spectrum\tindex=\"3\"",
+                "<chromatogram\nindex=\"1\"", "<indexList\r\ncount=");
+        assertThat(IndexedMzMLVerifier.verify(file)).isEmpty();
+    }
+
+    @Test
+    void aNonAsciiByteCountsAsOneByteOfAnIso88591Document(@TempDir Path dir) throws IOException {
+        Path shifted = tinyWith(dir, s -> insertBefore(s, AFFILIATION, "\u00e9"));
+        Path stale = tinyWith(dir, s -> replaceOnce(s, AFFILIATION, "\u00e9" + AFFILIATION));
+
+        assertThat(Files.readAllBytes(shifted)).hasSize(25073).contains((byte) 0xe9);
+        assertThat(Files.readString(shifted, StandardCharsets.ISO_8859_1)).contains("Higglesworth \u00e9University");
+        assertThat(IndexedMzMLVerifier.verify(shifted)).isEmpty();
+        List<String> problems = IndexedMzMLVerifier.verify(stale);
+        assertThat(problems).hasSize(8);
+        assertThat(problems.subList(0, 4)).allSatisfy(p -> assertThat(p).startsWith("spectrum offset ")
+                .contains(" does not land on '<spectrum ' but on ' <spectrum index=\"")
+                .doesNotEndWith(NOT_A_START_TAG));
+        assertThat(problems.subList(4, 6)).allSatisfy(p -> assertThat(p).startsWith("chromatogram offset ")
+                .contains(" does not land on '<chromatogram ' but on ' <chromatogram index=\""));
+        assertThat(problems.get(6)).startsWith("indexListOffset 24498 does not land on '<indexList' but on"
+                + " ' <indexList count=");
+        assertThat(problems.get(7)).startsWith("fileChecksum: stored 8a908dc1c5c31c43adca79dbe1a5b72e76686cb4,");
+    }
+
+    @Test
+    void offsetsAreBytesOfTheDeclaredEncodingNotCharacters(@TempDir Path dir) throws IOException {
+        // tiny as UTF-8: the declaration is 5 bytes shorter, the inserted e-acute is 2 bytes and 1 character long
+        String iso = Files.readString(MzMLFixtures.extract(TINY, dir), StandardCharsets.ISO_8859_1);
+        String text = replaceOnce(replaceOnce(iso, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-8\""), AFFILIATION,
+                "\u00e9" + AFFILIATION);
+        Path bytes = Files.writeString(dir.resolve("bytes.mzML"),
+                withChecksum(shiftOffsets(text, 0, -3), StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+        Path characters = Files.writeString(dir.resolve("characters.mzML"),
+                withChecksum(shiftOffsets(text, 0, -4), StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+
+        assertThat(Files.size(bytes)).isEqualTo(25072 - 5 + 2);
+        assertThat(IndexedMzMLVerifier.verify(bytes)).isEmpty();
+        assertThat(IndexedMzMLVerifier.verify(characters)).hasSize(7)
+                .allMatch(p -> p.contains(" does not land on '<"));
+    }
+
     // ---- (d) MzMLMappingCheck ------------------------------------------------------------------------------------
 
     @ParameterizedTest(name = "{0}")
@@ -335,6 +451,15 @@ class MzMLFixturesTest {
         Path file = tinyWith(dir, s -> replaceAfter(s, "id=\"scan=20\"", CID_PARAM, ""));
 
         assertThat(MzMLMappingCheck.violations(file)).containsExactly("precursor_activation_must @ scan=20");
+    }
+
+    @Test
+    void aChromatogramPrecursorWithoutDissociationMethodIsNoViolation(@TempDir Path dir) throws IOException {
+        // sic's precursor is the only other activation in tiny; precursor_activation_must covers spectra only
+        Path file = tinyWith(dir, s -> replaceAfter(s, "id=\"sic\"", CID_PARAM, ""));
+
+        assertThat(Files.readString(file, StandardCharsets.ISO_8859_1)).containsOnlyOnce(CID_PARAM);
+        assertThat(MzMLMappingCheck.violations(file)).isEmpty();
     }
 
     @Test
@@ -491,7 +616,80 @@ class MzMLFixturesTest {
         assertThat(obo.obsolete("MS:1000031")).containsExactly("MS:1000870");
     }
 
+    // ---- MzMLCountCheck (MJ-4) ------------------------------------------------------------------------------------
+
+    static Stream<Arguments> countAttributes() {
+        return Stream.of(arguments(TINY, 29), arguments(MzMLFixtures.SMALL, 225),
+                arguments(MzMLFixtures.TOFSULFAS, 1688), arguments(MzMLFixtures.DIAPASEF, 55));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("countAttributes")
+    void everyCountOfEveryFixtureMatchesItsChildren(String name, int counts, @TempDir Path dir) throws IOException {
+        Path file = MzMLFixtures.extract(name, dir);
+        MzMLCountCheck.Result result = MzMLCountCheck.check(file);
+
+        assertThat(result.problems()).isEmpty();
+        assertThat(result.checked()).isEqualTo(counts);
+        assertThat(MzMLCountCheck.problems(file)).isEmpty();
+    }
+
+    @ParameterizedTest(name = "plain {0}")
+    @ValueSource(booleans = {false, true})
+    void aCountThatDiffersFromItsChildrenIsReportedOnce(boolean plain, @TempDir Path dir) throws IOException {
+        MzMLCountCheck.Result tiny = MzMLCountCheck.check(plain ? variant(dir, true, s -> s)
+                : MzMLFixtures.extract(TINY, dir));
+        assertThat(tiny.problems()).isEmpty();
+        assertThat(tiny.checked()).isEqualTo(plain ? 28 : 29);
+
+        assertThat(countProblems(dir, plain, s -> replaceAfter(s, "id=\"scan=19\"", "<scanList count=\"1\">",
+                "<scanList count=\"2\">"))).containsExactly("count 2 but 1 children @ scanList [scan=19]");
+        assertThat(countProblems(dir, plain, s -> replaceAfter(s, "id=\"scan=19\"", "<scanWindowList count=\"1\">",
+                "<scanWindowList count=\"0\">"))).containsExactly("count 0 but 1 children @ scanWindowList [scan=19]");
+        assertThat(countProblems(dir, plain, s -> replaceOnce(s, "<componentList count=\"3\">",
+                "<componentList count=\"4\">"))).containsExactly("count 4 but 3 children @ componentList");
+        assertThat(countProblems(dir, plain, s -> replaceAfter(s, "id=\"sic\"", "<binaryDataArrayList count=\"2\">",
+                "<binaryDataArrayList count=\"x\">"))).containsExactly("count x but 2 children @ binaryDataArrayList"
+                + " [sic]");
+        // params do not count
+        assertThat(countProblems(dir, plain, s -> replaceAfter(s, "id=\"scan=19\"", "<scanList count=\"1\">",
+                "<scanList count=\"1\"><referenceableParamGroupRef ref=\"CommonMS1SpectrumParams\"/>"
+                        + NO_COMBINATION_PARAM + "<userParam name=\"note\" value=\"x\"/>"))).isEmpty();
+        // a count is an xs:nonNegativeInteger, leading zeros allowed; outside a spectrum or chromatogram, no id
+        assertThat(countProblems(dir, plain, s -> replaceOnce(s, "<spectrumList count=\"4\"",
+                "<spectrumList count=\"04\""))).isEmpty();
+        assertThat(countProblems(dir, plain, s -> replaceOnce(s, "<sourceFileRefList count=\"1\">",
+                "<sourceFileRefList count=\"2\">"))).containsExactly("count 2 but 1 children @ sourceFileRefList");
+    }
+
+    @Test
+    void theIndexListCountIsCheckedAndABrokenDocumentIsOneProblem(@TempDir Path dir) throws IOException {
+        Path index = tinyWith(dir, s -> replaceOnce(s, "<indexList count=\"2\">", "<indexList count=\"1\">"));
+        Path broken = Files.writeString(dir.resolve("broken.mzML"), "<mzML><run count=\"1\"></mzML>");
+
+        assertThat(MzMLCountCheck.problems(index)).containsExactly("count 1 but 2 children @ indexList");
+        MzMLCountCheck.Result result = MzMLCountCheck.check(broken);
+        assertThat(result.checked()).isZero();
+        assertThat(result.problems()).singleElement().asString().startsWith("not well-formed: ");
+    }
+
     // ---- MzMLAssert ----------------------------------------------------------------------------------------------
+
+    @Test
+    void mzMLAssertFailsWithEveryCountProblem(@TempDir Path dir) throws IOException {
+        UnaryOperator<String> twoScans = s -> replaceAfter(s, "id=\"scan=19\"", "<scanList count=\"1\">",
+                "<scanList count=\"2\">");
+        Path indexed = tinyWith(dir, s -> withChecksum(twoScans.apply(s)));
+        Path plain = plainTiny(dir, "plain.mzML", twoScans);
+
+        for (Path file : List.of(indexed, plain)) {
+            assertThat(MzMLSchema.validate(file)).isEmpty();
+            assertThatThrownBy(() -> MzMLAssert.valid(file)).isInstanceOf(AssertionError.class)
+                    .hasMessageContaining("1 problem(s)")
+                    .hasMessageEndingWith("\n  count: count 2 but 1 children @ scanList [scan=19]");
+        }
+        assertThat(IndexedMzMLVerifier.verify(indexed)).isEmpty();
+    }
 
     @Test
     void mzMLAssertAcceptsValidIndexedAndPlainDocuments(@TempDir Path dir) throws IOException {
@@ -737,11 +935,61 @@ class MzMLFixturesTest {
 
     /** {@code doc} with its fileChecksum recomputed, so that a mutation leaves only the problem it is about. */
     private static String withChecksum(String doc) {
-        String tag = "<fileChecksum>";
-        int end = doc.lastIndexOf(tag) + tag.length();
-        String sha1 = HexFormat.of().formatHex(digest("SHA-1", doc.substring(0, end)
-                .getBytes(StandardCharsets.ISO_8859_1)));
+        return withChecksum(doc, StandardCharsets.ISO_8859_1);
+    }
+
+    /**
+     * {@code doc}, written in {@code charset}, with its fileChecksum recomputed over the bytes up to the end of the
+     * last {@code <fileChecksum>} start tag, with or without whitespace before its {@code >}.
+     */
+    private static String withChecksum(String doc, Charset charset) {
+        Matcher tag = Pattern.compile("<fileChecksum[ \\t\\r\\n]*>").matcher(doc);
+        int end = -1;
+        while (tag.find()) {
+            end = tag.end();
+        }
+        assertThat(end).as("a fileChecksum start tag").isPositive();
+        String sha1 = HexFormat.of().formatHex(digest("SHA-1", doc.substring(0, end).getBytes(charset)));
         return doc.substring(0, end) + sha1 + doc.substring(end + sha1.length());
+    }
+
+    /**
+     * {@code doc} (ISO-8859-1) with {@code text} inserted before its one {@code anchor}, every index offset at or after
+     * that point moved by the length of {@code text}, and its checksum recomputed: still consistent.
+     */
+    private static String insertBefore(String doc, String anchor, String text) {
+        int at = doc.indexOf(anchor);
+        assertThat(at).as("'%s' occurs in tiny", anchor).isNotNegative();
+        assertThat(doc.indexOf(anchor, at + 1)).as("'%s' occurs once in tiny", anchor).isNegative();
+        String inserted = doc.substring(0, at) + text + doc.substring(at);
+        return withChecksum(shiftOffsets(inserted, at, text.length()));
+    }
+
+    /** {@code doc} with every {@code <offset>} and the {@code <indexListOffset>} at or after {@code from} moved. */
+    private static String shiftOffsets(String doc, long from, int by) {
+        Matcher m = OFFSET.matcher(doc);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            long offset = Long.parseLong(m.group(2));
+            m.appendReplacement(out, Matcher.quoteReplacement(m.group(1) + (offset >= from ? offset + by : offset)
+                    + m.group(3)));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** tiny after {@code edit}: indexed, or as a plain document. */
+    private static Path variant(Path dir, boolean plain, UnaryOperator<String> edit) throws IOException {
+        if (!plain) {
+            return tinyWith(dir, edit);
+        }
+        String name = Files.createTempFile(dir, "plain-", ".mzML").getFileName().toString();
+        return plainTiny(dir, name, edit);
+    }
+
+    /** The {@link MzMLCountCheck} problems of tiny after {@code edit}, indexed or plain. */
+    private static List<String> countProblems(Path dir, boolean plain, UnaryOperator<String> edit) throws IOException {
+        return MzMLCountCheck.problems(variant(dir, plain, edit));
     }
 
     private static String sha256(String resource) throws IOException {

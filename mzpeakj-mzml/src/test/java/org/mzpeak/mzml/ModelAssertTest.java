@@ -45,7 +45,11 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * changed value per rule kind, and in each component added in this round (MZ-4, MZ-5, MZ-7), is reported with its
  * path; every exclusion hides what it names and nothing else, and is stale on a pair without it; mixed mode leaves out
  * the declared counts and peak lists that are a row copy of the arrays; and legacy small.unpacked differs from current
- * small.unpacked exactly by the exclusions it needs and the known fixture differences pinned here.
+ * small.unpacked exactly by the exclusions it needs and the known fixture differences pinned here. MJ-4 (MZ-13 notes):
+ * in mixed mode the mzML side's own peaks and peak arrays are a difference, also where the mzPeak side has no peaks,
+ * so the mzML side of a mixed-mode pair here carries none, as {@code MzMLReader}'s models do; A_7 keeps an added 'no
+ * combination' next to another combination term, and A_7 and A_16 look past a user param; A_17 hides only a cv list
+ * filled with entries of {@code CvEntry.known()}.
  */
 class ModelAssertTest {
 
@@ -199,7 +203,10 @@ class ModelAssertTest {
             return with(d, "parameters", params);
         }));
         for (Mode mode : Mode.values()) {
-            assertThat(ModelAssert.compare(small, reordered, mode).equal()).as("%s", mode).isTrue();
+            // the mzML side of a mixed mode has no peaks (design 5.4)
+            Model expected = mode == MZML_VS_MZPEAK ? withoutPeaks(small) : small;
+            Model actual = mode == MZPEAK_VS_MZML ? withoutPeaks(reordered) : reordered;
+            assertThat(ModelAssert.compare(expected, actual, mode).equal()).as("%s", mode).isTrue();
         }
 
         Model duplicated = withSpectrum(small, 0, s -> withDescription(s, d -> {
@@ -469,6 +476,53 @@ class ModelAssertTest {
     }
 
     @Test
+    void a7HidesNothingWhereTheExpectedSideHasAnotherCombinationTerm() {
+        Param noCombination = new Param("no combination", "MS:1000795", null, null);
+        for (Param other : List.of(new Param("sum of spectra", "MS:1000571", null, null),
+                new Param("median of spectra", "MS:1000573", null, null),
+                new Param("mean of spectra", "MS:1000575", null, null))) {
+            Model combined = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "parameters",
+                    append(d.parameters(), other))));
+            Model added = withSpectrum(combined, 5, s -> withDescription(s, d -> with(d, "parameters",
+                    append(d.parameters(), noCombination))));
+            Result kept = ModelAssert.compare(combined, added, STRICT, ModelAssert.A_7);
+            assertThat(kept.paths()).as("%s", other.accession()).containsExactly("spectrum[5].parameters[MS:1000795]");
+            assertThat(kept.stale()).containsExactly("A_7");
+
+            Model uvCombined = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
+                    w -> with(w, "parameters", append(w.parameters(), other))));
+            Model uvAdded = with(uvCombined, "wavelengthSpectra", replace(uvCombined.wavelengthSpectra(), 0,
+                    w -> with(w, "parameters", append(w.parameters(), noCombination))));
+            assertThat(ModelAssert.compare(uvCombined, uvAdded, STRICT, ModelAssert.A_7).paths())
+                    .containsExactly("wavelengthSpectrum[0].parameters[MS:1000795]");
+        }
+    }
+
+    @Test
+    void a7HidesNoCombinationAddedNextToAUserParam() {
+        // a user param has no accession (tiny's scan=21 carries one, TOFsulfas 213); it is no combination term
+        Param note = new Param("note", null, "x", null);
+        Param noCombination = new Param("no combination", "MS:1000795", null, null);
+        Model noted = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "parameters",
+                append(d.parameters(), note))));
+        Model added = withSpectrum(noted, 5, s -> withDescription(s, d -> with(d, "parameters",
+                append(d.parameters(), noCombination))));
+        assertThat(ModelAssert.compare(noted, added, STRICT).paths())
+                .containsExactly("spectrum[5].parameters[MS:1000795]");
+        assertThat(ModelAssert.assertEqual("A_7 user param", noted, added, STRICT, ModelAssert.A_7).hidden())
+                .containsExactly(Map.entry("A_7", 1));
+
+        Model uvNoted = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
+                w -> with(w, "parameters", append(w.parameters(), note))));
+        Model uvAdded = with(uvNoted, "wavelengthSpectra", replace(uvNoted.wavelengthSpectra(), 0,
+                w -> with(w, "parameters", append(w.parameters(), noCombination))));
+        assertThat(ModelAssert.compare(uvNoted, uvAdded, STRICT).paths())
+                .containsExactly("wavelengthSpectrum[0].parameters[MS:1000795]");
+        assertThat(ModelAssert.assertEqual("A_7 uv user param", uvNoted, uvAdded, STRICT, ModelAssert.A_7).hidden())
+                .containsExactly(Map.entry("A_7", 1));
+    }
+
+    @Test
     void a16HidesTheGainedTypeAndSummariesOnlyWhereTheWriterDerivesThem() {
         Model bare = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "parameters", List.of())));
         Result result = ModelAssert.assertEqual("A_16", bare, small, STRICT, ModelAssert.A_16);
@@ -491,6 +545,14 @@ class ModelAssertTest {
                 List.of(new Param("ms level", "MS:1000511", 1L, null), new Param("note", null, "x", null)))));
         assertThat(ModelAssert.compare(other, otherPlusUser, STRICT, ModelAssert.A_16).paths())
                 .containsExactly("spectrum[0].parameters[note]");
+
+        // a user param in the expected params has no accession: it is neither a type nor a summary
+        Param note = new Param("note", null, "x", null);
+        Model noted = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "parameters", List.of(note))));
+        Model gained = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "parameters",
+                append(d.parameters(), note))));
+        assertThat(ModelAssert.assertEqual("A_16 user param", noted, gained, STRICT, ModelAssert.A_16).hidden())
+                .containsExactly(Map.entry("A_16", 6));
     }
 
     @Test
@@ -592,6 +654,26 @@ class ModelAssertTest {
     }
 
     @Test
+    void a17HidesOnlyAListFilledWithKnownEntries() {
+        assertThat(MzPeakManifest.CvEntry.known()).containsAll(small.cvList());
+        Model empty = with(small, "cvList", List.of());
+        List<MzPeakManifest.CvEntry> known = MzPeakManifest.CvEntry.known();
+        Model ims = with(small, "cvList", List.of(known.get(0), known.get(1), known.get(known.size() - 1)));
+        assertThat(ims.cvList()).extracting(MzPeakManifest.CvEntry::id).containsExactly("MS", "UO", "IMS");
+        assertThat(ModelAssert.assertEqual("A_17 IMS", empty, ims, STRICT, ModelAssert.A_17).hidden())
+                .containsExactly(Map.entry("A_17", 1));
+
+        Model otherVersion = with(small, "cvList", replace(small.cvList(), 1, c -> with(c, "version", "2026-01-17")));
+        Model unknownCv = with(small, "cvList", append(small.cvList(),
+                new MzPeakManifest.CvEntry("XX", "Unknown", "http://example.org/xx.obo", "1")));
+        for (Model filled : List.of(otherVersion, unknownCv)) {
+            Result kept = ModelAssert.compare(empty, filled, STRICT, ModelAssert.A_17);
+            assertThat(kept.paths()).containsExactly("cvList.size");
+            assertThat(kept.stale()).containsExactly("A_17");
+        }
+    }
+
+    @Test
     void b22HidesArraysThatAreEqualAsMzSortedTuples() {
         Model scanOrder = withSpectrum(dia, 0, s -> reversed(s, false));
         Result strict = ModelAssert.compare(scanOrder, dia, STRICT);
@@ -676,27 +758,27 @@ class ModelAssertTest {
         assertThat(kinds(strict)).containsExactly(Map.entry("spectrum[].numberOfPeaks", 34),
                 Map.entry("spectrum[].peaks.size", 34));
 
-        Model points = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "numberOfDataPoints", 1L)));
+        Model points = withSpectrum(mzml, 0, s -> withDescription(s, d -> with(d, "numberOfDataPoints", 1L)));
         assertThat(ModelAssert.compare(points, small, MZML_VS_MZPEAK).equal()).isTrue();
-        assertThat(ModelAssert.compare(points, small, STRICT).paths())
+        assertThat(ModelAssert.compare(points, mzml, STRICT).paths())
                 .containsExactly("spectrum[0].numberOfDataPoints");
     }
 
     @Test
-    void mixedModeComparesPeaksOnTheMzMLSideWhenTheMzPeakSideHasNone() {
+    void mixedModeReportsPeaksOnTheMzMLSideWhenTheMzPeakSideHasNone() {
         Model mzpeak = withSpectra(small, s -> new Spectrum(s.description(), s.mz(), s.intensity(), List.of()));
 
         Result mzmlWithPeaks = ModelAssert.compare(small, mzpeak, MZML_VS_MZPEAK);
 
-        assertThat(kinds(mzmlWithPeaks)).containsExactly(Map.entry("spectrum[].peaks.size", 34));
+        assertThat(kinds(mzmlWithPeaks)).containsExactly(Map.entry("spectrum[].peaks", 34));
+        assertThat(mzmlWithPeaks.differences()).allMatch(d -> d.matches(
+                "spectrum\\[\\d+]\\.peaks: the mzML side has \\d+ peaks: MzMLReader builds none \\(design 5\\.4\\)"));
         assertThat(ModelAssert.compare(small, mzpeak, MZPEAK_VS_MZML).equal()).isTrue();
     }
 
     @Test
     void mixedModeReportsPeaksThatAreNotARowCopyUnlessA1IsPassed() {
-        Model mzml = withSpectra(chunked, s -> s.description().signalContinuity() == SignalContinuity.PROFILE
-                ? new Spectrum(s.description(), s.mz(), s.intensity(), List.of())
-                : s);
+        Model mzml = withoutPeaks(chunked);
 
         Result mixed = ModelAssert.compare(mzml, chunked, MZML_VS_MZPEAK);
         assertThat(mixed.differences()).hasSize(14).allMatch(d -> d.matches(
@@ -713,13 +795,90 @@ class ModelAssertTest {
     @Test
     void mixedModeReportsACentroidPeakListThatDiffersFromItsArrays() {
         Model mzpeak = withSpectrum(small, 2, ModelAssertTest::oneChangedPeakIntensity);
+        Model mzml = withoutPeaks(small);
 
-        Result mixed = ModelAssert.compare(small, mzpeak, MZML_VS_MZPEAK);
+        Result mixed = ModelAssert.compare(mzml, mzpeak, MZML_VS_MZPEAK);
         assertThat(mixed.differences()).containsExactly(
                 "spectrum[2].peaks: the mzPeak side's 485 peaks are not a row copy of its arrays (design 5.4)");
-        assertThat(ModelAssert.assertEqual("A_1", small, mzpeak, MZML_VS_MZPEAK, ModelAssert.A_1).hidden())
+        assertThat(ModelAssert.assertEqual("A_1", mzml, mzpeak, MZML_VS_MZPEAK, ModelAssert.A_1).hidden())
                 .containsExactly(Map.entry("A_1", 1));
-        assertThat(ModelAssert.compare(mzpeak, small, MZPEAK_VS_MZML).paths()).containsExactly("spectrum[2].peaks");
+        assertThat(ModelAssert.compare(mzpeak, mzml, MZPEAK_VS_MZML).paths()).containsExactly("spectrum[2].peaks");
+    }
+
+    @Test
+    void mixedModeReportsPeaksAndPeakArraysOnTheMzMLSide() {
+        Spectrum s0 = dia.spectrumList().get(0);
+        assertThat(ModelAssert.isRowCopy(s0)).isTrue();
+        assertThat(s0.peakArrays()).containsOnlyKeys("MS:1003006");
+
+        for (Mode mode : List.of(MZML_VS_MZPEAK, MZPEAK_VS_MZML)) {
+            Result result = ModelAssert.compare(dia, dia, mode);
+            assertThat(kinds(result)).as("%s", mode).containsExactly(Map.entry("spectrum[].peakArrays", 9),
+                    Map.entry("spectrum[].peaks", 9));
+            assertThat(result.differences()).as("%s", mode).startsWith(
+                    "spectrum[0].peaks: the mzML side has " + s0.peaks().size()
+                            + " peaks: MzMLReader builds none (design 5.4)",
+                    "spectrum[0].peakArrays: the mzML side has peak arrays [MS:1003006]: MzMLReader builds none"
+                            + " (design 5.4)");
+        }
+        assertThat(ModelAssert.compare(withoutPeaks(dia), dia, MZML_VS_MZPEAK).equal()).isTrue();
+        assertThat(ModelAssert.compare(dia, withoutPeaks(dia), MZPEAK_VS_MZML).equal()).isTrue();
+
+        // A_1 does not hide them, not even where its own condition holds: the mzML side's peaks of spectrum 2 are
+        // not a row copy, the mzPeak side's are one
+        Model notACopy = withSpectrum(small, 2, ModelAssertTest::oneChangedPeakIntensity);
+        Result withA1 = ModelAssert.compare(notACopy, small, MZML_VS_MZPEAK, ModelAssert.A_1);
+        assertThat(kinds(withA1)).containsExactly(Map.entry("spectrum[].peaks", 34));
+        assertThat(withA1.differences()).contains(
+                "spectrum[2].peaks: the mzML side has 485 peaks: MzMLReader builds none (design 5.4)");
+        assertThat(withA1.stale()).containsExactly("A_1");
+    }
+
+    @Test
+    void mixedModeReportsTheMzMLSidesPeakListAlsoWhereTheMzPeakSideHasNoPeaks() {
+        // A_1's own condition holds (the mzML side's peaks of spectrum 2 are not a row copy, the mzPeak side has
+        // none), but the difference lies in the mzML side's own peak list, which A_1 does not hide
+        Spectrum s2 = small.spectrumList().get(2);
+        Model mzml = withSpectrum(withoutPeaks(small), 2, s -> oneChangedPeakIntensity(s2));
+        Model mzpeak = withoutPeaks(small);
+        String peaks = "spectrum[2].peaks: the mzML side has 485 peaks: MzMLReader builds none (design 5.4)";
+        Result mzmlFirst = ModelAssert.compare(mzml, mzpeak, MZML_VS_MZPEAK, ModelAssert.A_1);
+        assertThat(mzmlFirst.differences()).containsExactly(peaks);
+        assertThat(mzmlFirst.stale()).containsExactly("A_1");
+        Result mzpeakFirst = ModelAssert.compare(mzpeak, mzml, MZPEAK_VS_MZML, ModelAssert.A_1);
+        assertThat(mzpeakFirst.differences()).containsExactly(peaks);
+        assertThat(mzpeakFirst.stale()).containsExactly("A_1");
+
+        // equal peak arrays without peaks on both sides (parallel to no peaks, so of no values): the mzML side's are
+        // a difference
+        Spectrum s0 = dia.spectrumList().get(0);
+        Model arraysOnly = withSpectrum(withoutPeaks(dia), 0, s -> new Spectrum(s0.description(), s0.mz(),
+                s0.intensity(), List.of(), s0.arrays(), Map.of("MS:1003006", new double[0])));
+        String peakArrays = "spectrum[0].peakArrays: the mzML side has peak arrays [MS:1003006]: MzMLReader builds"
+                + " none (design 5.4)";
+        assertThat(ModelAssert.compare(arraysOnly, arraysOnly, MZML_VS_MZPEAK).differences())
+                .containsExactly(peakArrays);
+        assertThat(ModelAssert.compare(arraysOnly, arraysOnly, MZPEAK_VS_MZML).differences())
+                .containsExactly(peakArrays);
+
+        // where neither side has peaks and the mzML side no peak arrays, the mzPeak side's are compared with none
+        assertThat(ModelAssert.compare(withoutPeaks(dia), arraysOnly, MZML_VS_MZPEAK).paths())
+                .containsExactly("spectrum[0].peakArrays[MS:1003006]");
+        assertThat(ModelAssert.compare(arraysOnly, withoutPeaks(dia), MZPEAK_VS_MZML).paths())
+                .containsExactly("spectrum[0].peakArrays[MS:1003006]");
+
+        // where the mzML side has peaks, they are the difference and the peak lists are not compared pairwise, so
+        // A_1 has nothing to hide: in mixed mode it hides only 'not a row copy'
+        Model peaksOnly = withSpectrum(withoutPeaks(dia), 0, s -> new Spectrum(s0.description(), s0.mz(),
+                s0.intensity(), oneChangedPeakIntensity(s0).peaks(), s0.arrays(), Map.of()));
+        String mzmlPeaks = "spectrum[0].peaks: the mzML side has " + s0.peaks().size()
+                + " peaks: MzMLReader builds none (design 5.4)";
+        Result peaksFirst = ModelAssert.compare(peaksOnly, arraysOnly, MZML_VS_MZPEAK, ModelAssert.A_1);
+        assertThat(peaksFirst.differences()).containsExactly(mzmlPeaks);
+        assertThat(peaksFirst.stale()).containsExactly("A_1");
+        Result arraysFirst = ModelAssert.compare(arraysOnly, peaksOnly, MZPEAK_VS_MZML, ModelAssert.A_1);
+        assertThat(arraysFirst.differences()).containsExactly(mzmlPeaks);
+        assertThat(arraysFirst.stale()).containsExactly("A_1");
     }
 
     @Test
@@ -850,9 +1009,9 @@ class ModelAssertTest {
         return new Spectrum(s.description(), mz, intensity, s.peaks(), arrays, s.peakArrays());
     }
 
-    private static List<Param> append(List<Param> params, Param p) {
-        List<Param> out = new ArrayList<>(params);
-        out.add(p);
+    private static <T> List<T> append(List<T> list, T element) {
+        List<T> out = new ArrayList<>(list);
+        out.add(element);
         return out;
     }
 
@@ -879,6 +1038,12 @@ class ModelAssertTest {
             spectra.add(f.apply(s));
         }
         return with(m, "spectra", spectra);
+    }
+
+    /** {@code m} with no peaks and no peak arrays, as {@code MzMLReader} reads every spectrum (design 5.4). */
+    private static Model withoutPeaks(Model m) {
+        return withSpectra(m, s -> new Spectrum(s.description(), s.mz(), s.intensity(), List.of(), s.arrays(),
+                Map.of()));
     }
 
     private static Model withChromatogram(Model m, UnaryOperator<Chromatogram> f) {
