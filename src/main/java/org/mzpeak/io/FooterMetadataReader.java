@@ -267,7 +267,7 @@ final class FooterMetadataReader {
     // ---- param + json helpers ---------------------------------------------------------------------
 
     private static List<Param> params(JsonNode owner) {
-        return owner == null ? List.of() : paramsOf(owner.get("parameters"));
+        return paramsOf(owner.get("parameters"));
     }
 
     private static List<Param> paramsOf(JsonNode arr) {
@@ -298,7 +298,7 @@ final class FooterMetadataReader {
     }
 
     private static Iterable<JsonNode> array(JsonNode parent, String field) {
-        return parent == null ? List.of() : asArray(parent.get(field));
+        return asArray(parent.get(field));
     }
 
     private static Iterable<JsonNode> asArray(JsonNode n) {
@@ -306,17 +306,17 @@ final class FooterMetadataReader {
     }
 
     private static String text(JsonNode n, String field) {
-        JsonNode v = n == null ? null : n.get(field);
+        JsonNode v = n.get(field);
         return (v == null || v.isNull()) ? null : v.asText();
     }
 
     private static int intValue(JsonNode n, String field, int def) {
-        JsonNode v = n == null ? null : n.get(field);
+        JsonNode v = n.get(field);
         return (v == null || !v.isNumber()) ? def : v.asInt();
     }
 
     private static Integer intOrNull(JsonNode n, String field) {
-        JsonNode v = n == null ? null : n.get(field);
+        JsonNode v = n.get(field);
         return (v == null || !v.isNumber()) ? null : v.asInt();
     }
 }

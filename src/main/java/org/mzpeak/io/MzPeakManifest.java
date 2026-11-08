@@ -219,7 +219,7 @@ public final class MzPeakManifest {
         this.scanSettingsList = List.copyOf(scanSettingsList);
         this.imaging = imaging;
         this.version = version;
-        this.cvList = cvList == null ? List.of() : List.copyOf(cvList);
+        this.cvList = List.copyOf(cvList);
         this.metadataJson = metadataJson;
     }
 
@@ -460,7 +460,7 @@ public final class MzPeakManifest {
     }
 
     private static String text(JsonNode node, String field) {
-        JsonNode v = node == null ? null : node.get(field);
+        JsonNode v = node.get(field);
         return v == null || v.isNull() ? null : v.asText();
     }
 }
