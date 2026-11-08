@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -10,7 +11,8 @@ import java.util.Map;
  * The controlled vocabularies {@link ManifestWriter} declares in {@code metadata.cv_list}: a verbatim copy of the
  * reference's {@code From<ControlledVocabulary> for ControlledVocabularyEntry} (param.rs:272-336 at 2ee2589), in its
  * order. Every URI names a fixed release, as conformance.md requires of a writer, except that of IMS, which is the
- * imzML repository's master branch in the reference too.
+ * imzML repository's master branch in the reference too. Public as {@link CvEntry#known()}; a caller's cv list
+ * ({@link MzPeakWriter.Options#withCvList}) takes precedence.
  */
 final class KnownCvs {
 
@@ -56,24 +58,41 @@ final class KnownCvs {
     }
 
     /**
-     * The cv_list of a dataset that uses the prefixes {@code used}, each mapped to a CURIE that uses it: MS and UO,
-     * then every used prefix of {@link #ALL}, in the order of {@link #ALL}. A used prefix that is not in {@link #ALL}
-     * is not declared; {@code report} gets one warning for it, which names the CURIE.
+     * The cv_list of a dataset that uses the prefixes {@code used}, each mapped to a CURIE that uses it, with the
+     * caller's entries {@code callerCvs}: MS and UO, then every used prefix of {@link #ALL}, in the order of
+     * {@link #ALL}, each as the first entry of {@code callerCvs} with its id, else as the entry of {@link #ALL}; then
+     * every used prefix that is not in {@link #ALL} but in {@code callerCvs}, as its first entry there, in the order
+     * of {@code callerCvs}. An entry of {@code callerCvs} whose prefix is not used is not declared. A used prefix in
+     * neither list is not declared; {@code report} gets one warning for it, which names the CURIE.
      */
-    static List<CvEntry> declare(Map<String, String> used, WriteReport report) {
+    static List<CvEntry> declare(Map<String, String> used, List<CvEntry> callerCvs, WriteReport report) {
+        Map<String, CvEntry> caller = new LinkedHashMap<>();
+        for (CvEntry cv : callerCvs) {
+            caller.putIfAbsent(cv.id(), cv);
+        }
         List<CvEntry> declared = new ArrayList<>();
         for (CvEntry cv : ALL) {
             if (ALWAYS.contains(cv.id()) || used.containsKey(cv.id())) {
+                declared.add(caller.getOrDefault(cv.id(), cv));
+            }
+        }
+        for (CvEntry cv : caller.values()) {
+            if (used.containsKey(cv.id()) && !isKnown(cv.id())) {
                 declared.add(cv);
             }
         }
         for (Map.Entry<String, String> e : used.entrySet()) {
-            if (ALL.stream().noneMatch(cv -> cv.id().equals(e.getKey()))) {
+            if (!isKnown(e.getKey()) && !caller.containsKey(e.getKey())) {
                 report.warn("the CV prefix " + e.getKey() + " (used by " + e.getValue() + ") is not a controlled "
                         + "vocabulary mzPeakJ knows; its terms are written as given, but metadata.cv_list does not "
                         + "declare it");
             }
         }
         return declared;
+    }
+
+    /** {@code true} if {@code id} is the id of an entry of {@link #ALL}. */
+    private static boolean isKnown(String id) {
+        return ALL.stream().anyMatch(cv -> cv.id().equals(id));
     }
 }

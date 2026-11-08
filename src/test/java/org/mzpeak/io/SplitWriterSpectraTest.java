@@ -435,9 +435,9 @@ class SplitWriterSpectraTest {
         assertThat(SPLIT.withSignalEncoding(SignalEncoding.NUMPRESS).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(SPLIT.withRowGroupSize(4096).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(Options.defaults()).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
-                + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT]");
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[]]");
         assertThat(packed).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
-                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED]");
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[]]");
     }
 
     @Test

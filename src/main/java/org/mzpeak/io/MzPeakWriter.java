@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -376,24 +377,26 @@ public final class MzPeakWriter {
     public static final class Options {
 
         private static final Options DEFAULTS = new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF,
-                OptionalLong.empty(), MetadataLayout.SPLIT);
+                OptionalLong.empty(), MetadataLayout.SPLIT, List.of());
 
         private final SignalEncoding signalEncoding;
         private final NumpressIntensityEncoding numpressIntensity;
         private final OptionalLong rowGroupSize;
         private final MetadataLayout metadataLayout;
+        private final List<CvEntry> cvList;
 
         private Options(SignalEncoding signalEncoding, NumpressIntensityEncoding numpressIntensity,
-                        OptionalLong rowGroupSize, MetadataLayout metadataLayout) {
+                        OptionalLong rowGroupSize, MetadataLayout metadataLayout, List<CvEntry> cvList) {
             this.signalEncoding = signalEncoding;
             this.numpressIntensity = numpressIntensity;
             this.rowGroupSize = rowGroupSize;
             this.metadataLayout = metadataLayout;
+            this.cvList = cvList;
         }
 
         /**
-         * Point layout, SLOF Numpress intensity, no row-group size and the split metadata layout: what the plain
-         * overloads write.
+         * Point layout, SLOF Numpress intensity, no row-group size, the split metadata layout and no cv list of the
+         * caller's: what the plain overloads write.
          */
         public static Options defaults() {
             return DEFAULTS;
@@ -427,13 +430,21 @@ public final class MzPeakWriter {
         }
 
         /**
+         * The caller's controlled vocabularies, whose entries {@code metadata.cv_list} declares for the CVs in use in
+         * place of the writer's own ({@link #withCvList}); empty by default. Unmodifiable.
+         */
+        public List<CvEntry> cvList() {
+            return cvList;
+        }
+
+        /**
          * These options with {@code encoding} for spectra_data and spectra_peaks.
          *
          * @throws NullPointerException if {@code encoding} is {@code null}
          */
         public Options withSignalEncoding(SignalEncoding encoding) {
             return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize,
-                    metadataLayout);
+                    metadataLayout, cvList);
         }
 
         /**
@@ -444,7 +455,7 @@ public final class MzPeakWriter {
          */
         public Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
             return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize,
-                    metadataLayout);
+                    metadataLayout, cvList);
         }
 
         /**
@@ -458,7 +469,7 @@ public final class MzPeakWriter {
             if (bytes <= 0) {
                 throw new IllegalArgumentException("row-group size must be positive: " + bytes);
             }
-            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout);
+            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout, cvList);
         }
 
         /**
@@ -469,7 +480,23 @@ public final class MzPeakWriter {
          */
         public Options withMetadataLayout(MetadataLayout layout) {
             return new Options(signalEncoding, numpressIntensity, rowGroupSize,
-                    Objects.requireNonNull(layout, "layout"));
+                    Objects.requireNonNull(layout, "layout"), cvList);
+        }
+
+        /**
+         * These options with the caller's controlled vocabularies, such as the cv list of an mzML source, so that
+         * {@code metadata.cv_list} keeps their versions and URIs. The writer still declares only MS, UO and the CVs
+         * the dataset uses, in the order of {@link CvEntry#known()}, but a CV the list holds is declared with the
+         * list's entry, the first one when the list holds its id more than once. A CV in use that
+         * {@link CvEntry#known()} lacks and the list holds is declared after the known ones, in the list's order,
+         * without the warning that such a CV otherwise gets. An entry for a CV the dataset does not use is not
+         * declared. The list is copied.
+         *
+         * @throws NullPointerException if {@code cvList} or one of its entries is {@code null}
+         */
+        public Options withCvList(List<CvEntry> cvList) {
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout,
+                    List.copyOf(Objects.requireNonNull(cvList, "cvList")));
         }
 
         @Override
@@ -479,18 +506,19 @@ public final class MzPeakWriter {
             }
             return o instanceof Options other && signalEncoding == other.signalEncoding
                     && numpressIntensity == other.numpressIntensity && rowGroupSize.equals(other.rowGroupSize)
-                    && metadataLayout == other.metadataLayout;
+                    && metadataLayout == other.metadataLayout && cvList.equals(other.cvList);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout);
+            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList);
         }
 
         @Override
         public String toString() {
             return "Options[signalEncoding=" + signalEncoding + ", numpressIntensity=" + numpressIntensity
-                    + ", rowGroupSize=" + rowGroupSize + ", metadataLayout=" + metadataLayout + "]";
+                    + ", rowGroupSize=" + rowGroupSize + ", metadataLayout=" + metadataLayout + ", cvList=" + cvList
+                    + "]";
         }
     }
 

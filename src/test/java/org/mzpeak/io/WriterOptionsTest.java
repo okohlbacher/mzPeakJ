@@ -7,6 +7,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
@@ -20,6 +21,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
@@ -34,7 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The public {@link MzPeakWriter.Options} (WR-12): every one of the 14 legacy overloads writes exactly what the
  * Options form named in its Javadoc writes, the Options archive form writes Numpress PIC, the Numpress intensity is
  * ignored in point layout, and the row-group size comes from the option, then the {@code mzpeak.writer.rowGroupSize}
- * property, then the parquet-java default. The value semantics of {@link Options} are pinned as well.
+ * property, then the parquet-java default. The value semantics of {@link Options} are pinned as well, the caller's
+ * cv list (MZ-8) included.
  *
  * <p>Outputs are compared with {@link WriterSnapshotTest#snapshot}, member digests plus the ZIP entry order of an
  * archive, on the legacy {@code has_uv} fixture (spectra, chromatograms, wavelength spectra and file metadata) read
@@ -354,8 +358,9 @@ class WriterOptionsTest {
         assertThat(DEFAULTS.rowGroupSize()).isEqualTo(OptionalLong.empty());
         assertThat(DEFAULTS.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(Options.defaults()).isSameAs(DEFAULTS);
+        assertThat(DEFAULTS.cvList()).isEmpty();
         assertThat(DEFAULTS).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF, "
-                + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT]");
+                + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[]]");
     }
 
     @Test
@@ -368,7 +373,7 @@ class WriterOptionsTest {
         assertThat(packed.rowGroupSize()).isEmpty();
         assertThat(DEFAULTS.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(packed).isNotEqualTo(DEFAULTS).hasToString("Options[signalEncoding=POINT, "
-                + "numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty, metadataLayout=PACKED]");
+                + "numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[]]");
         assertThat(packed.withMetadataLayout(MetadataLayout.SPLIT)).isEqualTo(DEFAULTS).hasSameHashCodeAs(DEFAULTS);
         assertThat(NUMPRESS.withMetadataLayout(MetadataLayout.PACKED).withRowGroupSize(4096))
                 .isEqualTo(NUMPRESS.withRowGroupSize(4096).withMetadataLayout(MetadataLayout.PACKED));
@@ -393,7 +398,7 @@ class WriterOptionsTest {
         assertThat(sized.signalEncoding()).isEqualTo(SignalEncoding.NUMPRESS);
         assertThat(sized.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.PIC);
         assertThat(sized).hasToString("Options[signalEncoding=NUMPRESS, numpressIntensity=PIC, "
-                + "rowGroupSize=OptionalLong[32768], metadataLayout=SPLIT]");
+                + "rowGroupSize=OptionalLong[32768], metadataLayout=SPLIT, cvList=[]]");
 
         assertThat(DEFAULTS.signalEncoding()).isEqualTo(SignalEncoding.POINT);
         assertThat(DEFAULTS.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.SLOF);
@@ -417,6 +422,48 @@ class WriterOptionsTest {
         assertThat(a).isNotEqualTo(a.withSignalEncoding(SignalEncoding.POINT));
         assertThat(DEFAULTS).isNotEqualTo(DEFAULTS.withRowGroupSize(4096));
         assertThat(DEFAULTS).isNotEqualTo(null).isNotEqualTo(DEFAULTS.toString());
+    }
+
+    /** MZ-8: the caller's cv list is copied, kept by the other with-methods and compared like the other settings. */
+    @Test
+    void theCvListIsASettingLikeTheOthers() {
+        CvEntry ms = new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", "4.1.117");
+        CvEntry xyz = new CvEntry("XYZ", "XYZ ontology", "https://example.org/xyz.obo", "1.2");
+        List<CvEntry> given = new ArrayList<>(List.of(ms, xyz));
+        Options withCvs = DEFAULTS.withCvList(given);
+        given.clear();
+
+        assertThat(withCvs.cvList()).containsExactly(ms, xyz);
+        assertThatThrownBy(() -> withCvs.cvList().add(ms)).isInstanceOf(UnsupportedOperationException.class);
+        assertThat(withCvs.signalEncoding()).isEqualTo(SignalEncoding.POINT);
+        assertThat(withCvs.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.SLOF);
+        assertThat(withCvs.rowGroupSize()).isEmpty();
+        assertThat(withCvs.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
+        assertThat(DEFAULTS.cvList()).isEmpty();
+        Options all = withCvs.withSignalEncoding(SignalEncoding.NUMPRESS)
+                .withNumpressIntensity(NumpressIntensityEncoding.PIC).withRowGroupSize(4096)
+                .withMetadataLayout(MetadataLayout.PACKED);
+        assertThat(all.cvList()).containsExactly(ms, xyz);
+        assertThat(all.withCvList(List.of(xyz)).cvList()).containsExactly(xyz);
+        assertThat(all.withCvList(List.of(xyz)).metadataLayout()).isEqualTo(MetadataLayout.PACKED);
+
+        assertThat(withCvs).isEqualTo(DEFAULTS.withCvList(List.of(ms, xyz)))
+                .hasSameHashCodeAs(DEFAULTS.withCvList(List.of(ms, xyz)))
+                .isNotEqualTo(DEFAULTS)
+                .isNotEqualTo(DEFAULTS.withCvList(List.of(ms)))
+                .isNotEqualTo(DEFAULTS.withCvList(List.of(xyz, ms)))
+                .isNotEqualTo(DEFAULTS.withCvList(List.of(ms, new CvEntry("XYZ", "XYZ ontology",
+                        "https://example.org/xyz.obo", "1.3"))));
+        assertThat(withCvs.withCvList(List.of())).isEqualTo(DEFAULTS).hasSameHashCodeAs(DEFAULTS);
+        assertThat(withCvs).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF, "
+                + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[CvEntry[id=MS, fullName=PSI-MS, "
+                + "uri=https://example.org/ms.obo, version=4.1.117], CvEntry[id=XYZ, fullName=XYZ ontology, "
+                + "uri=https://example.org/xyz.obo, version=1.2]]]");
+
+        assertThatThrownBy(() -> DEFAULTS.withCvList(null)).isInstanceOf(NullPointerException.class)
+                .hasMessage("cvList");
+        assertThatThrownBy(() -> DEFAULTS.withCvList(Arrays.asList(ms, null)))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
