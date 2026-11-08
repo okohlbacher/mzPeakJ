@@ -196,7 +196,7 @@ final class ChromatogramDataDecoder {
     }
 
     private void acceptPoint(Group point, long idx, Map<Long, Accumulator> acc) {
-        Double t = timeField == null ? null : ParquetGroups.optDouble(point, timeField);
+        Double t = ParquetGroups.optDouble(point, timeField);
         Accumulator a = accumulator(acc, idx);
         Double in = pointIntensity(point, a);
         a.time.add(t  == null ? Double.NaN : t);
