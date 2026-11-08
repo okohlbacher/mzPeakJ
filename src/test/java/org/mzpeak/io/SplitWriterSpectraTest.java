@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
@@ -163,6 +164,86 @@ class SplitWriterSpectraTest {
             scanIndices.add(i);
         }
         assertThat(scanRows).extracting(r -> r.getLong("scan_index", 0)).containsExactlyElementsOf(scanIndices);
+    }
+
+    // ---- spectra without scans ----------------------------------------------------------------------------------
+
+    /**
+     * A spectrum without scans gets one scan row holding its retention time, as in the packed layout, since the HEAD
+     * Python reader cannot open a spectrum without one: three scanless PROFILE spectra, and a mixed set whose spectra
+     * 0 and 2 have scans and 1 and 3 none, the last with a NaN retention time, all written with the default options.
+     * Each scanless spectrum has exactly one row, with its source_index and its retention time (null unless finite),
+     * empty lists and no other cell; scan_index counts on contiguously; and the reader gives each scanless spectrum
+     * one scan whose start time is its retention time.
+     */
+    @Test
+    void aSpectrumWithoutScansGetsOneScanRowHoldingItsRetentionTime(@TempDir Path tmp) {
+        List<Spectrum> scanless = List.of(profile(0, 0.5, List.of()), profile(1, 1.25, List.of()),
+                profile(2, 2.0, List.of()));
+        Path out = tmp.resolve("scanless.mzpeak");
+        MzPeakWriter.writeDirectory(out, scanless);
+
+        assertThat(scanRows(out)).containsExactly("0|0|0.5", "1|1|1.25", "2|2|2.0");
+        List<Group> rows = rows(out.resolve("spectra_metadata_scans.parquet"));
+        assertThat(rows).allSatisfy(r -> {
+            assertThat(ParquetGroups.groupList(r, "parameters")).isEmpty();
+            assertThat(ParquetGroups.groupList(r, "scan_windows")).isEmpty();
+            for (String cell : List.of("preset_scan_configuration", "filter_string", "ion_injection_time",
+                    "instrument_configuration_id", "spectrum_reference")) {
+                assertThat(ParquetGroups.has(r, cell)).as("%s of a fallback scan row", cell).isFalse();
+            }
+        });
+        assertOneScanAtTheRetentionTime(out, scanless, Set.of(0L, 1L, 2L));
+
+        ScanEvent first = new ScanEvent(3.0, 12.5, "f0", null, null, null, List.of(new ScanWindow(100, 200)),
+                List.of());
+        ScanEvent second = new ScanEvent(4.0, null, null, null, null, null, List.of(), List.of());
+        ScanEvent third = new ScanEvent(4.01, null, null, null, null, null, List.of(), List.of());
+        List<Spectrum> mixed = List.of(profile(0, 3.0, List.of(first)), profile(1, 3.5, List.of()),
+                profile(2, 4.0, List.of(second, third)), profile(3, Double.NaN, List.of()));
+        Path mixedOut = tmp.resolve("mixed.mzpeak");
+        MzPeakWriter.writeDirectory(mixedOut, mixed);
+
+        assertThat(scanRows(mixedOut)).containsExactly("0|0|3.0", "1|1|3.5", "2|2|4.0", "2|3|4.01", "3|4|null");
+        assertOneScanAtTheRetentionTime(mixedOut, mixed, Set.of(1L, 3L));
+        try (MzPeakReader reader = MzPeakReader.open(mixedOut)) {
+            assertThat(reader.getSpectrumAt(0).description().scans()).containsExactly(first);
+            assertThat(reader.getSpectrumAt(2).description().scans()).containsExactly(second, third);
+        }
+    }
+
+    /** Each scan row of {@code out} as {@code source_index|scan_index|scan_start_time}, in row order. */
+    private static List<String> scanRows(Path out) {
+        List<String> lines = new ArrayList<>();
+        for (Group r : rows(out.resolve("spectra_metadata_scans.parquet"))) {
+            lines.add(ParquetGroups.optLong(r, "source_index") + "|" + ParquetGroups.optLong(r, "scan_index") + "|"
+                    + ParquetGroups.optDouble(r, "scan_start_time"));
+        }
+        return lines;
+    }
+
+    /** The {@code scanless} spectra of {@code written} read back with one scan whose start time is their RT. */
+    private static void assertOneScanAtTheRetentionTime(Path out, List<Spectrum> written, Set<Long> scanless) {
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            for (Spectrum s : written) {
+                if (!scanless.contains(s.index())) {
+                    continue;
+                }
+                SpectrumDescription back = reader.getSpectrumAt((int) s.index()).description();
+                double rt = s.description().retentionTime();
+                assertThat(Double.compare(back.retentionTime(), rt)).as("retention time %s of spectrum %d, expected %s",
+                        back.retentionTime(), s.index(), rt).isZero();
+                assertThat(back.scans()).as("scans of spectrum %d", s.index()).containsExactly(
+                        new ScanEvent(rt, null, null, null, null, null, List.of(), List.of()));
+            }
+        }
+    }
+
+    /** A PROFILE MS1 spectrum of three points with {@code index}, retention time {@code rt} and {@code scans}. */
+    private static Spectrum profile(long index, double rt, List<ScanEvent> scans) {
+        SpectrumDescription d = new SpectrumDescription(index, "scan=" + (index + 1), 1, rt, Polarity.POSITIVE,
+                SignalContinuity.PROFILE, 3, 0, scans, List.of(), List.of());
+        return new Spectrum(d, new double[] {100.0, 100.5, 101.0}, new double[] {10.0, 20.0, 5.0}, List.of());
     }
 
     @Test

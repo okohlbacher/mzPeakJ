@@ -59,7 +59,10 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       {@code parameters};
  *   <li>spectra_metadata_scans: one row per scan of every spectrum, keyed by {@code source_index} with a global
  *       {@code scan_index}, with its typed columns, {@code parameters}, {@code scan_windows} and, when some scan has
- *       one, the imaging positions;
+ *       one, the imaging positions. A spectrum without scans gets one row all the same, as in the packed layout: its
+ *       retention time as {@code scan_start_time} (null unless finite) and empty lists, so it reads back with one
+ *       scan holding its retention time. The HEAD Python reader cannot open a spectrum without a scan row, and the
+ *       Rust reader takes a spectrum's time from its scans;
  *   <li>spectra_metadata_precursors: one row per precursor of every spectrum, in the spectrum's order, keyed by
  *       {@code source_index} and the precursor's {@code precursor_index}, with its {@code precursor_id}, its
  *       {@code isolation_window} and its {@code activation} (dissociation method, collision energy,
@@ -419,7 +422,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     /**
      * Writes the scans, with the {@code positions} columns, those of {@link #positionColumns}, after the
-     * {@code scan_windows}, as the reference does.
+     * {@code scan_windows}, as the reference does, and one row holding only the retention time for a spectrum without
+     * scans.
      */
     private static void writeScans(Path file, WritePlan plan, Map<String, String> footer, List<Column> positions)
             throws IOException {
@@ -442,7 +446,22 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         long scanIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                for (ScanEvent scan : entry.source().description().scans()) {
+                SpectrumDescription d = entry.source().description();
+                if (d.scans().isEmpty()) {
+                    // One scan row anyway, as PACKED writes (PackedMetadataWriter.populateScan): the HEAD Python
+                    // reader cannot open a spectrum without one, and the Rust reader takes its time from the scans.
+                    Group row = factory.newGroup();
+                    row.add(SOURCE_INDEX, entry.sourceIndex());
+                    row.add(SCAN_INDEX, scanIndex++);
+                    if (Double.isFinite(d.retentionTime())) {
+                        row.add(field(SCAN_START_TIME), d.retentionTime());
+                    }
+                    params(row, List.of());
+                    row.addGroup(SCAN_WINDOWS);
+                    writer.write(row);
+                    continue;
+                }
+                for (ScanEvent scan : d.scans()) {
                     Group row = factory.newGroup();
                     row.add(SOURCE_INDEX, entry.sourceIndex());
                     row.add(SCAN_INDEX, scanIndex++);

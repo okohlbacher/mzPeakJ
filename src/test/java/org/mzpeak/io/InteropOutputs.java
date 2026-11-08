@@ -8,6 +8,7 @@ import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
@@ -29,7 +30,9 @@ import java.util.Locale;
  *   <li>the Numpress SLOF archive ({@link MzPeakWriter#writeArchiveNumpress}) and the Numpress PIC archive (the
  *       {@link Options} form) of current small;
  *   <li>the MS2 subset of current small as the {@link ExtractSpectra} example writes it: its 34 MS2 spectra, numbered
- *       0..33, with the TIC.
+ *       0..33, with the TIC;
+ *   <li>the archive of current small with the scans of every spectrum removed, which the writer replaces by one scan
+ *       holding the retention time.
  * </ul>
  * {@link #writePacked} writes legacy small.unpacked as an archive in the pin-era packed layout instead, which the
  * current readers reject.
@@ -59,6 +62,8 @@ final class InteropOutputs {
         NUMPRESS_PIC,
         /** The MS2 spectra of the source and its chromatograms, as an archive, through {@link ExtractSpectra}. */
         MS2_SUBSET,
+        /** Every entity of the source, its spectra without scans, point layout, as an archive. */
+        SCANLESS,
         /** Every entity of the source as an archive in the packed metadata layout. */
         PACKED_ARCHIVE
     }
@@ -123,7 +128,23 @@ final class InteropOutputs {
         Output subset = output(dir, SMALL, Kind.MS2_SUBSET, ms2);
         ExtractSpectra.main(new String[] {SMALL.toString(), subset.path().toString(), "--ms-level", "2"});
         outputs.add(subset);
+        Source scanless = new Source();
+        small.spectra.stream().map(InteropOutputs::withoutScans).forEach(scanless.spectra::add);
+        scanless.chromatograms = small.chromatograms;
+        scanless.wavelengthSpectra = small.wavelengthSpectra;
+        Output withoutScans = output(dir, SMALL, Kind.SCANLESS, scanless);
+        MzPeakWriter.writeArchive(withoutScans.path(), scanless.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata);
+        outputs.add(withoutScans);
         return outputs;
+    }
+
+    /** {@code s} without its scans; everything else is kept. */
+    private static Spectrum withoutScans(Spectrum s) {
+        SpectrumDescription d = s.description();
+        return new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(), d.polarity(),
+                d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), List.of(), d.precursors(),
+                d.parameters()), s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
     }
 
     /** Writes legacy small.unpacked into {@code dir} as an archive in the packed metadata layout. */
