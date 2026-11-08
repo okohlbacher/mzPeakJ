@@ -259,7 +259,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      *
      * <p>The reader takes ownership of {@code source} and closes it exactly once: when this method throws (also for
      * a {@code null} {@code options}, and for an {@link Error}), or on the first {@link #close()} of the returned
-     * reader. A failure to close it then is added to the thrown exception as suppressed.
+     * reader. A failure to close it then is added to the thrown exception as suppressed, unless it is that same
+     * exception.
      *
      * @throws NullPointerException if {@code source} or {@code options} is {@code null}
      */
@@ -279,7 +280,9 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             try {
                 source.close();
             } catch (RuntimeException | Error closing) {
-                e.addSuppressed(closing);
+                if (closing != e) {
+                    e.addSuppressed(closing);
+                }
             }
             throw e;
         }
@@ -834,8 +837,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /**
      * Release the signal readers and close the source. Only the first call has an effect. Each of the two spectrum
-     * signal readers and the source is closed even when closing another fails; the first failure is thrown, with any
-     * later ones added as suppressed.
+     * signal readers and the source is closed even when closing another fails, also with an {@link Error}; the first
+     * failure is thrown, with any later ones that are not that same exception added as suppressed.
      *
      * <p>After {@code close()}, the methods that read the dataset throw {@link IllegalStateException}: spectrum
      * retrieval (also through the iterator), chromatograms, wavelength spectra, range and column-statistics queries,
@@ -849,12 +852,12 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             return;
         }
         closed = true;
-        RuntimeException failure = null;
+        Throwable failure = null;
         try {
             if (dataStore != null) {
                 dataStore.close();
             }
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             failure = e;
         } finally {
             dataStore = null;
@@ -863,7 +866,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             if (peakStore != null) {
                 peakStore.close();
             }
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             failure = addFailure(failure, e);
         } finally {
             peakStore = null;
@@ -872,20 +875,28 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         }
         try {
             source.close();
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             failure = addFailure(failure, e);
         }
-        if (failure != null) {
-            throw failure;
+        if (failure instanceof RuntimeException e) {
+            throw e;
+        }
+        if (failure instanceof Error e) {
+            throw e;
         }
     }
 
-    /** {@code e} if there is no {@code failure} yet, else {@code failure} with {@code e} added as suppressed. */
-    private static RuntimeException addFailure(RuntimeException failure, RuntimeException e) {
+    /**
+     * {@code e} if there is no {@code failure} yet, else {@code failure} with {@code e} added as suppressed unless it is
+     * the same instance.
+     */
+    private static Throwable addFailure(Throwable failure, Throwable e) {
         if (failure == null) {
             return e;
         }
-        failure.addSuppressed(e);
+        if (failure != e) {
+            failure.addSuppressed(e);
+        }
         return failure;
     }
 }

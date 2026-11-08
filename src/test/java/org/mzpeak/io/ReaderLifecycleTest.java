@@ -22,9 +22,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * FN-6: the lifecycle of {@link MzPeakReader}. After {@link MzPeakReader#close()} the methods that read the dataset
  * throw {@link IllegalStateException} instead of returning empty data (small.mzpeak spectrum 0 had 13589 points before
  * close and 0 after, and its one chromatogram was gone); close releases both spectrum signal readers and the source
- * even when one of them fails; and {@link MzPeakReader#open(MzPeakSource, MzPeakReader.Options)} closes the source on
- * an {@link Error} too, keeping a close failure as suppressed. The sources are {@link TestSources#memory} copies of
- * the current small.mzpeak, wrapped to count and fail closes.
+ * even when one of them fails, also with an {@link Error}; and
+ * {@link MzPeakReader#open(MzPeakSource, MzPeakReader.Options)} closes the source on an {@link Error} too, keeping a
+ * close failure as suppressed. A failure thrown twice as the same instance is thrown once, never suppressed onto
+ * itself. The sources are {@link TestSources#memory} copies of the current small.mzpeak, wrapped to count and fail
+ * closes.
  */
 class ReaderLifecycleTest {
 
@@ -138,11 +140,78 @@ class ReaderLifecycleTest {
         assertThat(source.closes()).isEqualTo(1);
     }
 
+    @Test
+    void anErrorClosingTheDataMemberStillClosesThePeaksMemberAndTheSourceOnce() {
+        String[] members = signalMembers();
+        String data = members[0];
+        String peaks = members[1];
+        AssertionError failure = new AssertionError("data close error");
+        ClosingSource source = new ClosingSource(TestSources.memory(Fixtures.current(SMALL)), Map.of());
+        source.streamCloseThrows.put(data, failure);
+        MzPeakReader reader = MzPeakReader.open(source);
+        reader.getSpectrumAt(0); // opens both signal members
+        assertThat(source.opened(data)).isPositive();
+        assertThat(source.opened(peaks)).isPositive();
+
+        assertThatThrownBy(reader::close)
+                .isSameAs(failure)
+                .satisfies(e -> assertThat(e.getSuppressed()).isEmpty());
+        assertThat(source.closedStreams(data)).isEqualTo(source.opened(data));
+        assertThat(source.closedStreams(peaks)).isEqualTo(source.opened(peaks));
+        assertThat(source.closes()).isEqualTo(1);
+
+        reader.close(); // only the first call has an effect
+        assertThat(source.closes()).isEqualTo(1);
+        assertThatThrownBy(() -> reader.getSpectrumAt(0)).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void oneInstanceThrownByTheManifestReadAndTheSourceCloseIsRethrownByOpen() {
+        MzPeakException failure = new MzPeakException("backend failed");
+        ClosingSource source = new ClosingSource(TestSources.memory(Fixtures.current(SMALL)), Map.of());
+        source.manifestFailure = failure;
+        source.closeFailure = failure;
+
+        assertThatThrownBy(() -> MzPeakReader.open(source))
+                .isSameAs(failure)
+                .satisfies(e -> assertThat(e.getSuppressed()).isEmpty());
+        assertThat(source.closes()).isEqualTo(1);
+    }
+
+    @Test
+    void oneInstanceThrownClosingBothSignalMembersIsThrownOnceAndTheSourceIsClosed() {
+        String[] members = signalMembers();
+        MzPeakException failure = new MzPeakException("shared close failure");
+        ClosingSource source = new ClosingSource(TestSources.memory(Fixtures.current(SMALL)), Map.of());
+        source.streamCloseThrows.put(members[0], failure);
+        source.streamCloseThrows.put(members[1], failure);
+        MzPeakReader reader = MzPeakReader.open(source);
+        reader.getSpectrumAt(0);
+
+        assertThatThrownBy(reader::close)
+                .isSameAs(failure)
+                .satisfies(e -> assertThat(e.getSuppressed()).isEmpty());
+        assertThat(source.closedStreams(members[0])).isEqualTo(source.opened(members[0])).isPositive();
+        assertThat(source.closedStreams(members[1])).isEqualTo(source.opened(members[1])).isPositive();
+        assertThat(source.closes()).isEqualTo(1);
+    }
+
+    /** The names of the spectrum data-arrays and peaks members of small.mzpeak. */
+    private static String[] signalMembers() {
+        try (MzPeakSource probe = TestSources.memory(Fixtures.current(SMALL))) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(probe);
+            return new String[] {
+                    manifest.find(EntityType.SPECTRUM, DataKind.DATA_ARRAYS).orElseThrow().name(),
+                    manifest.find(EntityType.SPECTRUM, DataKind.PEAKS).orElseThrow().name()};
+        }
+    }
+
     /**
      * {@code delegate}, counting its closes and the streams of each member opened and closed. A member listed in
-     * {@code streamCloseFailures} with a non-empty message fails each stream close with that message;
-     * {@link #manifestFailure} is thrown by {@link #readManifestBytes()}, and {@link #failClose} fails
-     * {@link #close()} after closing the delegate.
+     * {@code streamCloseFailures} with a non-empty message fails each stream close with that message, and a member
+     * in {@link #streamCloseThrows} throws that instance from each stream close; {@link #manifestFailure} is thrown by
+     * {@link #readManifestBytes()}, and {@link #failClose} (a new exception) or {@link #closeFailure} (that instance)
+     * fails {@link #close()} after closing the delegate.
      */
     private static final class ClosingSource implements MzPeakSource {
 
@@ -151,8 +220,10 @@ class ReaderLifecycleTest {
         private final Map<String, AtomicInteger> opened = new ConcurrentHashMap<>();
         private final Map<String, AtomicInteger> closed = new ConcurrentHashMap<>();
         private final AtomicInteger closes = new AtomicInteger();
+        final Map<String, Throwable> streamCloseThrows = new ConcurrentHashMap<>();
         Throwable manifestFailure;
         boolean failClose;
+        Throwable closeFailure;
 
         ClosingSource(MzPeakSource delegate, Map<String, String> streamCloseFailures) {
             this.delegate = delegate;
@@ -211,6 +282,20 @@ class ReaderLifecycleTest {
             if (failClose) {
                 throw new MzPeakException("source close failed");
             }
+            if (closeFailure != null) {
+                throw unchecked(closeFailure);
+            }
+        }
+
+        /** {@code t} itself, typed for {@code throw}: a {@link RuntimeException} or an {@link Error}. */
+        private static RuntimeException unchecked(Throwable t) {
+            if (t instanceof RuntimeException e) {
+                return e;
+            }
+            if (t instanceof Error e) {
+                throw e;
+            }
+            throw new AssertionError("not unchecked: " + t);
         }
 
         private final class ClosingStream extends SeekableInputStream {
@@ -267,6 +352,10 @@ class ReaderLifecycleTest {
             public void close() throws IOException {
                 in.close();
                 closed.computeIfAbsent(member, k -> new AtomicInteger()).incrementAndGet();
+                Throwable thrown = streamCloseThrows.get(member);
+                if (thrown != null) {
+                    throw unchecked(thrown);
+                }
                 String failure = streamCloseFailures.get(member);
                 if (failure != null && !failure.isEmpty()) {
                     throw new IOException(failure);
