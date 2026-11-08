@@ -2,12 +2,19 @@ package org.mzpeak.io;
 
 import org.apache.parquet.io.InputFile;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Objects;
 
 /**
  * Abstracts where an mzPeak dataset's member files live: an unpacked directory or a single-file
  * (STORED) {@code .mzpeak} ZIP archive. Members are addressed by their manifest name.
+ *
+ * <p>{@link #open(Path)} opens a local directory or archive. For other storage, such as an object store, a caller
+ * supplies the bytes and the reader does the rest: {@link #zip(String, RandomAccessBytes)} reads a single-file archive
+ * through one {@link RandomAccessBytes}, and {@link #unpacked(String, MemberOpener)} reads an unpacked dataset whose
+ * members a {@link MemberOpener} opens one by one.
  *
  * <p>Implementations other than the built-in ones can be passed to {@link MzPeakReader#open(MzPeakSource)} and
  * {@link MzPeakReader#open(MzPeakSource, MzPeakReader.Options)}. What a reader expects of a source:
@@ -47,5 +54,53 @@ public interface MzPeakSource extends AutoCloseable {
             return new ZipSource(path);
         }
         throw new MzPeakException("No such mzPeak dataset: " + path);
+    }
+
+    /**
+     * A single-file {@code .mzpeak} ZIP archive read from {@code bytes}, as {@link #open(Path)} reads an archive file:
+     * the central directory is read now, STORED members are read in place and only the ranges a reader asks for.
+     *
+     * <p>The source takes ownership of {@code bytes} and closes them on {@link #close()}, or before throwing when the
+     * archive cannot be read (or {@code description} is null).
+     *
+     * @param description names the archive in messages and {@link #describe()}, e.g. its URL
+     * @throws MzPeakException if {@code bytes} are not a readable ZIP archive
+     */
+    static MzPeakSource zip(String description, RandomAccessBytes bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (description == null) {
+            ZipSource.closeQuietly(bytes);
+            throw new NullPointerException("description");
+        }
+        return new ZipSource(description, bytes);
+    }
+
+    /**
+     * An unpacked dataset whose members {@code opener} opens, as {@link #open(Path)} reads a directory. Members are
+     * opened lazily, each at most once, when a reader first asks for them; a member name that is absolute or contains
+     * a {@code ..} segment is rejected before {@code opener} is called. A name counts as absolute if it starts with
+     * {@code /} or {@code \}, or if its first segment contains {@code :} (a drive letter such as {@code C:/x}, or a
+     * URI scheme such as {@code https://host/x} or {@code file:///x}). {@link #close()} closes every member opened.
+     *
+     * @param description names the dataset in messages and {@link #describe()}, e.g. its base URL
+     */
+    static MzPeakSource unpacked(String description, MemberOpener opener) {
+        return new UnpackedSource(Objects.requireNonNull(description, "description"),
+                Objects.requireNonNull(opener, "opener"));
+    }
+
+    /** Opens the members of an unpacked dataset for {@link #unpacked(String, MemberOpener)}. */
+    @FunctionalInterface
+    interface MemberOpener {
+
+        /**
+         * Opens the member {@code name}, a {@code /}-separated path relative to the dataset root as the manifest
+         * lists it ({@code mzpeak_index.json} for the manifest). The source calls this at most once per name and
+         * closes the returned bytes when it is closed.
+         *
+         * @return the member's bytes, or {@code null} if the dataset has no such member
+         * @throws IOException if the member cannot be opened
+         */
+        RandomAccessBytes open(String name) throws IOException;
     }
 }

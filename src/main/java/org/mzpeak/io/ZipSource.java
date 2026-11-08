@@ -14,11 +14,12 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
 /**
- * {@link MzPeakSource} over a single-file {@code .mzpeak} ZIP archive.
+ * {@link MzPeakSource} over a single-file {@code .mzpeak} ZIP archive, read through {@link RandomAccessBytes}: a
+ * local file, or any storage a caller plugs in through {@link MzPeakSource#zip(String, RandomAccessBytes)}.
  *
  * <p>mzPeak archives store their Parquet members STORED (uncompressed). Such members are read <em>in place</em>
- * via a seekable {@link FileSliceInputFile} over the archive's {@link FileChannel} — no copy into memory — so
- * reads from inside the archive are streaming and memory-bounded, exactly like an unpacked directory.
+ * via a seekable {@link FileSliceInputFile} over the archive's bytes — no copy into memory — so reads from inside
+ * the archive are streaming and memory-bounded, exactly like an unpacked directory.
  * (Compressed members, which the spec doesn't use, are inflated into memory as a fallback.)
  */
 final class ZipSource implements MzPeakSource {
@@ -26,31 +27,44 @@ final class ZipSource implements MzPeakSource {
     /** Guard the in-memory fallback (manifest read + compressed members) against unbounded heap. */
     private static final long MAX_MEMBER_BYTES = Integer.MAX_VALUE - 8;
 
-    private final Path path;
-    private final FileChannel channel;
+    private final String description;
+    private final RandomAccessBytes bytes;
     private final Map<String, ZipIndex.Entry> index;
 
+    /** The archive file at {@code path}, described by the path. */
     ZipSource(Path path) {
-        this.path = path;
-        FileChannel ch = null;
+        this(path.toString(), openFile(path));
+    }
+
+    /**
+     * The archive {@code bytes}, described by {@code description} in messages. Takes ownership of {@code bytes}: they
+     * are closed when the archive cannot be read, or by {@link #close()}.
+     */
+    ZipSource(String description, RandomAccessBytes bytes) {
+        this.description = description;
+        this.bytes = bytes;
         try {
-            ch = FileChannel.open(path, StandardOpenOption.READ);
-            this.index = ZipIndex.read(ch);
-            this.channel = ch;
+            this.index = ZipIndex.read(bytes);
         } catch (IOException | RuntimeException e) {
-            closeQuietly(ch);
+            closeQuietly(bytes);
             throw (e instanceof MzPeakException me) ? me
-                    : new MzPeakException("Failed to open mzPeak archive " + path, e);
+                    : new MzPeakException("Failed to open mzPeak archive " + description, e);
         }
     }
 
-    private static void closeQuietly(FileChannel ch) {
-        if (ch != null) {
-            try {
-                ch.close();
-            } catch (IOException ignored) {
-                // best effort on the failure path
-            }
+    private static RandomAccessBytes openFile(Path path) {
+        try {
+            return RandomAccessBytes.of(FileChannel.open(path, StandardOpenOption.READ));
+        } catch (IOException | RuntimeException e) {
+            throw new MzPeakException("Failed to open mzPeak archive " + path, e);
+        }
+    }
+
+    static void closeQuietly(RandomAccessBytes bytes) {
+        try {
+            bytes.close();
+        } catch (IOException | RuntimeException ignored) {
+            // best effort on the failure path
         }
     }
 
@@ -63,7 +77,7 @@ final class ZipSource implements MzPeakSource {
     public InputFile inputFile(String name) {
         ZipIndex.Entry e = entry(name);
         if (e.method() == ZipIndex.STORED) {
-            return new FileSliceInputFile(channel, e.dataOffset(), e.size()); // in place, seekable
+            return new FileSliceInputFile(bytes, e.dataOffset(), e.size()); // in place, seekable
         }
         return new ByteArrayInputFile(readBytes(name)); // compressed -> inflate into memory
     }
@@ -71,7 +85,7 @@ final class ZipSource implements MzPeakSource {
     private ZipIndex.Entry entry(String name) {
         ZipIndex.Entry e = index.get(name);
         if (e == null) {
-            throw new MzPeakException("mzPeak archive " + path + " has no member " + name);
+            throw new MzPeakException("mzPeak archive " + description + " has no member " + name);
         }
         return e;
     }
@@ -79,7 +93,8 @@ final class ZipSource implements MzPeakSource {
     private byte[] readBytes(String name) {
         ZipIndex.Entry e = entry(name);
         if (e.size() > MAX_MEMBER_BYTES || e.compressedSize() > MAX_MEMBER_BYTES) {
-            throw new MzPeakException("mzPeak member " + name + " is too large to read into memory in " + path);
+            throw new MzPeakException("mzPeak member " + name + " is too large to read into memory in "
+                    + description);
         }
         byte[] raw = readSlice(e.dataOffset(), (int) e.compressedSize(), name);
         if (e.method() == ZipIndex.STORED) {
@@ -103,12 +118,12 @@ final class ZipSource implements MzPeakSource {
                 total += n;
             }
             if (!inflater.finished() || total != out.length) {
-                throw new MzPeakException("truncated/corrupt DEFLATE member " + name + " in " + path
+                throw new MzPeakException("truncated/corrupt DEFLATE member " + name + " in " + description
                         + " (inflated " + total + " of " + out.length + " bytes)");
             }
             return out;
         } catch (DataFormatException ex) {
-            throw new MzPeakException("Failed to inflate member " + name + " in " + path, ex);
+            throw new MzPeakException("Failed to inflate member " + name + " in " + description, ex);
         } finally {
             inflater.end();
         }
@@ -119,29 +134,30 @@ final class ZipSource implements MzPeakSource {
             ByteBuffer buf = ByteBuffer.allocate(length);
             long pos = offset;
             while (buf.hasRemaining()) {
-                int n = channel.read(buf, pos);
+                int n = bytes.read(buf, pos);
                 if (n < 0) {
-                    throw new MzPeakException("unexpected end of archive reading member " + name + " in " + path);
+                    throw new MzPeakException("unexpected end of archive reading member " + name + " in "
+                            + description);
                 }
                 pos += n;
             }
             return buf.array();
         } catch (IOException e) {
-            throw new MzPeakException("Failed to read member " + name + " from " + path, e);
+            throw new MzPeakException("Failed to read member " + name + " from " + description, e);
         }
     }
 
     @Override
     public String describe() {
-        return path.toString();
+        return description;
     }
 
     @Override
     public void close() {
         try {
-            channel.close();
+            bytes.close();
         } catch (IOException e) {
-            throw new MzPeakException("Failed to close " + path, e);
+            throw new MzPeakException("Failed to close " + description, e);
         }
     }
 }

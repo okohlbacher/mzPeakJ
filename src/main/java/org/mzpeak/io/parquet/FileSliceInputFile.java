@@ -2,29 +2,38 @@ package org.mzpeak.io.parquet;
 
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
+import org.mzpeak.io.RandomAccessBytes;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Objects;
 
 /**
- * A parquet {@link InputFile} over a contiguous slice {@code [base, base+length)} of a {@link FileChannel}.
- * Used to read a STORED (uncompressed) Parquet member of a single-file {@code .mzpeak} ZIP <em>in place</em>,
- * without copying it into memory — so reads from inside the archive are seekable and memory-bounded, just
- * like reading an unpacked directory.
+ * A parquet {@link InputFile} over a contiguous slice {@code [base, base+length)} of a {@link RandomAccessBytes}
+ * (or a {@link FileChannel}). Used to read a STORED (uncompressed) Parquet member of a single-file {@code .mzpeak}
+ * ZIP <em>in place</em>, without copying it into memory — so reads from inside the archive are seekable and
+ * memory-bounded, just like reading an unpacked directory.
  *
- * <p>The channel is shared and read positionally ({@link FileChannel#read(ByteBuffer, long)} does not move the
- * channel position), so multiple slice streams over the same archive coexist safely.
+ * <p>The bytes are shared and read positionally ({@link RandomAccessBytes#read(ByteBuffer, long)} keeps no
+ * position), so multiple slice streams over the same archive coexist safely. Neither this file nor its streams
+ * close the bytes.
  */
 public final class FileSliceInputFile implements InputFile {
 
-    private final FileChannel channel;
+    private final RandomAccessBytes bytes;
     private final long base;
     private final long length;
 
+    /** The slice {@code [base, base+length)} of {@code channel}, read through {@link RandomAccessBytes#of}. */
     public FileSliceInputFile(FileChannel channel, long base, long length) {
-        this.channel = channel;
+        this(RandomAccessBytes.of(channel), base, length);
+    }
+
+    /** The slice {@code [base, base+length)} of {@code bytes}. */
+    public FileSliceInputFile(RandomAccessBytes bytes, long base, long length) {
+        this.bytes = Objects.requireNonNull(bytes, "bytes");
         this.base = base;
         this.length = length;
     }
@@ -61,7 +70,7 @@ public final class FileSliceInputFile implements InputFile {
                 return -1;
             }
             ByteBuffer one = ByteBuffer.allocate(1);
-            int n = channel.read(one, base + pos);
+            int n = bytes.read(one, base + pos);
             if (n <= 0) {
                 return -1;
             }
@@ -78,7 +87,7 @@ public final class FileSliceInputFile implements InputFile {
                 return -1;
             }
             int toRead = (int) Math.min(len, length - pos);
-            int n = channel.read(ByteBuffer.wrap(b, off, toRead), base + pos);
+            int n = bytes.read(ByteBuffer.wrap(b, off, toRead), base + pos);
             if (n <= 0) {
                 return -1;
             }
@@ -107,7 +116,7 @@ public final class FileSliceInputFile implements InputFile {
             int want = (int) Math.min(dst.remaining(), length - pos);
             int savedLimit = dst.limit();
             dst.limit(dst.position() + want);
-            int n = channel.read(dst, base + pos);
+            int n = bytes.read(dst, base + pos);
             dst.limit(savedLimit);
             if (n <= 0) {
                 return -1;
@@ -124,7 +133,7 @@ public final class FileSliceInputFile implements InputFile {
             }
             long filePos = base + pos;
             while (dst.hasRemaining()) {
-                int n = channel.read(dst, filePos);
+                int n = bytes.read(dst, filePos);
                 if (n < 0) {
                     throw new EOFException("unexpected end of file in archive slice");
                 }
