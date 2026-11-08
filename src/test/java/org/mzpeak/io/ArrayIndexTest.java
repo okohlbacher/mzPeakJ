@@ -301,7 +301,9 @@ class ArrayIndexTest {
                 tuple("time_chunk_end", BufferFormat.CHUNK_END, null),
                 tuple("time_chunk_values", BufferFormat.CHUNK_VALUES, null),
                 tuple("chunk_encoding", BufferFormat.CHUNK_ENCODING, null),
-                tuple("intensity_numpress_slof_bytes", BufferFormat.CHUNK_TRANSFORM, "MS:1002314"));
+                tuple("intensity_numpress_slof_bytes", BufferFormat.CHUNK_TRANSFORM, "MS:1002314"),
+                // FN-4: listed so that a chunk holding only PIC intensities fails instead of reading zeros
+                tuple("intensity_numpress_pic_bytes", BufferFormat.CHUNK_TRANSFORM, "MS:1002313"));
     }
 
     @Test

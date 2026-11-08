@@ -62,12 +62,13 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>mzPeakJ output reads back the arrays it was written from;
  *   <li>constructed members without an array index footer pin the decoding rules (Q-U5): a point row takes the
  *       literal {@code intensity}, else the first non-null numeric {@code intensity_*} column in schema order, else
- *       0, and a null time reads as NaN; a chunk row adds its time deltas to {@code time_chunk_start} whatever its
- *       {@code chunk_encoding} (a null delta adds 0), takes the plain {@code intensity} list, else the SLOF bytes,
- *       pads missing intensities with 0 and cuts surplus ones; rows without an index, and chunk rows without a
- *       start, are skipped; PIC bytes are not read; wavelength spectra read {@code wavelength} and the literal
- *       {@code intensity} only.
+ *       0, and a null time reads as NaN; a chunk row adds its time deltas to {@code time_chunk_start} (a null delta
+ *       adds 0), takes the plain {@code intensity} list, else the SLOF bytes, pads missing intensities with 0 and
+ *       cuts surplus ones; rows without an index, and chunk rows without a start, are skipped; wavelength spectra
+ *       read {@code wavelength} and the literal {@code intensity} only.
  * </ul>
+ * FN-4 made the chromatogram rows that were read as wrong or empty arrays fail: a chunk_encoding other than delta,
+ * PIC-only intensities, a Numpress-linear time axis, a plan without time or intensity, and a negative index.
  */
 class SignalPlanWiringTest {
 
@@ -475,10 +476,10 @@ class SignalPlanWiringTest {
     }
 
     /**
-     * Chunk rows: the time axis is {@code time_chunk_start} plus the running sum of the deltas whatever the
-     * chunk_encoding, a null delta adds 0; intensities come from the plain list, else the SLOF bytes, are padded
-     * with 0 and cut to the time axis; PIC bytes are not read. Rows without an index or a start are skipped; chunks
-     * of one index are appended in row order.
+     * Chunk rows: the time axis is {@code time_chunk_start} plus the running sum of the deltas (chunk_encoding null or
+     * MS:1003089), a null delta adds 0; intensities come from the plain list, else the SLOF bytes, are padded with 0
+     * and cut to the time axis. Rows without an index or a start are skipped; chunks of one index are appended in row
+     * order. Chromatogram 3 was MS:1000576 and chromatogram 6 PIC-only before FN-4; both now throw (see below).
      */
     @Test
     void chunkRowsWithoutAnArrayIndex() {
@@ -493,14 +494,14 @@ class SignalPlanWiringTest {
                 chunk(rows, 0L, 20.0, null).list("time_chunk_values").list("intensity").parent,
                 chunk(rows, 2L, null, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent,
                 chunk(rows, null, 1.0, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent,
-                chunk(rows, 3L, 1.0, "MS:1000576").list("time_chunk_values", 1.0, 1.0)
+                chunk(rows, 3L, 1.0, null).list("time_chunk_values", 1.0, 1.0)
                         .list("intensity", 7.0, 8.0, 9.0, 10.0).parent,
                 chunk(rows, 4L, 0.0, null).list("time_chunk_values", 2.0)
                         .bytes("intensity_numpress_slof_bytes", new byte[0]).parent,
                 chunk(rows, 5L, 0.0, null).list("time_chunk_values", 1.0).list("intensity", 4.0, 5.0)
                         .bytes("intensity_numpress_slof_bytes", slof).parent,
                 chunk(rows, 6L, 0.0, null).list("time_chunk_values", 1.0)
-                        .bytes("intensity_numpress_pic_bytes", new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}).parent,
+                        .bytes("intensity_numpress_pic_bytes", new byte[0]).parent,
                 chunk(rows, 7L, 0.0, null).list("intensity", 6.0).parent);
 
         List<Chromatogram> all = chromatograms(data, 0, 1, 2, 3, 4, 5, 6, 7);
@@ -517,6 +518,152 @@ class SignalPlanWiringTest {
         assertArrays(all.get(5), new double[] {0.0, 1.0}, new double[] {4.0, 5.0});
         assertArrays(all.get(6), new double[] {0.0, 1.0}, new double[] {0.0, 0.0});
         assertArrays(all.get(7), new double[] {0.0}, new double[] {6.0});
+    }
+
+    @Test
+    void aChunkWhoseEncodingIsNotDeltaThrows() {
+        // before FN-4 the absolute values were summed as deltas: times [1, 11, 31]
+        MessageType schema = chunkSchema();
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                chunk(rows, 3L, 1.0, "MS:1000576").list("time_chunk_values", 10.0, 20.0)
+                        .list("intensity", 7.0, 8.0, 9.0).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 3))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk encoding MS:1000576 for chromatogram_index 3");
+    }
+
+    @Test
+    void aChunkWithOnlyPicIntensitiesThrows() {
+        // before FN-4 its intensities read as zeros
+        MessageType schema = chunkSchema();
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                chunk(rows, 6L, 0.0, null).list("time_chunk_values", 1.0)
+                        .bytes("intensity_numpress_pic_bytes", new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("PIC-encoded chromatogram intensities are not supported (column"
+                        + " intensity_numpress_pic_bytes) for chromatogram_index 6");
+    }
+
+    @Test
+    void aChunkWithNumpressLinearTimeThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time_chunk_start;
+                    optional group time_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional binary chunk_encoding (STRING);
+                    optional group time_numpress_linear_bytes (LIST) {
+                      repeated group list { required int32 item (INTEGER(8,false)); }
+                    }
+                    optional group intensity (LIST) { repeated group list { optional float item; } }
+                  }
+                }""");
+        String index = arrayIndex("chunk",
+                indexEntry("chunk.chromatogram_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.time_chunk_start", "chunk_start", "MS:1000595", 1, null, null),
+                indexEntry("chunk.time_chunk_values", "chunk_values", "MS:1000595", 1, null, null),
+                indexEntry("chunk.chunk_encoding", "chunk_encoding", "MS:1000595", 1, null, null),
+                indexEntry("chunk.time_numpress_linear_bytes", "chunk_transform", "MS:1000595", 1,
+                        MSNumpress.ACC_NUMPRESS_LINEAR, null),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, null));
+        double[] times = {1.0, 2.0, 3.0};
+        byte[] buffer = new byte[8 + times.length * 5];
+        int n = MSNumpress.encodeLinear(times, times.length, buffer,
+                MSNumpress.optimalLinearFixedPoint(times, times.length));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = rows.newGroup();
+        new Row(row, row.addGroup("chunk")).append("chromatogram_index", 2L).append("time_chunk_start", 1.0)
+                .append("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR)
+                .bytes("time_numpress_linear_bytes", Arrays.copyOf(buffer, n)).list("intensity", 4.0, 5.0, 6.0);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index), row);
+
+        assertThatThrownBy(() -> chromatograms(data, 2))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk encoding MS:1002312 for chromatogram_index 2");
+
+        // the transform column alone, under the delta encoding, throws too
+        Group delta = rows.newGroup();
+        new Row(delta, delta.addGroup("chunk")).append("chromatogram_index", 2L).append("time_chunk_start", 1.0)
+                .bytes("time_numpress_linear_bytes", Arrays.copyOf(buffer, n)).list("intensity", 4.0, 5.0, 6.0);
+        Path deltaData = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index), delta);
+        assertThatThrownBy(() -> chromatograms(deltaData, 2))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram_index 2 stores its time axis with the chunk transform MS:1002312 (column"
+                        + " time_numpress_linear_bytes), which is not decoded for chromatograms");
+    }
+
+    @Test
+    void aPointPlanWithoutTimeThrows() {
+        // before FN-4 every time read as NaN
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time;
+                    optional float intensity;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.chromatogram_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("point.intensity", "point", "MS:1000515", null, null, null));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                point(rows).append("chromatogram_index", 0L).append("time", 1.0).append("intensity", 2f).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("the chromatogram signal plan names no time values column, so the rows of"
+                        + " chromatogram_index 0 cannot be read");
+    }
+
+    @Test
+    void aPlanWithoutAnIntensityColumnThrows() {
+        // before FN-4 every intensity read as 0
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                point(rows).append("chromatogram_index", 0L).append("time", 1.0).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("the chromatogram signal plan names neither a value-bearing intensity column nor an"
+                        + " MS-Numpress SLOF column, so the rows of chromatogram_index 0 cannot be read");
+    }
+
+    @Test
+    void aNegativeChromatogramIndexThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int32 chromatogram_index (INTEGER(32,false));
+                    optional double time;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        // the uint32 2^31 + 1, sign-extended
+        Path data = write("chromatograms_data.parquet", schema,
+                point(rows).append("chromatogram_index", (int) 0x8000_0001L).append("time", 1.0)
+                        .append("intensity", 2f).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chromatogram_index -2147483647 is out of range");
     }
 
     /** SLOF bytes that do not decode throw, naming the chromatogram index. */

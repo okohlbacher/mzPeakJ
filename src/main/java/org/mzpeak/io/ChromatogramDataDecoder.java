@@ -26,12 +26,19 @@ import java.util.stream.Collectors;
  *       value-bearing intensity columns in index order, such as has_uv's {@code intensity_f32_au} absorbance where
  *       {@code intensity} is null. A null time reads as NaN, an intensity without any value as 0.
  *   <li><b>chunk</b>, one row per chunk: the time axis is the chunk start followed by the running sum of the chunk
- *       values as deltas, whatever the chunk encoding; a null delta adds 0. The intensities are the first non-null
- *       value-bearing intensity list, else the MS-Numpress SLOF bytes, else none; a null intensity reads as 0,
- *       missing ones are padded with 0 and surplus ones dropped. A chunk without a start is skipped.
+ *       values as deltas; a null delta adds 0. The intensities are the first non-null value-bearing intensity list,
+ *       else the MS-Numpress SLOF bytes, else none; a null intensity reads as 0, missing ones are padded with 0 and
+ *       surplus ones dropped. A chunk without a start is skipped.
  * </ul>
  * Rows without the prefix struct or an index are skipped; the chunks and points of one index are appended in row
  * order. These are Q-U5's semantics; sharing the spectrum chunk decoder would change them (deferred).
+ *
+ * <p>What cannot be decoded throws an {@link MzPeakException} instead of reading as wrong or empty arrays: a negative
+ * index (an unsigned value of 2^31 or more in an INT32 column, or a uint64 with the high bit set); on the first decoded
+ * row, a plan that names no time values column (point layout) or neither a value-bearing intensity column nor a SLOF
+ * column; a chunk whose {@code chunk_encoding} is neither null nor MS:1003089 (delta); a chunk in which a chunk
+ * transform column of the time axis (such as Numpress linear time) carries a value; and a chunk whose only non-null
+ * intensity source is a non-empty MS-Numpress PIC (MS:1002313) list.
  *
  * <p><b>Extra arrays</b> (AP-9) are the plan's {@link SignalPlan#extras() extras}, under the plan's keys, parallel
  * to the time axis: one cell per point row, and per chunk row a list that aligns 1:1 with the time values the chunk
@@ -52,6 +59,9 @@ final class ChromatogramDataDecoder {
 
     private static final System.Logger LOG = System.getLogger(ChromatogramDataDecoder.class.getName());
 
+    /** MS:1003089, delta prediction: the only chunk encoding the time axis is decoded with. */
+    private static final String DELTA_ENCODING = "MS:1003089";
+
     /**
      * The decoded arrays of one chromatogram.
      *
@@ -66,8 +76,14 @@ final class ChromatogramDataDecoder {
     private final boolean chunked;
     private final String timeField;
     private final String startField;
+    private final String encodingField;
+    /** The chunk transforms of the time axis, CURIE to column; none of them is decoded. */
+    private final Map<String, String> axisTransforms;
     private final List<Column> intensityColumns;
     private final Column slofColumn;
+    private final Column picColumn;
+    /** Why the plan cannot decode a row, thrown on the first decoded row; null when it can. */
+    private final String unreadablePlan;
     private final boolean unitsDeclared;
     /** The decodable extras, in plan order. */
     private final List<Extra> extras;
@@ -80,13 +96,20 @@ final class ChromatogramDataDecoder {
         this.chunked = plan.layout() == SignalPlan.Layout.CHUNK;
         this.timeField = field(plan.axis().values());
         this.startField = field(plan.axis().start());
+        this.encodingField = field(plan.axis().encoding());
+        this.axisTransforms = plan.axis().transformFields();
         this.intensityColumns = plan.intensities().stream()
                 .filter(c -> c.format().valueBearing())
                 .toList();
-        this.slofColumn = plan.intensities().stream()
-                .filter(c -> c.format() == BufferFormat.CHUNK_TRANSFORM
-                        && MSNumpress.ACC_NUMPRESS_SLOF.equals(c.transform()))
-                .findFirst().orElse(null);
+        this.slofColumn = intensityTransform(plan, MSNumpress.ACC_NUMPRESS_SLOF);
+        this.picColumn = intensityTransform(plan, MSNumpress.ACC_NUMPRESS_PIC);
+        if (!chunked && timeField == null) {
+            unreadablePlan = "names no time values column";
+        } else if (intensityColumns.isEmpty() && slofColumn == null) {
+            unreadablePlan = "names neither a value-bearing intensity column nor an MS-Numpress SLOF column";
+        } else {
+            unreadablePlan = null;
+        }
         this.unitsDeclared = plan.source() == ArrayIndex.Source.FOOTER;
         List<Extra> decodable = new ArrayList<>();
         for (Extra extra : plan.extras().values()) {
@@ -105,7 +128,8 @@ final class ChromatogramDataDecoder {
     /**
      * Groups the rows of {@code dataFile} by chromatogram index, in the order the indices first occur.
      *
-     * @throws MzPeakException when SLOF bytes do not decode; the message names the chromatogram index
+     * @throws MzPeakException when SLOF bytes do not decode, or a row cannot be decoded (see the class comment); the
+     *                         message names the chromatogram index
      */
     static Map<Long, Decoded> decode(InputFile dataFile, SignalPlan plan) {
         ChromatogramDataDecoder decoder = new ChromatogramDataDecoder(plan);
@@ -119,6 +143,13 @@ final class ChromatogramDataDecoder {
 
     private static String field(Column column) {
         return column == null ? null : column.field();
+    }
+
+    /** The first intensity column of {@code plan} stored as the chunk transform {@code transform}, or null. */
+    private static Column intensityTransform(SignalPlan plan, String transform) {
+        return plan.intensities().stream()
+                .filter(c -> c.format() == BufferFormat.CHUNK_TRANSFORM && transform.equals(c.transform()))
+                .findFirst().orElse(null);
     }
 
     private String transformColumns(Extra extra) {
@@ -135,6 +166,14 @@ final class ChromatogramDataDecoder {
         Long idx = ParquetGroups.optLong(group, indexField);
         if (idx == null) {
             return;
+        }
+        if (idx < 0) {
+            throw new MzPeakException(indexField + " " + idx + " is out of range (negative when read as a signed"
+                    + " integer: an unsigned value of 2^31 or more in an INT32 column, or of 2^63 or more)");
+        }
+        if (unreadablePlan != null) {
+            throw new MzPeakException("the chromatogram signal plan " + unreadablePlan + ", so the rows of "
+                    + indexField + " " + idx + " cannot be read");
         }
         if (chunked) {
             acceptChunk(group, idx, acc);
@@ -156,7 +195,7 @@ final class ChromatogramDataDecoder {
             Double cell;
             try {
                 cell = ParquetGroups.optDouble(point, extras.get(k).values().field());
-            } catch (IllegalStateException | ClassCastException e) {
+            } catch (RuntimeException e) {
                 markUnreadable(k, e);
                 continue;
             }
@@ -180,6 +219,17 @@ final class ChromatogramDataDecoder {
     }
 
     private void acceptChunk(Group chunk, long idx, Map<Long, Accumulator> acc) {
+        String encoding = encodingField == null ? null : ParquetGroups.optString(chunk, encodingField);
+        if (encoding != null && !encoding.equals(DELTA_ENCODING)) {
+            throw new MzPeakException("unsupported chunk encoding " + encoding + " for " + indexField + " " + idx);
+        }
+        for (Map.Entry<String, String> transform : axisTransforms.entrySet()) {
+            if (ChunkCodecs.carriesValue(chunk, transform.getValue())) {
+                throw new MzPeakException(indexField + " " + idx + " stores its time axis with the chunk transform "
+                        + transform.getKey() + " (column " + transform.getValue() + "), which is not decoded for"
+                        + " chromatograms");
+            }
+        }
         // Time axis: chunk start + cumulative sum of the chunk values
         Double start = startField == null ? null : ParquetGroups.optDouble(chunk, startField);
         if (start == null) {
@@ -219,7 +269,7 @@ final class ChromatogramDataDecoder {
         try {
             cells = ParquetGroups.has(chunk, extra.values().field())
                     ? ParquetGroups.doubleListNullable(chunk, extra.values().field()) : null;
-        } catch (IllegalStateException | ClassCastException e) {
+        } catch (RuntimeException e) {
             markUnreadable(k, e);
             return;
         }
@@ -243,6 +293,8 @@ final class ChromatogramDataDecoder {
      * Intensity values of a chunk row: the first non-null value-bearing intensity list of the plan, otherwise the
      * plan's MS-Numpress SLOF bytes; the column used is noted on {@code a}. Returns an empty array when neither is
      * present.
+     *
+     * @throws MzPeakException when the SLOF bytes do not decode, or when the only source is a non-empty PIC list
      */
     private double[] chunkIntensity(Group chunk, long chromatogramIndex, Accumulator a) {
         for (Column column : intensityColumns) {
@@ -264,8 +316,11 @@ final class ChromatogramDataDecoder {
                         + chromatogramIndex, e);
             }
         }
-        // A chunk with only PIC bytes is not decoded yet and reads as zero intensities
-        // (deferred: PIC chromatograms, via MSNumpress.decodePic, since decode() rejects PIC payloads < 8 bytes).
+        // PIC chromatograms are not decoded (deferred: MSNumpress.decode() rejects PIC payloads < 8 bytes)
+        if (picColumn != null && ChunkCodecs.carriesValue(chunk, picColumn.field())) {
+            throw new MzPeakException("PIC-encoded chromatogram intensities are not supported (column "
+                    + picColumn.field() + ") for " + indexField + " " + chromatogramIndex);
+        }
         return new double[0];
     }
 

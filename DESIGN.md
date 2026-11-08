@@ -381,9 +381,14 @@ throws.
 - **point:** the time value, and the first non-null value among the value-bearing intensity columns in index
   order. has_uv's 'DAD1 A' absorbance comes from `intensity_f32_au` (unit UO:0000269) where `intensity` is
   null. A null time reads as NaN, an intensity without any value as 0.
-- **chunk:** the chunk start followed by the running sum of the chunk values as deltas, whatever the chunk
-  encoding; the intensities are the first non-null intensity list, else the Numpress SLOF bytes. Missing
-  intensities are padded with 0 and surplus ones dropped.
+- **chunk:** the chunk start followed by the running sum of the chunk values as deltas (`chunk_encoding` null
+  or `MS:1003089`); the intensities are the first non-null intensity list, else the Numpress SLOF bytes.
+  Missing intensities are padded with 0 and surplus ones dropped.
+
+What the decoder cannot decode throws instead of reading as wrong or empty arrays: another `chunk_encoding`, a
+value in a chunk transform column of the time axis (such as Numpress linear time), a chunk whose only intensity
+source is a non-empty PIC list, a negative index, and, on the first row, a plan without a time values column
+(point layout) or without any intensity source.
 
 `Chromatogram.intensityUnit()` is the unit of the plan entry that supplied the values (null for an INFERRED
 plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`).

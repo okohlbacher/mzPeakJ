@@ -204,13 +204,13 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
      *       {@code intensity} and every non-repeated FLOAT, DOUBLE, INT32 or INT64 column named
      *       {@code intensity_*}, the latter listed after all other columns (in schema order among themselves) because
      *       they are read only when {@code intensity} is null; in {@code chunk}, the {@code time_chunk_*} and
-     *       {@code chunk_encoding} columns of the time axis (rank 1), the {@code intensity} list (chunk secondary) and
-     *       {@code intensity_numpress_slof_bytes}. PIC intensity is not read for chromatograms, so it is not
-     *       listed.
+     *       {@code chunk_encoding} columns of the time axis (rank 1), the {@code intensity} list (chunk secondary),
+     *       {@code intensity_numpress_slof_bytes} and {@code intensity_numpress_pic_bytes}. PIC intensity is not
+     *       decoded for chromatograms; it is listed so that a chunk holding only PIC intensities fails.
      *   <li>Wavelength spectra, as read by {@link PointArrays}: {@code wavelength} (rank 1) and {@code intensity}.
      * </ul>
-     * The axis bounds and {@code chunk_encoding} are listed whenever present so that the index matches what a
-     * footer would list, although the chromatogram decoder reads neither. Units and data types are not inferred.
+     * The axis bounds are listed whenever present so that the index matches what a footer would list, although the
+     * chromatogram decoder does not read the end. Units and data types are not inferred.
      */
     static ArrayIndex infer(MessageType schema, SignalEntity entity) {
         String prefix = POINT_PREFIX;
@@ -283,6 +283,10 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
             return inferred(entity, prefix, name, INTENSITY_ARRAY, BufferFormat.CHUNK_TRANSFORM,
                     MSNumpress.ACC_NUMPRESS_SLOF, null);
         }
+        if (name.equals("intensity_numpress_pic_bytes")) {
+            return inferred(entity, prefix, name, INTENSITY_ARRAY, BufferFormat.CHUNK_TRANSFORM,
+                    MSNumpress.ACC_NUMPRESS_PIC, null);
+        }
         if (entity == SignalEntity.SPECTRUM) {
             if (name.equals("mz_numpress_linear_bytes")) {
                 return inferred(entity, prefix, name, axis, BufferFormat.CHUNK_TRANSFORM,
@@ -290,10 +294,6 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
             }
             if (name.equals("mz_grid")) {
                 return inferred(entity, prefix, name, axis, BufferFormat.CHUNK_TRANSFORM, GRID_TRANSFORM, 1);
-            }
-            if (name.equals("intensity_numpress_pic_bytes")) {
-                return inferred(entity, prefix, name, INTENSITY_ARRAY, BufferFormat.CHUNK_TRANSFORM,
-                        MSNumpress.ACC_NUMPRESS_PIC, null);
             }
         }
         return null;
