@@ -480,6 +480,89 @@ class ExtraArraysTest {
         }
     }
 
+    // ---- FN-2: an extra never blocks m/z and intensity, and an all-NaN extra stays absent -----------------------
+
+    private static final MessageType NUMPRESS_NAMED_EXTRA = MessageTypeParser.parseMessageType("""
+            message m {
+              optional group chunk {
+                optional int64 spectrum_index (INTEGER(64,false));
+                optional double mz_chunk_start;
+                optional group mz_chunk_values (LIST) { repeated group list { optional double element; } }
+                optional binary chunk_encoding (STRING);
+                optional group intensity (LIST) { repeated group list { optional float element; } }
+                optional group mobility_numpress_quality (LIST) { repeated group list { optional double element; } }
+              }
+            }""");
+
+    @Test
+    void anExtraValueColumnWhoseNameContainsNumpressIsRead() {
+        Peak[] p = Peak.firstOfDiaPasefRefSpectrum2(3);
+        String json = index("chunk",
+                entry("chunk.spectrum_index", "index", "MS:1003870", 0, null, null),
+                entry("chunk.mz_chunk_start", "chunk_start", "MS:1000514", 1, null, null),
+                entry("chunk.mz_chunk_values", "chunk_values", "MS:1000514", 1, null, null),
+                entry("chunk.chunk_encoding", "chunk_encoding", "MS:1000514", 1, null, null),
+                entry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, null),
+                entry("chunk.mobility_numpress_quality", "chunk_secondary", IM, null, null, null));
+        Group record = new SimpleGroupFactory(NUMPRESS_NAMED_EXTRA).newGroup();
+        Group chunk = record.addGroup("chunk");
+        chunk.add("spectrum_index", 2L);
+        chunk.add("mz_chunk_start", p[0].mz);
+        addDoubles(chunk, "mz_chunk_values", new double[] {p[1].mz - p[0].mz, p[2].mz - p[1].mz});
+        chunk.add("chunk_encoding", "MS:1003089");
+        Group list = chunk.addGroup("intensity");
+        for (double v : intensities(p, 0, 3)) {
+            list.addGroup("list").add("element", (float) v);
+        }
+        addDoubles(chunk, "mobility_numpress_quality", mobility(p, 0, 3));
+        Path file = write(NUMPRESS_NAMED_EXTRA, json, record);
+
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            SpectrumArrayStore.Arrays two = store.get(2);
+            assertExact("m/z", new double[] {p[0].mz, p[0].mz + (p[1].mz - p[0].mz),
+                    p[0].mz + (p[1].mz - p[0].mz) + (p[2].mz - p[1].mz)}, two.mz());
+            assertExact("intensity", widened(intensities(p, 0, 3)), two.intensity());
+            assertThat(two.extras().keySet()).containsExactly(IM);
+            assertExact(IM, mobility(p, 0, 3), two.extras().get(IM));
+        }
+    }
+
+    @Test
+    void anExtraWhoseOnlyValuesSitAtDroppedNullMarkedRowsIsAbsent() {
+        Peak[] p = Peak.firstOfDiaPasefRefSpectrum2(2);
+        Path file = write(POINT, POINT_INDEX,
+                pointRow(2, p[0].mz, p[0].intensity, null, p[0].mobility),
+                pointRow(2, null, null, p[0].mobility, null), // null-marked, its im_a cell the only number
+                pointRow(2, p[1].mz, p[1].intensity, null, p[1].mobility));
+
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            SpectrumArrayStore.Arrays two = store.get(2);
+            assertExact("m/z", new double[] {p[0].mz, p[1].mz}, two.mz());
+            assertThat(two.extras().keySet()).containsExactly(IM + "@im_b");
+        }
+        // with the gaps filled the cell is kept, at the filled point
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true, Map.of())) {
+            SpectrumArrayStore.Arrays two = store.get(2);
+            assertThat(two.mz()).hasSize(3);
+            assertThat(two.extras().keySet()).containsExactly(IM, IM + "@im_b");
+            assertExact(IM, new double[] {Double.NaN, p[0].mobility, Double.NaN}, two.extras().get(IM));
+        }
+    }
+
+    @Test
+    void finalizeArraysDropsAnExtraLeftWithOnlyNaN() {
+        Map<String, double[]> extras = new LinkedHashMap<>();
+        extras.put("a", new double[] {Double.NaN, 7, Double.NaN});
+        extras.put("b", new double[] {1, 2, 3});
+
+        SpectrumArrayStore.Arrays kept = NullFill.finalizeArrays(new double[] {100, Double.NaN, 102},
+                new double[] {50, 0, 52}, extras, false);
+
+        assertThat(kept.mz()).containsExactly(100, 102);
+        assertThat(kept.extras().keySet()).containsExactly("b");
+        assertThat(kept.extras().get("b")).containsExactly(1, 3);
+    }
+
     // ---- fixtures and constructed members ----------------------------------------------------------------------
 
     /** One stored peak of diaPASEF.ref, read with parquet-java from its peaks member. */

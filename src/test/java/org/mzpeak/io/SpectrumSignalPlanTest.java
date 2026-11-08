@@ -302,6 +302,137 @@ class SpectrumSignalPlanTest {
                 .hasMessageContaining("point.mz and point.mz_b");
     }
 
+    // ---- FN-2: the intensity column per row, and plans without m/z or intensity -----------------------------------
+
+    private static final MessageType TWO_INTENSITY_POINT = MessageTypeParser.parseMessageType("""
+            message m {
+              optional group point {
+                optional int64 spectrum_index (INTEGER(64,false));
+                optional double mz;
+                optional double intensity_f64;
+                optional float intensity;
+              }
+            }""");
+
+    @Test
+    void aPointRowReadsTheFirstNonNullIntensityColumn() {
+        String json = index("point",
+                entry("point.spectrum_index", "index", "MS:1003870", 0, null),
+                entry("point.mz", "point", "MS:1000514", 1, null),
+                entry("point.intensity_f64", "point", "MS:1000515", null, null),
+                entry("point.intensity", "point", "MS:1000515", null, null));
+        Group first = new SimpleGroupFactory(TWO_INTENSITY_POINT).newGroup();
+        first.addGroup("point").append("spectrum_index", 3L).append("mz", 100.0).append("intensity", 42f);
+        Group second = new SimpleGroupFactory(TWO_INTENSITY_POINT).newGroup();
+        second.addGroup("point").append("spectrum_index", 3L).append("mz", 101.0).append("intensity", 43f);
+        // a row whose earlier column has the value takes it
+        Group third = new SimpleGroupFactory(TWO_INTENSITY_POINT).newGroup();
+        third.addGroup("point").append("spectrum_index", 3L).append("mz", 102.0).append("intensity_f64", 7.5)
+                .append("intensity", 44f);
+        Path file = write(TWO_INTENSITY_POINT, json, 100, first, second, third);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertExact("m/z", new double[] {100, 101, 102}, store.get(3).mz());
+            assertExact("intensity", new double[] {42, 43, 7.5}, store.get(3).intensity());
+        }
+    }
+
+    private static final MessageType TWO_INTENSITY_CHUNK = MessageTypeParser.parseMessageType("""
+            message m {
+              optional group chunk {
+                optional int64 spectrum_index (INTEGER(64,false));
+                optional double mz_chunk_start;
+                optional group mz_chunk_values (LIST) { repeated group list { optional double element; } }
+                optional binary chunk_encoding (STRING);
+                optional group intensity_f64 (LIST) { repeated group list { optional double element; } }
+                optional group intensity (LIST) { repeated group list { optional double element; } }
+              }
+            }""");
+
+    @Test
+    void aChunkRowReadsTheFirstNonNullIntensityList() {
+        String json = index("chunk",
+                entry("chunk.spectrum_index", "index", "MS:1003870", 0, null),
+                entry("chunk.mz_chunk_start", "chunk_start", "MS:1000514", 1, null),
+                entry("chunk.mz_chunk_values", "chunk_values", "MS:1000514", 1, null),
+                entry("chunk.chunk_encoding", "chunk_encoding", "MS:1000514", 1, null),
+                entry("chunk.intensity_f64", "chunk_secondary", "MS:1000515", null, null),
+                entry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null));
+        Group first = new SimpleGroupFactory(TWO_INTENSITY_CHUNK).newGroup();
+        Group a = first.addGroup("chunk");
+        a.add("spectrum_index", 3L);
+        a.add("mz_chunk_start", 100.0);
+        addDoubles(a, "mz_chunk_values", new double[] {1});
+        a.add("chunk_encoding", "MS:1003089");
+        addDoubles(a, "intensity", new double[] {42, 43});
+        Group second = new SimpleGroupFactory(TWO_INTENSITY_CHUNK).newGroup();
+        Group b = second.addGroup("chunk");
+        b.add("spectrum_index", 3L);
+        b.add("mz_chunk_start", 110.0);
+        addDoubles(b, "mz_chunk_values", new double[] {1});
+        b.add("chunk_encoding", "MS:1003089");
+        addDoubles(b, "intensity_f64", new double[] {7.5, 8.5});
+        addDoubles(b, "intensity", new double[] {44, 45});
+        Path file = write(TWO_INTENSITY_CHUNK, json, 100, first, second);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertExact("m/z", new double[] {100, 101, 110, 111}, store.get(3).mz());
+            assertExact("intensity", new double[] {42, 43, 7.5, 8.5}, store.get(3).intensity());
+        }
+    }
+
+    @Test
+    void aPointPlanWithoutAnIntensityColumnThrows() {
+        String json = index("point",
+                entry("point.spectrum_index", "index", "MS:1003870", 0, null),
+                entry("point.mz", "point", "MS:1000514", 1, null));
+        Path file = write(CONVENTIONAL_POINT, json, 100,
+                pointRow(CONVENTIONAL_POINT, "spectrum_index", "mz", "intensity", 2, new double[] {100, 42}));
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), "spectra_peaks.parquet",
+                false, Map.of())) {
+            assertThatThrownBy(() -> store.get(2))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectra_peaks.parquet: the signal plan names no value-bearing intensity column, so"
+                            + " the point rows of spectrum_index 2 cannot be read");
+        }
+    }
+
+    @Test
+    void aPointPlanWithoutAnMzValuesColumnThrows() {
+        String json = index("point",
+                entry("point.spectrum_index", "index", "MS:1003870", 0, null),
+                entry("point.intensity", "point", "MS:1000515", null, null));
+        Path file = write(CONVENTIONAL_POINT, json, 100,
+                pointRow(CONVENTIONAL_POINT, "spectrum_index", "mz", "intensity", 2, new double[] {100, 42}));
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), "spectra_data.parquet",
+                false, Map.of())) {
+            assertThatThrownBy(() -> store.get(2))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectra_data.parquet: the signal plan names no m/z values column, so the point rows"
+                            + " of spectrum_index 2 cannot be read");
+        }
+    }
+
+    @Test
+    void aChunkRowWithIntensitiesButNeitherMzValuesNorStartThrows() {
+        // the footer names no m/z column at all: the single intensity would read as a point at m/z 0
+        String json = index("chunk",
+                entry("chunk.spectrum_index", "index", "MS:1003870", 0, null),
+                entry("chunk.chunk_encoding", "chunk_encoding", "MS:1000514", 1, null),
+                entry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null));
+        Group record = new SimpleGroupFactory(TWO_INTENSITY_CHUNK).newGroup();
+        Group c = record.addGroup("chunk");
+        c.add("spectrum_index", 3L);
+        c.add("mz_chunk_start", 100.0);
+        c.add("chunk_encoding", "MS:1003089");
+        addDoubles(c, "intensity", new double[] {42});
+        Path file = write(TWO_INTENSITY_CHUNK, json, 100, record);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertThatThrownBy(() -> store.get(3))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("chunk row of spectrum_index 3 carries 1 intensities, but the signal plan names"
+                            + " neither an m/z values nor an m/z chunk start column");
+        }
+    }
+
     // ---- fixtures and constructed members ----------------------------------------------------------------------
 
     /** The first 3 peaks of spectrum {@code index} of the current small.mzpeak peaks member, as {m/z, intensity}. */

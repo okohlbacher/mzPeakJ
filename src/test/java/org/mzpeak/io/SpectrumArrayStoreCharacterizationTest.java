@@ -128,7 +128,8 @@ class SpectrumArrayStoreCharacterizationTest {
     }
 
     @Test
-    void aPointMemberWithoutAnIntensityColumnReadsZeroIntensities() {
+    void aPointMemberWithoutAnIntensityColumnFails() {
+        // FN-2: the intensities read as 0.0 before
         double[][] p = Peaks.points(2);
         List<Group> rows = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
@@ -138,9 +139,11 @@ class SpectrumArrayStoreCharacterizationTest {
             point.add("mz", p[i][0]);
             rows.add(record);
         }
-        SpectrumArrayStore.Arrays arrays = read(writePoints(MZ_ONLY_SCHEMA, rows, 100, true), 2, false);
-        assertExact("m/z", new double[] {p[0][0], p[1][0], p[2][0]}, arrays.mz());
-        assertExact("intensity", new double[] {0.0, 0.0, 0.0}, arrays.intensity());
+        Path file = writePoints(MZ_ONLY_SCHEMA, rows, 100, true);
+        assertThatThrownBy(() -> read(file, 2, false))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum signal member: the signal plan names no value-bearing intensity column, so the"
+                        + " point rows of spectrum_index 2 cannot be read");
     }
 
     // ---- structural errors --------------------------------------------------------------------------------------
