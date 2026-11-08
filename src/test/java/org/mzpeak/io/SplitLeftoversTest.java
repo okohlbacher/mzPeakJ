@@ -466,7 +466,15 @@ class SplitLeftoversTest {
             return null;
         }
         Object type = row.get("ion_mobility_type");
-        return new Param("ion mobility value", type == null ? DEFAULT_ION_MOBILITY_TYPE : (String) type, value, null);
+        String accession = type == null ? DEFAULT_ION_MOBILITY_TYPE : (String) type;
+        // FN-8: the name and unit of visitor.rs:878-920
+        return switch (accession) {
+            case "MS:1002476" -> new Param("ion mobility drift time", accession, value, "UO:0000028");
+            case "MS:1002815" -> new Param("inverse reduced ion mobility drift time", accession, value, "MS:1002814");
+            case "MS:1001581" -> new Param("FAIMS compensation voltage", accession, value, "UO:0000218");
+            case "MS:1003371" -> new Param("SELEXION compensation voltage", accession, value, "UO:0000218");
+            default -> new Param("ion mobility value", accession, value, null);
+        };
     }
 
     /** The Params the imaging position cells of a scan row give when its parameters list lacks them. */

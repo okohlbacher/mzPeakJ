@@ -154,8 +154,9 @@ class SplitPrecursorsTest {
             assertThat(ion.mz()).isEqualTo(813.0);
             assertThat(ion.charge()).isNull();
             assertThat(ion.intensity()).isEqualTo(0.0);
-            assertThat(ion.parameters()).containsExactly(
-                    new Param("ion mobility value", "MS:1002815", 1.2517460582524271, null));
+            // FN-8: the PSI-MS name and the unit the same spectrum's scan Param carries, as the Rust reader gives
+            assertThat(ion.parameters()).containsExactly(new Param("inverse reduced ion mobility drift time",
+                    "MS:1002815", 1.2517460582524271, "MS:1002814"));
 
             for (long index = 1; index <= 8; index++) {
                 SelectedIon each = only(only(reader.getMetadata(index).orElseThrow().precursors()).selectedIons());
@@ -239,9 +240,10 @@ class SplitPrecursorsTest {
         untyped.group().add("ion_mobility_value", 0.75);
 
         assertThat(SelectedIonRowDecoder.decode(typed)).isEqualTo(new SelectedIon(ion5.mz(), ion5.charge(),
-                ion5.intensity(), List.of(new Param("ion mobility value", "MS:1002815", 1.25, null))));
+                ion5.intensity(), List.of(new Param("inverse reduced ion mobility drift time", "MS:1002815", 1.25,
+                "MS:1002814"))));
         assertThat(SelectedIonRowDecoder.decode(untyped).parameters()).containsExactly(
-                new Param("ion mobility value", DEFAULT_ION_MOBILITY_TYPE, 0.75, null));
+                new Param("ion mobility drift time", DEFAULT_ION_MOBILITY_TYPE, 0.75, "UO:0000028"));
     }
 
     /**
@@ -448,7 +450,7 @@ class SplitPrecursorsTest {
         assertThat(SelectedIonRowDecoder.decode(new FacetRow(Facet.SPECTRUM_SELECTED_ION, g, columns)))
                 .isEqualTo(new SelectedIon(ion5.mz(), ion5.charge(), ion5.intensity(), List.of(
                         new Param("user note", null, "first", null),
-                        new Param("ion mobility value", DEFAULT_ION_MOBILITY_TYPE, 0.9, null),
+                        new Param("ion mobility drift time", DEFAULT_ION_MOBILITY_TYPE, 0.9, "UO:0000028"),
                         new Param("opt_ion_note", null, "monoisotopic", null))));
     }
 

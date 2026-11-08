@@ -501,8 +501,10 @@ order:
 - `ScanEvent.ionMobilityValue()` reads the first Param with a finite value whose accession is an ion mobility
   type, the types taken in mzdata's priority order (MS:1002476, MS:1002815, MS:1001581, MS:1003371, then the
   table order); `ionMobilityType()` is the type of that Param. Typed `ion_mobility_value`/`ion_mobility_type`
-  columns of scans and selected ions become such a Param (`IonMobilityParams`) when the list holds none; a value
-  without a type is MS:1002476 (drift time).
+  columns of scans and selected ions become such a Param (`IonMobilityParams`) when the list holds none, with
+  the PSI-MS name and unit the Rust reader gives the type (MS:1002815 'inverse reduced ion mobility drift time'
+  in MS:1002814, for example; another type is 'ion mobility value' without a unit); a value without a type is
+  MS:1002476 (drift time, in milliseconds).
 - `Spectrum.ionMobility()` looks for an ion mobility array key (§3.6).
 - `Activation.methods()` reports only `DISSOCIATION_METHODS`, which also name the dissociation-method marker's
   Param. MS:1002631 (EThcD) is a child of MS:1003181 'combined dissociation method', not of MS:1000044: it is
