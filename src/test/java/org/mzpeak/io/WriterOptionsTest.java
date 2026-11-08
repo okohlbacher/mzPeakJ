@@ -248,7 +248,10 @@ class WriterOptionsTest {
 
     // ---- row-group size ---------------------------------------------------------------------------------------
 
-    /** Only the row-group count changes; members below parquet-java's first size check stay in one row group. */
+    /**
+     * Only the row-group count changes; members below parquet-java's first size check stay in one row group, and a
+     * member without rows has none.
+     */
     @Test
     void aRowGroupSizeOptionSplitsTheLargeMembers(@TempDir Path tmp) {
         assertPropertyUnset();
@@ -269,7 +272,7 @@ class WriterOptionsTest {
                                 tmp.resolve("default").resolve("out.mzpeak")));
                 continue;
             }
-            assertThat(rowGroups(before)).as("default row groups of %s", name).isEqualTo(1);
+            assertThat(rowGroups(before)).as("default row groups of %s", name).isEqualTo(rows(before) == 0 ? 0 : 1);
             assertThat(withoutRowGroups(e.getValue().detail())).as("detail of %s", name)
                     .isEqualTo(withoutRowGroups(before.detail()));
         }
@@ -457,6 +460,14 @@ class WriterOptionsTest {
         String detail = digest.detail();
         assertThat(detail).as("detail of %s", digest.member()).startsWith("row_groups=");
         return Integer.parseInt(detail.substring("row_groups=".length(), detail.indexOf(' ')));
+    }
+
+    private static long rows(ContentDigest digest) {
+        String detail = digest.detail();
+        int start = detail.indexOf(" rows=");
+        assertThat(start).as("rows in the detail of %s", digest.member()).isPositive();
+        start += " rows=".length();
+        return Long.parseLong(detail.substring(start, detail.indexOf(' ', start)));
     }
 
     private static String withoutRowGroups(String detail) {

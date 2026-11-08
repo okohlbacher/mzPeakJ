@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.example.data.Group;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.io.LocalInputFile;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -132,8 +133,8 @@ class WriterIndexContractTest {
         try (MzPeakReader r = MzPeakReader.open(dir)) {
             StreamingReaderTest.assertReReadsExactly(r, expectedReRead(layout, s, tmp));
         }
-        assertThat(indexColumn(dir.resolve("spectra_metadata.parquet"), "spectrum", "index"))
-                .as("spectrum.index in spectra_metadata.parquet row order").isSorted();
+        assertThat(metadataIndexColumn(dir.resolve("spectra_metadata.parquet")))
+                .as("spectrum index in spectra_metadata.parquet row order").hasSize(s.spectra.size()).isSorted();
         assertThat(indexColumn(data, layout == Layout.POINT ? "point" : "chunk", "spectrum_index"))
                 .as("spectrum_index in spectra_data.parquet row order").isSorted();
         assertThat(indexColumn(dir.resolve("spectra_peaks.parquet"), layout == Layout.POINT ? "point" : "chunk",
@@ -285,6 +286,19 @@ class WriterIndexContractTest {
         List<Long> values = new ArrayList<>();
         ParquetGroups.forEach(file,
                 row -> values.add(ParquetGroups.optLong(ParquetGroups.optGroup(row, group), field)));
+        return values;
+    }
+
+    /**
+     * The spectrum index of every spectra_metadata row in row order, in either metadata layout: the packed layout's
+     * {@code spectrum.index}, or the split layout's top-level {@code index}.
+     */
+    private static List<Long> metadataIndexColumn(Path file) {
+        List<Long> values = new ArrayList<>();
+        ParquetGroups.forEach(file, row -> {
+            Group packed = ParquetGroups.optGroup(row, "spectrum");
+            values.add(ParquetGroups.optLong(packed != null ? packed : row, "index"));
+        });
         return values;
     }
 

@@ -218,7 +218,7 @@ class SplitWriterPrecursorsTest {
 
         Path packed = tmp.resolve("packed.mzpeak");
         MzPeakWriter.writeDirectory(packed, spectra, small.chromatograms, small.wavelengthSpectra,
-                small.scanSettings, small.fileMetadata, Options.defaults());
+                small.scanSettings, small.fileMetadata, Options.defaults().withMetadataLayout(MetadataLayout.PACKED));
         Source back = ForwardBackwardCorpusTest.readSource(packed);
         assertThat(back.spectra).hasSameSizeAs(spectra);
         assertThat(back.spectra.get(msn).description().precursors()).as("PACKED precursors of the spectrum")

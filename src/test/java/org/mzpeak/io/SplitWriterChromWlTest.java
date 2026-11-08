@@ -310,7 +310,7 @@ class SplitWriterChromWlTest {
         Source source = source(Fixtures.legacy(HAS_UV));
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
-                source.scanSettings, source.fileMetadata);
+                source.scanSettings, source.fileMetadata, Options.defaults().withMetadataLayout(MetadataLayout.PACKED));
 
         assertThat(shape(out, EntityType.CHROMATOGRAM, "chromatogram")).isEqualTo(MetadataShape.PACKED);
         assertThat(shape(out, EntityType.WAVELENGTH_SPECTRUM, "spectrum")).isEqualTo(MetadataShape.PACKED);

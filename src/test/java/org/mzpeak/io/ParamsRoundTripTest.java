@@ -12,7 +12,10 @@ import org.mzpeak.model.SpectrumDescription;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,11 +52,13 @@ class ParamsRoundTripTest {
         try (MzPeakReader r = MzPeakReader.open(out)) {
             SpectrumDescription d2 = r.getMetadata(2).orElseThrow();
 
-            // Spectrum-level params preserved
-            assertThat(d2.parameters()).hasSize(originalSpectrumParams.size());
+            // Spectrum-level params preserved, apart from the summary values and spectrum type the writer derives
+            // when the source has none, which the split layout reads back as params (WR-5c)
+            List<Param> params = withoutDerived(d2.parameters(), originalSpectrumParams);
+            assertThat(params).hasSize(originalSpectrumParams.size());
             for (int i = 0; i < originalSpectrumParams.size(); i++) {
-                assertThat(d2.parameters().get(i).name()).isEqualTo(originalSpectrumParams.get(i).name());
-                assertThat(d2.parameters().get(i).accession()).isEqualTo(originalSpectrumParams.get(i).accession());
+                assertThat(params.get(i).name()).isEqualTo(originalSpectrumParams.get(i).name());
+                assertThat(params.get(i).accession()).isEqualTo(originalSpectrumParams.get(i).accession());
             }
 
             // Scan params preserved
@@ -135,5 +140,25 @@ class ParamsRoundTripTest {
                 .filter(p -> accession.equals(p.accession()))
                 .map(Param::value)
                 .findFirst().orElse(null);
+    }
+
+    /**
+     * {@code readBack} without the params the writer derives for a spectrum whose own params are {@code source}
+     * (the rule of {@link DescriptionAssert}): the five summary values when the source has none of them, and the
+     * MS1 or MSn spectrum type when it has no spectrum type.
+     */
+    private static List<Param> withoutDerived(List<Param> readBack, List<Param> source) {
+        Set<String> accessions = new HashSet<>();
+        for (Param p : source) {
+            accessions.add(p.accession());
+        }
+        Set<String> derived = new HashSet<>();
+        if (Collections.disjoint(accessions, DescriptionAssert.DERIVED_SUMMARY)) {
+            derived.addAll(DescriptionAssert.DERIVED_SUMMARY);
+        }
+        if (Collections.disjoint(accessions, SpectrumSummary.SPECTRUM_TYPES)) {
+            derived.addAll(DescriptionAssert.DERIVED_SPECTRUM_TYPES);
+        }
+        return readBack.stream().filter(p -> p.accession() == null || !derived.contains(p.accession())).toList();
     }
 }
