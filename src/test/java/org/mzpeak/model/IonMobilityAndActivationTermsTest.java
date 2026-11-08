@@ -387,7 +387,7 @@ class IonMobilityAndActivationTermsTest {
     // ---- (d) regeneration from the psi-ms OBO ------------------------------------------------------------------
 
     /**
-     * Regenerates the three tables from the psi-ms OBO file that {@code -Dmzpeak.psims.obo} names (plain or gzip,
+     * Regenerates the four tables from the psi-ms OBO file that {@code -Dmzpeak.psims.obo} names (plain or gzip,
      * such as mzdata v0.68.0 cv/psi-ms.obo.gz) with the rule recorded in {@link CvTerms}, and compares them with the
      * checked-in constants, order and names included.
      */
@@ -408,6 +408,12 @@ class IonMobilityAndActivationTermsTest {
             methods.put(id, obo.names.get(id));
         }
         assertThat(CvTerms.DISSOCIATION_METHODS).containsExactlyEntriesOf(methods);
+
+        Map<String, String> arrayTypes = new LinkedHashMap<>();
+        for (String id : obo.descendants("MS:1000513")) {
+            arrayTypes.put(id, obo.names.get(id));
+        }
+        assertThat(CvTerms.ARRAY_TYPES).containsExactlyEntriesOf(arrayTypes);
     }
 
     /** The is_a graph and names of the non-obsolete [Term] stanzas of an OBO file. */
