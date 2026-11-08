@@ -977,6 +977,34 @@ expected values and says why.
   - `Zip64Test`: `-Dmzpeak.zip64.file=<archive>` also opens a real zip64 archive;
   - `IonMobilityAndActivationTermsTest`: `-Dmzpeak.psims.obo=<path>` regenerates the CV tables (§5).
 
+### 9.5 Coverage gate
+
+`mvn verify` runs the tests under the JaCoCo agent, which instruments only `org.mzpeak.*` and
+`ms.numpress.*`, writes the report and then runs `jacoco:check` (`pom.xml`, execution `check`):
+
+| Rule | Lines | Branches | Methods |
+|---|---|---|---|
+| every package `org.mzpeak` and `org.mzpeak.*` | 100% | 100% | 100% |
+| `ms.numpress` (vendored) | ≥ 0.9951 (207/208) | ≥ 0.9924 (131/132) | 100% |
+
+A package-level ratio of 1.0 means that no class in it misses a line, branch or method; no `org.mzpeak`
+class is excluded. `ms.numpress` is vendored and stays byte-identical, so it gets its own rule at exactly
+the coverage reached: the only gap is `MSNumpress.java` line 73-74 in `decode(String, byte[], int)`, the
+true branch of `if (nbrOfDoubles < 0)` and its `Corrupt numPic data!` throw. `decodePic` returns its output
+count, which starts at 0 and only grows, so no input reaches the throw.
+
+The report is written before the check, so a failing build leaves it in `target/site/jacoco/`. The log names
+each package that breaks a rule and the ratio it reached; `index.html` leads from package to class to the
+source, where red lines were never run and yellow lines have a branch that was never taken (the diamond in
+the margin gives the count); `jacoco.csv` has a row per class with `LINE_MISSED`, `BRANCH_MISSED` and
+`METHOD_MISSED`, and `jacoco.xml` has the counts per line. A new gap is closed with a test that asserts
+behaviour on a fixture (or a constructed input where no fixture reaches the path), or, if no input can reach
+it, by removing the dead code and saying why in the commit message; never by an exclusion.
+
+The gate needs the whole suite. For quick local runs, such as one test with `-Dtest=...`, pass
+`-Djacoco.skip=true`, which skips the agent, the report and the check. `mvn test` and `mvn package` stop
+before `verify` and never run the check.
+
 ---
 
 ## 10. Known limitations / deferred
