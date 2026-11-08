@@ -41,7 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Parquet schemas and types, footer key-values and ZIP entry order.
  *
  * <p>Each case reads a fixture with {@link ForwardBackwardCorpusTest#readSource}, writes it with one of the
- * full-form overloads (wavelength spectra, scan settings and file metadata included), and digests every member of the
+ * full-form overloads (wavelength spectra, scan settings and file metadata included), or for the split metadata layout
+ * (WR-5a, label suffix {@code -SPLIT}) with the {@code Options} form, and digests every member of the
  * output with {@link ContentDigest}, which ignores ZSTD bytes and ZIP timestamps. The archive case also records the
  * ZIP entries in file order with their method. The pinned line of the manifest digests it with every member checksum
  * masked ({@link #maskedIndex}). The expected lines live in
@@ -97,7 +98,14 @@ class WriterSnapshotTest {
                 MzPeakWriter.writeDirectoryNumpress(out, s.spectra, s.chromatograms, s.wavelengthSpectra,
                         s.scanSettings, s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.PIC)),
         WRITE_ARCHIVE("writeArchive", true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
-                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata)),
+        WRITE_DIRECTORY_SPLIT("writeDirectory-SPLIT", false, (out, s) -> MzPeakWriter.writeDirectory(out,
+                s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split())),
+        WRITE_DIRECTORY_NUMPRESS_SPLIT("writeDirectoryNumpress-SPLIT", false, (out, s) ->
+                MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                        s.fileMetadata, split().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS))),
+        WRITE_ARCHIVE_SPLIT("writeArchive-SPLIT", true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
+                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split()));
 
         final String label;
         final boolean archive;
@@ -107,6 +115,11 @@ class WriterSnapshotTest {
             this.label = label;
             this.archive = archive;
             this.write = write;
+        }
+
+        /** The split metadata layout (WR-5a), which only the package-private option selects. */
+        private static MzPeakWriter.Options split() {
+            return MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.SPLIT);
         }
     }
 
@@ -118,7 +131,12 @@ class WriterSnapshotTest {
                 Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_DIRECTORY),
                 Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_ARCHIVE),
                 Arguments.of(FixtureSet.CURRENT, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY),
-                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY));
+                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_SPLIT),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_SPLIT),
+                Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_ARCHIVE_SPLIT),
+                Arguments.of(FixtureSet.CURRENT, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_SPLIT),
+                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY_SPLIT));
     }
 
     @ParameterizedTest(name = "{0} {1} via {2}")

@@ -252,6 +252,21 @@ public final class MzPeakWriter {
      */
     public enum NumpressIntensityEncoding { SLOF, PIC }
 
+    /**
+     * How the metadata members are laid out (design §11.4). Package-private until the split writer is complete
+     * (WR-7); until then the public overloads always write {@link #PACKED}.
+     */
+    enum MetadataLayout {
+        /**
+         * The current layout (HUPO-PSI/mzPeak 0a28759 and later): one flat table per metadata facet, listed in the
+         * current manifest dialect with underscore roles and a column mapping. So far it writes spectra_metadata and
+         * spectra_metadata_scans; the chromatogram and wavelength-spectrum metadata are still packed.
+         */
+        SPLIT,
+        /** The pin-era packed layout (HUPO-PSI/mzPeak 29e59b2): one struct per facet in one member per entity. */
+        PACKED
+    }
+
     /** How spectra_data and spectra_peaks are encoded; chromatograms and wavelength spectra are always points. */
     public enum SignalEncoding {
         /** One row per point: index, m/z and intensity. */
@@ -278,18 +293,20 @@ public final class MzPeakWriter {
      */
     public static final class Options {
 
-        private static final Options DEFAULTS =
-                new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF, OptionalLong.empty());
+        private static final Options DEFAULTS = new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF,
+                OptionalLong.empty(), MetadataLayout.PACKED);
 
         private final SignalEncoding signalEncoding;
         private final NumpressIntensityEncoding numpressIntensity;
         private final OptionalLong rowGroupSize;
+        private final MetadataLayout metadataLayout;
 
         private Options(SignalEncoding signalEncoding, NumpressIntensityEncoding numpressIntensity,
-                        OptionalLong rowGroupSize) {
+                        OptionalLong rowGroupSize, MetadataLayout metadataLayout) {
             this.signalEncoding = signalEncoding;
             this.numpressIntensity = numpressIntensity;
             this.rowGroupSize = rowGroupSize;
+            this.metadataLayout = metadataLayout;
         }
 
         /** Point layout, SLOF Numpress intensity, no row-group size: what the plain overloads write. */
@@ -319,13 +336,19 @@ public final class MzPeakWriter {
             return rowGroupSize;
         }
 
+        /** How the metadata members are laid out; {@link MetadataLayout#PACKED} by default. */
+        MetadataLayout metadataLayout() {
+            return metadataLayout;
+        }
+
         /**
          * These options with {@code encoding} for spectra_data and spectra_peaks.
          *
          * @throws NullPointerException if {@code encoding} is {@code null}
          */
         public Options withSignalEncoding(SignalEncoding encoding) {
-            return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize);
+            return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize,
+                    metadataLayout);
         }
 
         /**
@@ -335,7 +358,8 @@ public final class MzPeakWriter {
          * @throws NullPointerException if {@code encoding} is {@code null}
          */
         public Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
-            return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize);
+            return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize,
+                    metadataLayout);
         }
 
         /**
@@ -349,7 +373,17 @@ public final class MzPeakWriter {
             if (bytes <= 0) {
                 throw new IllegalArgumentException("row-group size must be positive: " + bytes);
             }
-            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes));
+            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout);
+        }
+
+        /**
+         * These options with {@code layout} for the metadata members.
+         *
+         * @throws NullPointerException if {@code layout} is {@code null}
+         */
+        Options withMetadataLayout(MetadataLayout layout) {
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize,
+                    Objects.requireNonNull(layout, "layout"));
         }
 
         @Override
@@ -358,18 +392,22 @@ public final class MzPeakWriter {
                 return true;
             }
             return o instanceof Options other && signalEncoding == other.signalEncoding
-                    && numpressIntensity == other.numpressIntensity && rowGroupSize.equals(other.rowGroupSize);
+                    && numpressIntensity == other.numpressIntensity && rowGroupSize.equals(other.rowGroupSize)
+                    && metadataLayout == other.metadataLayout;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize);
+            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout);
         }
 
         @Override
         public String toString() {
+            // The metadata layout is named only when it is not the default: while it is package-private (until
+            // WR-7), every Options the public API can build prints as it always has.
             return "Options[signalEncoding=" + signalEncoding + ", numpressIntensity=" + numpressIntensity
-                    + ", rowGroupSize=" + rowGroupSize + "]";
+                    + ", rowGroupSize=" + rowGroupSize
+                    + (metadataLayout == MetadataLayout.PACKED ? "" : ", metadataLayout=" + metadataLayout) + "]";
         }
     }
 

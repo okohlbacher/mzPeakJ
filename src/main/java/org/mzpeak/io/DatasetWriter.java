@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
@@ -21,7 +22,7 @@ import static org.mzpeak.io.PointSignalWriter.writeWavelengthData;
  * metadata, spectra_data and spectra_peaks in the plan's signal encoding, chromatograms and wavelength spectra in
  * point layout, and the manifest last, once every member is closed, so that it can list each member's checksum. Only
  * the members the plan names are written. The metadata members are written by the {@link MetadataTablesWriter} of the
- * packed layout, whose dialect the manifest uses.
+ * plan's metadata layout, whose dialect the manifest uses.
  */
 final class DatasetWriter {
 
@@ -30,7 +31,7 @@ final class DatasetWriter {
 
     static void write(Path directory, WritePlan plan) {
         boolean numpress = plan.options().signalEncoding() == SignalEncoding.NUMPRESS;
-        MetadataTablesWriter metadata = PackedMetadataWriter.INSTANCE;
+        MetadataTablesWriter metadata = MetadataTablesWriter.of(plan.options().metadataLayout());
         List<WrittenMember> members = new ArrayList<>();
         try {
             Files.createDirectories(directory);
@@ -65,7 +66,13 @@ final class DatasetWriter {
      * member's writer closes the file before the next member is started.
      */
     static Path member(Path directory, List<WrittenMember> members, String name, EntityType entity, DataKind kind) {
-        members.add(new WrittenMember(name, entity, kind));
+        return member(directory, members, name, entity, kind, List.of());
+    }
+
+    /** {@link #member(Path, List, String, EntityType, DataKind)} with the member's {@code columnMapping}. */
+    static Path member(Path directory, List<WrittenMember> members, String name, EntityType entity, DataKind kind,
+                       List<ColumnMapping> columnMapping) {
+        members.add(new WrittenMember(name, entity, kind, columnMapping));
         return directory.resolve(name);
     }
 
