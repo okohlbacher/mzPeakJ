@@ -22,4 +22,13 @@ class NativeIdTest {
         assertThat(NativeId.scanNumber("controllerType=0 controllerNumber=1")).isEmpty();
         assertThat(NativeId.scanNumber(null)).isEmpty();
     }
+
+    @Test
+    void emptyWhenTheFirstMatchingTokenDoesNotFitAnInt() {
+        assertThat(NativeId.scanNumber("scan=2147483647")).hasValue(Integer.MAX_VALUE);
+        assertThat(NativeId.scanNumber("scan=2147483648")).isEmpty();
+        assertThat(NativeId.scanNumber("controllerType=0 controllerNumber=1 scan=99999999999")).isEmpty();
+        // the out-of-range scan= token decides; the lower-priority index= token is not consulted
+        assertThat(NativeId.scanNumber("scan=99999999999 index=5")).isEmpty();
+    }
 }
