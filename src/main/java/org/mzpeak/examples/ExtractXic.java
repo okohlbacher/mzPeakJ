@@ -5,6 +5,7 @@ import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -60,11 +61,16 @@ public final class ExtractXic {
     }
 
     public static void main(String[] args) {
+        ExampleArgs.exit(run(args, System.out, System.err), System::exit);
+    }
+
+    /** Writes the XIC as CSV, prints a summary to {@code out} and returns 0, or the usage to {@code err} and 2. */
+    static int run(String[] args, PrintStream out, PrintStream err) {
         ExampleArgs a = new ExampleArgs(args);
         if (a.positional.size() < 2 || a.options.get("mz") == null) {
-            System.err.println("Usage: ExtractXic <in.mzpeak> <out.csv> --mz M "
+            err.println("Usage: ExtractXic <in.mzpeak> <out.csv> --mz M "
                     + "[--tol-ppm 20 | --tol-da 0.01] [--ms-level 1] [--rt-min M] [--rt-max M]");
-            System.exit(2);
+            return 2;
         }
         double mz = a.optDouble("mz", 0);
         double tolDa = a.options.containsKey("tol-da")
@@ -75,16 +81,17 @@ public final class ExtractXic {
             a.options.put("ms-level", "1");
         }
         var points = compute(Path.of(a.positional.get(0)), mz, tolDa, SpectrumFilter.from(a));
-        Path out = Path.of(a.positional.get(1));
-        try (Writer w = Files.newBufferedWriter(out, StandardCharsets.UTF_8)) {
+        Path csv = Path.of(a.positional.get(1));
+        try (Writer w = Files.newBufferedWriter(csv, StandardCharsets.UTF_8)) {
             w.write("retention_time,intensity\n");
             for (XicPoint p : points) {
                 w.write(String.format(Locale.US, "%.6f,%.4f%n", p.retentionTime(), p.intensity()));
             }
         } catch (IOException e) {
-            throw new UncheckedIOException("Failed writing XIC to " + out, e);
+            throw new UncheckedIOException("Failed writing XIC to " + csv, e);
         }
-        System.out.printf(Locale.US, "Wrote XIC with %d points (m/z %.4f +/- %.4f Da) to %s%n",
+        out.printf(Locale.US, "Wrote XIC with %d points (m/z %.4f +/- %.4f Da) to %s%n",
                 points.size(), mz, tolDa, a.positional.get(1));
+        return 0;
     }
 }

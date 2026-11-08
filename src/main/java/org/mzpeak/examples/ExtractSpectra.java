@@ -5,6 +5,7 @@ import org.mzpeak.io.MzPeakWriter;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
 
+import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,14 +45,20 @@ public final class ExtractSpectra {
     }
 
     public static void main(String[] args) {
+        ExampleArgs.exit(run(args, System.out, System.err), System::exit);
+    }
+
+    /** Writes the filtered copy, prints a summary to {@code out} and returns 0, or the usage to {@code err} and 2. */
+    static int run(String[] args, PrintStream out, PrintStream err) {
         ExampleArgs a = new ExampleArgs(args);
         if (a.positional.size() < 2) {
-            System.err.println("Usage: ExtractSpectra <in.mzpeak> <out.mzpeak> "
+            err.println("Usage: ExtractSpectra <in.mzpeak> <out.mzpeak> "
                     + "[--ms-level 1,2] [--rt-min M] [--rt-max M]");
-            System.exit(2);
+            return 2;
         }
         SpectrumFilter filter = SpectrumFilter.from(a);
         int n = run(Path.of(a.positional.get(0)), Path.of(a.positional.get(1)), filter);
-        System.out.printf("Wrote %d spectra (%s) to %s%n", n, filter.describe(), a.positional.get(1));
+        out.printf("Wrote %d spectra (%s) to %s%n", n, filter.describe(), a.positional.get(1));
+        return 0;
     }
 }

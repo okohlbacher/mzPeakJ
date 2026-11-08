@@ -8,6 +8,7 @@ import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -91,14 +92,20 @@ public final class ConvertToDta {
     }
 
     public static void main(String[] args) {
+        ExampleArgs.exit(run(args, System.out, System.err), System::exit);
+    }
+
+    /** Writes the .dta files, prints how many to {@code out} and returns 0, or the usage to {@code err} and 2. */
+    static int run(String[] args, PrintStream out, PrintStream err) {
         ExampleArgs a = new ExampleArgs(args);
         if (a.positional.size() < 2) {
-            System.err.println("Usage: ConvertToDta <in.mzpeak> <outDir> "
+            err.println("Usage: ConvertToDta <in.mzpeak> <outDir> "
                     + "[--ms-level 2] [--rt-min M] [--rt-max M] [--default-charge 2]");
-            System.exit(2);
+            return 2;
         }
         int n = run(Path.of(a.positional.get(0)), Path.of(a.positional.get(1)),
                 SpectrumFilter.from(a), a.optInt("default-charge", 2));
-        System.out.printf("Wrote %d .dta files to %s%n", n, a.positional.get(1));
+        out.printf("Wrote %d .dta files to %s%n", n, a.positional.get(1));
+        return 0;
     }
 }
