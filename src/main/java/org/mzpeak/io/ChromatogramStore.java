@@ -24,6 +24,8 @@ final class ChromatogramStore {
 
     /** Names a member given directly as an {@link InputFile} in error messages, by its manifest role. */
     private static final String MEMBER = "chromatogram metadata member";
+    /** Names a data member given directly as an {@link InputFile} in error messages, by its manifest role. */
+    private static final String DATA_MEMBER = "chromatogram data member";
 
     private final List<Chromatogram> all;
     private final Map<Long, Chromatogram> byIndex;
@@ -52,7 +54,7 @@ final class ChromatogramStore {
 
     /**
      * Loads the members that {@code manifest} lists under the roles (chromatogram, metadata) and (chromatogram, data
-     * arrays); error messages name the metadata member by its file name.
+     * arrays); error messages name the members by their file names.
      *
      * @return the store, or {@code null} when the manifest lacks either member
      */
@@ -64,26 +66,30 @@ final class ChromatogramStore {
             return null;
         }
         return load(ChromatogramMetadataDecoder.decode(source.inputFile(metadata.name()), metadata),
-                source.inputFile(dataName));
+                source.inputFile(dataName), dataName);
     }
 
     /**
-     * Loads a metadata member of either layout and a data member given directly; error messages name the metadata
-     * member by its role.
+     * Loads a metadata member of either layout and a data member given directly; error messages name the members by
+     * their roles.
      */
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.CHROMATOGRAM.canonical(), DataKind.METADATA.canonical());
-        return load(ChromatogramMetadataDecoder.decode(metadataFile, metadata), dataFile);
+        return load(ChromatogramMetadataDecoder.decode(metadataFile, metadata), dataFile, DATA_MEMBER);
     }
 
-    /** Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. */
-    private static ChromatogramStore load(List<ChromatogramMetadataDecoder.Header> headers, InputFile dataFile) {
+    /**
+     * Pairs {@code headers} with the arrays of the data member, named {@code dataMember} in errors; the data member
+     * is not read when there are none.
+     */
+    private static ChromatogramStore load(List<ChromatogramMetadataDecoder.Header> headers, InputFile dataFile,
+                                          String dataMember) {
         if (headers.isEmpty()) {
             return new ChromatogramStore(List.of(), null);
         }
         // ---- data: point or chunk layout, as the plan says -------------------------
         SignalPlan plan = plan(dataFile);
-        Map<Long, ChromatogramDataDecoder.Decoded> data = ChromatogramDataDecoder.decode(dataFile, plan);
+        Map<Long, ChromatogramDataDecoder.Decoded> data = ChromatogramDataDecoder.decode(dataFile, dataMember, plan);
 
         // ---- assemble --------------------------------------------------------------
         List<Chromatogram> all = new ArrayList<>(headers.size());

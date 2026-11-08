@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.DoubleUnaryOperator;
 import java.util.stream.Collectors;
 
 /**
@@ -34,6 +35,11 @@ import java.util.stream.Collectors;
  * </ul>
  * Rows without the prefix struct or an index are skipped; the chunks and points of one index are appended in row
  * order. These are Q-U5's semantics; sharing the spectrum chunk decoder would change them (deferred).
+ *
+ * <p><b>Time unit</b> (MZ-3): the times are in minutes. The time values column and the chunk start column are each
+ * converted from the unit of their plan entry: minutes or no unit as stored, seconds, milliseconds and hours
+ * converted (a chunk's deltas before they are summed). Any other unit throws an {@link MzPeakException} naming the
+ * member, the column and the unit, before any row is read.
  *
  * <p>What cannot be decoded throws an {@link MzPeakException} instead of reading as wrong or empty arrays: a negative
  * index (an unsigned value of 2^31 or more in an INT32 column, or a uint64 with the high bit set); on the first decoded
@@ -80,6 +86,9 @@ final class ChromatogramDataDecoder {
     private final boolean chunked;
     private final String timeField;
     private final String startField;
+    /** The conversions of the time values column and of the chunk start column to minutes. */
+    private final DoubleUnaryOperator timeToMinutes;
+    private final DoubleUnaryOperator startToMinutes;
     private final String encodingField;
     /** The chunk transforms of the time axis, CURIE to column; none of them is decoded. */
     private final Map<String, String> axisTransforms;
@@ -100,12 +109,14 @@ final class ChromatogramDataDecoder {
     /** Per extra: its cells did not read as numbers, so it is dropped from the member. */
     private final boolean[] unreadable;
 
-    private ChromatogramDataDecoder(SignalPlan plan) {
+    private ChromatogramDataDecoder(SignalPlan plan, String member) {
         this.prefix = plan.prefix();
         this.indexField = plan.indexField();
         this.chunked = plan.layout() == SignalPlan.Layout.CHUNK;
         this.timeField = field(plan.axis().values());
         this.startField = field(plan.axis().start());
+        this.timeToMinutes = toMinutes(plan.axis().values(), member);
+        this.startToMinutes = toMinutes(plan.axis().start(), member);
         this.encodingField = field(plan.axis().encoding());
         this.axisTransforms = plan.axis().transformFields();
         this.intensityColumns = plan.intensities().stream()
@@ -142,11 +153,13 @@ final class ChromatogramDataDecoder {
     /**
      * Groups the rows of {@code dataFile} by chromatogram index, in the order the indices first occur.
      *
-     * @throws MzPeakException when SLOF bytes do not decode, or a row cannot be decoded (see the class comment); the
+     * @param member the name of the member in errors
+     * @throws MzPeakException when a time column is in a unit that is not converted (the message names the member);
+     *                         when SLOF bytes do not decode, or a row cannot be decoded (see the class comment); the
      *                         message names the chromatogram index
      */
-    static Map<Long, Decoded> decode(InputFile dataFile, SignalPlan plan) {
-        ChromatogramDataDecoder decoder = new ChromatogramDataDecoder(plan);
+    static Map<Long, Decoded> decode(InputFile dataFile, String member, SignalPlan plan) {
+        ChromatogramDataDecoder decoder = new ChromatogramDataDecoder(plan, member);
         Map<Long, Accumulator> acc = new LinkedHashMap<>();
         ParquetGroups.forEach(dataFile, row -> decoder.accept(row, acc));
 
@@ -157,6 +170,12 @@ final class ChromatogramDataDecoder {
 
     private static String field(Column column) {
         return column == null ? null : column.field();
+    }
+
+    /** The conversion of the time values in {@code column} to minutes; none when there is no column. */
+    private static DoubleUnaryOperator toMinutes(Column column, String member) {
+        return column == null ? DoubleUnaryOperator.identity()
+                : ArrayUnits.toMinutes(column.unit(), member, column.path());
     }
 
     /** True if {@code column} is stored as the MS-Numpress SLOF chunk transform. */
@@ -199,7 +218,7 @@ final class ChromatogramDataDecoder {
         Double t = ParquetGroups.optDouble(point, timeField);
         Accumulator a = accumulator(acc, idx);
         Double in = pointIntensity(point, a);
-        a.time.add(t  == null ? Double.NaN : t);
+        a.time.add(t  == null ? Double.NaN : timeToMinutes.applyAsDouble(t));
         a.intensity.add(in == null ? 0.0 : in);
         for (int k = 0; k < extras.size(); k++) {
             if (unreadable[k]) {
@@ -252,14 +271,14 @@ final class ChromatogramDataDecoder {
         double[] deltas    = timeField == null ? new double[0] : ParquetGroups.doubleListNullable(chunk, timeField);
         double[] intensity = chunkIntensity(chunk, idx, a);
 
-        // Reconstruct time axis: time[0] = start; time[i+1] = time[i] + deltas[i]
+        // Reconstruct time axis in minutes: time[0] = start; time[i+1] = time[i] + deltas[i]
         // intensity.length == deltas.length + 1 (intensity[0] is at the chunk start)
         int n = deltas.length + 1;
         double[] time = new double[n];
-        time[0] = start;
+        time[0] = startToMinutes.applyAsDouble(start);
         for (int i = 0; i < deltas.length; i++) {
             double d = deltas[i];
-            time[i + 1] = time[i] + (Double.isNaN(d) ? 0.0 : d);
+            time[i + 1] = time[i] + (Double.isNaN(d) ? 0.0 : timeToMinutes.applyAsDouble(d));
         }
 
         // Pair with intensity; guard against length mismatch (shouldn't happen in well-formed files)

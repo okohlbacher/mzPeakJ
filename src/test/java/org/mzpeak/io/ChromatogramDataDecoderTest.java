@@ -41,6 +41,7 @@ class ChromatogramDataDecoderTest {
     private static final String TIME = "MS:1000595";
     private static final String INTENSITY = "MS:1000515";
     private static final String NON_STANDARD = "MS:1000786";
+    private static final String MEMBER = "chromatograms_data.parquet";
 
     private static final MessageType CHUNK = MessageTypeParser.parseMessageType("""
             message m {
@@ -83,7 +84,7 @@ class ChromatogramDataDecoderTest {
         assertThat(plan.axis().transformFields())
                 .containsExactly(Map.entry(MSNumpress.ACC_NUMPRESS_LINEAR, "time_numpress_linear_bytes"));
 
-        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(data, plan))
+        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(data, MEMBER, plan))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("chromatogram_index 1 stores its time axis with the chunk transform MS:1002312 (column"
                         + " time_numpress_linear_bytes), which is not decoded for chromatograms");
@@ -102,9 +103,10 @@ class ChromatogramDataDecoderTest {
         assertThat(plan.layout()).isEqualTo(SignalPlan.Layout.CHUNK);
         assertThat(plan.axis().start()).isNull();
 
-        assertThat(ChromatogramDataDecoder.decode(data, plan)).isEmpty();
+        assertThat(ChromatogramDataDecoder.decode(data, MEMBER, plan)).isEmpty();
 
-        Map<Long, ChromatogramDataDecoder.Decoded> inferred = ChromatogramDataDecoder.decode(data, inferredPlan(data));
+        Map<Long, ChromatogramDataDecoder.Decoded> inferred =
+                ChromatogramDataDecoder.decode(data, MEMBER, inferredPlan(data));
         assertThat(inferred.keySet()).containsExactly(0L, 1L);
         assertThat(inferred.get(0L).time()).containsExactly(10.0, 11.0, 12.0);
         assertThat(inferred.get(0L).intensity()).containsExactly(1.0, 2.0, 3.0);
@@ -124,7 +126,7 @@ class ChromatogramDataDecoderTest {
         SignalPlan plan = footerPlan(data);
         assertThat(plan.axis().values()).isNull();
 
-        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(data, plan);
+        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(data, MEMBER, plan);
 
         assertThat(decoded.keySet()).containsExactly(0L, 1L);
         assertThat(decoded.get(0L).time()).containsExactly(10.0, 20.0);
@@ -150,7 +152,7 @@ class ChromatogramDataDecoderTest {
 
         Map<Long, ChromatogramDataDecoder.Decoded> decoded = new LinkedHashMap<>();
         List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
-                () -> decoded.putAll(ChromatogramDataDecoder.decode(data, plan)));
+                () -> decoded.putAll(ChromatogramDataDecoder.decode(data, MEMBER, plan)));
 
         assertThat(decoded.keySet()).containsExactly(0L, 1L);
         assertThat(decoded.get(0L).time()).containsExactly(0.0, 1.0);

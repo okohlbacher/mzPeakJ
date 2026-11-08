@@ -571,6 +571,9 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      * prefix ({@code MS_1000016_}) when exactly one field has it. Only columns directly in the facet's table or
      * packed struct are found, not ones in a nested struct or list.
      *
+     * <p>The statistics are of the values as stored, in the column's own unit: they are not converted as the reader
+     * converts what it decodes, such as scan start times to minutes.
+     *
      * @return empty for the data arrays and peaks roles, for a role that the dataset has no metadata member for,
      *         when no column holds the term, and when the column is not of the Parquet type INT32, INT64, FLOAT or
      *         DOUBLE

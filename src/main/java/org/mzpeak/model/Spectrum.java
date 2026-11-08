@@ -19,7 +19,10 @@ import java.util.Optional;
  * <p>Additional signal arrays, such as the per-peak ion mobility of a diaPASEF spectrum, are in {@link #arrays()},
  * parallel to {@link #mz()}, and in {@link #peakArrays()}, parallel to the stored peak list. They are keyed by the
  * array type CURIE (for example {@code MS:1003006}), by the array name for a non-standard data array (MS:1000786,
- * for example {@code ms level}), and by {@code <key>@<column>} for every further column of a key.
+ * for example {@code ms level}), and by {@code <key>@<column>} for every further column of a key. A drift-time ion
+ * mobility array (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154 or MS:1003156, also under a
+ * {@code <key>@<column>} key) is in milliseconds, its unit in {@link CvTerms#DEFAULT_ARRAY_UNITS}: the reader converts
+ * one stored in seconds or minutes. The reader keeps every other array as stored.
  */
 public final class Spectrum {
 

@@ -15,7 +15,8 @@ import java.util.Map;
  * @param index         0-based chromatogram index
  * @param id            chromatogram id (e.g. {@code "TIC"})
  * @param typeCurie     PSI-MS chromatogram type CURIE (e.g. {@code MS:1000235} = total ion current)
- * @param time          time axis (MS:1000595), in the file's time unit
+ * @param time          time axis (MS:1000595), in minutes, the unit of {@link CvTerms#DEFAULT_ARRAY_UNITS}: the
+ *                      reader converts a time array stored in seconds, milliseconds or hours
  * @param intensity     intensity axis (MS:1000515), parallel to {@link #time}
  * @param intensityUnit unit CURIE of the intensity values as the file declares it (e.g. {@code MS:1000131} =
  *                      number of detector counts, {@code UO:0000269} = absorbance unit), or {@code null} when the
