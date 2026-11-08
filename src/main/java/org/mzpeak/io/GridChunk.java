@@ -25,18 +25,30 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
      * The grid in column {@code field} of {@code chunk}, or null when its cell is null. The indices are unsigned 32-bit
      * integers: an INT32 column holds their bit patterns, so a negative INT32 is read as its unsigned value.
      *
-     * @throws MzPeakException when an index is null, not an integer or outside 0..2^32-1
+     * @throws MzPeakException when the cell cannot be read as such a struct (a column that is not a struct, a
+     *                         grid_type that is not text, a parameters or indices list that is not numeric), or when
+     *                         an index is null, not an integer or outside 0..2^32-1
      */
     static GridChunk read(Group chunk, String field, long si) {
-        Group grid = ParquetGroups.optGroup(chunk, field);
-        if (grid == null) {
-            return null;
+        Group grid;
+        String gridType;
+        double[] parameters;
+        double[] stored;
+        boolean int32;
+        try {
+            grid = ParquetGroups.optGroup(chunk, field);
+            if (grid == null) {
+                return null;
+            }
+            gridType = ParquetGroups.optString(grid, "grid_type");
+            parameters = ParquetGroups.doubleListNullable(grid, "parameters");
+            stored = ParquetGroups.doubleListNullable(grid, "indices");
+            int32 = ParquetGroups.has(grid, "indices")
+                    && leaf(grid.getType(), "indices") == PrimitiveTypeName.INT32;
+        } catch (RuntimeException e) {
+            throw new MzPeakException("grid " + field + " cannot be read as {grid_type, parameters, indices} ("
+                    + e.getMessage() + ") for spectrum_index " + si, e);
         }
-        String gridType = ParquetGroups.optString(grid, "grid_type");
-        double[] parameters = ParquetGroups.doubleListNullable(grid, "parameters");
-        double[] stored = ParquetGroups.doubleListNullable(grid, "indices");
-        boolean int32 = ParquetGroups.has(grid, "indices")
-                && leaf(grid.getType(), "indices") == PrimitiveTypeName.INT32;
         long[] indices = new long[stored.length];
         for (int i = 0; i < stored.length; i++) {
             double v = stored[i];

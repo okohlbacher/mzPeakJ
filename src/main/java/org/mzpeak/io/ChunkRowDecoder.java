@@ -26,7 +26,7 @@ import java.util.Map;
  *       ({@link GridChunk}): its indices are delta-encoded from an absolute first one, each maps to one m/z through the
  *       {@link GridModels} model of its grid_type, and the m/z pair one-to-one with the plain intensity list; there is
  *       no chunk start point. A grid row without a grid, or with a grid_type that is not in {@link GridModels#KINDS},
- *       throws RD-12's grid error.
+ *       throws RD-12's grid error; one whose grid cannot be read throws an error that names the grid column.
  *   <li>Any other chunk_encoding throws, also on a Numpress row, as does a value in a {@code *numpress*} column the
  *       plan does not decode (an extra array's transform column excepted).
  *   <li>Each extra array pairs one-to-one with the decoded m/z of the row, chunk start point included; a null list
@@ -251,7 +251,7 @@ final class ChunkRowDecoder {
                 try {
                     g = GridChunk.read(chunk, gridField, si);
                     model = g.model(si);
-                } catch (MzPeakException e) {
+                } catch (RuntimeException e) {
                     dropped.put(extra.key(), "cannot be decoded from its grid (" + e.getMessage() + ")");
                     continue;
                 }

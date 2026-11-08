@@ -11,6 +11,7 @@ import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.io.LocalOutputFile;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -51,7 +52,8 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>Constructed members, written with parquet-java into a {@link TempDir} from row 0 of diaPASEF.grid's peaks
  *       member or from the spec's worked example, cover the unsigned index read, the cumulative main axis next to the
  *       absolute secondary grid, grid and delta rows in one spectrum, and the errors: an unknown main-axis grid_type
- *       keeps RD-12's error, while an unknown ion mobility grid only drops that extra array.
+ *       keeps RD-12's error, while an unknown ion mobility grid only drops that extra array; a grid column that cannot
+ *       be read fails naming the column on the main axis and only drops that extra array as an ion mobility grid.
  * </ul>
  */
 class GridDecodeTest {
@@ -299,6 +301,46 @@ class GridDecodeTest {
                         "mean_inverse_reduced_ion_mobility_grid", "m/z and intensity are kept");
     }
 
+    /** An ion mobility grid column that cannot be read (design §1 principle 4) drops that extra, as an unknown one. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {TEXT_INDICES, NOT_A_STRUCT})
+    void anIonMobilityGridThatCannotBeReadDropsOnlyThatExtraWithOneWarning(String malformation) {
+        SpectrumArrayStore.Arrays stored = read(Row0.INSTANCE.copy());
+        Path file = write(schema(grid(MZ_GRID, UINT32), malformed(IM_GRID, malformation)), Row0.INSTANCE.copy(),
+                Row0.INSTANCE.copy());
+
+        SpectrumArrayStore.Arrays[] arrays = new SpectrumArrayStore.Arrays[1];
+        List<LogRecord> records = ArrayIndexTest.captureLog(SpectrumArrayStore.class, () -> {
+            try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), MEMBER, false,
+                    Map.of())) {
+                arrays[0] = store.get(0);
+            }
+        });
+
+        assertThat(arrays[0].extras()).isEmpty();
+        assertExact("m/z", concat(stored.mz(), stored.mz()), arrays[0].mz());
+        assertExact("intensity", concat(stored.intensity(), stored.intensity()), arrays[0].intensity());
+        List<LogRecord> warnings = records.stream().filter(r -> r.getLevel() == Level.WARNING).toList();
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.get(0).getMessage())
+                .contains(MEMBER, "extra array " + IM + " ", "spectrum_index 0", "cannot be decoded from its grid",
+                        "grid " + IM_GRID + " cannot be read", "m/z and intensity are kept");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {TEXT_INDICES, NOT_A_STRUCT})
+    void aMainAxisGridThatCannotBeReadFailsNamingItsColumn(String malformation) {
+        Path file = write(schema(malformed(MZ_GRID, malformation), grid(IM_GRID, UINT32)), Row0.INSTANCE.copy());
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), MEMBER, false, Map.of())) {
+            assertThatThrownBy(() -> store.get(0))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("grid " + MZ_GRID + " cannot be read as {grid_type, parameters, indices}")
+                    .hasMessageEndingWith(" for spectrum_index 0")
+                    .cause().isInstanceOf(malformation.equals(NOT_A_STRUCT)
+                            ? ClassCastException.class : IllegalStateException.class);
+        }
+    }
+
     @Test
     void aMainAxisGridWithTheWrongNumberOfParametersFails() {
         GridRow row = Row0.INSTANCE.copy();
@@ -439,27 +481,47 @@ class GridDecodeTest {
         }
     }
 
-    private static final MessageType SCHEMA = MessageTypeParser.parseMessageType("""
-            message m {
-              optional group chunk {
-                optional int64 spectrum_index (INTEGER(64,false));
-                optional double mz_chunk_start;
-                optional double mz_chunk_end;
-                optional group mz_chunk_values (LIST) { repeated group list { optional double element; } }
-                optional binary chunk_encoding (STRING);
-                optional group intensity (LIST) { repeated group list { optional float element; } }
-                optional group mz_grid {
-                  required binary grid_type (STRING);
-                  optional group parameters (LIST) { repeated group list { required double element; } }
-                  optional group indices (LIST) { repeated group list { required int32 element (INTEGER(32,false)); } }
-                }
-                optional group mean_inverse_reduced_ion_mobility_grid {
-                  required binary grid_type (STRING);
-                  optional group parameters (LIST) { repeated group list { required double element; } }
-                  optional group indices (LIST) { repeated group list { required int32 element (INTEGER(32,false)); } }
-                }
-              }
-            }""");
+    private static final String MZ_GRID = "mz_grid";
+    private static final String IM_GRID = "mean_inverse_reduced_ion_mobility_grid";
+    /** The grid indices element of diaPASEF.grid: an unsigned 32-bit integer. */
+    private static final String UINT32 = "required int32 element (INTEGER(32,false));";
+    /** A malformed grid column: a struct whose indices are text. */
+    private static final String TEXT_INDICES = "text indices";
+    /** A malformed grid column: a double instead of the struct. */
+    private static final String NOT_A_STRUCT = "not a struct";
+
+    private static final MessageType SCHEMA = schema(grid(MZ_GRID, UINT32), grid(IM_GRID, UINT32));
+
+    /** The member schema with the declarations {@code mzGrid} and {@code imGrid} of the two grid columns. */
+    private static MessageType schema(String mzGrid, String imGrid) {
+        return MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 spectrum_index (INTEGER(64,false));
+                    optional double mz_chunk_start;
+                    optional double mz_chunk_end;
+                    optional group mz_chunk_values (LIST) { repeated group list { optional double element; } }
+                    optional binary chunk_encoding (STRING);
+                    optional group intensity (LIST) { repeated group list { optional float element; } }
+                    %s
+                    %s
+                  }
+                }""".formatted(mzGrid, imGrid));
+    }
+
+    /** The declaration of grid column {@code field} whose indices list holds {@code indexElement}. */
+    private static String grid(String field, String indexElement) {
+        return "optional group " + field + " {"
+                + " required binary grid_type (STRING);"
+                + " optional group parameters (LIST) { repeated group list { required double element; } }"
+                + " optional group indices (LIST) { repeated group list { " + indexElement + " } } }";
+    }
+
+    /** The declaration of grid column {@code field} with {@link #TEXT_INDICES} or {@link #NOT_A_STRUCT}. */
+    private static String malformed(String field, String malformation) {
+        return malformation.equals(NOT_A_STRUCT) ? "optional double " + field + ";"
+                : grid(field, "required binary element (STRING);");
+    }
 
     /** The entries of diaPASEF.grid's spectrum_array_index footer. */
     private static final String INDEX = "{\"prefix\": \"chunk\", \"entries\": ["
@@ -493,17 +555,22 @@ class GridDecodeTest {
 
     /** Writes {@code rows} with diaPASEF.grid's array index as the footer, in one row group. */
     private Path write(GridRow... rows) {
+        return write(SCHEMA, rows);
+    }
+
+    /** Writes {@code rows} in {@code schema} with diaPASEF.grid's array index as the footer, in one row group. */
+    private Path write(MessageType schema, GridRow... rows) {
         Path file = tmp.resolve("member-" + (written++) + ".parquet");
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
-                .withType(SCHEMA)
+                .withType(schema)
                 .withExtraMetaData(Map.of(SignalEntity.SPECTRUM.arrayIndexKey(), INDEX))
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {
             for (GridRow row : rows) {
-                writer.write(toGroup(row));
+                writer.write(toGroup(schema, row));
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -511,8 +578,8 @@ class GridDecodeTest {
         return file;
     }
 
-    private static Group toGroup(GridRow row) {
-        Group record = new SimpleGroupFactory(SCHEMA).newGroup();
+    private static Group toGroup(MessageType schema, GridRow row) {
+        Group record = new SimpleGroupFactory(schema).newGroup();
         Group chunk = record.addGroup("chunk");
         chunk.add("spectrum_index", 0L);
         if (row.start != null) {
@@ -534,14 +601,22 @@ class GridDecodeTest {
         for (double v : row.intensity) {
             intensity.addGroup("list").add("element", (float) v);
         }
-        addGrid(chunk, "mz_grid", row.mzType, row.mzParameters, row.mzIndices);
-        addGrid(chunk, "mean_inverse_reduced_ion_mobility_grid", row.imType, row.imParameters, row.imIndices);
+        addGrid(chunk, MZ_GRID, row.mzType, row.mzParameters, row.mzIndices);
+        addGrid(chunk, IM_GRID, row.imType, row.imParameters, row.imIndices);
         return record;
     }
 
-    /** A grid struct; each index is stored as the INT32 with its unsigned 32-bit pattern. */
+    /**
+     * A grid struct; each index is stored as the INT32 with its unsigned 32-bit pattern, or as the text
+     * {@code "index <i>"} when the schema declares text indices. A column declared as a double gets the first
+     * parameter.
+     */
     private static void addGrid(Group chunk, String field, String type, double[] parameters, long[] indices) {
         if (type == null) {
+            return;
+        }
+        if (chunk.getType().getType(field).isPrimitive()) {
+            chunk.add(field, parameters[0]);
             return;
         }
         Group grid = chunk.addGroup(field);
@@ -551,8 +626,14 @@ class GridDecodeTest {
             p.addGroup("list").add("element", v);
         }
         Group i = grid.addGroup("indices");
+        boolean text = i.getType().getType("list").asGroupType().getType("element").asPrimitiveType()
+                .getPrimitiveTypeName() == PrimitiveTypeName.BINARY;
         for (long v : indices) {
-            i.addGroup("list").add("element", (int) v);
+            if (text) {
+                i.addGroup("list").add("element", "index " + v);
+            } else {
+                i.addGroup("list").add("element", (int) v);
+            }
         }
     }
 
