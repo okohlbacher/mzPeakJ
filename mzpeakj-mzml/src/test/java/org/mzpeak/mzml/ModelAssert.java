@@ -121,14 +121,15 @@ public final class ModelAssert {
      *
      * <p>In the two mixed modes (one model from {@code MzMLReader}, the other from {@link MzPeakReader}), which
      * differ only in which side is the mzPeak one: {@code numberOfDataPoints} and {@code numberOfPeaks} are not
-     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12). When the mzPeak side has peaks, the
-     * peak lists ({@code peaks} and {@code peakArrays}) are not compared pairwise: the mzPeak side's peaks that are a
-     * row copy of its arrays ({@link ModelAssert#isRowCopy}, design 5.4, the reader invariant for CENTROID spectra)
-     * are skipped with their peak arrays, peaks that are not are one difference at {@code spectrum[i].peaks} unless
-     * {@link ModelAssert#A_1} is passed, and a non-empty {@code peaks()} or {@code peakArrays()} on the mzML side,
-     * which {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
-     * {@code spectrum[i].peakArrays} that {@link ModelAssert#A_1} does not hide (MJ-4). When the mzPeak side has no
-     * peaks, both peak lists are compared as they are, so a non-empty one on the mzML side differs too.
+     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12). The peak lists ({@code peaks} and
+     * {@code peakArrays}): a non-empty {@code peaks()} or {@code peakArrays()} on the mzML side, which
+     * {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
+     * {@code spectrum[i].peakArrays} that {@link ModelAssert#A_1} does not hide, whatever the mzPeak side has (MJ-4);
+     * the mzPeak side's peaks that are a row copy of its arrays ({@link ModelAssert#isRowCopy}, design 5.4, the reader
+     * invariant for CENTROID spectra) are skipped with their peak arrays, and peaks that are not are one difference at
+     * {@code spectrum[i].peaks} unless {@link ModelAssert#A_1} is passed. A peak list is compared pairwise only where
+     * neither side has peaks and the mzML side's list is empty (so the mzPeak side's peak arrays without peaks are
+     * compared with none); A_1 therefore hides nothing in mixed mode but 'not a row copy'.
      * Term-marker names (a Param with a {@code null} name on the mzPeak side, A-4) are not compared, in any mode: the
      * {@link Kind#PARAMS} rule never compares the name of a Param with an accession.
      */
@@ -442,9 +443,6 @@ public final class ModelAssert {
         }
     }
 
-    /** How a mixed-mode comparison treats a pair's peak lists. */
-    private enum PeakLists { COMPARE, SKIP, NOT_A_COPY }
-
     private static final class Comparison {
         private final Mode mode;
         private final List<Exclusion> exclusions;
@@ -573,17 +571,11 @@ public final class ModelAssert {
                 value(path, Rule.EXACT, expected, actual);
                 return;
             }
-            PeakLists peaks = peakLists(expected, actual);
             for (Map.Entry<String, Function<Spectrum, Object>> c : SPECTRUM_COMPONENTS.entrySet()) {
                 String name = c.getKey();
                 Rule rule = rule("Spectrum." + name);
-                if (peaks != PeakLists.COMPARE && (name.equals("peaks") || name.equals("peakArrays"))) {
-                    if (peaks == PeakLists.NOT_A_COPY && name.equals("peaks")) {
-                        differ(path + ".peaks", expected.peaks(), actual.peaks(), "the mzPeak side's "
-                                + mzPeakSide(expected, actual).peaks().size()
-                                + " peaks are not a row copy of its arrays (design 5.4)");
-                    }
-                    mzMLSide(path, name, expected, actual);
+                if (mode != Mode.STRICT && (name.equals("peaks") || name.equals("peakArrays"))) {
+                    mixedPeakList(path, name, rule, c.getValue(), expected, actual);
                     continue;
                 }
                 value(name.equals("description") ? path : path + "." + name, rule, c.getValue().apply(expected),
@@ -591,34 +583,31 @@ public final class ModelAssert {
             }
         }
 
-        private Spectrum mzPeakSide(Spectrum expected, Spectrum actual) {
-            return mode == Mode.MZML_VS_MZPEAK ? actual : expected;
-        }
-
         /**
-         * In mixed mode, where the peak lists are not compared pairwise: the mzML side's {@code peaks} or
-         * {@code peakArrays} ({@code name}), which {@code MzMLReader} never builds, is a difference when not empty.
+         * In mixed mode, the {@code peaks} or {@code peakArrays} ({@code name}) of a pair, see {@link Mode}: the
+         * mzPeak side's peaks that are not a row copy of its arrays are a difference; a non-empty list on the mzML
+         * side, which {@code MzMLReader} never builds (design 5.4), is a difference that {@link #A_1} does not hide,
+         * whatever the mzPeak side has; and only where neither side has peaks and the mzML side's list is empty are
+         * the two lists compared pairwise. A_1 needs peaks on one side, so it hides no pairwise difference here.
          */
-        private void mzMLSide(String path, String name, Spectrum expected, Spectrum actual) {
+        private void mixedPeakList(String path, String name, Rule rule, Function<Spectrum, Object> component,
+                                   Spectrum expected, Spectrum actual) {
             Spectrum mzML = mode == Mode.MZML_VS_MZPEAK ? expected : actual;
-            if (name.equals("peaks") && !mzML.peaks().isEmpty()) {
+            Spectrum mzPeak = mode == Mode.MZML_VS_MZPEAK ? actual : expected;
+            boolean peaks = name.equals("peaks");
+            if (peaks && !mzPeak.peaks().isEmpty() && !isRowCopy(mzPeak)) {
+                differ(path + ".peaks", expected.peaks(), actual.peaks(), "the mzPeak side's "
+                        + mzPeak.peaks().size() + " peaks are not a row copy of its arrays (design 5.4)");
+            }
+            if (peaks && !mzML.peaks().isEmpty()) {
                 differ(path + ".peaks", expected.peaks(), actual.peaks(), MZML_SIDE + mzML.peaks().size()
                         + " peaks: MzMLReader builds none (design 5.4)");
-            } else if (name.equals("peakArrays") && !mzML.peakArrays().isEmpty()) {
+            } else if (!peaks && !mzML.peakArrays().isEmpty()) {
                 differ(path + ".peakArrays", expected.peakArrays(), actual.peakArrays(), MZML_SIDE + "peak arrays "
                         + new TreeSet<>(mzML.peakArrays().keySet()) + ": MzMLReader builds none (design 5.4)");
+            } else if (mzPeak.peaks().isEmpty() && mzML.peaks().isEmpty()) {
+                value(path + "." + name, rule, component.apply(expected), component.apply(actual));
             }
-        }
-
-        private PeakLists peakLists(Spectrum expected, Spectrum actual) {
-            if (mode == Mode.STRICT) {
-                return PeakLists.COMPARE;
-            }
-            Spectrum mzPeak = mzPeakSide(expected, actual);
-            if (mzPeak.peaks().isEmpty()) {
-                return PeakLists.COMPARE;
-            }
-            return isRowCopy(mzPeak) ? PeakLists.SKIP : PeakLists.NOT_A_COPY;
         }
 
         void value(String path, Rule rule, Object expected, Object actual) {
@@ -990,11 +979,19 @@ public final class ModelAssert {
         return d.expected() instanceof List<?> e && e.isEmpty() && d.actual() instanceof List<?> a && !a.isEmpty();
     }
 
-    /** {@code root} is a spectrum or wavelength spectrum whose params carry none of {@link #OTHER_COMBINATIONS}. */
+    /**
+     * {@code root} is a spectrum or wavelength spectrum whose params carry none of {@link #OTHER_COMBINATIONS}; a
+     * user param has no accession and is none of them.
+     */
     private static boolean noOtherCombination(Object root) {
         List<Param> params = root instanceof Spectrum s ? s.description().parameters()
                 : root instanceof WavelengthSpectrum w ? w.parameters() : null;
-        return params != null && params.stream().noneMatch(p -> OTHER_COMBINATIONS.contains(p.accession()));
+        return params != null && params.stream().noneMatch(p -> hasAccessionIn(p, OTHER_COMBINATIONS));
+    }
+
+    /** {@code p} has an accession and it is one of {@code accessions}, which may reject {@code null}. */
+    private static boolean hasAccessionIn(Param p, Set<String> accessions) {
+        return p.accession() != null && accessions.contains(p.accession());
     }
 
     private static boolean gainedTypeOrSummary(Difference d) {
@@ -1006,7 +1003,7 @@ public final class ModelAssert {
         Set<String> blocking = DERIVED_TYPES.contains(accession) ? MzMLTerms.SPECTRUM_TYPES.keySet()
                 : SUMMARIES.contains(accession) ? SUMMARIES : Set.of();
         return !blocking.isEmpty()
-                && e.description().parameters().stream().noneMatch(p -> blocking.contains(p.accession()));
+                && e.description().parameters().stream().noneMatch(p -> hasAccessionIn(p, blocking));
     }
 
     private static boolean differsOnlyAtNaN(double[] expected, double[] actual) {
