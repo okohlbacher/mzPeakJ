@@ -189,7 +189,7 @@ and dropped.
 
 | Decoder | Fields |
 |---|---|
-| `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers |
+| `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers (a column wins over a list entry with the same accession) |
 | `ScanRowDecoder` | MS:1000016 scan start time in minutes (converted from its mapping's unit: second, millisecond or hour; another unit, or a unit column, throws), MS:1000927 ion injection time, MS:1000512 filter string, MS:1000616 preset scan configuration; `instrument_configuration_id`; `spectrum_reference`; `scan_windows` (MS:1000501/MS:1000500, a window needs both); `parameters`; typed ion mobility (§5); IMS:1000050/51 positions as Long Params when the list lacks them; leftovers |
 | `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
 | `SelectedIonRowDecoder` | MS:1000744 (a row without it is skipped), MS:1000041, MS:1000042, `parameters`, typed ion mobility, leftovers |

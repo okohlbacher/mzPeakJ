@@ -38,7 +38,8 @@ final class SpectrumRowDecoder {
      * Decodes the spectrum row whose (non-negative) {@code index} is {@code idx}. Its Params are the
      * {@code parameters} list, then the row's leftovers ({@link ColumnResolver#leftovers}, split layout only): its
      * scalar columns that none of the fields below is read from, such as the summary columns and the
-     * {@code spectrum_type} term marker.
+     * {@code spectrum_type} term marker. A column wins over a list entry of the same accession: such an entry is
+     * dropped, as {@link PrecursorRowDecoder} does for the activation.
      */
     static SpectrumHead decode(FacetRow spectrum, long idx) {
         ColumnResolver columns = spectrum.columns();
@@ -62,8 +63,20 @@ final class SpectrumRowDecoder {
         b.mzDeltaModel = deltaModel(columns, g, consumed);
         List<Param> leftovers = columns.leftovers(g, consumed);
         if (!leftovers.isEmpty()) {
-            b.spectrumParams = new ArrayList<>(b.spectrumParams);
-            b.spectrumParams.addAll(leftovers);
+            Set<String> columnAccessions = new HashSet<>();
+            for (Param p : leftovers) {
+                if (p.accession() != null) {
+                    columnAccessions.add(p.accession());
+                }
+            }
+            List<Param> params = new ArrayList<>(b.spectrumParams.size() + leftovers.size());
+            for (Param p : b.spectrumParams) {
+                if (p.accession() == null || !columnAccessions.contains(p.accession())) {
+                    params.add(p);
+                }
+            }
+            params.addAll(leftovers);
+            b.spectrumParams = params;
         }
         return b;
     }
