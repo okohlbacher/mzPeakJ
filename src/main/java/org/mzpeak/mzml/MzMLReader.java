@@ -34,7 +34,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -77,6 +76,8 @@ public final class MzMLReader {
     private final Losses losses = new Losses();
     /** The params of each referenceableParamGroup, by id; filled by {@link #header()}. */
     private final Map<String, List<Param>> groups = new HashMap<>();
+    /** Each referenceableParamGroup, by id, for the value texts of its cvParams; filled by {@link #header()}. */
+    private final Map<String, Node> groupElements = new HashMap<>();
     private Header header;
 
     /**
@@ -255,6 +256,7 @@ public final class MzMLReader {
         List<Node> groupList = section(sections, "referenceableParamGroupList").children("referenceableParamGroup");
         for (Node group : groupList) {
             groups.put(group.attr("id"), params(group));
+            groupElements.put(group.attr("id"), group);
         }
         losses.note(B_1, groupList.size());
 
@@ -315,17 +317,30 @@ public final class MzMLReader {
 
     /**
      * A contact: the first MS:1000586 (contact name) gives the name, the first MS:1000590 (whatever name the file gives
-     * it) the affiliation, as text ({@link MzMLTerms#format}); the other params stay params.
+     * it) the affiliation, first in the order of {@link #params}; each is its cvParam's value text, verbatim, an empty
+     * value null (design 2, 6.2). The other params stay params.
      */
     private Contact contact(Node contact) {
         List<Param> params = params(contact);
-        Optional<Param> name = Param.find(params, CONTACT_NAME);
-        Optional<Param> affiliation = Param.find(params, CONTACT_AFFILIATION);
+        List<Node> cvParams = new ArrayList<>();
+        for (Node ref : contact.children("referenceableParamGroupRef")) {
+            cvParams.addAll(groupElements.get(ref.attr("ref")).children("cvParam")); // params() checked the ref
+        }
+        cvParams.addAll(contact.children("cvParam"));
         List<Param> others = new ArrayList<>(params);
-        name.ifPresent(others::remove);
-        affiliation.ifPresent(others::remove);
-        return new Contact(name.map(p -> MzMLTerms.format(p.value())).orElse(null),
-                affiliation.map(p -> MzMLTerms.format(p.value())).orElse(null), others);
+        Param.find(params, CONTACT_NAME).ifPresent(others::remove);
+        Param.find(params, CONTACT_AFFILIATION).ifPresent(others::remove);
+        return new Contact(text(cvParams, CONTACT_NAME), text(cvParams, CONTACT_AFFILIATION), others);
+    }
+
+    /** The value text of the first of {@code cvParams} with {@code accession}; null if there is none or it is empty. */
+    private static String text(List<Node> cvParams, String accession) {
+        for (Node cvParam : cvParams) {
+            if (cvParam.attr("accession").equals(accession)) {
+                return emptyToNull(cvParam.attr("value"));
+            }
+        }
+        return null;
     }
 
     private ScanSettings scanSettings(Node scanSettings) {

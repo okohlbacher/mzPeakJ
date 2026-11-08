@@ -561,19 +561,42 @@ class MzMLReaderHeaderTest {
 
     @Test
     void contactsTakeTheFirstNameAndAffiliationAndKeepTheRestAsParams(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> replaceOnce(s, "</contact>",
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s, "</contact>",
                 "  <cvParam cvRef=\"MS\" accession=\"MS:1000586\" name=\"contact name\" value=\"1.50\"/>\n"
                         + "      </contact>\n      <contact>\n"
                         + "        <cvParam cvRef=\"MS\" accession=\"MS:1000586\" name=\"contact name\" value=\"007\"/>\n"
-                        + "      </contact>"));
+                        + "        <cvParam cvRef=\"MS\" accession=\"MS:1000590\" name=\"contact affiliation\""
+                        + " value=\"1e3\"/>\n"
+                        + "      </contact>\n      <contact>\n"
+                        + "        <referenceableParamGroupRef ref=\"ContactParams\"/>\n"
+                        + "        <cvParam cvRef=\"MS\" accession=\"MS:1000586\" name=\"contact name\" value=\"Own\"/>\n"
+                        + "      </contact>\n      <contact>\n"
+                        + "        <cvParam cvRef=\"MS\" accession=\"MS:1000589\" name=\"contact email\" value=\"x@y\"/>\n"
+                        + "      </contact>"),
+                "<referenceableParamGroupList count=\"2\">",
+                "<referenceableParamGroupList count=\"3\">\n"
+                        + "      <referenceableParamGroup id=\"ContactParams\">\n"
+                        + "        <cvParam cvRef=\"MS\" accession=\"MS:1000586\" name=\"contact name\" value=\"0.10\"/>\n"
+                        + "        <cvParam cvRef=\"MS\" accession=\"MS:1000590\" name=\"contact affiliation\""
+                        + " value=\"\"/>\n"
+                        + "      </referenceableParamGroup>"));
 
         List<Contact> contacts = new MzMLReader(file).header().fileMetadata().fileDescription().contacts();
 
-        assertThat(contacts).hasSize(2);
+        assertThat(contacts).hasSize(4);
         assertThat(contacts.get(0).name()).isEqualTo("William Pennington");
-        assertThat(contacts.get(0).parameters()).extracting(Param::accession)
-                .containsExactly("MS:1000587", "MS:1000588", "MS:1000589", "MS:1000586");
-        assertThat(contacts.get(1)).isEqualTo(new Contact("7", null, List.of()));
+        assertThat(contacts.get(0).affiliation()).isEqualTo("Higglesworth University");
+        assertThat(contacts.get(0).parameters()).extracting(Param::accession, Param::value)
+                .containsExactly(tuple("MS:1000587", "12 Higglesworth Avenue, 12045, HI, USA"),
+                        tuple("MS:1000588", "http://www.higglesworth.edu/"),
+                        tuple("MS:1000589", "wpennington@higglesworth.edu"), tuple("MS:1000586", 1.5));
+        // Name and affiliation are text, verbatim: no typing of numeric-looking values.
+        assertThat(contacts.get(1)).isEqualTo(new Contact("007", "1e3", List.of()));
+        // The referenced group's params come first; its empty affiliation is null.
+        assertThat(contacts.get(2)).isEqualTo(new Contact("0.10", null,
+                List.of(new Param("contact name", "MS:1000586", "Own", null))));
+        assertThat(contacts.get(3)).isEqualTo(new Contact(null, null,
+                List.of(new Param("contact email", "MS:1000589", "x@y", null))));
     }
 
     @Test
