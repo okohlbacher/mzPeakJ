@@ -46,8 +46,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Oracles: the values of the reference tests (Rust reader.rs test_read_mz_range, Python test_reader.py:47-51) for
  * small, the footer statistics of the other fixtures as parquet-java reads them, and the MS:1000528/MS:1000527 Params
- * of every current spectrum (RD-6). Constructed members cover the packed CURIE-prefix fallback, several row groups and
- * missing statistics, which no fixture has.
+ * of every current spectrum (RD-6). Constructed members cover the packed CURIE-prefix fallback, several row groups,
+ * missing statistics, missing or all-null observed m/z columns and INT64 columns, which no fixture has.
  */
 class ColumnStatisticsTest {
 
@@ -58,6 +58,9 @@ class ColumnStatisticsTest {
     private static final String UNKNOWN = "MS:9999999";
     private static final String MZ_ARRAY = "MS:1000514";
     private static final String INTENSITY_ARRAY = "MS:1000515";
+    /** Made-up terms of the INT64 columns of {@link #writeInt64Metadata}. */
+    private static final String SIGNED_INT64 = "MS:9999001";
+    private static final String UNSIGNED_INT64 = "MS:9999002";
 
     /** The reference value of every small dataset, current and legacy (Rust and Python tests). */
     private static final DoubleRange SMALL_MZ = new DoubleRange(162.24594116210938, 2000.0099466203774);
@@ -446,6 +449,97 @@ class ColumnStatisticsTest {
         }
     }
 
+    /** Without a column for one of the two terms there is no observed m/z range, whichever term it is. */
+    @ParameterizedTest(name = "{0} missing")
+    @CsvSource({"MS:1000528, MS:1000527", "MS:1000527, MS:1000528"})
+    void eitherObservedMzColumnMissingLeavesTheObservedMzRangeEmpty(String missing, String present) {
+        writeSplitMetadata(SPLIT_MZ, true, missing);
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            assertThat(reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, missing)).isEmpty();
+            ColumnStatistics other =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, present).orElseThrow();
+            assertThat(other.column()).isEqualTo(LOWEST_MZ.equals(present) ? "lowest_observed_mz"
+                    : "highest_observed_mz");
+            assertThat(other.complete()).isTrue();
+            assertThat(other.min()).isPresent();
+            assertThat(other.max()).isPresent();
+            assertThat(reader.observedMzRange()).isEmpty();
+        }
+    }
+
+    /**
+     * A column of only nulls has complete statistics without a minimum or a maximum, and then there is no observed
+     * m/z range, whichever of the two columns it is; the other column is bounded.
+     */
+    @ParameterizedTest(name = "{0} all null")
+    @CsvSource({"MS:1000528, MS:1000527", "MS:1000527, MS:1000528"})
+    void eitherObservedMzColumnOfOnlyNullsLeavesTheObservedMzRangeEmpty(String nulls, String bounded) {
+        int column = LOWEST_MZ.equals(nulls) ? 0 : 1;
+        Double[][] mz = new Double[SPLIT_MZ.length][];
+        for (int i = 0; i < mz.length; i++) {
+            mz[i] = SPLIT_MZ[i].clone();
+            mz[i][column] = null;
+        }
+        writeSplitMetadata(mz, true);
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            ColumnStatistics empty =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, nulls).orElseThrow();
+            assertThat(empty.rowGroups()).containsExactly(
+                    new RowGroup(2, 2L, null, null),
+                    new RowGroup(2, 2L, null, null),
+                    new RowGroup(1, 1L, null, null));
+            assertThat(empty.complete()).isTrue();
+            assertThat(empty.min()).isEmpty();
+            assertThat(empty.max()).isEmpty();
+            ColumnStatistics other =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, bounded).orElseThrow();
+            assertThat(other.complete()).isTrue();
+            assertThat(other.min()).isPresent();
+            assertThat(other.max()).isPresent();
+            assertThat(reader.observedMzRange()).isEmpty();
+        }
+    }
+
+    /**
+     * INT64 statistics keep their value: a signed column its sign, an INTEGER(64,false) column below 2<sup>63</sup>
+     * its unsigned value.
+     */
+    @Test
+    void int64StatisticsAreReadSignedOrUnsigned() {
+        writeInt64Metadata(new long[] {3_000_000_000L, -5_000_000_000L, 7L},
+                new long[] {1L << 40, 1L, 1L << 62});
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            ColumnStatistics signed =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, SIGNED_INT64).orElseThrow();
+            assertThat(signed.column()).isEqualTo("signed_count");
+            assertThat(signed.rowGroups()).containsExactly(new RowGroup(3, 0L, -5_000_000_000.0, 3_000_000_000.0));
+            ColumnStatistics unsigned =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, UNSIGNED_INT64).orElseThrow();
+            assertThat(unsigned.column()).isEqualTo("unsigned_count");
+            assertThat(unsigned.rowGroups()).containsExactly(new RowGroup(3, 0L, 1.0, 0x1p62));
+        }
+    }
+
+    /**
+     * An INTEGER(64,false) statistic with the high bit set is beyond the supported range and rejected; the same bits
+     * in a signed INT64 column are a negative value. Read through {@link MetadataColumns#statistics} on its own, so
+     * that the reader's metadata decoding cannot fail first.
+     */
+    @Test
+    void aUint64StatisticWithTheHighBitSetIsRejected() {
+        writeInt64Metadata(new long[] {5L, -1L}, new long[] {5L, -1L});
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThat(MetadataColumns.statistics(manifest, src, EntityType.SPECTRUM, DataKind.METADATA, SIGNED_INT64))
+                    .map(ColumnStatistics::rowGroups).contains(List.of(new RowGroup(2, 0L, -1.0, 5.0)));
+            assertThatThrownBy(() -> MetadataColumns.statistics(manifest, src, EntityType.SPECTRUM,
+                    DataKind.METADATA, UNSIGNED_INT64))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageContaining("unsigned_count")
+                    .hasMessageContaining("maximum 18446744073709551615");
+        }
+    }
+
     // ---- the record and the reader contract ----------------------------------------------------------------------
 
     @Test
@@ -509,14 +603,25 @@ class ColumnStatisticsTest {
 
     /**
      * A split spectrum metadata member of 5 rows in row groups of 2, 2 and 1 rows, whose lowest and highest observed
-     * m/z are the pairs of {@code mz} (a {@code null} pair for null cells), with a manifest that maps its columns.
+     * m/z are the pairs of {@code mz} ({@code null} for a null cell), with a manifest that maps its columns.
      */
     private void writeSplitMetadata(Double[][] mz, boolean statistics) {
+        writeSplitMetadata(mz, statistics, null);
+    }
+
+    /**
+     * {@link #writeSplitMetadata(Double[][], boolean)} without the observed m/z column of the accession
+     * {@code omitted} ({@code null} for none): it is neither written nor mapped, as the column table would otherwise
+     * find it by its name.
+     */
+    private void writeSplitMetadata(Double[][] mz, boolean statistics, String omitted) {
+        boolean lowest = !LOWEST_MZ.equals(omitted);
+        boolean highest = !HIGHEST_MZ.equals(omitted);
         MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
                 + "  optional int64 index (INTEGER(64,false));\n"
                 + "  optional double time;\n"
-                + "  optional double lowest_observed_mz;\n"
-                + "  optional double highest_observed_mz;\n"
+                + (lowest ? "  optional double lowest_observed_mz;\n" : "")
+                + (highest ? "  optional double highest_observed_mz;\n" : "")
                 + "  optional int32 number_of_data_points (INTEGER(32,false));\n"
                 + "}");
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
@@ -525,20 +630,50 @@ class ColumnStatisticsTest {
         for (int i = 0; i < mz.length; i++) {
             Group g = factory.newGroup().append("index", (long) i).append("time", i + 1.0)
                     .append("number_of_data_points", points[i]);
-            if (mz[i][0] != null) {
-                g.append("lowest_observed_mz", mz[i][0]).append("highest_observed_mz", mz[i][1]);
+            if (lowest && mz[i][0] != null) {
+                g.append("lowest_observed_mz", mz[i][0]);
+            }
+            if (highest && mz[i][1] != null) {
+                g.append("highest_observed_mz", mz[i][1]);
             }
             rows[i] = g;
         }
         write("spectra_metadata.parquet", schema, 2, statistics, rows);
         manifest("{\"name\": \"spectra_metadata.parquet\", \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\","
                 + " \"column_mapping\": ["
-                + "{\"name\": \"lowest observed m/z\", \"path\": \"lowest_observed_mz\", \"accession\": \"MS:1000528\","
-                + " \"unit\": \"MS:1000040\"},"
-                + "{\"name\": \"highest observed m/z\", \"path\": \"highest_observed_mz\","
-                + " \"accession\": \"MS:1000527\", \"unit\": \"MS:1000040\"},"
+                + (lowest ? "{\"name\": \"lowest observed m/z\", \"path\": \"lowest_observed_mz\","
+                + " \"accession\": \"MS:1000528\", \"unit\": \"MS:1000040\"}," : "")
+                + (highest ? "{\"name\": \"highest observed m/z\", \"path\": \"highest_observed_mz\","
+                + " \"accession\": \"MS:1000527\", \"unit\": \"MS:1000040\"}," : "")
                 + "{\"name\": \"number of data points\", \"path\": \"number_of_data_points\","
                 + " \"accession\": \"MS:1003060\", \"unit\": null}]}");
+    }
+
+    /**
+     * A split spectrum metadata member of one row group whose INT64 column {@code signed_count} holds {@code signed}
+     * and whose INTEGER(64,false) column {@code unsigned_count} holds {@code unsigned}, mapped to the made-up terms
+     * {@link #SIGNED_INT64} and {@link #UNSIGNED_INT64}.
+     */
+    private void writeInt64Metadata(long[] signed, long[] unsigned) {
+        MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
+                + "  optional int64 index (INTEGER(64,false));\n"
+                + "  optional double time;\n"
+                + "  optional int64 signed_count;\n"
+                + "  optional int64 unsigned_count (INTEGER(64,false));\n"
+                + "}");
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        Group[] rows = new Group[signed.length];
+        for (int i = 0; i < rows.length; i++) {
+            rows[i] = factory.newGroup().append("index", (long) i).append("time", i + 1.0)
+                    .append("signed_count", signed[i]).append("unsigned_count", unsigned[i]);
+        }
+        write("spectra_metadata.parquet", schema, Integer.MAX_VALUE, true, rows);
+        manifest("{\"name\": \"spectra_metadata.parquet\", \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\","
+                + " \"column_mapping\": ["
+                + "{\"name\": \"signed count\", \"path\": \"signed_count\", \"accession\": \"" + SIGNED_INT64 + "\","
+                + " \"unit\": null},"
+                + "{\"name\": \"unsigned count\", \"path\": \"unsigned_count\", \"accession\": \"" + UNSIGNED_INT64
+                + "\", \"unit\": null}]}");
     }
 
     private void manifest(String entry) {
