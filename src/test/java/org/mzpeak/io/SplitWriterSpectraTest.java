@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakManifest.DataKind;
@@ -27,11 +28,13 @@ import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -210,6 +213,46 @@ class SplitWriterSpectraTest {
             assertThat(reader.getSpectrumAt(0).description().scans()).containsExactly(first);
             assertThat(reader.getSpectrumAt(2).description().scans()).containsExactly(second, third);
         }
+    }
+
+    /**
+     * A scan's spectrum_reference and instrument configuration survive a round trip in both metadata layouts: of two
+     * constructed spectra, the scan of spectrum 1 has both, and the raw cells of the scan row with its source_index
+     * hold them (spectra_metadata_scans in the split layout, the scan struct of spectra_metadata in the packed one),
+     * while the scan of spectrum 0 has neither.
+     */
+    @ParameterizedTest
+    @EnumSource(MetadataLayout.class)
+    void aScansSpectrumReferenceAndInstrumentConfigurationRoundTrip(MetadataLayout layout, @TempDir Path tmp) {
+        ScanEvent plain = new ScanEvent(0.5, null, null, null, null, null, List.of(), List.of());
+        ScanEvent referenced = new ScanEvent(1.0, 20.0, null, null, 3, "index=0", List.of(), List.of());
+        List<Spectrum> spectra = List.of(profile(0, 0.5, List.of(plain)), profile(1, 1.0, List.of(referenced)));
+        Path out = tmp.resolve(layout + ".mzpeak");
+        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                Options.defaults().withMetadataLayout(layout));
+
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        DescriptionAssert.assertEqual("scan references via " + layout,
+                spectra.stream().map(Spectrum::description).toList(), descriptions(back));
+        assertThat(back.spectra.get(1).description().scans()).containsExactly(referenced);
+
+        Map<Long, Group> scans = new HashMap<>();
+        if (layout == MetadataLayout.SPLIT) {
+            for (Group row : rows(out.resolve("spectra_metadata_scans.parquet"))) {
+                scans.put(ParquetGroups.optLong(row, "source_index"), row);
+            }
+        } else {
+            for (Group row : rows(out.resolve("spectra_metadata.parquet"))) {
+                Group scan = ParquetGroups.optGroup(row, "scan");
+                scans.put(ParquetGroups.optLong(scan, "source_index"), scan);
+            }
+        }
+        String configuration = layout == MetadataLayout.SPLIT ? "instrument_configuration_id"
+                : "instrument_configuration_ref";
+        assertThat(ParquetGroups.optString(scans.get(1L), "spectrum_reference")).isEqualTo("index=0");
+        assertThat(ParquetGroups.optInt(scans.get(1L), configuration)).isEqualTo(3);
+        assertThat(ParquetGroups.has(scans.get(0L), "spectrum_reference")).isFalse();
+        assertThat(ParquetGroups.has(scans.get(0L), configuration)).isFalse();
     }
 
     /** Each scan row of {@code out} as {@code source_index|scan_index|scan_start_time}, in row order. */

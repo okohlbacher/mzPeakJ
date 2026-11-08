@@ -330,6 +330,59 @@ class SplitWriterPromotionTest {
     }
 
     /**
+     * A summary value or a collision energy that is not finite does not qualify for its column
+     * ({@code SplitMetadataWriter.doubleIn}): a NaN and an infinite total ion current and a NaN and an infinite
+     * collision energy stay in their {@code parameters} lists, their columns stay null, nothing is derived next to
+     * the summary Param, and the spectra read back equal.
+     */
+    @Test
+    void nonFiniteSummaryValuesAndCollisionEnergiesStayParams(@TempDir Path tmp) throws IOException {
+        Source small = source(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        List<Integer> ms1 = positions(spectra, false);
+        List<Integer> msn = positions(spectra, true);
+        List<Param> tics = List.of(new Param("total ion current", TIC, Double.NaN, "MS:1000131"),
+                new Param("total ion current", TIC, Double.POSITIVE_INFINITY, "MS:1000131"));
+        Param cid = new Param("collision-induced dissociation", "MS:1000133", null, null);
+        List<Param> energies = List.of(new Param("collision energy", "MS:1000045", Double.NaN, "UO:0000266"),
+                new Param("collision energy", "MS:1000045", Double.NEGATIVE_INFINITY, "UO:0000266"));
+        for (int k = 0; k < 2; k++) {
+            spectra.set(ms1.get(k), withParams(spectra.get(ms1.get(k)), List.of(tics.get(k))));
+            spectra.set(msn.get(k), withActivation(spectra.get(msn.get(k)), List.of(cid, energies.get(k))));
+        }
+
+        Path out = write(spectra, small, tmp.resolve("out.mzpeak"));
+
+        Map<Long, Group> rows = byIndex(rows(out.resolve(SPECTRA)), "index");
+        Map<Long, Group> activations = new HashMap<>();
+        for (Group row : rows(out.resolve(PRECURSORS))) {
+            activations.put(row.getLong("source_index", 0), ParquetGroups.optGroup(row, "activation"));
+        }
+        for (int k = 0; k < 2; k++) {
+            Group spectrum = rows.get(spectra.get(ms1.get(k)).index());
+            assertThat(ParquetGroups.readParams(spectrum, "parameters")).as("params of %s", tics.get(k))
+                    .containsExactly(tics.get(k));
+            assertSummary(spectrum, Map.of());
+            Group activation = activations.get(spectra.get(msn.get(k)).index());
+            assertThat(ParquetGroups.optString(activation, "dissociation_method")).isEqualTo("MS:1000133");
+            assertThat(ParquetGroups.optDouble(activation, "collision_energy")).as("column of %s", energies.get(k))
+                    .isNull();
+            assertThat(ParquetGroups.readParams(activation, "parameters")).as("params of %s", energies.get(k))
+                    .containsExactly(energies.get(k));
+        }
+
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        DescriptionAssert.assertEqual("non-finite summaries and energies", descriptions(spectra),
+                descriptions(back.spectra));
+        for (int k = 0; k < 2; k++) {
+            assertThat(back.spectra.get(ms1.get(k)).description().parameters()).contains(tics.get(k));
+            assertThat(back.spectra.get(msn.get(k)).description().primaryPrecursor().activation().parameters())
+                    .containsExactlyInAnyOrder(cid, energies.get(k));
+        }
+        assertNoAccessionTwice(out);
+    }
+
+    /**
      * Each position column is written when some scan has a position that qualifies for it: a negative y stays a
      * Param, and without another y there is no y column.
      */

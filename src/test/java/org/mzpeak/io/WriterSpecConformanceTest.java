@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.example.data.Group;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
@@ -12,6 +13,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.Param;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.FileDescription;
 import org.mzpeak.model.meta.FileMetadata.MsRun;
@@ -20,6 +25,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -192,6 +198,74 @@ class WriterSpecConformanceTest {
                 List.of("spectra_peaks.parquet: point.spectrum_index"), PACKED_CHROMATOGRAM_UINT64,
                 PACKED_WAVELENGTH_UINT64));
         assertManifestVersionAndCvList(dir);
+    }
+
+    /**
+     * The packed layout also writes a scan's ion mobility into its typed columns: current diaPASEF.ref, written with
+     * options naming the layout, has {@code scan.ion_mobility_value} equal to the scan's value and
+     * {@code scan.ion_mobility_type} MS:1002815 on each of the 8 spectra whose scan has one, and neither on the other.
+     * A scan whose only ion-mobility Param is the array term MS:1002893 has no scan-level value, so it gets no typed
+     * ion-mobility cell; the split layout keeps ion mobility in the {@code parameters} list and has no such column.
+     */
+    @Test
+    void thePackedLayoutWritesTypedIonMobilityForAScanValueOnly(@TempDir Path tmp) throws IOException {
+        Source s = ForwardBackwardCorpusTest.readSource(Fixtures.current("diaPASEF.ref.mzpeak"));
+        Path dir = tmp.resolve("diaPASEF.mzpeak");
+        MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, PACKED);
+
+        Map<Long, Group> scans = packedScans(dir);
+        int withValue = 0;
+        for (Spectrum spectrum : s.spectra) {
+            ScanEvent scan = spectrum.description().scans().get(0);
+            Group row = scans.get(spectrum.index());
+            if (scan.ionMobilityValue().isPresent()) {
+                withValue++;
+                assertThat(ParquetGroups.optDouble(row, "ion_mobility_value")).as("spectrum %d", spectrum.index())
+                        .isEqualTo(scan.ionMobilityValue().getAsDouble());
+                assertThat(ParquetGroups.optString(row, "ion_mobility_type")).as("spectrum %d", spectrum.index())
+                        .isEqualTo("MS:1002815");
+            } else {
+                assertThat(ParquetGroups.has(row, "ion_mobility_value")).as("spectrum %d", spectrum.index()).isFalse();
+                assertThat(ParquetGroups.has(row, "ion_mobility_type")).as("spectrum %d", spectrum.index()).isFalse();
+            }
+        }
+        assertThat(withValue).as("diaPASEF.ref spectra with a scan-level ion mobility").isEqualTo(8);
+
+        Spectrum first = s.spectra.get(1);
+        SpectrumDescription d = first.description();
+        ScanEvent arrayOnly = new ScanEvent(d.scans().get(0).startTime(), null, null, null, null, null, List.of(),
+                List.of(new Param("ion mobility array", "MS:1002893", null, null)));
+        Spectrum constructed = new Spectrum(new SpectrumDescription(0, d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), List.of(arrayOnly),
+                List.of(), d.parameters()), first.mz(), first.intensity(), first.peaks());
+        assertThat(arrayOnly.ionMobilityValue()).isEmpty();
+        Path packed = tmp.resolve("array-term.mzpeak");
+        MzPeakWriter.writeDirectory(packed, List.of(constructed), List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                PACKED);
+        Group row = packedScans(packed).get(0L);
+        assertThat(ParquetGroups.has(row, "ion_mobility_value")).as("ion_mobility_value of an array term").isFalse();
+        assertThat(ParquetGroups.has(row, "ion_mobility_type")).as("ion_mobility_type of an array term").isFalse();
+        assertThat(ParquetGroups.readParams(row, "parameters")).containsExactly(arrayOnly.parameters().get(0));
+
+        Path split = tmp.resolve("array-term-split.mzpeak");
+        MzPeakWriter.writeDirectory(split, List.of(constructed), List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                MzPeakWriter.Options.defaults());
+        try (ParquetFileReader reader = ParquetFileReader.open(
+                new LocalInputFile(split.resolve("spectra_metadata_scans.parquet")), ParquetGroups.readOptions())) {
+            assertThat(reader.getFooter().getFileMetaData().getSchema().getFields())
+                    .noneMatch(f -> f.getName().contains("ion_mobility"));
+        }
+    }
+
+    /** The {@code scan} struct of each spectra_metadata row of a packed dataset, by its {@code source_index}. */
+    private static Map<Long, Group> packedScans(Path dir) {
+        Map<Long, Group> out = new HashMap<>();
+        ParquetGroups.forEach(dir.resolve("spectra_metadata.parquet"), row -> {
+            Group scan = ParquetGroups.optGroup(row, "scan");
+            out.put(ParquetGroups.optLong(scan, "source_index"), scan);
+        });
+        return out;
     }
 
     // ---- footer metadata fallbacks (FooterMetadataWriter.serialize) ----------------------------------
