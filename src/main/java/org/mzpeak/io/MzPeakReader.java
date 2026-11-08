@@ -28,9 +28,40 @@ import java.util.Optional;
  * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
  * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); open with
  * {@link Options#withReconstructProfile(boolean) Options.defaults().withReconstructProfile(false)} to get only the
- * stored non-null points. Not thread-safe.
+ * stored non-null points. Spectra combine the data arrays member and the peaks member by default; a
+ * {@link SignalMode} set with {@link Options#withSignalMode(SignalMode)} reads only one of them. Not thread-safe.
  */
 public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
+
+    /**
+     * Which of a dataset's two spectrum signal members a reader decodes: the data arrays member (typically
+     * {@code spectra_data.parquet}, profile or other point arrays) and the peaks member (typically
+     * {@code spectra_peaks.parquet}, centroids). A spectrum may be stored in either or both.
+     *
+     * <p>{@link #PROFILE} and {@link #CENTROID} read one member and leave the other unopened. A spectrum read in one
+     * of these modes is a partial view of what the dataset stores and must not be passed to {@link MzPeakWriter},
+     * which would write only that part: read with {@link #BOTH} before writing.
+     */
+    public enum SignalMode {
+        /**
+         * Both members, the default. {@link Spectrum#mz()}, {@link Spectrum#intensity()} and
+         * {@link Spectrum#arrays()} hold the data arrays of the spectrum, or its centroids in stored order when the
+         * data arrays member has none; {@link Spectrum#peaks()} and {@link Spectrum#peakArrays()} hold its centroids.
+         */
+        BOTH,
+        /**
+         * The data arrays member only. {@link Spectrum#mz()}, {@link Spectrum#intensity()} and
+         * {@link Spectrum#arrays()} hold the data arrays of the spectrum, and are empty when that member has none;
+         * {@link Spectrum#peaks()} and {@link Spectrum#peakArrays()} are always empty.
+         */
+        PROFILE,
+        /**
+         * The peaks member only. {@link Spectrum#mz()}, {@link Spectrum#intensity()} and {@link Spectrum#arrays()}
+         * hold the centroids of the spectrum in stored order, and are empty when that member has none;
+         * {@link Spectrum#peaks()} and {@link Spectrum#peakArrays()} hold the same centroids, as in {@link #BOTH}.
+         */
+        CENTROID
+    }
 
     /**
      * How a reader decodes a dataset. Immutable: start from {@link #defaults()} and derive variants with the
@@ -40,14 +71,19 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     public static final class Options {
 
         private final boolean reconstructProfile;
+        private final SignalMode signalMode;
 
-        private Options(boolean reconstructProfile) {
+        private Options(boolean reconstructProfile, SignalMode signalMode) {
             this.reconstructProfile = reconstructProfile;
+            this.signalMode = signalMode;
         }
 
-        /** The default options: null-marked profile points are reconstructed. */
+        /**
+         * The default options: null-marked profile points are reconstructed, and spectra are read from both signal
+         * members ({@link SignalMode#BOTH}).
+         */
         public static Options defaults() {
-            return new Options(true);
+            return new Options(true, SignalMode.BOTH);
         }
 
         /**
@@ -61,22 +97,40 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
         /** These options with {@link #reconstructProfile()} set to {@code reconstructProfile}, as a new instance. */
         public Options withReconstructProfile(boolean reconstructProfile) {
-            return new Options(reconstructProfile);
+            return new Options(reconstructProfile, signalMode);
+        }
+
+        /**
+         * Which signal members spectra are read from. Default {@link SignalMode#BOTH}; the other modes give partial
+         * views of a spectrum, see {@link SignalMode}.
+         */
+        public SignalMode signalMode() {
+            return signalMode;
+        }
+
+        /**
+         * These options with {@link #signalMode()} set to {@code signalMode}, as a new instance.
+         *
+         * @throws NullPointerException if {@code signalMode} is {@code null}
+         */
+        public Options withSignalMode(SignalMode signalMode) {
+            return new Options(reconstructProfile, Objects.requireNonNull(signalMode, "signalMode"));
         }
 
         @Override
         public boolean equals(Object o) {
-            return o instanceof Options other && reconstructProfile == other.reconstructProfile;
+            return o instanceof Options other && reconstructProfile == other.reconstructProfile
+                    && signalMode == other.signalMode;
         }
 
         @Override
         public int hashCode() {
-            return Boolean.hashCode(reconstructProfile);
+            return 31 * Boolean.hashCode(reconstructProfile) + signalMode.hashCode();
         }
 
         @Override
         public String toString() {
-            return "Options[reconstructProfile=" + reconstructProfile + "]";
+            return "Options[reconstructProfile=" + reconstructProfile + ", signalMode=" + signalMode + "]";
         }
     }
 
@@ -301,8 +355,12 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     private Spectrum materialize(SpectrumDescription description) {
         long index = description.index();
-        SpectrumArrayStore.Arrays profile = data() == null ? null : data().get(index);
-        SpectrumArrayStore.Arrays centroids = peaks() == null ? null : peaks().get(index);
+        SignalMode mode = options.signalMode();
+        // PROFILE never loads the peaks member, CENTROID never the data member
+        SpectrumArrayStore.Arrays profile =
+                mode == SignalMode.CENTROID || data() == null ? null : data().get(index);
+        SpectrumArrayStore.Arrays centroids =
+                mode == SignalMode.PROFILE || peaks() == null ? null : peaks().get(index);
 
         List<CentroidPeak> peakList = List.of();
         if (centroids != null) {
