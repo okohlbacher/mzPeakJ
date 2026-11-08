@@ -76,8 +76,8 @@ class WriterManifestConformanceTest {
             .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
 
     /**
-     * The roles of the split layout's output of small.unpacked, in manifest order. The chromatogram metadata stays
-     * packed until WR-6.
+     * The roles of the split layout's output of small.unpacked, in manifest order. The chromatogram metadata is split
+     * since WR-6.
      */
     private static final List<String> SPLIT_SMALL_ROLES = List.of(
             "spectra_metadata.parquet|spectrum|metadata",
@@ -87,9 +87,12 @@ class WriterManifestConformanceTest {
             "spectra_data.parquet|spectrum|data_arrays",
             "spectra_peaks.parquet|spectrum|peaks",
             "chromatograms_metadata.parquet|chromatogram|metadata",
+            "chromatograms_metadata_precursors.parquet|chromatogram|precursors",
+            "chromatograms_metadata_selected_ions.parquet|chromatogram|selected_ions",
             "chromatograms_data.parquet|chromatogram|data_arrays");
     private static final List<String> SPLIT_HAS_UV_ROLES = Stream.concat(SPLIT_SMALL_ROLES.stream(), Stream.of(
             "wavelength_spectra_metadata.parquet|wavelength_spectrum|metadata",
+            "wavelength_spectra_metadata_scans.parquet|wavelength_spectrum|scans",
             "wavelength_spectra_data.parquet|wavelength_spectrum|data_arrays")).toList();
     private static final List<String> SPLIT_HAS_UV_POINT_ROLES = SPLIT_HAS_UV_ROLES.stream()
             .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
@@ -97,7 +100,9 @@ class WriterManifestConformanceTest {
     /** The members that carry a column mapping in the split layout. */
     private static final List<String> SPLIT_MAPPED = List.of("spectra_metadata.parquet",
             "spectra_metadata_scans.parquet", "spectra_metadata_precursors.parquet",
-            "spectra_metadata_selected_ions.parquet");
+            "spectra_metadata_selected_ions.parquet", "chromatograms_metadata.parquet",
+            "chromatograms_metadata_precursors.parquet", "chromatograms_metadata_selected_ions.parquet",
+            "wavelength_spectra_metadata.parquet", "wavelength_spectra_metadata_scans.parquet");
 
     /** The full form of each legacy writer family, and the split layout's directory, archive and Numpress forms. */
     enum Form {
