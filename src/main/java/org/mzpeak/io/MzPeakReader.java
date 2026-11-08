@@ -258,7 +258,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      * Open the mzPeak dataset that {@code source} provides, with {@code options}.
      *
      * <p>The reader takes ownership of {@code source} and closes it exactly once: when this method throws (also for
-     * a {@code null} {@code options}), or on the first {@link #close()} of the returned reader.
+     * a {@code null} {@code options}, and for an {@link Error}), or on the first {@link #close()} of the returned
+     * reader. A failure to close it then is added to the thrown exception as suppressed.
      *
      * @throws NullPointerException if {@code source} or {@code options} is {@code null}
      */
@@ -274,8 +275,12 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             String peaksFile = member(manifest, EntityType.SPECTRUM, DataKind.PEAKS);
             return new MzPeakReader(source, manifest, options, decoded,
                     metadataFile, dataFile, peaksFile);
-        } catch (RuntimeException e) {
-            source.close();
+        } catch (RuntimeException | Error e) {
+            try {
+                source.close();
+            } catch (RuntimeException | Error closing) {
+                e.addSuppressed(closing);
+            }
             throw e;
         }
     }
@@ -296,7 +301,11 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /**
      * Scan settings from the manifest's {@code metadata.scan_settings_list}, else from the spectrum metadata
-     * footer — non-empty for imaging (MSI / imzML) datasets, empty for conventional LC-MS files.
+     * footer — non-empty for imaging (MSI / imzML) datasets, empty for conventional LC-MS files. Read on first use and
+     * cached.
+     *
+     * @throws IllegalStateException if this reader is closed and the scan settings are not cached yet and must be read
+     *                               from the footer
      */
     public synchronized java.util.List<org.mzpeak.model.meta.ScanSettings> scanSettings() {
         if (!scanSettingsLoaded) {
@@ -309,6 +318,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     /**
      * {@code true} if this is a mass-spectrometry imaging dataset (manifest {@code metadata.imaging.is_imaging}
      * flag set or {@link #scanSettings()} is non-empty).
+     *
+     * @throws IllegalStateException as {@link #scanSettings()} does, when the manifest flag is not set
      */
     public boolean isImaging() {
         return manifest.isImaging() || !scanSettings().isEmpty();
@@ -331,11 +342,21 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return descriptions.get(ordinal);
     }
 
+    /**
+     * The spectrum with {@code index}, or empty if there is none.
+     *
+     * @throws IllegalStateException if this reader is closed and the spectrum exists
+     */
     public Optional<Spectrum> getSpectrum(long index) {
         Integer ordinal = indexToOrdinal.get(index);
         return ordinal == null ? Optional.empty() : Optional.of(materialize(descriptions.get(ordinal)));
     }
 
+    /**
+     * The spectrum at {@code ordinal} in metadata order.
+     *
+     * @throws IllegalStateException if this reader is closed
+     */
     public Spectrum getSpectrumAt(int ordinal) {
         return materialize(descriptions.get(ordinal));
     }
@@ -372,6 +393,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     }
 
     private Spectrum materialize(SpectrumDescription description) {
+        requireOpen();
         long index = description.index();
         SignalMode mode = options.signalMode();
         // PROFILE never loads the peaks member, CENTROID never the data member
@@ -604,7 +626,12 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     // ---- chromatograms ----------------------------------------------------------------------------
 
-    /** All chromatograms (TIC, BPC, ...) ordered by index. */
+    /**
+     * All chromatograms (TIC, BPC, ...) ordered by index.
+     *
+     * @throws IllegalStateException if this reader is closed, as do {@link #getChromatogram(long)} and
+     *                               {@link #getChromatogramById(String)}
+     */
     public List<org.mzpeak.model.Chromatogram> chromatograms() {
         return chromatograms0() == null ? List.of() : chromatograms0().all();
     }
@@ -707,7 +734,11 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     // ---- wavelength (UV/DAD) spectra --------------------------------------------------------------
 
-    /** All wavelength (UV/DAD) spectra ordered by index; empty if the dataset has none. */
+    /**
+     * All wavelength (UV/DAD) spectra ordered by index; empty if the dataset has none.
+     *
+     * @throws IllegalStateException if this reader is closed, as does {@link #getWavelengthSpectrum(long)}
+     */
     public List<org.mzpeak.model.WavelengthSpectrum> wavelengthSpectra() {
         return wavelength0() == null ? List.of() : wavelength0().all();
     }
@@ -720,7 +751,10 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /**
      * File/run-level metadata (instrument, software, run, file description, ...) from the manifest's
-     * {@code metadata}; a document the manifest lacks is read from the spectrum metadata footer.
+     * {@code metadata}; a document the manifest lacks is read from the spectrum metadata footer. Read on first use and
+     * cached.
+     *
+     * @throws IllegalStateException if this reader is closed and the metadata is not cached yet and needs the footer
      */
     public synchronized org.mzpeak.model.meta.FileMetadata fileMetadata() {
         if (!fileMetadataLoaded) {
@@ -732,6 +766,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /** The key-value metadata of the spectrum metadata member's Parquet footer, read on first use. */
     private synchronized Map<String, String> footerKeyValue() {
+        requireOpen();
         if (footerKeyValue == null) {
             footerKeyValue = ParquetGroups.footerKeyValue(source.inputFile(metadataFileName));
         }
@@ -759,6 +794,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     }
 
     private synchronized ChromatogramStore chromatograms0() {
+        requireOpen();
         if (!chromatogramsLoaded) {
             chromatogramStore = ChromatogramStore.load(source, manifest);
             chromatogramsLoaded = true;
@@ -767,6 +803,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     }
 
     private synchronized WavelengthSpectrumStore wavelength0() {
+        requireOpen();
         if (!wavelengthLoaded) {
             wavelengthStore = WavelengthSpectrumStore.load(source, manifest);
             wavelengthLoaded = true;
@@ -774,6 +811,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return wavelengthStore;
     }
 
+    /** The spectra in metadata order; {@code next()} throws {@link IllegalStateException} after {@link #close()}. */
     @Override
     public Iterator<Spectrum> iterator() {
         return new Iterator<>() {
@@ -794,26 +832,60 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         };
     }
 
-    /** Release the signal readers and close the source. Only the first call has an effect. */
+    /**
+     * Release the signal readers and close the source. Only the first call has an effect. Each of the two spectrum
+     * signal readers and the source is closed even when closing another fails; the first failure is thrown, with any
+     * later ones added as suppressed.
+     *
+     * <p>After {@code close()}, the methods that read the dataset throw {@link IllegalStateException}: spectrum
+     * retrieval (also through the iterator), chromatograms, wavelength spectra, range and column-statistics queries,
+     * and file metadata or scan settings that are not cached yet and need the footer. What the reader holds in memory
+     * stays available: the manifest, the spectrum descriptions, {@link #select(SignalQuery)},
+     * {@link #observedTimeRange()}, and file metadata and scan settings read before.
+     */
     @Override
     public void close() {
         if (closed) {
             return;
         }
         closed = true;
+        RuntimeException failure = null;
         try {
             if (dataStore != null) {
                 dataStore.close();
-                dataStore = null;
             }
+        } catch (RuntimeException e) {
+            failure = e;
+        } finally {
+            dataStore = null;
+        }
+        try {
             if (peakStore != null) {
                 peakStore.close();
-                peakStore = null;
             }
+        } catch (RuntimeException e) {
+            failure = addFailure(failure, e);
+        } finally {
+            peakStore = null;
             chromatogramStore = null;
             wavelengthStore = null;
-        } finally {
-            source.close();
         }
+        try {
+            source.close();
+        } catch (RuntimeException e) {
+            failure = addFailure(failure, e);
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    /** {@code e} if there is no {@code failure} yet, else {@code failure} with {@code e} added as suppressed. */
+    private static RuntimeException addFailure(RuntimeException failure, RuntimeException e) {
+        if (failure == null) {
+            return e;
+        }
+        failure.addSuppressed(e);
+        return failure;
     }
 }
