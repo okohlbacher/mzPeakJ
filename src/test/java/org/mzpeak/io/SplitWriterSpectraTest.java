@@ -124,12 +124,16 @@ class SplitWriterSpectraTest {
                 "chromatograms_metadata.parquet|chromatogram|metadata",
                 "chromatograms_data.parquet|chromatogram|data_arrays");
 
+        // WR-5c added spectrum_type and the five summary columns, in the reference's order.
         MessageType spectra = schema(out, "spectra_metadata.parquet");
         assertThat(columns(spectra)).containsExactly(
                 "index required INT64 uint64", "id optional BINARY string", "ms_level optional INT32 -",
                 "time optional DOUBLE -", "scan_polarity optional INT32 -",
-                "spectrum_representation optional BINARY string", "number_of_data_points optional INT64 uint64",
-                "number_of_peaks optional INT64 uint64", "parameters optional group list");
+                "spectrum_representation optional BINARY string", "spectrum_type optional BINARY string",
+                "lowest_observed_mz optional DOUBLE -", "highest_observed_mz optional DOUBLE -",
+                "number_of_data_points optional INT64 uint64", "number_of_peaks optional INT64 uint64",
+                "base_peak_mz optional DOUBLE -", "base_peak_intensity optional DOUBLE -",
+                "total_ion_current optional DOUBLE -", "parameters optional group list");
         MessageType scans = schema(out, "spectra_metadata_scans.parquet");
         assertThat(columns(scans)).containsExactly(
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",
