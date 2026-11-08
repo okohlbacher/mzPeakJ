@@ -325,16 +325,19 @@ transforms the other way round. Rule 1 and the lowest-rank rule cover them uncha
 
 | Row | Axis | Intensity |
 |---|---|---|
-| a Numpress column carries a value (the axis's `MS:1002312` transform, or a SLOF/PIC intensity transform) | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
+| the axis's `MS:1002312` transform column is non-null | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
 | `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | plain list, as long as the values or one longer |
 | `MS:1000576` or `MS:1003088` | absolute values | same |
 | `MS:1003826` (coordinate grid) | throws (below) | |
 | any other CURIE | throws `unsupported chunk encoding <curie> for spectrum_index <n>` | |
 
 Column presence picks the Numpress decoder, but an unknown `chunk_encoding` throws on every row. A row that
-names `MS:1002312` without carrying a Numpress column decodes as delta. A plan may list several plain lists,
-SLOF or PIC columns: of each kind the first one that carries a value (non-null and not empty) is read, else the
-first non-null one.
+names `MS:1002312` without carrying a Numpress column decodes as delta. A row without Numpress m/z is never
+decoded as Numpress: SLOF or PIC intensity that decodes to values throws, and a payload without values is
+skipped, so it cannot hide the row's delta m/z and plain intensities. A plan may list several plain lists, SLOF
+or PIC columns: the first plain list that carries a value (non-null and not empty) is read, else the first
+non-null one, and the first SLOF or PIC column whose payload decodes to values. An empty payload, or a SLOF
+payload of its 8-byte header only, has no values and does not hide a later column of any kind.
 
 **Delta encoding** (`MS:1003089`, "truncation, delta prediction and zlib compression"): differences from a
 predictor seeded at `mz_chunk_start`. **Null-aware**, per the spec's `null_delta_decode`: a null (NaN) breaks
@@ -362,7 +365,7 @@ encoded values fit in uint16; this is transparent to the reader.
 misdecoded: a grid chunk, an unknown `chunk_encoding`, Numpress intensity that decodes to values without a
 Numpress m/z source, Numpress m/z that decodes to values without an intensity column, a value in a
 `*numpress*` column the plan does not decode, and a value in an intensity chunk transform other than SLOF and
-PIC when no plain, SLOF or PIC intensity column of the row carries one.
+PIC when no plain list of the row carries a value and no SLOF or PIC payload decodes to values.
 
 **Coordinate grids are rejected.** A chunk with `chunk_encoding` `MS:1003826` (the draft coordinate-grid
 encoding) throws `unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type <type> for

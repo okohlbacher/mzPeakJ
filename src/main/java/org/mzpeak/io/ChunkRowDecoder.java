@@ -16,19 +16,21 @@ import java.util.Map;
  * Decodes one chunk row of a spectrum signal member into paired m/z and intensity values, and the plan's extra arrays,
  * reading the columns the member's {@link SignalPlan} names (design §8.2, §8.5). Per row:
  * <ul>
- *   <li>A value in a Numpress column (the axis's MS:1002312 transform, or a SLOF or PIC intensity transform) selects
- *       the Numpress decoder: column presence wins over a known chunk_encoding. The intensity is SLOF, then PIC, then
- *       the plain list, chosen per row; of several SLOF (or PIC) columns, the first that carries a value is read, else
- *       the first that is non-null. Numpress intensity that decodes to values without Numpress m/z throws, in any
- *       SLOF or PIC column, as does Numpress m/z that decodes to values without any intensity column; an empty
- *       payload is skipped.
+ *   <li>Numpress m/z (a non-null value in the axis's MS:1002312 transform column) selects the Numpress decoder:
+ *       column presence wins over a known chunk_encoding. The intensity is the first SLOF column whose payload
+ *       decodes to values, else the first such PIC column, else the plain list, chosen per row; an empty payload, or
+ *       a SLOF payload of its header only, has no values and does not hide a later column. Numpress m/z that decodes
+ *       to values without any intensity column throws; an empty payload is skipped.
+ *   <li>Without Numpress m/z, SLOF or PIC intensity that decodes to values throws, in any such column, as it has no
+ *       m/z to pair with; a payload without values is skipped and the row is decoded as below.
  *   <li>Otherwise the axis values are decoded from the chunk start with a null-aware delta (chunk_encoding null or
  *       MS:1003089) or kept absolute (MS:1000576, MS:1003088), and paired with the plain intensity list. A row with
  *       intensities throws when the plan names neither an axis values nor a chunk start column.
  *   <li>The plain intensity list of a row is the first of the plan's value-bearing intensity columns, in index
  *       order, that carries a value (non-null and not empty), else the first that is non-null in the row.
  *   <li>A value in an intensity chunk transform column that is not decoded (neither SLOF nor PIC, or naming no
- *       transform) throws when no value-bearing, SLOF or PIC intensity column of the row carries a value.
+ *       transform) throws when the row has no other intensities: no value-bearing column carries a value and no
+ *       SLOF or PIC payload decodes to values.
  *   <li>A grid chunk (chunk_encoding MS:1003826, also on a Numpress row) takes the m/z from the axis's grid
  *       ({@link GridChunk}): its indices are delta-encoded from an absolute first one, each maps to one m/z through the
  *       {@link GridModels} model of its grid_type, and the m/z pair one-to-one with the plain intensity list; there is
@@ -163,9 +165,11 @@ final class ChunkRowDecoder {
         }
         // Checked for every row: Numpress column presence picks the decoder, but never admits an unknown CURIE.
         boolean absolute = ChunkCodecs.isAbsolute(chunkEncoding, si);
-        if (has(chunk, linear) || present(chunk, slof) != null || present(chunk, pic) != null) {
-            return decodeNumpress(chunk, chunkEncoding, si);
+        if (has(chunk, linear)) {
+            return decodeNumpress(chunk, si);
         }
+        // SLOF or PIC values without Numpress m/z throw; a payload without values does not hide the delta row.
+        rejectUnpairedNumpressIntensity(chunk, chunkEncoding, si);
         Double storedStart = start == null ? null : ParquetGroups.optDouble(chunk, start);
         double axisStart = storedStart == null ? 0.0 : storedStart;
         double[] rawAxis = doubles(chunk, values);
@@ -235,39 +239,15 @@ final class ChunkRowDecoder {
      *
      * <p>Some writers (e.g. Thermo Orbitrap profile exports via mzML2mzPeak) use mixed-format chunks
      * where m/z is Numpress-encoded but intensity is stored as a plain intensity LIST. We detect
-     * this by falling back to the plain intensity column when no intensity Numpress bytes are present.
+     * this by falling back to the plain intensity column when no Numpress intensity payload has values.
      *
-     * <p>Numpress intensity without Numpress m/z has no m/z to pair with, and Numpress m/z without an intensity
-     * column has no intensity: an empty payload is skipped, and one that decodes to values throws rather than
-     * dropping them.
+     * <p>Numpress m/z without an intensity column has no intensity: an empty payload is skipped, and one that decodes
+     * to values throws rather than dropping them.
      */
-    private Row decodeNumpress(Group chunk, String chunkEncoding, long si) {
-        if (!has(chunk, linear)) {
-            for (String field : slof) {
-                ChunkCodecs.rejectUnpairedNumpressIntensity(chunk, field, MSNumpress.ACC_NUMPRESS_SLOF, "SLOF",
-                        chunkEncoding, si);
-            }
-            for (String field : pic) {
-                ChunkCodecs.rejectUnpairedNumpressIntensity(chunk, field, MSNumpress.ACC_NUMPRESS_PIC, "PIC",
-                        chunkEncoding, si);
-            }
-            return EMPTY;
-        }
+    private Row decodeNumpress(Group chunk, long si) {
         double[] axis = ChunkCodecs.decodeNumpress(chunk, linear, MSNumpress.ACC_NUMPRESS_LINEAR, si, "m/z");
-        double[] chunkIntensity;
-        String slofField = present(chunk, slof);
-        String picField = present(chunk, pic);
-        String plain = plainIntensity(chunk);
-        if (slofField != null) {
-            chunkIntensity = ChunkCodecs.decodeNumpress(chunk, slofField, MSNumpress.ACC_NUMPRESS_SLOF, si,
-                    "intensity");
-        } else if (picField != null) {
-            chunkIntensity = ChunkCodecs.decodeNumpress(chunk, picField, MSNumpress.ACC_NUMPRESS_PIC, si,
-                    "intensity");
-        } else if (plain != null) {
-            // Mixed format: m/z is Numpress-compressed, intensity is a plain double list.
-            chunkIntensity = ParquetGroups.doubleListNullable(chunk, plain);
-        } else {
+        double[] chunkIntensity = numpressRowIntensity(chunk, si);
+        if (chunkIntensity == null) {
             // No intensity column: only an empty m/z payload is skipped; decoded m/z is never dropped.
             if (axis.length > 0) {
                 throw new MzPeakException("unsupported chunk: Numpress linear m/z without an intensity column"
@@ -280,6 +260,58 @@ final class ChunkRowDecoder {
                     + chunkIntensity.length + ") lengths differ for spectrum_index " + si);
         }
         return new Row(axis, chunkIntensity);
+    }
+
+    /**
+     * The intensities of a row with Numpress m/z: the first SLOF column whose payload decodes to values, else the first
+     * such PIC column, else the plain list ({@link #plainIntensity}). Without any of them, no values when a SLOF or
+     * PIC column is non-null in the row (an empty payload, or a SLOF header), else null.
+     */
+    private double[] numpressRowIntensity(Group chunk, long si) {
+        double[] decoded = firstDecoded(chunk, slof, MSNumpress.ACC_NUMPRESS_SLOF, si);
+        if (decoded == null) {
+            decoded = firstDecoded(chunk, pic, MSNumpress.ACC_NUMPRESS_PIC, si);
+        }
+        if (decoded != null) {
+            return decoded;
+        }
+        String plain = plainIntensity(chunk);
+        if (plain != null) {
+            // Mixed format: m/z is Numpress-compressed, intensity is a plain double list.
+            return ParquetGroups.doubleListNullable(chunk, plain);
+        }
+        return present(chunk, slof) != null || present(chunk, pic) != null ? new double[0] : null;
+    }
+
+    /**
+     * The values of the first of {@code fields} whose MS-Numpress payload ({@code cvAccession}) decodes to at least
+     * one value, or null; an empty payload, or a SLOF payload of its 8-byte header only, has none.
+     */
+    private static double[] firstDecoded(Group chunk, List<String> fields, String cvAccession, long si) {
+        for (String field : fields) {
+            if (ParquetGroups.has(chunk, field)) {
+                double[] values = ChunkCodecs.decodeNumpress(chunk, field, cvAccession, si, "intensity");
+                if (values.length > 0) {
+                    return values;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Throws when a SLOF or PIC column of a row without Numpress m/z decodes to values, which have no m/z to pair
+     * with; the message names the row's {@code chunkEncoding}.
+     */
+    private void rejectUnpairedNumpressIntensity(Group chunk, String chunkEncoding, long si) {
+        for (String field : slof) {
+            ChunkCodecs.rejectUnpairedNumpressIntensity(chunk, field, MSNumpress.ACC_NUMPRESS_SLOF, "SLOF",
+                    chunkEncoding, si);
+        }
+        for (String field : pic) {
+            ChunkCodecs.rejectUnpairedNumpressIntensity(chunk, field, MSNumpress.ACC_NUMPRESS_PIC, "PIC",
+                    chunkEncoding, si);
+        }
     }
 
     /** {@code row} with the extra arrays of {@code chunk}, each paired one-to-one with the row's m/z. */
@@ -372,16 +404,20 @@ final class ChunkRowDecoder {
     }
 
     /**
-     * Throws when an intensity chunk transform column that is not decoded here carries a value in a row in which no
-     * intensity column that is decoded (a value-bearing list, SLOF or PIC) does: its values would otherwise be lost.
+     * Throws when an intensity chunk transform column that is not decoded here carries a value in a row without
+     * intensities that are decoded (a value-bearing list that carries a value, or a SLOF or PIC payload that decodes
+     * to values): its values would otherwise be lost.
      */
     private void rejectUndecodedIntensity(Group chunk, long si) {
-        if (undecodedIntensity.isEmpty() || carriesAny(chunk, intensities) || carriesAny(chunk, slof)
-                || carriesAny(chunk, pic)) {
+        if (undecodedIntensity.isEmpty() || carriesAny(chunk, intensities)) {
             return;
         }
         for (Column column : undecodedIntensity) {
             if (ChunkCodecs.carriesValue(chunk, column.field())) {
+                if (firstDecoded(chunk, slof, MSNumpress.ACC_NUMPRESS_SLOF, si) != null
+                        || firstDecoded(chunk, pic, MSNumpress.ACC_NUMPRESS_PIC, si) != null) {
+                    return;
+                }
                 String transform = column.transform() == null
                         ? "an unnamed chunk transform" : "the chunk transform " + column.transform();
                 throw new MzPeakException("spectrum_index " + si + " stores its intensities with " + transform

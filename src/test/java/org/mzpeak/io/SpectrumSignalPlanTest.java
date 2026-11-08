@@ -711,6 +711,137 @@ class SpectrumSignalPlanTest {
         }
     }
 
+    /**
+     * A SLOF or PIC column without values (an empty list, or a SLOF payload of only its 8-byte header) does not turn a
+     * delta chunk into a Numpress one: the row's m/z and plain intensities are read. Spectrum 11 has the empty list in
+     * the second SLOF column, spectrum 12 in the first SLOF and the second PIC column, spectrum 13 a SLOF header.
+     * Before the fix all three read as empty spectra, without an error.
+     */
+    @Test
+    void anEmptySlofOrPicColumnDoesNotHideADeltaChunk() {
+        Group second = deltaRecord(11);
+        addBytes(second.getGroup("chunk", 0), "slof_b", new byte[0]);
+        Group first = deltaRecord(12);
+        addBytes(first.getGroup("chunk", 0), "slof_a", new byte[0]);
+        addBytes(first.getGroup("chunk", 0), "pic_b", new byte[0]);
+        Group header = deltaRecord(13);
+        addBytes(header.getGroup("chunk", 0), "slof_a", slof());
+
+        Path file = write(MULTI_INTENSITY_CHUNK, MULTI_INTENSITY_CHUNK_INDEX, 1, second, first, header);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            for (long si = 11; si <= 13; si++) {
+                assertExact("m/z of " + si, new double[] {100, 101}, store.get(si).mz());
+                assertExact("intensity of " + si, new double[] {42, 43}, store.get(si).intensity());
+            }
+        }
+    }
+
+    /**
+     * A SLOF or PIC column without values does not outrank the column that holds the intensities of a row with Numpress
+     * m/z: the first SLOF column whose payload decodes to values is read, else the first such PIC column, else the
+     * first plain list that carries a value. Before the fix spectra 14 to 18 threw, as their empty column was read
+     * as an intensity array of length 0.
+     */
+    @Test
+    void anEmptySlofOrPicColumnDoesNotHideTheIntensitiesOfANumpressRow() {
+        Row0 r = Row0.load();
+        byte[] mz = linear(100, 101);
+        Group plainNextToSlof = multiRecord(14);
+        addBytes(plainNextToSlof.getGroup("chunk", 0), "mz_lin", mz);
+        addDoubles(plainNextToSlof.getGroup("chunk", 0), "counts", new double[] {42, 43});
+        addBytes(plainNextToSlof.getGroup("chunk", 0), "slof_b", new byte[0]);
+        Group plainNextToPic = multiRecord(15);
+        addBytes(plainNextToPic.getGroup("chunk", 0), "mz_lin", mz);
+        addDoubles(plainNextToPic.getGroup("chunk", 0), "counts", new double[] {42, 43});
+        addBytes(plainNextToPic.getGroup("chunk", 0), "pic_a", new byte[0]);
+        byte[] pic = pic(r.intensity);
+        Group picNextToSlof = multiRecord(16);
+        addBytes(picNextToSlof.getGroup("chunk", 0), "mz_lin", r.mzLinear);
+        addBytes(picNextToSlof.getGroup("chunk", 0), "slof_a", new byte[0]);
+        addBytes(picNextToSlof.getGroup("chunk", 0), "pic_b", pic);
+        Group plainNextToHeader = multiRecord(17);
+        addBytes(plainNextToHeader.getGroup("chunk", 0), "mz_lin", mz);
+        addDoubles(plainNextToHeader.getGroup("chunk", 0), "counts", new double[] {42, 43});
+        addBytes(plainNextToHeader.getGroup("chunk", 0), "slof_a", slof());
+        byte[] slof = slof(42, 43);
+        Group slofNextToHeader = multiRecord(18);
+        addBytes(slofNextToHeader.getGroup("chunk", 0), "mz_lin", mz);
+        addBytes(slofNextToHeader.getGroup("chunk", 0), "slof_a", slof());
+        addBytes(slofNextToHeader.getGroup("chunk", 0), "slof_b", slof);
+
+        Path file = write(MULTI_INTENSITY_CHUNK, MULTI_INTENSITY_CHUNK_INDEX, 1, plainNextToSlof, plainNextToPic,
+                picNextToSlof, plainNextToHeader, slofNextToHeader);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            for (long si : new long[] {14, 15, 17}) {
+                assertExact("m/z of " + si, new double[] {100, 101}, store.get(si).mz());
+                assertExact("intensity of " + si, new double[] {42, 43}, store.get(si).intensity());
+            }
+            assertExact("m/z of 16", r.mz, store.get(16).mz());
+            assertExact("intensity of 16", MSNumpress.decode(MSNumpress.ACC_NUMPRESS_PIC, pic, pic.length),
+                    store.get(16).intensity());
+            assertExact("m/z of 18", new double[] {100, 101}, store.get(18).mz());
+            assertExact("intensity of 18", MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, slof, slof.length),
+                    store.get(18).intensity());
+        }
+    }
+
+    /**
+     * A SLOF payload of only its header carries no intensities, so a row whose only values are in an undecoded
+     * intensity transform throws, with or without Numpress m/z. Before the fix spectrum 19 read as empty, without an
+     * error, and spectrum 20 threw for an intensity array of length 0.
+     */
+    @Test
+    void aSlofHeaderWithoutValuesDoesNotExemptAnUndecodedTransform() {
+        Row0 r = Row0.load();
+        Group startRecord = multiRecord(19);
+        startRecord.getGroup("chunk", 0).add("mz_chunk_start", 100.0);
+        addBytes(startRecord.getGroup("chunk", 0), "slof_b", slof());
+        addBytes(startRecord.getGroup("chunk", 0), "lossy", r.slof);
+        Group numpressRecord = multiRecord(20);
+        addBytes(numpressRecord.getGroup("chunk", 0), "mz_lin", r.mzLinear);
+        addBytes(numpressRecord.getGroup("chunk", 0), "slof_b", slof());
+        addBytes(numpressRecord.getGroup("chunk", 0), "lossy", r.slof);
+
+        Path file = write(MULTI_INTENSITY_CHUNK, MULTI_INTENSITY_CHUNK_INDEX, 1, startRecord, numpressRecord);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            for (long si = 19; si <= 20; si++) {
+                long index = si;
+                assertThatThrownBy(() -> store.get(index))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("spectrum_index " + si + " stores its intensities with the chunk transform"
+                                + " MS:9999999 (column lossy), which is not decoded");
+            }
+        }
+    }
+
+    /**
+     * A delta chunk of {@link #MULTI_INTENSITY_CHUNK} for spectrum {@code si}: m/z 100 and 101 from its chunk start
+     * and values, intensities 42 and 43 in {@code counts}.
+     */
+    private static Group deltaRecord(long si) {
+        Group record = multiRecord(si);
+        Group chunk = record.getGroup("chunk", 0);
+        chunk.add("mz_chunk_start", 100.0);
+        addDoubles(chunk, "mz_chunk_values", new double[] {1});
+        addDoubles(chunk, "counts", new double[] {42, 43});
+        return record;
+    }
+
+    /** MS-Numpress linear bytes of {@code values} with the fixed point 1000, which decode to them exactly. */
+    private static byte[] linear(double... values) {
+        byte[] buffer = new byte[8 + values.length * 5];
+        int length = MSNumpress.encodeLinear(values, values.length, buffer, 1000.0);
+        return java.util.Arrays.copyOf(buffer, length);
+    }
+
+    /** MS-Numpress SLOF bytes of {@code values}; without values, only the 8-byte header of the fixed point. */
+    private static byte[] slof(double... values) {
+        byte[] buffer = new byte[8 + values.length * 2];
+        int length = MSNumpress.encodeSlof(values, values.length, buffer,
+                MSNumpress.optimalSlofFixedPoint(values, values.length));
+        return java.util.Arrays.copyOf(buffer, length);
+    }
+
     // ---- fixtures and constructed members ----------------------------------------------------------------------
 
     /** The first 3 peaks of spectrum {@code index} of the current small.mzpeak peaks member, as {m/z, intensity}. */
