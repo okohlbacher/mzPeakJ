@@ -22,12 +22,19 @@ import java.util.Map;
  *       empty payload is skipped.
  *   <li>Otherwise the axis values are decoded from the chunk start with a null-aware delta (chunk_encoding null or
  *       MS:1003089) or kept absolute (MS:1000576, MS:1003088), and paired with the plain intensity list.
- *   <li>A grid chunk (MS:1003826) and any other chunk_encoding throw, also on a Numpress row, as does a value in a
- *       {@code *numpress*} column the plan does not decode (an extra array's transform column excepted).
+ *   <li>A grid chunk (chunk_encoding MS:1003826, also on a Numpress row) takes the m/z from the axis's grid
+ *       ({@link GridChunk}): its indices are delta-encoded from an absolute first one, each maps to one m/z through the
+ *       {@link GridModels} model of its grid_type, and the m/z pair one-to-one with the plain intensity list; there is
+ *       no chunk start point. A grid row without a grid, or with a grid_type that is not in {@link GridModels#KINDS},
+ *       throws RD-12's grid error; one whose grid cannot be read throws an error that names the grid column.
+ *   <li>Any other chunk_encoding throws, also on a Numpress row, as does a value in a {@code *numpress*} column the
+ *       plan does not decode (an extra array's transform column excepted).
  *   <li>Each extra array pairs one-to-one with the decoded m/z of the row, chunk start point included; a null list
- *       reads as NaN, as does a null element. An extra whose list has another length, whose transform column (a
- *       Numpress or grid transform, none of which is decoded for extras) carries a value, or whose list cannot be
- *       read as numbers is not decoded: the row reports it as dropped and the m/z and intensity are unaffected.
+ *       reads as NaN, as does a null element. An extra stored as a grid (its MS:1003826 transform column carries a
+ *       value) is decoded from its indices as they are, which are absolute. An extra whose values or grid have another
+ *       length, whose grid_type is unknown or whose grid cannot be read, whose other transform column (a Numpress
+ *       transform, which is not decoded for extras) carries a value, or whose list cannot be read as numbers is not
+ *       decoded: the row reports it as dropped and the m/z and intensity are unaffected.
  * </ul>
  */
 final class ChunkRowDecoder {
@@ -113,7 +120,7 @@ final class ChunkRowDecoder {
     /** Decodes {@code chunk}, a row of spectrum {@code si}. */
     Row decode(Group chunk, long si) {
         Row row = decodeSignal(chunk, si);
-        return extras.isEmpty() ? row : withExtras(row, chunk);
+        return extras.isEmpty() ? row : withExtras(row, chunk, si);
     }
 
     /** The m/z and intensity of {@code chunk}. */
@@ -121,7 +128,7 @@ final class ChunkRowDecoder {
         ChunkCodecs.rejectUnknownNumpressColumns(chunk, numpressColumns, extraTransformColumns, si);
         String chunkEncoding = encoding == null ? null : ParquetGroups.optString(chunk, encoding);
         if (chunkEncoding != null && chunkEncoding.contains("1003826")) {
-            throw ChunkCodecs.unsupportedGrid(chunk, grid, si);
+            return decodeGrid(chunk, si);
         }
         // Checked for every row: Numpress column presence picks the decoder, but never admits an unknown CURIE.
         boolean absolute = ChunkCodecs.isAbsolute(chunkEncoding, si);
@@ -152,11 +159,36 @@ final class ChunkRowDecoder {
             throw new MzPeakException("chunk intensity length (" + chunkIntensity.length
                     + ") must equal m/z values (" + decoded.length + ") or values+1, for spectrum_index " + si);
         }
+        zeroNulls(chunkIntensity);
+        return new Row(axis, chunkIntensity);
+    }
+
+    /** A null intensity element reads as NaN; the pair keeps intensity 0. */
+    private static void zeroNulls(double[] chunkIntensity) {
         for (int i = 0; i < chunkIntensity.length; i++) {
             if (Double.isNaN(chunkIntensity[i])) {
-                chunkIntensity[i] = 0.0; // a null intensity element reads as NaN; the pair keeps intensity 0
+                chunkIntensity[i] = 0.0;
             }
         }
+    }
+
+    /**
+     * Grid chunk: the m/z are the axis grid's model applied to its cumulative indices, paired one-to-one with the plain
+     * intensity list; chunk values, if any, are not read.
+     */
+    private Row decodeGrid(Group chunk, long si) {
+        GridChunk g = grid == null ? null : GridChunk.read(chunk, grid, si);
+        GridModels.Model model = g == null ? null : g.model(si);
+        if (model == null) {
+            throw ChunkCodecs.unsupportedGrid(chunk, grid, si);
+        }
+        double[] axis = GridModels.decode(model, g.cumulativeIndices(si));
+        double[] chunkIntensity = doubles(chunk, intensity);
+        if (chunkIntensity.length != axis.length) {
+            throw new MzPeakException("grid chunk intensity length (" + chunkIntensity.length + ") must equal its "
+                    + grid + " indices (" + axis.length + ") for spectrum_index " + si);
+        }
+        zeroNulls(chunkIntensity);
         return new Row(axis, chunkIntensity);
     }
 
@@ -201,7 +233,7 @@ final class ChunkRowDecoder {
     }
 
     /** {@code row} with the extra arrays of {@code chunk}, each paired one-to-one with the row's m/z. */
-    private Row withExtras(Row row, Group chunk) {
+    private Row withExtras(Row row, Group chunk, long si) {
         int n = row.axis().length;
         Map<String, double[]> values = new LinkedHashMap<>();
         Map<String, String> dropped = new LinkedHashMap<>();
@@ -211,8 +243,30 @@ final class ChunkRowDecoder {
                 dropped.put(extra.key(), "is stored with the transform " + transform + ", which is not decoded");
                 continue;
             }
+            String gridField = extra.transformFields().get(ArrayIndex.GRID_TRANSFORM);
             double[] v;
-            if (has(chunk, extra.values())) {
+            if (gridField != null && ChunkCodecs.carriesValue(chunk, gridField)) {
+                GridChunk g;
+                GridModels.Model model;
+                try {
+                    g = GridChunk.read(chunk, gridField, si);
+                    model = g.model(si);
+                } catch (RuntimeException e) {
+                    dropped.put(extra.key(), "cannot be decoded from its grid (" + e.getMessage() + ")");
+                    continue;
+                }
+                if (model == null) {
+                    dropped.put(extra.key(), "is stored as a grid (column " + gridField + ") of the unknown grid_type "
+                            + g.gridType());
+                    continue;
+                }
+                v = GridModels.decode(model, g.indices()); // absolute indices
+                if (v.length != n) {
+                    dropped.put(extra.key(), "has " + v.length + " grid indices (column " + gridField
+                            + ") in a chunk of " + n + " points");
+                    continue;
+                }
+            } else if (has(chunk, extra.values())) {
                 try {
                     v = ParquetGroups.doubleListNullable(chunk, extra.values());
                 } catch (RuntimeException e) {
@@ -232,10 +286,13 @@ final class ChunkRowDecoder {
         return new Row(row.axis(), row.intensity(), values, dropped);
     }
 
-    /** The first transform of {@code extra} whose column carries a value in this row, as text, or null. */
+    /**
+     * The first transform of {@code extra} other than the grid whose column carries a value in this row, as text, or
+     * null.
+     */
     private static String carriedTransform(Group chunk, ExtraColumns extra) {
         for (Map.Entry<String, String> t : extra.transformFields().entrySet()) {
-            if (ChunkCodecs.carriesValue(chunk, t.getValue())) {
+            if (!t.getKey().equals(ArrayIndex.GRID_TRANSFORM) && ChunkCodecs.carriesValue(chunk, t.getValue())) {
                 return t.getKey() + " (column " + t.getValue() + ")";
             }
         }

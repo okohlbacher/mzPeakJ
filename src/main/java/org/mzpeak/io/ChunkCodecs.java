@@ -104,10 +104,11 @@ final class ChunkCodecs {
     }
 
     /**
-     * The error for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding not decoded yet): one whose
-     * {@code chunk_encoding} names the grid, or one with a main-axis grid struct (such as {@code mz_grid}) and
-     * intensities but no chunk values. Without this check the intensities fail the length check with a misleading
-     * message.
+     * The error for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding) that cannot be decoded: one whose
+     * {@code chunk_encoding} names the grid but whose main-axis grid is missing or has a grid_type that
+     * {@link GridModels#KINDS} does not hold, or one with a main-axis grid struct (such as {@code mz_grid}) and
+     * intensities but no chunk values and not the grid encoding. Without this check the intensities fail the length
+     * check with a misleading message.
      *
      * @param gridField the main-axis grid struct, or null when the member has none
      */
