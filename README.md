@@ -55,6 +55,13 @@ Python, and R. mzPeakJ is an unofficial demonstrator; an official Java implement
 The build is self-contained: it never calls Hadoop FileSystem, Configuration, native libraries, or any
 cluster setup (see [DESIGN.md](DESIGN.md) §6).
 
+### Test coverage
+
+`mvn verify` also measures test coverage with [JaCoCo](https://www.jacoco.org/) (only the project's own
+`org.mzpeak` and `ms.numpress` classes are instrumented). The report is written to `target/site/jacoco/`:
+`index.html` to browse, plus `jacoco.xml` and `jacoco.csv` for tools. There is no coverage threshold; pass
+`-Djacoco.skip=true` to build without it.
+
 ## Library usage
 
 ### Reading
