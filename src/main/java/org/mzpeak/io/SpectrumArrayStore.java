@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.column.page.PageReadStore;
+import org.apache.parquet.column.statistics.LongStatistics;
 import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
@@ -62,10 +63,6 @@ final class SpectrumArrayStore implements AutoCloseable {
      *               plan order; empty when the member has none
      */
     record Arrays(double[] mz, double[] intensity, Map<String, double[]> extras) {
-
-        Arrays(double[] mz, double[] intensity) {
-            this(mz, intensity, Map.of());
-        }
     }
 
     private static final System.Logger LOG = System.getLogger(SpectrumArrayStore.class.getName());
@@ -158,9 +155,8 @@ final class SpectrumArrayStore implements AutoCloseable {
         for (ColumnChunkMetaData col : block.getColumns()) {
             if (col.getPath().toDotString().equals(indexPath)) {
                 Statistics<?> stats = col.getStatistics();
-                if (stats != null && stats.hasNonNullValue()
-                        && stats.genericGetMin() instanceof Long min && stats.genericGetMax() instanceof Long max) {
-                    return new long[] {min, max};
+                if (stats instanceof LongStatistics longStats && longStats.hasNonNullValue()) {
+                    return new long[] {longStats.getMin(), longStats.getMax()};
                 }
             }
         }
@@ -354,7 +350,7 @@ final class SpectrumArrayStore implements AutoCloseable {
                 String field = extraFields.get(extra.getKey());
                 Double v;
                 try {
-                    v = field == null ? null : ParquetGroups.optDouble(point, field);
+                    v = ParquetGroups.optDouble(point, field);
                 } catch (RuntimeException e) {
                     it.remove();
                     drops.drop(extra.getKey(), current, "cannot be read as a number (" + e.getMessage() + ")");
@@ -397,9 +393,6 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
 
         void flush() {
-            if (!started) {
-                return;
-            }
             double[] mzArray = mz.toArray();
             double[] intensityArray = intensity.toArray();
             Map<String, double[]> extraArrays = extraArrays();
