@@ -31,8 +31,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Pins the mzPeak spec rules the writer must follow, which the lenient reader cannot catch on its own: every
  * index, count and source_index column is written as UINT64 ({@code intType(64, false)}), the manifest declares
- * version {@code 0.9.0} and the MS, IMS and UO controlled vocabularies, and the footer metadata always gives the
- * run a resolvable default data processing and default source file id.
+ * version {@code 0.9.0} and the controlled vocabularies the dataset uses (MS and UO for these fixtures), and the
+ * footer metadata always gives the run a resolvable default data processing and default source file id.
  *
  * <p>The expected UINT64 columns are spelled out per file and layout. Signed INT64 leaves such as the parameter
  * {@code value.integer} union member are deliberately not covered by the naming rule.
@@ -211,11 +211,21 @@ class WriterSpecConformanceTest {
         assertThat(ruleViolations).as("index/count INT64 columns not annotated UINT64").isEmpty();
     }
 
+    /**
+     * The manifest declares version 0.9.0 and exactly the MS and UO CVs, each with a URI and a version: the legacy
+     * fixtures use no other CV, and IMS is declared only when it is used (WR-4). Every prefix the written files use
+     * is declared.
+     */
     private static void assertManifestVersionAndCvList(Path dir) {
         try (MzPeakReader r = MzPeakReader.open(dir)) {
             assertThat(r.manifest().version()).isEqualTo("0.9.0");
-            assertThat(r.manifest().cvList()).extracting(MzPeakManifest.CvEntry::id).contains("MS", "IMS", "UO");
+            assertThat(r.manifest().cvList()).extracting(MzPeakManifest.CvEntry::id).containsExactly("MS", "UO");
+            assertThat(r.manifest().cvList()).allSatisfy(cv -> {
+                assertThat(cv.uri()).as("uri of %s", cv.id()).isNotBlank();
+                assertThat(cv.version()).as("version of %s", cv.id()).isNotBlank();
+            });
         }
+        WriterCvListTest.assertEveryWrittenPrefixIsDeclared(dir);
     }
 
     @SafeVarargs

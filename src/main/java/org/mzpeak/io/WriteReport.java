@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * What a write did that is legal but loses or changes something the caller passed. {@link WritePlanner} and the
  * encoders record it while the dataset is planned and written; {@link MzPeakWriter} logs each warning as WARNING
- * once the dataset is written. Nothing records a warning yet.
+ * once the dataset is written. {@link ManifestWriter} records a CV prefix that {@link KnownCvs} does not know.
  */
 final class WriteReport {
 
