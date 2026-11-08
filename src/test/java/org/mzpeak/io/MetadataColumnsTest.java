@@ -23,10 +23,13 @@ import org.mzpeak.io.GoldenMeta.Row;
 import org.mzpeak.io.MetadataColumns.Resolved;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,10 +42,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * {@link MetadataColumns}: the paths of {@link MzPeakReader#columnStatistics} and {@link MetadataColumns#valuesByIndex}
- * that {@link ColumnStatisticsTest} does not take. Signed integer statistics, and columns that are found but hold a
- * list or strings, are read from the fixtures; members without a usable shape, struct or index, a row group without
- * the column's chunk and members that fail to open are constructed, as no fixture has them.
+ * {@link MetadataColumns}: the paths of {@link MzPeakReader#columnStatistics} and
+ * {@link MetadataColumns#valuesByIndex} that {@link ColumnStatisticsTest} does not take. Signed integer statistics,
+ * columns that are found but hold a list or strings, and members that fail to open are read from the fixtures;
+ * members without a usable shape, struct or index, and footers without a column's chunk or with a NaN bound are
+ * constructed, as no fixture has them.
  */
 class MetadataColumnsTest {
 
@@ -54,6 +58,15 @@ class MetadataColumnsTest {
     private static final String BASE_PEAK_INTENSITY = "MS:1000505";
     private static final String SCAN_START_TIME = "MS:1000016";
     private static final String ISOLATION_WINDOW_TARGET = "MS:1000827";
+
+    /** The schema of {@link #lowLevelWriter}. */
+    private static final MessageType LOW_LEVEL_SCHEMA = MessageTypeParser.parseMessageType("message arrow_schema {\n"
+            + "  optional int64 index (INTEGER(64,false));\n"
+            + "  optional double lowest_observed_mz;\n"
+            + "}");
+    private static final ColumnDescriptor INDEX = LOW_LEVEL_SCHEMA.getColumnDescription(new String[] {"index"});
+    private static final ColumnDescriptor LOWEST_OBSERVED_MZ =
+            LOW_LEVEL_SCHEMA.getColumnDescription(new String[] {"lowest_observed_mz"});
 
     @TempDir
     Path tmp;
@@ -89,10 +102,10 @@ class MetadataColumnsTest {
         try (MzPeakSource current = MzPeakSource.open(Fixtures.current("small.mzpeak"));
              MzPeakSource legacy = MzPeakSource.open(Fixtures.legacy("small.mzpeak"))) {
             MzPeakManifest currentManifest = MzPeakManifest.fromSource(current);
-            String member = currentManifest.find(EntityType.SPECTRUM, DataKind.METADATA).orElseThrow().name();
-            assertThat(ColumnResolver.split(ParquetFooter.read(current.inputFile(member)).schema(),
-                    currentManifest.find(EntityType.SPECTRUM, DataKind.METADATA).orElseThrow(), Facet.SPECTRUM)
-                    .resolve(DELTA_MODEL)).isEqualTo("polynomial_delta_coordinate_interpolation");
+            Entry entry = currentManifest.find(EntityType.SPECTRUM, DataKind.METADATA).orElseThrow();
+            String member = entry.name();
+            assertThat(ColumnResolver.split(ParquetFooter.read(current.inputFile(member)).schema(), entry,
+                    Facet.SPECTRUM).resolve(DELTA_MODEL)).isEqualTo("polynomial_delta_coordinate_interpolation");
             assertThat(MetadataColumns.resolve(currentManifest, current, EntityType.SPECTRUM, DataKind.METADATA,
                     DELTA_MODEL)).isEmpty();
             assertThat(MetadataColumns.statistics(currentManifest, current, EntityType.SPECTRUM, DataKind.METADATA,
@@ -240,30 +253,15 @@ class MetadataColumnsTest {
 
     /**
      * A row group whose footer lists no chunk of the column records neither a null count nor bounds, and leaves the
-     * statistics incomplete. parquet-java's writers always write every chunk; the low-level writer here leaves the
-     * column's out.
+     * statistics incomplete. parquet-java's record writers always write every chunk; its low-level writer here leaves
+     * the column's out of the second row group.
      */
     @Test
     void aRowGroupWithoutTheColumnsChunkHasNoStatistics() throws IOException {
-        MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
-                + "  optional int64 index (INTEGER(64,false));\n"
-                + "  optional double lowest_observed_mz;\n"
-                + "}");
-        ColumnDescriptor index = schema.getColumnDescription(new String[] {"index"});
-        Statistics<?> indexStatistics = Statistics.createStats(index.getPrimitiveType());
-        indexStatistics.updateStats(0L);
-        // a v1 data page of one non-null INT64: the definition levels, RLE with a 4-byte length (one run of one 1),
-        // then the PLAIN value 0
-        byte[] page = {2, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0};
-        ParquetFileWriter writer = new ParquetFileWriter(new LocalOutputFile(tmp.resolve("spectra_metadata.parquet")),
-                schema, ParquetFileWriter.Mode.CREATE, ParquetWriter.DEFAULT_BLOCK_SIZE,
-                ParquetWriter.MAX_PADDING_SIZE_DEFAULT, 64, Integer.MAX_VALUE, false);
-        writer.start();
+        ParquetFileWriter writer = lowLevelWriter();
+        writeRowGroup(writer, 0L, 150.5);
         writer.startBlock(1);
-        writer.startColumn(index, 1, CompressionCodecName.UNCOMPRESSED);
-        writer.writeDataPage(1, page.length, BytesInput.from(page), indexStatistics, 1, Encoding.RLE, Encoding.RLE,
-                Encoding.PLAIN);
-        writer.endColumn();
+        writeChunk(writer, INDEX, 1L);
         writer.endBlock();
         writer.end(new HashMap<>());
         manifest(metadataEntry());
@@ -272,13 +270,83 @@ class MetadataColumnsTest {
             ColumnStatistics lowest = MetadataColumns.statistics(MzPeakManifest.fromSource(src), src,
                     EntityType.SPECTRUM, DataKind.METADATA, LOWEST_MZ).orElseThrow();
             assertThat(lowest).isEqualTo(new ColumnStatistics("spectra_metadata.parquet", "lowest_observed_mz",
-                    LOWEST_MZ, List.of(new RowGroup(1, null, null, null))));
+                    LOWEST_MZ, List.of(new RowGroup(1, 0L, 150.5, 150.5), new RowGroup(1, null, null, null))));
             assertThat(lowest.complete()).isFalse();
-            assertThat(lowest.min()).isEmpty();
+            assertThat(lowest.min()).hasValue(150.5);
+        }
+    }
+
+    /**
+     * A NaN bound in the footer, whose order is undefined, is dropped as parquet-java reads the footer: the row group
+     * keeps its null count, has no bounds and leaves the statistics incomplete. parquet-java's low-level writer here
+     * writes the page statistics it is given, whose minimum and maximum are NaN, into the footer.
+     */
+    @Test
+    void aNaNBoundInTheFooterGivesNoBounds() throws IOException {
+        ParquetFileWriter writer = lowLevelWriter();
+        writeRowGroup(writer, 0L, 150.5);
+        writeRowGroup(writer, 1L, Double.NaN);
+        writer.end(new HashMap<>());
+        manifest(metadataEntry());
+
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThat(MetadataColumns.valuesByIndex(manifest, src, EntityType.SPECTRUM, LOWEST_MZ))
+                    .hasValueSatisfying(values -> assertThat(values)
+                            .containsExactly(Map.entry(0L, 150.5), Map.entry(1L, Double.NaN)));
+            ColumnStatistics lowest = MetadataColumns.statistics(manifest, src, EntityType.SPECTRUM,
+                    DataKind.METADATA, LOWEST_MZ).orElseThrow();
+            assertThat(lowest.rowGroups()).containsExactly(new RowGroup(1, 0L, 150.5, 150.5),
+                    new RowGroup(1, 0L, null, null));
+            assertThat(lowest.complete()).isFalse();
+            assertThat(lowest.max()).hasValue(150.5);
         }
     }
 
     // ---- helpers ---------------------------------------------------------------------------------------------
+
+    /**
+     * parquet-java's low-level writer of a split spectrum metadata member {@code spectra_metadata.parquet} of the
+     * columns {@link #INDEX} and {@link #LOWEST_OBSERVED_MZ}, started; it writes the chunks and the page statistics it
+     * is given.
+     */
+    private ParquetFileWriter lowLevelWriter() throws IOException {
+        ParquetFileWriter writer = new ParquetFileWriter(new LocalOutputFile(tmp.resolve("spectra_metadata.parquet")),
+                LOW_LEVEL_SCHEMA, ParquetFileWriter.Mode.CREATE, ParquetWriter.DEFAULT_BLOCK_SIZE,
+                ParquetWriter.MAX_PADDING_SIZE_DEFAULT, 64, Integer.MAX_VALUE, false);
+        writer.start();
+        return writer;
+    }
+
+    /** A row group of one row of the index {@code index} and the lowest observed m/z {@code lowestMz}. */
+    private static void writeRowGroup(ParquetFileWriter writer, long index, double lowestMz) throws IOException {
+        writer.startBlock(1);
+        writeChunk(writer, INDEX, index);
+        writeChunk(writer, LOWEST_OBSERVED_MZ, lowestMz);
+        writer.endBlock();
+    }
+
+    /**
+     * A chunk of {@code column} of one non-null value, {@code value} as a long or a double, in one v1 data page: the
+     * definition levels, RLE with a 4-byte length (one run of one 1), then the PLAIN value. The page statistics hold
+     * the value.
+     */
+    private static void writeChunk(ParquetFileWriter writer, ColumnDescriptor column, Object value)
+            throws IOException {
+        Statistics<?> statistics = Statistics.createStats(column.getPrimitiveType());
+        ByteBuffer page = ByteBuffer.allocate(14).order(ByteOrder.LITTLE_ENDIAN).putInt(2).put((byte) 2).put((byte) 1);
+        if (value instanceof Long l) {
+            statistics.updateStats(l);
+            page.putLong(l);
+        } else {
+            statistics.updateStats((Double) value);
+            page.putDouble((Double) value);
+        }
+        writer.startColumn(column, 1, CompressionCodecName.UNCOMPRESSED);
+        writer.writeDataPage(1, page.capacity(), BytesInput.from(page.array()), statistics, 1, Encoding.RLE,
+                Encoding.RLE, Encoding.PLAIN);
+        writer.endColumn();
+    }
 
     /** The manifest entry of the spectrum metadata member, without a column mapping. */
     private static String metadataEntry() {
