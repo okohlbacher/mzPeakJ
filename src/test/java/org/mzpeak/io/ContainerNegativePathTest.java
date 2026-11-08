@@ -26,9 +26,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * carries a stable fragment. ZIP offsets are found at run time by walking the archive from its
  * end-of-central-directory record.
  *
- * <p>The legacy {@code small.mzpeak} keeps its member sizes in per-entry zip64 extra fields. The size cases
- * therefore run on a plain STORED archive built from {@code small.unpacked.mzpeak}, whose 32-bit size fields
- * hold the real values. The zip64 end-of-central-directory sentinel and duplicate member names are not
+ * <p>The legacy {@code small.mzpeak} keeps its member sizes in per-entry zip64 extra fields (one 0x0001 field of 16
+ * bytes per record: size and compressed size), which the zip64 extra-field cases edit. The size and compression cases
+ * run on a plain archive built from {@code small.unpacked.mzpeak}, whose 32-bit size fields hold the real values; the
+ * DEFLATE cases compress its index. The zip64 end-of-central-directory sentinel and duplicate member names are not
  * covered, because RD-15 and RD-16 change them on purpose.
  */
 class ContainerNegativePathTest {
@@ -133,11 +134,81 @@ class ContainerNegativePathTest {
 
     @Test
     void unsupportedCompressionMethod(@TempDir Path tmp) throws IOException {
-        ZipImage zip = ZipImage.of(ARCHIVE);
+        ZipImage zip = ZipImage.of(plainArchive(tmp));
         CdRecord index = zip.record(INDEX);
         zip.putShort(index.offset() + 10, 12); // BZIP2, in the central directory and the local header
         zip.putShort(index.localHeader() + 8, 12);
         assertOpenFails(zip.save(tmp.resolve("method.mzpeak")), "unsupported ZIP compression method", INDEX);
+    }
+
+    // ---- FN-11: zip64 extra fields, a short read, DEFLATE -----------------------------------------------------
+
+    @Test
+    void zip64ExtraFieldWhosePayloadIsTooShort(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(ARCHIVE);
+        int extra = zip.zip64Extra(METADATA);
+        assertThat(zip.getShort(extra + 2)).isEqualTo(16);
+        // 8 bytes where the size and the compressed size need 16; the other 8 stay in the record, so only the length
+        // check stops the read
+        zip.putShort(extra + 2, 8);
+        assertOpenFails(zip.save(tmp.resolve("zip64-short.mzpeak")), "payload too short");
+    }
+
+    @Test
+    void zip64ExtraFieldThatOverrunsTheRecord(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(ARCHIVE);
+        int extra = zip.zip64Extra(METADATA);
+        zip.putShort(extra + 2, 17);
+        assertOpenFails(zip.save(tmp.resolve("zip64-overrun.mzpeak")), "overruns the record");
+    }
+
+    @Test
+    void sentinelSizeWithoutAZip64ExtraField(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(ARCHIVE);
+        int extra = zip.zip64Extra(METADATA);
+        zip.putShort(extra, 0x5455); // an extended-timestamp field in place of the zip64 one
+        assertOpenFails(zip.save(tmp.resolve("zip64-missing.mzpeak")), "has no zip64 extra field");
+    }
+
+    @Test
+    void localHeaderOffsetOfTheLastByte(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(ARCHIVE);
+        zip.putInt(zip.record(METADATA).offset() + 42, zip.bytes.length - 1);
+        assertOpenFails(zip.save(tmp.resolve("lfh-last-byte.mzpeak")),
+                "unexpected end of ZIP archive while reading 30 bytes at " + (zip.bytes.length - 1));
+    }
+
+    @Test
+    void deflatedIndexWithCorruptData(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(deflatedIndexArchive(tmp));
+        CdRecord index = zip.record(INDEX);
+        int data = zip.dataOffset(index);
+        for (int i = 0; i < 16; i++) {
+            zip.bytes[data + i] = (byte) 0xFF;
+        }
+        assertOpenFails(zip.save(tmp.resolve("deflate-corrupt.mzpeak")), "Failed to inflate member", INDEX);
+    }
+
+    @Test
+    void deflatedIndexShorterThanItsDeclaredSize(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(deflatedIndexArchive(tmp));
+        CdRecord index = zip.record(INDEX);
+        int size = zip.getInt(index.offset() + 24);
+        zip.putInt(index.offset() + 24, size + 10);
+        assertOpenFails(zip.save(tmp.resolve("deflate-truncated.mzpeak")), "truncated/corrupt DEFLATE member",
+                INDEX, "inflated " + size + " of " + (size + 10) + " bytes");
+    }
+
+    @Test
+    void deflatedIndexTooLargeToReadIntoMemory(@TempDir Path tmp) throws IOException {
+        ZipImage zip = ZipImage.of(deflatedIndexArchive(tmp));
+        zip.putInt(zip.record(INDEX).offset() + 24, 0xFFFF_FFFE); // 4 GiB - 2, not the zip64 sentinel
+        assertOpenFails(zip.save(tmp.resolve("deflate-large.mzpeak")), "too large to read into memory", INDEX);
+    }
+
+    @Test
+    void anIntactDeflatedIndexOpens(@TempDir Path tmp) throws IOException {
+        assertThat(spectrumCount(deflatedIndexArchive(tmp))).isEqualTo(SPECTRA);
     }
 
     @Test
@@ -198,22 +269,37 @@ class ContainerNegativePathTest {
 
     /** The legacy unpacked members as a STORED ZIP without extra fields, the index last. */
     private static Path plainArchive(Path tmp) throws IOException {
+        return archive(tmp.resolve("plain.mzpeak"), false);
+    }
+
+    /** {@link #plainArchive}, except that the index is DEFLATED. */
+    private static Path deflatedIndexArchive(Path tmp) throws IOException {
+        Path archive = archive(tmp.resolve("deflated-index.mzpeak"), true);
+        ZipImage zip = ZipImage.of(archive);
+        assertThat(zip.getShort(zip.record(INDEX).offset() + 10)).isEqualTo(ZipEntry.DEFLATED);
+        return archive;
+    }
+
+    private static Path archive(Path archive, boolean deflateIndex) throws IOException {
         List<Path> members = new ArrayList<>();
         try (Stream<Path> files = Files.list(UNPACKED)) {
             files.filter(f -> !f.getFileName().toString().equals(INDEX)).sorted().forEach(members::add);
         }
         members.add(UNPACKED.resolve(INDEX));
-        Path archive = tmp.resolve("plain.mzpeak");
         try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
             for (Path f : members) {
                 byte[] data = Files.readAllBytes(f);
-                CRC32 crc = new CRC32();
-                crc.update(data);
                 ZipEntry e = new ZipEntry(f.getFileName().toString());
-                e.setMethod(ZipEntry.STORED);
-                e.setSize(data.length);
-                e.setCompressedSize(data.length);
-                e.setCrc(crc.getValue());
+                if (deflateIndex && f.getFileName().toString().equals(INDEX)) {
+                    e.setMethod(ZipEntry.DEFLATED);
+                } else {
+                    CRC32 crc = new CRC32();
+                    crc.update(data);
+                    e.setMethod(ZipEntry.STORED);
+                    e.setSize(data.length);
+                    e.setCompressedSize(data.length);
+                    e.setCrc(crc.getValue());
+                }
                 out.putNextEntry(e);
                 out.write(data);
                 out.closeEntry();
@@ -276,6 +362,21 @@ class ContainerNegativePathTest {
         CdRecord record(String name) {
             return records.stream().filter(r -> r.name().equals(name)).findFirst()
                     .orElseThrow(() -> new AssertionError("no record " + name));
+        }
+
+        /** The offset of the zip64 extra field (header id 0x0001) of the record of {@code name}. */
+        int zip64Extra(String name) {
+            CdRecord r = record(name);
+            int extra = r.offset() + 46 + getShort(r.offset() + 28);
+            assertThat(getShort(r.offset() + 30)).as("extra field length of %s", name).isEqualTo(20);
+            assertThat(getShort(extra)).as("extra field id of %s", name).isEqualTo(0x0001);
+            assertThat(getInt(r.offset() + 24)).as("size of %s", name).isEqualTo(0xFFFF_FFFF);
+            return extra;
+        }
+
+        /** Where the data of {@code r} starts, after its local file header. */
+        int dataOffset(CdRecord r) {
+            return r.localHeader() + 30 + getShort(r.localHeader() + 26) + getShort(r.localHeader() + 28);
         }
 
         int getShort(int at) {
