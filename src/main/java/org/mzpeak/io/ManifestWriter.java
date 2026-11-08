@@ -182,10 +182,11 @@ final class ManifestWriter {
 
     /**
      * Every CURIE prefix of the plan's spectra and chromatograms, mapped to the first CURIE that uses it: the
-     * accession and unit of every param of a spectrum, of each of its scans, and of each precursor's activation and
-     * selected ions, and the chromatogram types. The packed layout writes only a spectrum's first scan and primary
-     * precursor and selected ion, but the prefixes of the others count too. The other CURIEs the writer puts into a
-     * member are MS and UO terms, and the IMS position columns, which only a scan's IMS params give rise to.
+     * accession and unit of every param of a spectrum, of each of its scans, and of each precursor's isolation
+     * window, activation and selected ions, and the chromatogram types. The packed layout writes only a spectrum's
+     * first scan and primary precursor and selected ion, but the prefixes of the others count too. The other CURIEs
+     * the writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params
+     * give rise to.
      */
     private static Map<String, String> prefixesOf(WritePlan plan) {
         Map<String, String> used = new LinkedHashMap<>();
@@ -196,6 +197,9 @@ final class ManifestWriter {
                 addParamPrefixes(scan.parameters(), used);
             }
             for (Precursor precursor : d.precursors()) {
+                if (precursor.isolationWindow() != null) {
+                    addParamPrefixes(precursor.isolationWindow().parameters(), used);
+                }
                 addParamPrefixes(precursor.activation().parameters(), used);
                 for (SelectedIon ion : precursor.selectedIons()) {
                     addParamPrefixes(ion.parameters(), used);

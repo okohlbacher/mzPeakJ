@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.ManifestWriter.Dialect;
@@ -23,6 +24,7 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
@@ -375,6 +377,64 @@ class WriterCvListTest {
         }
     }
 
+    // ---- prefixes used only by an isolation window param (AP-7) -------------------------------------------------
+
+    @ParameterizedTest
+    @EnumSource(MzPeakWriter.MetadataLayout.class)
+    void aKnownPrefixUsedOnlyInAnIsolationWindowParamIsDeclared(MzPeakWriter.MetadataLayout layout,
+                                                                @TempDir Path tmp) throws IOException {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        // BTO is only the unit of one window param and NCIT only the accession of another, BTO first although NCIT
+        // comes first in the table.
+        Param btoUnit = new Param("sample mass", "MS:1000004", 1.5, "BTO:0000089");
+        Param ncit = new Param("concept", "NCIT:C25330", null, null);
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        int ms2 = precursorSpectra(spectra).get(0);
+        spectra.set(ms2, withWindowParams(spectra.get(ms2), List.of(btoUnit, ncit)));
+        Path out = tmp.resolve("window.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withMetadataLayout(layout)));
+
+        assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(6), REFERENCE_TABLE.get(7));
+        assertThat(warnings).isEmpty();
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000089")
+                .containsEntry("NCIT", "NCIT:C25330");
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.getSpectrumAt(ms2).description().precursors().get(0).isolationWindow().parameters())
+                    .contains(btoUnit, ncit);
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(MzPeakWriter.MetadataLayout.class)
+    void anUnknownPrefixInAnIsolationWindowParamGivesExactlyOneWarningAndStaysUndeclared(
+            MzPeakWriter.MetadataLayout layout, @TempDir Path tmp) throws IOException {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        Param pato = new Param("quality", "PATO:0000001", null, null);
+        // The same unknown prefix in the windows of two spectra: still one warning.
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        List<Integer> ms2 = precursorSpectra(spectra);
+        spectra.set(ms2.get(0), withWindowParams(spectra.get(ms2.get(0)), List.of(pato)));
+        spectra.set(ms2.get(1), withWindowParams(spectra.get(ms2.get(1)), List.of(pato)));
+        Path out = tmp.resolve("window-pato.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withMetadataLayout(layout)));
+
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.get(0).getMessage()).contains("PATO:0000001");
+        assertThat(cvList(out)).containsExactly(MS, UO);
+        assertThat(writtenPrefixes(out)).containsEntry("PATO", "PATO:0000001");
+        assertThat(declaredIds(out)).doesNotContain("PATO");
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.getSpectrumAt(ms2.get(1)).description().precursors().get(0).isolationWindow().parameters())
+                    .contains(pato);
+        }
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
 
     /**
@@ -539,6 +599,35 @@ class WriterCvListTest {
         SpectrumDescription changed = new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
                 d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), scans,
                 d.precursors(), d.parameters());
+        return new Spectrum(changed, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+    }
+
+    /** The positions in {@code spectra} of the spectra whose first precursor has an isolation window. */
+    private static List<Integer> precursorSpectra(List<Spectrum> spectra) {
+        List<Integer> positions = new ArrayList<>();
+        for (int i = 0; i < spectra.size(); i++) {
+            List<Precursor> precursors = spectra.get(i).description().precursors();
+            if (!precursors.isEmpty() && precursors.get(0).isolationWindow() != null) {
+                positions.add(i);
+            }
+        }
+        return positions;
+    }
+
+    /** {@code s} with {@code params} added to the isolation window of its first precursor. */
+    private static Spectrum withWindowParams(Spectrum s, List<Param> params) {
+        SpectrumDescription d = s.description();
+        List<Precursor> precursors = new ArrayList<>(d.precursors());
+        Precursor first = precursors.get(0);
+        IsolationWindow w = first.isolationWindow();
+        List<Param> windowParams = new ArrayList<>(w.parameters());
+        windowParams.addAll(params);
+        precursors.set(0, new Precursor(first.precursorIndex(), first.precursorId(),
+                new IsolationWindow(w.targetMz(), w.lowerOffset(), w.upperOffset(), windowParams),
+                first.selectedIons(), first.activation()));
+        SpectrumDescription changed = new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                precursors, d.parameters());
         return new Spectrum(changed, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
     }
 
