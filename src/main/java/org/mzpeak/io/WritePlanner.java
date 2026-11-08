@@ -68,15 +68,27 @@ final class WritePlanner {
     // that has arrays but no peak list (the SRM shape), writes its arrays to spectra_peaks only. Every other
     // spectrum writes its arrays to spectra_data and its peak list to spectra_peaks: UNKNOWN and null continuity
     // stay in spectra_data, and a CENTROID spectrum whose arrays are not a peak copy keeps both files instead of
-    // losing its arrays (both deviate from the reference).
+    // losing its arrays (both deviate from the reference). So does a CENTROID spectrum with a non-finite m/z
+    // (deviation from §11.5): the reader builds a peak from every spectra_peaks row, and such a row does not come
+    // back as stored (the null fill interpolates a NaN m/z, and Numpress linear cannot encode NaN or an infinity),
+    // so in spectra_peaks it would read back as an invented peak.
 
     /** Where the rows of {@code s} go, by the disposition table of design §11.5. */
     static SpectrumEntry disposition(Spectrum s) {
         boolean centroid = s.description().signalContinuity() == SignalContinuity.CENTROID;
-        if (centroid && (s.peaks().isEmpty() || isPeakCopy(s))) {
+        if (centroid && allFinite(s.mz()) && (s.peaks().isEmpty() || isPeakCopy(s))) {
             return new SpectrumEntry(s, s.index(), false, s.mz().length > 0, true);
         }
         return new SpectrumEntry(s, s.index(), s.mz().length > 0, !s.peaks().isEmpty(), false);
+    }
+
+    private static boolean allFinite(double[] values) {
+        for (double v : values) {
+            if (!Double.isFinite(v)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -84,6 +96,7 @@ final class WritePlanner {
      * {@link CentroidPeak#index()} names a distinct row of {@code mz()}/{@code intensity()} holding exactly the
      * peak's values, and every row no peak names has a non-finite m/z (the rows {@link Spectrum} drops from
      * {@code peaks()}). The match goes through {@code index()} because {@code peaks()} is sorted by m/z.
+     * {@link #disposition} still writes a peak copy with such a row to both files.
      */
     static boolean isPeakCopy(Spectrum s) {
         if (s.description().signalContinuity() != SignalContinuity.CENTROID) {

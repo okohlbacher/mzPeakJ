@@ -5,8 +5,12 @@ import org.apache.parquet.io.LocalInputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.CentroidPeak;
@@ -23,8 +27,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.withinPercentage;
 
 /**
  * Where {@link MzPeakWriter} routes each spectrum's signal, spectra_data or spectra_peaks, and the counts its
@@ -139,32 +145,138 @@ class WriterDispositionTest {
     }
 
     /**
-     * The peak list matches every row but the one whose m/z is NaN, which {@link Spectrum} filters out: still a peak
-     * copy, so the arrays go to spectra_peaks only, NaN row included, in stored order. Re-read through the Parquet
-     * rows they are {@code Arrays.equals} to the source. {@link MzPeakReader} returns the same intensities and finite
-     * m/z values, but its null fill (design §8.3, unchanged) interpolates the NaN m/z, as it did when this row went
-     * to spectra_data.
+     * The peak list matches every row but the one whose m/z is non-finite, which {@link Spectrum} filters out: a peak
+     * copy, but the reader cannot give a stored non-finite m/z back (its null fill, design §8.3, interpolates NaN, and
+     * Numpress linear cannot encode it), so such a spectrum keeps both files: its arrays, non-finite row included, go
+     * to spectra_data and its peak list to spectra_peaks. Re-read, {@code peaks()} equals the source's (m/z and
+     * intensity; {@link CentroidPeak#index()} is the position in the stored peak list), the stored spectra_data rows
+     * are {@code Arrays.equals} to the source, and so are the re-read arrays apart from a NaN m/z.
      */
-    @Test
-    void centroidPeakCopyWithANonFiniteMzRow(@TempDir Path tmp) {
-        double[] mz = {100.0, Double.NaN, 300.0};
+    @ParameterizedTest
+    @ValueSource(doubles = {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    void centroidPeakCopyWithANonFiniteMzRowKeepsBothFiles(double nonFinite, @TempDir Path tmp) {
+        double[] mz = {100.0, nonFinite, 300.0};
         double[] intensity = {1.0, 2.0, 3.0};
         Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, copyOf(mz, intensity));
         assertThat(s.peaks()).hasSize(2);
 
         Path out = write(tmp, s);
 
-        assertThat(route(out, 0)).isEqualTo("data=- peaks=3 number_of_data_points=- number_of_peaks=3");
-        double[][] stored = storedRows(out.resolve(PEAKS), 0);
-        assertThat(Arrays.equals(stored[0], mz)).as("stored m/z %s", Arrays.toString(stored[0])).isTrue();
-        assertThat(Arrays.equals(stored[1], intensity)).as("stored intensity %s", Arrays.toString(stored[1]))
-                .isTrue();
         try (MzPeakReader r = MzPeakReader.open(out)) {
             Spectrum back = r.getSpectrum(0).orElseThrow();
+            assertThat(mzs(back.peaks())).containsExactly(mzs(s.peaks()));
+            assertThat(intensities(back.peaks())).containsExactly(intensities(s.peaks()));
             assertThat(back.intensity()).isEqualTo(intensity);
-            assertThat(back.mz()).hasSize(3);
-            assertThat(back.mz()[0]).isEqualTo(100.0);
-            assertThat(back.mz()[2]).isEqualTo(300.0);
+            if (Double.isNaN(nonFinite)) {
+                assertThat(back.mz()).hasSize(3);
+                assertThat(back.mz()[0]).isEqualTo(100.0);
+                assertThat(back.mz()[2]).isEqualTo(300.0);
+            } else {
+                assertThat(Arrays.equals(back.mz(), mz)).as("re-read m/z %s", Arrays.toString(back.mz())).isTrue();
+            }
+        }
+        assertThat(WritePlanner.isPeakCopy(s)).isTrue();
+        assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, true, true, false));
+        assertThat(route(out, 0)).isEqualTo("data=3 peaks=2 number_of_data_points=3 number_of_peaks=2");
+        double[][] data = storedRows(out.resolve(DATA), 0);
+        assertThat(Arrays.equals(data[0], mz)).as("stored m/z %s", Arrays.toString(data[0])).isTrue();
+        assertThat(Arrays.equals(data[1], intensity)).as("stored intensity %s", Arrays.toString(data[1])).isTrue();
+        double[][] peaks = storedRows(out.resolve(PEAKS), 0);
+        assertThat(peaks[0]).containsExactly(100.0, 300.0);
+        assertThat(peaks[1]).containsExactly(1.0, 3.0);
+    }
+
+    /**
+     * An array-only CENTROID spectrum (the SRM shape) with a non-finite m/z row stays in spectra_data, for the same
+     * reason: in spectra_peaks the reader would turn that row into a peak.
+     */
+    @ParameterizedTest
+    @ValueSource(doubles = {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    void arrayOnlyCentroidSpectrumWithANonFiniteMzRowStaysInSpectraData(double nonFinite, @TempDir Path tmp) {
+        double[] mz = {100.0, nonFinite, 300.0};
+        double[] intensity = {1.0, 2.0, 3.0};
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, List.of());
+
+        Path out = write(tmp, s);
+
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            Spectrum back = r.getSpectrum(0).orElseThrow();
+            assertThat(back.peaks()).isEmpty();
+            assertThat(back.intensity()).isEqualTo(intensity);
+        }
+        assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, true, false, false));
+        assertThat(route(out, 0)).isEqualTo("data=3 peaks=- number_of_data_points=3 number_of_peaks=-");
+        double[][] data = storedRows(out.resolve(DATA), 0);
+        assertThat(Arrays.equals(data[0], mz)).as("stored m/z %s", Arrays.toString(data[0])).isTrue();
+        assertThat(Arrays.equals(data[1], intensity)).as("stored intensity %s", Arrays.toString(data[1])).isTrue();
+    }
+
+    // ---- Numpress -----------------------------------------------------------------------------------------------
+
+    /**
+     * Numpress writes a peak copy from {@code mz()}/{@code intensity()} in stored order, not from the sorted
+     * {@code peaks()}, to spectra_peaks only; number_of_peaks is the rows decoded from it.
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void numpressWritesAnUnsortedPeakCopyInStoredOrder(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        double[] mz = {300.0, 100.0, 200.0};
+        double[] intensity = {5e8, 3e8, 4e8};
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity, copyOf(mz, intensity));
+        assertThat(mzs(s.peaks())).containsExactly(100.0, 200.0, 300.0);
+
+        Path out = writeNumpress(tmp, s, encoding);
+
+        assertThat(decoded(out.resolve(DATA), 0)).isNull();
+        SpectrumArrayStore.Arrays peaks = decoded(out.resolve(PEAKS), 0);
+        assertThat(peaks.mz()).containsExactly(mz);
+        assertNumpressIntensities(peaks.intensity(), intensity);
+        Group spectrum = metadataRows(out).get(0L);
+        assertThat(ParquetGroups.optLong(spectrum, DATA_POINTS)).isNull();
+        assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isEqualTo((long) peaks.mz().length);
+    }
+
+    static Stream<Arguments> numpressNonFiniteMzRows() {
+        List<Arguments> cases = new ArrayList<>();
+        for (NumpressIntensityEncoding encoding : NumpressIntensityEncoding.values()) {
+            for (double nonFinite : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+                cases.add(Arguments.of(encoding, nonFinite, true));
+                cases.add(Arguments.of(encoding, nonFinite, false));
+            }
+        }
+        return cases.stream();
+    }
+
+    /**
+     * A CENTROID spectrum with a non-finite m/z row, as a peak copy and array-only, in Numpress: it reads back with
+     * the source's peak list. Its arrays go to spectra_data and its peak list, if any, to spectra_peaks.
+     */
+    @ParameterizedTest(name = "{0} {1} peak copy={2}")
+    @MethodSource("numpressNonFiniteMzRows")
+    void numpressCentroidSpectrumWithANonFiniteMzRow(NumpressIntensityEncoding encoding, double nonFinite,
+                                                     boolean peakCopy, @TempDir Path tmp) {
+        double[] mz = {100.0, nonFinite, 300.0};
+        double[] intensity = {3e8, 4e8, 5e8};
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity,
+                peakCopy ? copyOf(mz, intensity) : List.of());
+
+        Path out = writeNumpress(tmp, s, encoding);
+
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            Spectrum back = r.getSpectrum(0).orElseThrow();
+            assertThat(mzs(back.peaks())).containsExactly(mzs(s.peaks()));
+            assertNumpressIntensities(intensities(back.peaks()), intensities(s.peaks()));
+        }
+        Group spectrum = metadataRows(out).get(0L);
+        assertThat(ParquetGroups.optLong(spectrum, DATA_POINTS)).isEqualTo(3L);
+        if (peakCopy) {
+            SpectrumArrayStore.Arrays peaks = decoded(out.resolve(PEAKS), 0);
+            assertThat(peaks.mz()).containsExactly(100.0, 300.0);
+            assertNumpressIntensities(peaks.intensity(), 3e8, 5e8);
+            assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isEqualTo(2L);
+        } else {
+            assertThat(out.resolve(PEAKS)).doesNotExist();
+            assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isNull();
         }
     }
 
@@ -313,6 +425,39 @@ class WriterDispositionTest {
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY);
         return out;
+    }
+
+    private static Path writeNumpress(Path tmp, Spectrum spectrum, NumpressIntensityEncoding encoding) {
+        Path out = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectoryNumpress(out, List.of(spectrum), List.of(), List.of(), List.of(),
+                FileMetadata.EMPTY, encoding);
+        return out;
+    }
+
+    /** The rows of spectrum {@code index} in a signal file, decoded by {@link SpectrumArrayStore}; null if none. */
+    private static SpectrumArrayStore.Arrays decoded(Path file, long index) {
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true, Map.of())) {
+            return store.get(index);
+        }
+    }
+
+    private static double[] mzs(List<CentroidPeak> peaks) {
+        return peaks.stream().mapToDouble(CentroidPeak::mz).toArray();
+    }
+
+    private static double[] intensities(List<CentroidPeak> peaks) {
+        return peaks.stream().mapToDouble(CentroidPeak::intensity).toArray();
+    }
+
+    /**
+     * Numpress intensities equal {@code expected} in order: PIC rounds to integers, which these are, and SLOF is
+     * lossy (about 1e-4 relative). They are large because the vendored decoder rejects a PIC payload under 8 bytes.
+     */
+    private static void assertNumpressIntensities(double[] actual, double... expected) {
+        assertThat(actual).hasSize(expected.length);
+        for (int i = 0; i < expected.length; i++) {
+            assertThat(actual[i]).as("intensity %d", i).isCloseTo(expected[i], withinPercentage(0.1));
+        }
     }
 
     /**
