@@ -224,6 +224,9 @@ class SpectrumSignalPlanTest {
                 optional group signal_numpress_slof (LIST) {
                   repeated group list { required int32 element (INTEGER(8,false)); }
                 }
+                optional group signal_numpress_pic (LIST) {
+                  repeated group list { required int32 element (INTEGER(8,false)); }
+                }
               }
             }""");
 
@@ -234,7 +237,8 @@ class SpectrumSignalPlanTest {
             entry("chunk.enc", "chunk_encoding", "MS:1000514", 1, null),
             entry("chunk.mass_numpress_lin", "chunk_transform", "MS:1000514", 1, MSNumpress.ACC_NUMPRESS_LINEAR),
             entry("chunk.signal", "chunk_secondary", "MS:1000515", null, null),
-            entry("chunk.signal_numpress_slof", "chunk_transform", "MS:1000515", null, MSNumpress.ACC_NUMPRESS_SLOF));
+            entry("chunk.signal_numpress_slof", "chunk_transform", "MS:1000515", null, MSNumpress.ACC_NUMPRESS_SLOF),
+            entry("chunk.signal_numpress_pic", "chunk_transform", "MS:1000515", null, MSNumpress.ACC_NUMPRESS_PIC));
 
     @Test
     void chunkRowsAreDecodedFromTheColumnsTheFooterNames() {
@@ -278,6 +282,73 @@ class SpectrumSignalPlanTest {
             assertExact("Numpress m/z", r.mz, second.mz());
             assertExact("Numpress intensity", r.intensity, second.intensity());
         }
+    }
+
+    /**
+     * More chunk rows in renamed columns (RD-13 note 0): an absolute encoding in the renamed encoding column, a renamed
+     * PIC column, and a renamed plain list next to Numpress m/z, each read through the plan alone.
+     */
+    @Test
+    void renamedEncodingPicAndPlainListColumnsAreReadThroughThePlan() {
+        Row0 r = Row0.load();
+        // spectrum 2: MS:1000576 in the renamed encoding column, absolute values after a chunk start point
+        Group absoluteRecord = chunkRecord(2);
+        Group absolute = absoluteRecord.getGroup("chunk", 0);
+        absolute.add("mass_start", r.mz[0]);
+        addDoubles(absolute, "mass_values", new double[] {r.mz[1], r.mz[2], r.mz[3]});
+        absolute.add("enc", "MS:1000576");
+        addDoubles(absolute, "signal", java.util.Arrays.copyOf(r.intensity, 4));
+        // spectrum 3: Numpress m/z and PIC intensity in renamed columns
+        byte[] pic = pic(r.intensity);
+        Group picRecord = chunkRecord(3);
+        Group picChunk = picRecord.getGroup("chunk", 0);
+        picChunk.add("mass_start", r.mz[0]);
+        picChunk.add("enc", "MS:1002312");
+        addBytes(picChunk, "mass_numpress_lin", r.mzLinear);
+        addBytes(picChunk, "signal_numpress_pic", pic);
+        // spectrum 4: Numpress m/z next to the renamed plain intensity list (mixed format)
+        Group mixedRecord = chunkRecord(4);
+        Group mixed = mixedRecord.getGroup("chunk", 0);
+        mixed.add("mass_start", r.mz[0]);
+        mixed.add("enc", "MS:1002312");
+        addBytes(mixed, "mass_numpress_lin", r.mzLinear);
+        addDoubles(mixed, "signal", r.intensity);
+
+        Path file = write(RENAMED_CHUNK, RENAMED_CHUNK_INDEX, 100, absoluteRecord, picRecord, mixedRecord);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertExact("absolute m/z", java.util.Arrays.copyOf(r.mz, 4), store.get(2).mz());
+            assertExact("absolute intensity", java.util.Arrays.copyOf(r.intensity, 4), store.get(2).intensity());
+            assertExact("PIC m/z", r.mz, store.get(3).mz());
+            assertExact("PIC intensity", MSNumpress.decode(MSNumpress.ACC_NUMPRESS_PIC, pic, pic.length),
+                    store.get(3).intensity());
+            assertExact("mixed m/z", r.mz, store.get(4).mz());
+            assertExact("mixed intensity", r.intensity, store.get(4).intensity());
+        }
+    }
+
+    /** An unknown CURIE in the renamed encoding column throws, as in the conventional one. */
+    @Test
+    void anUnknownCurieInTheRenamedEncodingColumnThrows() {
+        Row0 r = Row0.load();
+        Group record = chunkRecord(2);
+        Group chunk = record.getGroup("chunk", 0);
+        chunk.add("mass_start", r.mz[0]);
+        addDoubles(chunk, "mass_values", new double[] {0.5});
+        chunk.add("enc", "MS:9999999");
+        addDoubles(chunk, "signal", new double[] {1.0, 2.0});
+        Path file = write(RENAMED_CHUNK, RENAMED_CHUNK_INDEX, 100, record);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertThatThrownBy(() -> store.get(2))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("unsupported chunk encoding MS:9999999 for spectrum_index 2");
+        }
+    }
+
+    /** {@code values} encoded as Numpress PIC. */
+    private static byte[] pic(double[] values) {
+        byte[] buffer = new byte[8 + values.length * 5];
+        int length = MSNumpress.encodePic(values, values.length, buffer);
+        return java.util.Arrays.copyOf(buffer, length);
     }
 
     @Test
