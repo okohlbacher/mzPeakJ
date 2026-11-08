@@ -5,12 +5,16 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.CvTerms;
+import org.mzpeak.model.DoubleRange;
+import org.mzpeak.model.SignalSlice;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -18,12 +22,13 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * Reads an mzPeak dataset — either an unpacked {@code *.mzpeak/} directory or a single-file (STORED)
  * {@code .mzpeak} ZIP. Surface: open, count, metadata access, spectrum (m/z + intensity + peaks + extra arrays
- * such as ion mobility) materialization, lookup by index / scan number / native id / retention time, iteration, and
- * chromatograms.
+ * such as ion mobility) materialization, lookup by index / scan number / native id / retention time, iteration, range
+ * queries ({@link #extractSignal(SignalQuery)}, {@link #queryPeaks(SignalQuery)}), and chromatograms.
  *
  * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
  * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); open with
@@ -391,6 +396,129 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         }
         return new Spectrum(description, mz, intensity, peakList, arrays,
                 centroids == null ? Map.of() : centroids.extras());
+    }
+
+    // ---- range queries ----------------------------------------------------------------------------
+
+    /**
+     * The spectra {@code query} selects by its time or index range and its MS levels, in index order. Works on the
+     * metadata held in memory and reads no signal; the m/z and ion-mobility filters of {@code query} play no part.
+     *
+     * @return an unmodifiable list, empty when no spectrum matches
+     * @throws NullPointerException if {@code query} is {@code null}
+     */
+    public List<SpectrumDescription> select(SignalQuery query) {
+        Objects.requireNonNull(query, "query");
+        List<SpectrumDescription> selected = new ArrayList<>();
+        for (SpectrumDescription d : descriptions) {
+            if (query.selects(d)) {
+                selected.add(d);
+            }
+        }
+        selected.sort(Comparator.comparingLong(SpectrumDescription::index));
+        return Collections.unmodifiableList(selected);
+    }
+
+    /**
+     * The data arrays (typically {@code spectra_data.parquet}: profile or other point arrays) of the spectra
+     * {@link #select(SignalQuery) selected} by {@code query}, one slice per spectrum in index order, keeping the
+     * points that pass the query's m/z and ion-mobility filters. The points are those of {@link Spectrum#mz()} in
+     * {@link SignalMode#PROFILE} mode, so the {@linkplain Options#reconstructProfile() reconstructProfile} option
+     * applies; the {@link SignalMode} of this reader does not. A spectrum without data arrays gives an empty slice.
+     *
+     * <p>Only the row groups that hold a selected spectrum are read. The stream is lazy and sequential: it decodes a
+     * spectrum when its slice is requested, and throws {@link IllegalStateException} when that happens after
+     * {@link #close()}. A slice that the filters leave whole shares its arrays with the reader's cache, like
+     * {@link Spectrum#mz()}; treat them as immutable.
+     *
+     * @throws NullPointerException  if {@code query} is {@code null}
+     * @throws IllegalStateException if this reader is closed
+     */
+    public Stream<SignalSlice> extractSignal(SignalQuery query) {
+        return slices(query, false);
+    }
+
+    /**
+     * The centroid peaks (typically {@code spectra_peaks.parquet}) of the spectra {@link #select(SignalQuery)
+     * selected} by {@code query}, one slice per spectrum in index order, keeping in stored order the peaks with a
+     * finite m/z that pass the query's m/z and ion-mobility filters. The peaks are those of {@link Spectrum#mz()} in
+     * {@link SignalMode#CENTROID} mode; the {@link SignalMode} of this reader does not apply. A spectrum without
+     * peaks gives an empty slice. Reads and streams like {@link #extractSignal(SignalQuery)}.
+     *
+     * @throws NullPointerException  if {@code query} is {@code null}
+     * @throws IllegalStateException if this reader is closed
+     */
+    public Stream<SignalSlice> queryPeaks(SignalQuery query) {
+        return slices(query, true);
+    }
+
+    private Stream<SignalSlice> slices(SignalQuery query, boolean fromPeaks) {
+        List<SpectrumDescription> selected = select(query);
+        requireOpen();
+        return selected.stream().map(d -> slice(d, query, fromPeaks));
+    }
+
+    /**
+     * The slice of spectrum {@code d}: its points in the peaks member when {@code fromPeaks}, else in the data
+     * arrays member, filtered by {@code query}. Peaks with a non-finite m/z are always dropped.
+     */
+    private SignalSlice slice(SpectrumDescription d, SignalQuery query, boolean fromPeaks) {
+        requireOpen();
+        SpectrumArrayStore store = fromPeaks ? peaks() : data();
+        SpectrumArrayStore.Arrays arrays = store == null ? null : store.get(d.index());
+        if (arrays == null) {
+            return new SignalSlice(d.index(), d.retentionTime(), d.msLevel(), null, null, null);
+        }
+        double[] mz = arrays.mz();
+        double[] intensity = arrays.intensity();
+        double[] im = null;
+        for (Map.Entry<String, double[]> extra : arrays.extras().entrySet()) {
+            if (CvTerms.ION_MOBILITY_ARRAYS.contains(extra.getKey())) {
+                im = extra.getValue();
+                break;
+            }
+        }
+        DoubleRange mzRange = query.mz().orElse(null);
+        // the ion-mobility filter applies only to a spectrum that has ion mobility
+        DoubleRange imRange = im == null ? null : query.ionMobility().orElse(null);
+        int kept = 0;
+        for (int i = 0; i < mz.length; i++) {
+            if (keeps(i, mz, im, mzRange, imRange, fromPeaks)) {
+                kept++;
+            }
+        }
+        if (kept == mz.length) {
+            return new SignalSlice(d.index(), d.retentionTime(), d.msLevel(), mz, intensity, im);
+        }
+        double[] keptMz = new double[kept];
+        double[] keptIntensity = new double[kept];
+        double[] keptIm = im == null ? null : new double[kept];
+        int k = 0;
+        for (int i = 0; i < mz.length; i++) {
+            if (keeps(i, mz, im, mzRange, imRange, fromPeaks)) {
+                keptMz[k] = mz[i];
+                keptIntensity[k] = intensity[i];
+                if (keptIm != null) {
+                    keptIm[k] = im[i];
+                }
+                k++;
+            }
+        }
+        return new SignalSlice(d.index(), d.retentionTime(), d.msLevel(), keptMz, keptIntensity, keptIm);
+    }
+
+    /** Whether point {@code i} passes the filters; {@code finiteMz} also drops a non-finite m/z. */
+    private static boolean keeps(int i, double[] mz, double[] im, DoubleRange mzRange, DoubleRange imRange,
+                                 boolean finiteMz) {
+        return (!finiteMz || Double.isFinite(mz[i]))
+                && (mzRange == null || mzRange.contains(mz[i]))
+                && (imRange == null || imRange.contains(im[i]));
+    }
+
+    private void requireOpen() {
+        if (closed) {
+            throw new IllegalStateException("the reader is closed");
+        }
     }
 
     // ---- chromatograms ----------------------------------------------------------------------------
