@@ -182,8 +182,8 @@ any other unmapped column.
 
 Leftovers of the spectrum, scan, activation and selected-ion scopes join that scope's Params (for example the
 summary columns `lowest_observed_mz` … `total_ion_current` and the `spectrum_type` marker at spectrum scope).
-Leftovers of the precursor and isolation-window scopes have no place in the model; they are logged at DEBUG
-and dropped.
+Leftovers of the isolation-window scope follow its `parameters` list in `IsolationWindow.parameters` (AP-7).
+Leftovers of the precursor scope have no place in the model; they are logged at DEBUG and dropped.
 
 **What each row decoder reads:**
 
@@ -191,7 +191,7 @@ and dropped.
 |---|---|
 | `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers |
 | `ScanRowDecoder` | MS:1000016 scan start time in minutes (converted from its mapping's unit: second, millisecond or hour; another unit, or a unit column, throws), MS:1000927 ion injection time, MS:1000512 filter string, MS:1000616 preset scan configuration; `instrument_configuration_id`; `spectrum_reference`; `scan_windows` (MS:1000501/MS:1000500, a window needs both); `parameters`; typed ion mobility (§5); IMS:1000050/51 positions as Long Params when the list lacks them; leftovers |
-| `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
+| `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29, then `parameters` and leftovers); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
 | `SelectedIonRowDecoder` | MS:1000744 (a row without it is skipped), MS:1000041, MS:1000042, `parameters`, typed ion mobility, leftovers |
 
 ### 2.3 One assembler for both layouts
@@ -648,6 +648,7 @@ m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point la
 - `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
   `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
   `wavelength spectrum`, empty column mappings, and only the first scan and the primary precursor of a spectrum.
+  Isolation-window Params go to the pin-era `isolation_window.parameters` list.
   The HEAD Python reader rejects it ("Old concatenated storage layout not supported").
 
 Both layouts get format version 0.9.0, the `cv_list`, a SHA-512 checksum and an empty `parameters` list per
@@ -783,7 +784,7 @@ expected values and says why.
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.
 - **Dataset checks.** A dataset without a spectrum metadata member throws; the format version is not checked.
 - **Metadata not decoded:** products facets; chromatogram precursor and selected-ion facets; the wavelength
-  scans facet; Params of chromatograms and wavelength spectra; precursor- and isolation-window-scope leftovers;
+  scans facet; Params of chromatograms and wavelength spectra; precursor-scope leftovers;
   leftover Params in the legacy packed layout.
 - **Precursor join.** The reference-identical join (precursors in reverse, last precursor for unmatched ions,
   orphan ions dropped, null-m/z ions kept) is not ported (§2.3).

@@ -84,7 +84,8 @@ final class Canonical {
         if (w == null) {
             return "null";
         }
-        return "(" + num(w.targetMz()) + "|" + num(w.lowerOffset()) + "|" + num(w.upperOffset()) + ")";
+        return "(" + num(w.targetMz()) + "|" + num(w.lowerOffset()) + "|" + num(w.upperOffset())
+                + "|" + list(w.parameters(), Canonical::param) + ")";
     }
 
     static String selectedIon(SelectedIon i) {

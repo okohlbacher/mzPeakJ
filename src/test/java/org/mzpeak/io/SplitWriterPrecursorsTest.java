@@ -98,7 +98,9 @@ class SplitWriterPrecursorsTest {
                 assertThat(ParquetGroups.optDouble(iso, "isolation_window_upper_offset")).as(where)
                         .isEqualTo(precursor.isolationWindow().upperOffset());
                 assertThat(ParquetGroups.has(iso, "parameters")).as(where + ": isolation_window.parameters").isTrue();
-                assertThat(ParquetGroups.groupList(iso, "parameters")).as(where).isEmpty();
+                // Every window of current small stores the user param 'ms level' (AP-7).
+                assertThat(ParquetGroups.readParams(iso, "parameters")).as(where)
+                        .isEqualTo(precursor.isolationWindow().parameters()).hasSize(1);
                 // The activation's dissociation method and collision energy are columns since WR-5c.
                 Group activation = ParquetGroups.optGroup(row, "activation");
                 assertThat(precursor.activation().parameters()).as(where).hasSize(2);

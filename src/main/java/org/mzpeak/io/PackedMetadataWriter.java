@@ -93,6 +93,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000827_isolation_window_target_mz")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000828_isolation_window_lower_offset")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000829_isolation_window_upper_offset")
+                    .addField(paramListField())
                     .named("isolation_window")
                     .addField(Types.optionalGroup().addField(paramListField()).named("activation"))
                     .named("precursor"))
@@ -288,6 +289,8 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
             addIfPresent(iso, "MS_1000827_isolation_window_target_mz", precursor.isolationWindow().targetMz());
             addIfPresent(iso, "MS_1000828_isolation_window_lower_offset", precursor.isolationWindow().lowerOffset());
             addIfPresent(iso, "MS_1000829_isolation_window_upper_offset", precursor.isolationWindow().upperOffset());
+            // The pin-era schema's isolation_window.parameters (AP-7).
+            writeParams(iso, precursor.isolationWindow().parameters());
         }
         // Precursor activation (dissociation method + collision energy). Round-trips via the reader's
         // Precursor.activation(); previously dropped entirely on write.
@@ -358,7 +361,8 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
     private static boolean hasAnyWindowValue(Precursor p) {
         return p.isolationWindow().targetMz() != null
                 || p.isolationWindow().lowerOffset() != null
-                || p.isolationWindow().upperOffset() != null;
+                || p.isolationWindow().upperOffset() != null
+                || !p.isolationWindow().parameters().isEmpty();
     }
 
     private static void addIfPresent(Group group, String field, Double value) {

@@ -16,8 +16,9 @@ import java.util.Set;
 /**
  * Decodes one precursor row of the spectrum metadata into a {@link PrecursorPart}; columns are resolved by
  * accession. The selected ions are attached by {@link PrecursorJoin}. Unconsumed scalar columns of the activation
- * scope become activation Params; those of the precursor and isolation-window scopes have no place in the model and
- * are logged at DEBUG and dropped (split layout only; packed scopes have no leftovers).
+ * scope become activation Params, and those of the isolation-window scope isolation-window Params; those of the
+ * precursor scope have no place in the model and are logged at DEBUG and dropped (split layout only; packed scopes
+ * have no leftovers).
  */
 final class PrecursorRowDecoder {
 
@@ -40,7 +41,7 @@ final class PrecursorRowDecoder {
     /** Decodes one precursor row. */
     static PrecursorPart decode(FacetRow precursor) {
         FacetRow iso = precursor.child(F_ISOLATION);
-        IsolationWindow window = iso == null ? null : isolationWindow(precursor, iso);
+        IsolationWindow window = iso == null ? null : isolationWindow(iso);
         FacetRow activationRow = precursor.child(F_ACTIVATION);
         Activation activation = activationRow == null ? Activation.EMPTY : activation(activationRow);
         ColumnResolver columns = precursor.columns();
@@ -53,17 +54,23 @@ final class PrecursorRowDecoder {
                 activation);
     }
 
-    private static IsolationWindow isolationWindow(FacetRow precursor, FacetRow iso) {
+    /**
+     * The isolation window: its target and offsets (MS:1000827, MS:1000828, MS:1000829), and as its parameters the
+     * scope's {@code parameters} list followed by its leftovers ({@link ColumnResolver#leftovers}, split layout only).
+     */
+    private static IsolationWindow isolationWindow(FacetRow iso) {
         ColumnResolver columns = iso.columns();
         Group g = iso.group();
         String target = columns.resolve(ISO_TARGET);
         String lower = columns.resolve(ISO_LOWER);
         String upper = columns.resolve(ISO_UPPER);
-        dropLeftovers(precursor, iso, F_ISOLATION, consumed(target, lower, upper));
+        List<Param> params = new ArrayList<>(columns.params(g));
+        params.addAll(columns.leftovers(g, consumed(target, lower, upper)));
         return new IsolationWindow(
                 columns.doubleValue(g, target),
                 columns.doubleValue(g, lower),
-                columns.doubleValue(g, upper));
+                columns.doubleValue(g, upper),
+                params);
     }
 
     /**
