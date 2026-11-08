@@ -1,0 +1,34 @@
+Vendored mzML fixtures, PSI schemas and the PSI-MS instrument-model list (mzPeakJ MZ-12). Licences: NOTICE.
+The .gz files were written with `gzip -9n` (no name, no timestamp); the SHA-256 is that of the uncompressed file,
+pinned in MzMLFixtures.SHA256 and checked by MzMLFixturesTest.
+
+tiny.pwiz.1.1.mzML (stored raw, 25,072 bytes)
+  Source:  ProteoWizard example_data/tiny.pwiz.1.1.mzML (https://github.com/ProteoWizard/pwiz), Apache-2.0
+  SHA-256: 711ac14b666f14817c208bd4d39b738e96ac827574c4639d8f8f6eebbfde9c83
+
+small.mzML.gz (small.mzML, 5.1 MB)
+  Source:  HUPO-PSI/mzPeak 2ee2589 small.mzML (https://github.com/HUPO-PSI/mzPeak), Apache-2.0
+  SHA-256: f7c03b94e64aa42011877b53c512e24ee702c3f66a02125ce50977d1efe9ac5f
+  Note:    its stored fileChecksum (ee65c07e9093c5b127674ea5d0fe147f690411d0) is stale; the SHA-1 of its bytes is
+           9223a7e633782f88ffa85cef7b2a9ff2011baf20. Its offsets are correct.
+
+TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML.gz (2.6 MB uncompressed)
+  Source:  HUPO-PSI/mzPeak 2ee2589 test/data/ (ProteoWizard Agilent test data), Apache-2.0
+  SHA-256: dc3e26d2f67d1e647e6d6ebc415f5e883c5aea2747f574333ad5f8e888bcc8ed
+
+diaPASEF.mzML.gz (3.2 MB uncompressed)
+  Source:  mzdata test/data/diaPASEF.mzML (https://github.com/mobiusklein/mzdata, checkout e060b75), Apache-2.0
+  SHA-256: 67652af39e65bf4cacd331dcb4ad041d0a930dae4ae248b93527b61c98f2a2ee
+
+xsd/mzML1.1.0.xsd (58,417 bytes) and xsd/mzML1.1.2_idx.xsd (4,418 bytes)
+  Source:  HUPO-PSI/mzML schema files (https://github.com/HUPO-PSI/mzML), unmodified, as distributed with psims
+           1.3.6 (psims/validation/xsd/); mzML1.1.0.xsd is byte-identical to upstream, mzML1.1.2_idx.xsd differs
+           from upstream in whitespace only. PSI copyright notice: NOTICE.
+  SHA-256: 141877fd774653617ad1c067533bc74d51e63fb9f19f78558faff50a3e14a206  mzML1.1.0.xsd
+           5a58505a065209c5b964e185c2b2cb077450cfd4246ce794dec7dfcb058b708f  mzML1.1.2_idx.xsd
+
+ms-instrument-models.txt
+  Generated from psi-ms.obo data-version 4.2.11 (mzdata v0.68.0 cv/psi-ms.obo.gz, SHA-256
+  4cef86b34651ebca638abcecfb568d14ea2f109666c79f5bed16644d1896c584): the non-obsolete transitive is_a descendants
+  of MS:1000031 "instrument model" (502 descendants, MS:1000870 obsolete: 501 accessions), one per line, in
+  accession order, after a '#' header that states the rule. PSI-MS CV, CC BY 4.0.
