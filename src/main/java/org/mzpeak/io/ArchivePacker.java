@@ -12,9 +12,14 @@ import java.util.zip.ZipOutputStream;
 
 /**
  * Packs a dataset directory into a single-file STORED {@code .mzpeak} ZIP for the {@link MzPeakWriter} archive
- * overloads, in member-name order.
+ * overloads: the members in name order, then the manifest as the last entry.
  */
 final class ArchivePacker {
+
+    /** Name order, except that the manifest sorts after every member. */
+    private static final Comparator<Path> INDEX_LAST = Comparator
+            .comparing((Path p) -> p.getFileName().toString().equals(ManifestWriter.INDEX))
+            .thenComparing(Comparator.naturalOrder());
 
     private ArchivePacker() {
     }
@@ -45,7 +50,7 @@ final class ArchivePacker {
     private static void packStored(Path dir, Path zipFile) throws IOException {
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(zipFile))) {
             zip.setMethod(ZipOutputStream.STORED);
-            try (var members = Files.list(dir).sorted()) {
+            try (var members = Files.list(dir).sorted(INDEX_LAST)) {
                 for (Path member : (Iterable<Path>) members::iterator) {
                     byte[] bytes = Files.readAllBytes(member);
                     CRC32 crc = new CRC32();
