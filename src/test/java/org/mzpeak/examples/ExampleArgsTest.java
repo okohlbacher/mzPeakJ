@@ -2,12 +2,14 @@ package org.mzpeak.examples;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The command-line parser shared by the example tools. */
+/** The command-line parser shared by the example tools, and the exit helper their main methods end with. */
 class ExampleArgsTest {
 
     @Test
@@ -74,5 +76,16 @@ class ExampleArgsTest {
         // a flag's value is the string "true", which is not a number either
         assertThatThrownBy(() -> a.optInt("flag", 1))
                 .isInstanceOf(NumberFormatException.class).hasMessageContaining("true");
+    }
+
+    @Test
+    void exitHandsOnlyANonZeroStatusToTheExiter() {
+        List<Integer> statuses = new ArrayList<>();
+
+        ExampleArgs.exit(0, statuses::add);
+        assertThat(statuses).isEmpty();
+
+        ExampleArgs.exit(2, statuses::add);
+        assertThat(statuses).containsExactly(2);
     }
 }

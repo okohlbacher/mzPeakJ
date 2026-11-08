@@ -319,16 +319,48 @@ class MzPeakFileInfoTest {
     }
 
     @Test
-    void mainSummarizesTheFirstInputAndReadsDashSOrStatisticsAsTheStatisticsSwitch() {
+    void runSummarizesTheFirstInputAndReadsDashSOrStatisticsAsTheStatisticsSwitch() {
         Path input = Fixtures.current("Example_Processed.img.mzpeak");
         String plain = String.join(System.lineSeparator(), summary(input, false)) + System.lineSeparator();
         String withStatistics = String.join(System.lineSeparator(), summary(input, true)) + System.lineSeparator();
 
-        assertThat(mainOutput(input.toString())).isEqualTo(plain);
-        assertThat(mainOutput(input.toString(), "other.mzpeak")).isEqualTo(plain);
-        assertThat(mainOutput(input.toString(), "-s")).isEqualTo(withStatistics);
-        assertThat(mainOutput("-s", input.toString())).isEqualTo(withStatistics);
-        assertThat(mainOutput(input.toString(), "--statistics")).isEqualTo(withStatistics);
+        assertThat(runOutput(input.toString())).isEqualTo(plain);
+        assertThat(runOutput(input.toString(), "other.mzpeak")).isEqualTo(plain);
+        assertThat(runOutput(input.toString(), "-s")).isEqualTo(withStatistics);
+        assertThat(runOutput("-s", input.toString())).isEqualTo(withStatistics);
+        assertThat(runOutput(input.toString(), "--statistics")).isEqualTo(withStatistics);
+    }
+
+    @Test
+    void runPrintsTheUsageToErrAndReturns2WithoutInput() {
+        for (String[] args : List.of(new String[0], new String[] {"-s"}, new String[] {"--statistics"})) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+            assertThat(MzPeakFileInfo.run(args, printStream(out), printStream(err))).isEqualTo(2);
+            assertThat(out.toString(StandardCharsets.UTF_8)).isEmpty();
+            assertThat(err.toString(StandardCharsets.UTF_8)).isEqualTo(USAGE + System.lineSeparator());
+        }
+    }
+
+    @Test
+    void mainPrintsWhatRunPrintsAndReturnsNormally() {
+        String input = Fixtures.current("Example_Processed.img.mzpeak").toString();
+        PrintStream originalOut = System.out;
+        PrintStream originalErr = System.err;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        System.setOut(printStream(out));
+        System.setErr(printStream(err));
+        try {
+            MzPeakFileInfo.main(new String[] {input, "-s"});
+        } finally {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+        }
+
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains("-- Statistics --").isEqualTo(runOutput(input, "-s"));
+        assertThat(err.toString(StandardCharsets.UTF_8)).isEmpty();
     }
 
     @Test
@@ -349,17 +381,17 @@ class MzPeakFileInfoTest {
         return buffer.toString(StandardCharsets.UTF_8).lines().toList();
     }
 
-    /** What {@code main(args)} prints to standard output. */
-    private static String mainOutput(String... args) {
-        PrintStream original = System.out;
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        System.setOut(new PrintStream(buffer, true, StandardCharsets.UTF_8));
-        try {
-            MzPeakFileInfo.main(args);
-        } finally {
-            System.setOut(original);
-        }
-        return buffer.toString(StandardCharsets.UTF_8);
+    /** What {@code run(args, out, err)} prints to {@code out}; it returns 0 and prints nothing to {@code err}. */
+    private static String runOutput(String... args) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        assertThat(MzPeakFileInfo.run(args, printStream(out), printStream(err))).isEqualTo(0);
+        assertThat(err.toString(StandardCharsets.UTF_8)).isEmpty();
+        return out.toString(StandardCharsets.UTF_8);
+    }
+
+    private static PrintStream printStream(ByteArrayOutputStream buffer) {
+        return new PrintStream(buffer, true, StandardCharsets.UTF_8);
     }
 
     private record Exit(int status, String stdout, String stderr) {

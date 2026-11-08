@@ -5,9 +5,11 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SpectrumDescription;
 
+import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.TreeMap;
+import java.util.function.IntConsumer;
 
 /**
  * Tiny demo CLI: prints a summary of an mzPeak dataset.
@@ -22,35 +24,40 @@ public final class MzPeakInfo {
     }
 
     public static void main(String[] args) {
+        exit(run(args, System.out, System.err), System::exit);
+    }
+
+    /** Prints the summary to {@code out} and returns 0, or prints the usage to {@code err} and returns 2. */
+    static int run(String[] args, PrintStream out, PrintStream err) {
         if (args.length < 1) {
-            System.err.println("Usage: MzPeakInfo <path-to-.mzpeak-dir-or-zip> [maxSpectra]");
-            System.exit(2);
+            err.println("Usage: MzPeakInfo <path-to-.mzpeak-dir-or-zip> [maxSpectra]");
+            return 2;
         }
         Path path = Path.of(args[0]);
         int max = args.length > 1 ? Integer.parseInt(args[1]) : 5;
 
         try (MzPeakReader reader = MzPeakReader.open(path)) {
-            System.out.println("Dataset: " + path);
-            System.out.println("Spectra: " + reader.size());
+            out.println("Dataset: " + path);
+            out.println("Spectra: " + reader.size());
 
             TreeMap<Integer, Long> byLevel = new TreeMap<>();
             for (SpectrumDescription d : reader.metadata()) {
                 byLevel.merge(d.msLevel(), 1L, Long::sum);
             }
-            System.out.println("MS levels: " + byLevel);
+            out.println("MS levels: " + byLevel);
 
             var chroms = reader.chromatograms();
-            System.out.println("Chromatograms: " + chroms.size());
+            out.println("Chromatograms: " + chroms.size());
             for (Chromatogram c : chroms) {
-                System.out.printf("  - %s (%s) %d points%n", c.id(), c.typeCurie(), c.size());
+                out.printf("  - %s (%s) %d points%n", c.id(), c.typeCurie(), c.size());
             }
 
             int wl = reader.wavelengthSpectra().size();
             if (wl > 0) {
-                System.out.println("Wavelength (UV/DAD) spectra: " + wl);
+                out.println("Wavelength (UV/DAD) spectra: " + wl);
             }
 
-            System.out.println("First " + Math.min(max, reader.size()) + " spectra:");
+            out.println("First " + Math.min(max, reader.size()) + " spectra:");
             for (int i = 0; i < Math.min(max, reader.size()); i++) {
                 var s = reader.getSpectrumAt(i);
                 SpectrumDescription d = s.description();
@@ -65,8 +72,16 @@ public final class MzPeakInfo {
                         line.append(" z=").append(p.primaryIon().charge());
                     }
                 }
-                System.out.println(line);
+                out.println(line);
             }
+        }
+        return 0;
+    }
+
+    /** Hands a non-zero {@code status} to {@code exiter} (in {@link #main}, {@link System#exit}). */
+    static void exit(int status, IntConsumer exiter) {
+        if (status != 0) {
+            exiter.accept(status);
         }
     }
 }

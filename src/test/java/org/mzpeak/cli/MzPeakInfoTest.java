@@ -113,11 +113,47 @@ class MzPeakInfoTest {
 
     @Test
     void rejectsAMaxSpectraThatIsNotANumberBeforeOpeningTheDataset() {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
 
-        assertThatThrownBy(() -> runMain(buffer, "does-not-exist.mzpeak", "many"))
+        assertThatThrownBy(() -> runMain(out, err, "does-not-exist.mzpeak", "many"))
                 .isInstanceOf(NumberFormatException.class).hasMessageContaining("\"many\"");
-        assertThat(buffer.toString(StandardCharsets.UTF_8)).isEmpty();
+        assertThat(out.toString(StandardCharsets.UTF_8)).isEmpty();
+        assertThat(err.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    @Test
+    void runPrintsTheUsageToErrAndReturns2WithoutArguments() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        assertThat(MzPeakInfo.run(new String[0], printStream(out), printStream(err))).isEqualTo(2);
+        assertThat(out.toString(StandardCharsets.UTF_8)).isEmpty();
+        assertThat(err.toString(StandardCharsets.UTF_8)).isEqualTo(USAGE + System.lineSeparator());
+    }
+
+    @Test
+    void mainPrintsWhatRunPrintsAndReturnsNormally() {
+        String input = Fixtures.current("small.mzpeak").toString();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        runMain(out, err, input, "3");
+
+        assertThat(out.toString(StandardCharsets.UTF_8).lines().toList())
+                .hasSize(9).isEqualTo(output(input, "3"));
+        assertThat(err.toString(StandardCharsets.UTF_8)).isEmpty();
+    }
+
+    @Test
+    void exitHandsOnlyANonZeroStatusToTheExiter() {
+        List<Integer> statuses = new ArrayList<>();
+
+        MzPeakInfo.exit(0, statuses::add);
+        assertThat(statuses).isEmpty();
+
+        MzPeakInfo.exit(2, statuses::add);
+        assertThat(statuses).containsExactly(2);
     }
 
     @Test
@@ -129,21 +165,30 @@ class MzPeakInfoTest {
         assertThat(exit.stderr()).isEqualTo(USAGE + System.lineSeparator());
     }
 
-    /** What {@code main(args)} prints, line by line. */
+    /** What {@code run(args, out, err)} prints to {@code out}, line by line; it returns 0 and prints nothing to err. */
     private static List<String> output(String... args) {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        runMain(buffer, args);
-        return buffer.toString(StandardCharsets.UTF_8).lines().toList();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        assertThat(MzPeakInfo.run(args, printStream(out), printStream(err))).isEqualTo(0);
+        assertThat(err.toString(StandardCharsets.UTF_8)).isEmpty();
+        return out.toString(StandardCharsets.UTF_8).lines().toList();
     }
 
-    /** Runs {@code main(args)} with standard output going to {@code buffer}. */
-    private static void runMain(ByteArrayOutputStream buffer, String... args) {
-        PrintStream original = System.out;
-        System.setOut(new PrintStream(buffer, true, StandardCharsets.UTF_8));
+    private static PrintStream printStream(ByteArrayOutputStream buffer) {
+        return new PrintStream(buffer, true, StandardCharsets.UTF_8);
+    }
+
+    /** Runs {@code main(args)} with standard output going to {@code out} and standard error to {@code err}. */
+    private static void runMain(ByteArrayOutputStream out, ByteArrayOutputStream err, String... args) {
+        PrintStream originalOut = System.out;
+        PrintStream originalErr = System.err;
+        System.setOut(printStream(out));
+        System.setErr(printStream(err));
         try {
             MzPeakInfo.main(args);
         } finally {
-            System.setOut(original);
+            System.setOut(originalOut);
+            System.setErr(originalErr);
         }
     }
 
