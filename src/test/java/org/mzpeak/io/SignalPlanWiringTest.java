@@ -270,6 +270,48 @@ class SignalPlanWiringTest {
     }
 
     /**
+     * The same point member with its footer entries in reverse schema order (RD-22 note 1): the index entry, listed
+     * last, still names the index field and the ranked {@code rt} the time axis, while the intensities follow the
+     * index order, absorbance before counts, so a row with both reads its absorbance.
+     */
+    @Test
+    void pointRowsAreReadFromTheColumnsOfAnIndexInReverseSchemaOrder() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 trace (INTEGER(64,false));
+                    optional double time;
+                    optional float intensity;
+                    optional double rt;
+                    optional float counts;
+                    optional float absorbance;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.absorbance", "point", "MS:1000515", null, null, "UO:0000269"),
+                indexEntry("point.counts", "point", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("point.rt", "point", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("point.trace", "index", "MS:1003870", 0, null, null));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                point(rows).append("trace", 0L).append("time", 98.0).append("intensity", 99f).append("rt", 1.0)
+                        .append("counts", 5f).append("absorbance", 7f).parent,
+                point(rows).append("trace", 0L).append("time", 97.0).append("intensity", 96f).append("rt", 2.0)
+                        .append("counts", 3f).parent,
+                point(rows).append("trace", 1L).append("time", 95.0).append("intensity", 94f).parent);
+
+        ChromatogramStore store = chromatogramStore(data, 0, 1);
+
+        assertThat(store.plan().indexField()).isEqualTo("trace");
+        assertThat(store.plan().axis().values().field()).isEqualTo("rt");
+        assertThat(store.plan().intensities()).extracting(Column::field).containsExactly("absorbance", "counts");
+        assertArrays(store.all().get(0), new double[] {1.0, 2.0}, new double[] {7.0, 3.0});
+        assertThat(store.all().get(0).intensityUnit()).as("absorbance, then counts").isNull();
+        assertArrays(store.all().get(1), new double[] {Double.NaN}, new double[] {0.0});
+    }
+
+    /**
      * A chunk member is read from the columns its index names: the start {@code rt_start}, the deltas
      * {@code rt_deltas}, the intensity list {@code counts} and the SLOF bytes {@code counts_slof}; the literal
      * {@code time_chunk_start} and {@code intensity} columns are not read.

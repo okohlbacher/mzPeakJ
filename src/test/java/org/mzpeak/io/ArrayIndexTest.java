@@ -359,6 +359,18 @@ class ArrayIndexTest {
     }
 
     /** Runs {@code action} and returns what it logged through the logger of {@code owner}, at any level. */
+    /** A sorting_rank of 2^31 does not fit an int and is malformed, not wrapped to -2^31 (A2). */
+    @Test
+    void aSortingRankOfTwoToThe31IsMalformed() {
+        String json = "{\"prefix\": \"point\", \"entries\": [{\"path\": \"point.mz\","
+                + " \"buffer_format\": \"point\", \"array_type\": \"MS:1000514\", \"sorting_rank\": 2147483648}]}";
+        assertThatThrownBy(() -> ArrayIndex.parse(json, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("malformed spectrum_array_index footer: entry 0 has a non-integer 'sorting_rank'");
+        assertThat(ArrayIndex.parse(json.replace("2147483648", "2147483647"), SignalEntity.SPECTRUM).entries()
+                .get(0).sortingRank()).isEqualTo(Integer.MAX_VALUE);
+    }
+
     static List<LogRecord> captureLog(Class<?> owner, Runnable action) {
         List<LogRecord> records = new ArrayList<>();
         Logger log = Logger.getLogger(owner.getName());

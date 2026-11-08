@@ -631,6 +631,146 @@ class SignalPlanTest {
                 .satisfies(r -> assertThat(r.getMessage()).contains("chunk.im_grid", "names no transform"));
     }
 
+    // ---- FN-14: the remaining rules of SignalPlan.of on constructed footers ------------------------------------
+
+    private static final MessageType TRANSFORM_SCHEMA = MessageTypeParser.parseMessageType("""
+            message m {
+              optional group chunk {
+                optional int64 spectrum_index;
+                optional double mz_chunk_start;
+                optional double start_b;
+                optional double mz_chunk_end;
+                optional double end_b;
+                optional group mz_chunk_values (LIST) { repeated group list { optional double item; } }
+                optional binary chunk_encoding (STRING);
+                optional binary enc_b (STRING);
+                optional group intensity (LIST) { repeated group list { optional float item; } }
+                optional group im_a (LIST) { repeated group list { optional double item; } }
+                optional group im_b (LIST) { repeated group list { optional double item; } }
+                optional group im_grid { required binary grid_type (STRING); }
+              }
+            }""");
+
+    /** An entry of {@link #TRANSFORM_SCHEMA}: MS:1003006 with the data type MS:1000523 and the given extras. */
+    private static String imEntry(String field, String format, String unit, String dataProcessing, String more) {
+        return "{\"path\": \"chunk." + field + "\", \"buffer_format\": \"" + format + "\","
+                + " \"array_type\": \"MS:1003006\", \"data_type\": \"MS:1000523\", \"unit\": \"" + unit
+                + "\", \"data_processing_id\": \"" + dataProcessing + "\"" + more + "}";
+    }
+
+    private static String transformIndex(String... extras) {
+        List<String> entries = new ArrayList<>(List.of(
+                indexEntry("chunk.spectrum_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("chunk.mz_chunk_values", "chunk_values", "MS:1000514", "primary", 1),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", "primary", null)));
+        entries.addAll(List.of(extras));
+        return index("chunk", entries.toArray(String[]::new));
+    }
+
+    private static final String GRID = ", \"transform\": \"MS:1003826\"";
+    private static final String PRIMARY = ", \"buffer_priority\": \"primary\"";
+
+    /** A transform joins the value column of its key that matches its unit, the data type and processing alike (S3). */
+    @Test
+    void aTransformJoinsTheValueColumnOfItsUnit() {
+        SignalPlan plan = plan(transformIndex(
+                imEntry("im_a", "chunk_secondary", "MS:1002814", "dp", PRIMARY),
+                imEntry("im_b", "chunk_secondary", "UO:0000028", "dp", ""),
+                imEntry("im_grid", "chunk_transform", "UO:0000028", "dp", GRID)), TRANSFORM_SCHEMA,
+                SignalEntity.SPECTRUM);
+
+        assertThat(plan.extras().get("MS:1003006").transformFields()).isEmpty();
+        assertThat(plan.extras().get("MS:1003006@im_b").transformFields())
+                .containsExactly(entry("MS:1003826", "im_grid"));
+    }
+
+    /** A transform joins the value column of its key that matches its data processing (S13). */
+    @Test
+    void aTransformJoinsTheValueColumnOfItsDataProcessing() {
+        SignalPlan plan = plan(transformIndex(
+                imEntry("im_a", "chunk_secondary", "MS:1002814", "dp_a", PRIMARY),
+                imEntry("im_b", "chunk_secondary", "MS:1002814", "dp_b", ""),
+                imEntry("im_grid", "chunk_transform", "MS:1002814", "dp_b", GRID)), TRANSFORM_SCHEMA,
+                SignalEntity.SPECTRUM);
+
+        assertThat(plan.extras().get("MS:1003006").transformFields()).isEmpty();
+        assertThat(plan.extras().get("MS:1003006@im_b").transformFields())
+                .containsExactly(entry("MS:1003826", "im_grid"));
+    }
+
+    /** A transform listed before its value column takes the value column's metadata, its array name here (S12). */
+    @Test
+    void aTransformBeforeItsValueColumnTakesTheValueColumnsMetadata() {
+        SignalPlan plan = plan(transformIndex(
+                imEntry("im_grid", "chunk_transform", "MS:1002814", "dp", GRID),
+                imEntry("im_a", "chunk_secondary", "MS:1002814", "dp", ", \"array_name\": \"mobility\"")),
+                TRANSFORM_SCHEMA, SignalEntity.SPECTRUM);
+
+        assertThat(plan.extras()).containsOnlyKeys("MS:1003006");
+        Extra im = plan.extras().get("MS:1003006");
+        assertThat(im.arrayName()).isEqualTo("mobility");
+        assertThat(im.values().field()).isEqualTo("im_a");
+        assertThat(im.transformFields()).containsExactly(entry("MS:1003826", "im_grid"));
+    }
+
+    /** An entry with an unknown buffer_format does not make the layout CHUNK and names no array (S6). */
+    @Test
+    void anUnknownBufferFormatStaysPoint() {
+        SignalPlan plan = plan(pointIndex(indexEntry("point.im_a", "bogus_format", "MS:1003006", "primary", null)),
+                IM_SCHEMA, SignalEntity.SPECTRUM);
+
+        assertThat(plan.layout()).isEqualTo(Layout.POINT);
+        assertThat(plan.extras()).isEmpty();
+    }
+
+    /** Of two index entries, the first names the index field (S9). */
+    @Test
+    void aDuplicateIndexEntryKeepsTheFirst() {
+        SignalPlan plan = plan(pointIndex(indexEntry("point.ms_level", "index", "MS:1003870", "primary", 0)),
+                IM_SCHEMA, SignalEntity.SPECTRUM);
+
+        assertThat(plan.indexField()).isEqualTo("spectrum_index");
+    }
+
+    /** Of two chunk_start, chunk_end or chunk_encoding entries of the main axis, the first is kept (S10). */
+    @Test
+    void duplicateChunkStartEndAndEncodingEntriesKeepTheFirst() {
+        SignalPlan plan = plan(index("chunk",
+                indexEntry("chunk.spectrum_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("chunk.mz_chunk_start", "chunk_start", "MS:1000514", "primary", 1),
+                indexEntry("chunk.start_b", "chunk_start", "MS:1000514", "primary", 1),
+                indexEntry("chunk.mz_chunk_end", "chunk_end", "MS:1000514", "primary", 1),
+                indexEntry("chunk.end_b", "chunk_end", "MS:1000514", "primary", 1),
+                indexEntry("chunk.chunk_encoding", "chunk_encoding", "MS:1000514", "primary", 1),
+                indexEntry("chunk.enc_b", "chunk_encoding", "MS:1000514", "primary", 1),
+                indexEntry("chunk.mz_chunk_values", "chunk_values", "MS:1000514", "primary", 1),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", "primary", null)),
+                TRANSFORM_SCHEMA, SignalEntity.SPECTRUM);
+
+        assertThat(plan.axis().start().field()).isEqualTo("mz_chunk_start");
+        assertThat(plan.axis().end().field()).isEqualTo("mz_chunk_end");
+        assertThat(plan.axis().encoding().field()).isEqualTo("chunk_encoding");
+    }
+
+    /** A path that continues below a primitive field is not a column: the extra is skipped with a WARNING (S14). */
+    @Test
+    void aPathBelowAPrimitiveFieldIsNotAColumn() {
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(pointIndex(indexEntry("point.im_a.x", "point", "MS:1003006", "primary", null)),
+                    IM_SCHEMA, SignalEntity.SPECTRUM);
+            assertThat(plan.extras()).isEmpty();
+        });
+        assertThat(records).filteredOn(r -> r.getLevel() == Level.WARNING).singleElement()
+                .satisfies(r -> assertThat(r.getMessage()).contains("point.im_a.x", "not a column"));
+    }
+
+    /** An index without entries under the prefix 'chunk' gives the CHUNK layout, under 'point' the POINT one (S15). */
+    @Test
+    void anEmptyIndexTakesItsLayoutFromThePrefix() {
+        assertThat(plan(index("chunk"), TRANSFORM_SCHEMA, SignalEntity.SPECTRUM).layout()).isEqualTo(Layout.CHUNK);
+        assertThat(plan(index("point"), IM_SCHEMA, SignalEntity.SPECTRUM).layout()).isEqualTo(Layout.POINT);
+    }
+
     @Test
     void planCollectionsAreUnmodifiable() {
         SignalPlan plan = plan(pointIndex(indexEntry("point.im_a", "point", "MS:1003006", "primary", null)),
