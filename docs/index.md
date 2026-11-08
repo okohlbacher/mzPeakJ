@@ -36,13 +36,20 @@ Java demonstrator; an official Java implementation is planned by the HUPO-PSI.
 
 - **Reads** unpacked `*.mzpeak/` directories and single-file STORED `.mzpeak` ZIPs — STORED members are
   read in-place from the archive (seekable file slice, no whole-member buffering).
-- **Three signal layouts**: `point` (one row per data point), delta-`chunk` (delta-encoded fixed-width
-  m/z chunks), and MS-Numpress `chunk` (lossless linear m/z + lossy SLOF/PIC intensity compression).
+- **Four signal layouts**: `point` (one row per data point), delta-`chunk` (delta-encoded fixed-width
+  m/z chunks), MS-Numpress `chunk` (lossless linear m/z + lossy SLOF/PIC intensity compression), and
+  coordinate-grid `chunk` (draft; linear, square-root and provisional timsTOF grid models).
 - **Spectra** (MS1 + MSn): profile and centroid, with metadata in the current split layout and the legacy
   packed layout, precursor, activation params (CID/HCD/ETD + collision energy), isolation window,
   per-spectrum/scan CV param lists, secondary centroid peaks, extra arrays such as per-peak ion mobility, and
   polynomial profile reconstruction from the stored m/z delta model.
-- **Chromatograms** (TIC, DAD/absorption, …) and **UV/DAD wavelength spectra**.
+- **Chromatograms** (TIC, DAD/absorption, …) with their per-point extra arrays, and **UV/DAD wavelength
+  spectra**.
+- **Reader API**: profile/centroid signal modes, range queries by time or index with m/z, ion-mobility and
+  MS-level filters, column statistics and observed ranges, a TIC and BPC derived from the spectrum metadata,
+  and a storage SPI for remote or custom storage. The
+  [Reader API notes](https://github.com/okohlbacher/mzPeakJ/blob/main/DESIGN.md#82-reader-api) give the
+  contract and where mzPeakJ deliberately differs from the Rust and Python readers.
 - **File/run-level metadata** from the manifest, with the Parquet footer as fallback: instrument configuration
   (analyzer types, resolution), software list, run, source files, data processing, sample.
 - **Writes** point and Numpress chunk layouts, with footer metadata and CV param lists.
@@ -50,8 +57,9 @@ Java demonstrator; an official Java implementation is planned by the HUPO-PSI.
   decoded from dedicated typed scan columns and CV params; accessible via `ScanEvent` convenience methods.
 - **No Hadoop runtime** — custom `ZstdCompressionCodecFactory` means no Hadoop FileSystem, Configuration,
   or native libraries are ever touched.
-- **543 tests** (corpus gate over 207 HUPO-PSI example files), cross-validated against the Rust and Python
-  reference test suites. CI on JDK 17 + 21.
+- **Tested** on both vendored HUPO-PSI example sets against golden outputs of the upstream Python reader,
+  cross-validated against the Rust and Python reference test suites, with an opt-in corpus gate. CI on
+  JDK 17 + 21.
 
 ---
 
@@ -123,7 +131,7 @@ Two sets of HUPO-PSI example datasets are included. The current set, from upstre
 | `small.numpress.mzpeak` | Numpress chunk, STORED ZIP | same data, MS:1002312 linear m/z + MS:1002314 SLOF intensity |
 | `has_uv.mzpeak` | point, STORED ZIP | 212 MS spectra + 520 UV/DAD spectra + TIC & DAD chromatograms |
 | `diaPASEF.ref.mzpeak` | point, STORED ZIP | 9 spectra (1 MS1 + 8 MS2) of a Bruker diaPASEF run with per-peak ion mobility; TIC & BPC |
-| `diaPASEF.grid.mzpeak` | coordinate-grid chunk, STORED ZIP | same run; spectrum arrays not decoded yet (grid encoding) |
+| `diaPASEF.grid.mzpeak` | coordinate-grid chunk, STORED ZIP | same run, grid-encoded (provisional timsTOF grid models); decodes to the same arrays |
 | `Example_Processed.img.mzpeak` | point, STORED ZIP | 9 profile spectra of an imzML imaging run |
 
 The legacy set, from upstream commit `29e59b2`, lies under `src/test/resources/mzpeak-legacy/` and uses the
