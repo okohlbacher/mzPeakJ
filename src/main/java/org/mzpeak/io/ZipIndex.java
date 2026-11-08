@@ -36,6 +36,8 @@ final class ZipIndex {
     private static final int CDH_SIG = 0x02014b50;
     private static final int LFH_SIG = 0x04034b50;
     private static final long U32_MAX = 0xFFFFFFFFL;
+    /** The tail searched for the end-of-central-directory record before the longest possible tail is read. */
+    private static final int EOCD_PROBE = 1024;
 
     private ZipIndex() {
     }
@@ -223,7 +225,21 @@ final class ZipIndex {
 
     /** The offset of the end-of-central-directory record: the last one whose comment reaches the end of the file. */
     private static long locateEocd(RandomAccessBytes bytes, long fileSize) throws IOException {
-        int tailLen = (int) Math.min(fileSize, 22 + 0xFFFF); // EOCD record + max comment
+        // Most archives carry no comment, so the last KiB is searched before the longest possible tail is read. Both
+        // searches run backwards from the end, so the probe finds exactly what the full search would find first.
+        long eocd = searchTail(bytes, fileSize, (int) Math.min(fileSize, EOCD_PROBE));
+        int maxTail = (int) Math.min(fileSize, 22 + 0xFFFF); // EOCD record + max comment
+        if (eocd < 0 && maxTail > EOCD_PROBE) {
+            eocd = searchTail(bytes, fileSize, maxTail);
+        }
+        if (eocd < 0) {
+            throw new MzPeakException("not a ZIP archive (no end-of-central-directory record found)");
+        }
+        return eocd;
+    }
+
+    /** The offset of the last EOCD record in the last {@code tailLen} bytes whose comment reaches the end, or -1. */
+    private static long searchTail(RandomAccessBytes bytes, long fileSize, int tailLen) throws IOException {
         long start = fileSize - tailLen;
         ByteBuffer tail = readAt(bytes, start, tailLen);
         for (int i = tailLen - 22; i >= 0; i--) {
@@ -231,7 +247,7 @@ final class ZipIndex {
                 return start + i;
             }
         }
-        throw new MzPeakException("not a ZIP archive (no end-of-central-directory record found)");
+        return -1;
     }
 
     private static ByteBuffer readAt(RandomAccessBytes bytes, long position, int length) throws IOException {

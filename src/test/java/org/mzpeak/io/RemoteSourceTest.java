@@ -88,6 +88,28 @@ class RemoteSourceTest {
     }
 
     @Test
+    void openSizeAndMetadataReadLittleOfTheArchive() throws IOException {
+        // the members read are the manifest and the four spectrum metadata members, plus the ZIP directory
+        Path fixture = Fixtures.current("small.mzpeak");
+        long fileSize = Files.size(fixture);
+        Counting bytes = new Counting(RandomAccessBytes.of(FileChannel.open(fixture, StandardOpenOption.READ)));
+        long metadataBytes;
+        try (MzPeakReader reader = MzPeakReader.open(MzPeakSource.zip(fixture.toString(), bytes))) {
+            assertThat(reader.size()).isEqualTo(48);
+            for (int i = 0; i < reader.size(); i++) {
+                assertThat(reader.metadataAt(i).index()).isEqualTo(i);
+            }
+            metadataBytes = bytes.bytesRead();
+            assertThat(reader.getSpectrumAt(0).mz()).isNotEmpty();
+            assertThat(bytes.bytesRead()).as("reading a spectrum reads its signal").isGreaterThan(metadataBytes);
+        }
+        assertThat(metadataBytes).isPositive().isLessThan(fileSize / 10);
+        assertThat(bytes.readsAtOrPastEnd()).as("reads starting at or past size()").isZero();
+        assertThat(bytes.maxEnd()).as("end of the furthest read").isLessThanOrEqualTo(fileSize);
+        assertThat(bytes.closes()).isEqualTo(1);
+    }
+
+    @Test
     void zipMembersMatchTheArchiveUnderConcurrentReads() throws Exception {
         Path fixture = Fixtures.current("small.mzpeak");
         Map<String, byte[]> expected = ZipSourceCharacterizationTest.zipFileMembers(fixture);
