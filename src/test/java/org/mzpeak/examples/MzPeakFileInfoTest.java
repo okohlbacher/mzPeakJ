@@ -26,15 +26,10 @@ import org.mzpeak.model.meta.FileMetadata.Software;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.PrintStream;
-import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -366,9 +361,9 @@ class MzPeakFileInfoTest {
     @Test
     void mainPrintsTheUsageAndExitsWithStatus2WithoutInput(@TempDir Path tmp) throws Exception {
         for (String[] args : List.of(new String[0], new String[] {"-s"}, new String[] {"--statistics"})) {
-            Exit exit = runInNewJvm(tmp, args);
+            ForkedExampleMain.Result exit = ForkedExampleMain.run(tmp, MzPeakFileInfo.class, args);
 
-            assertThat(exit.status()).isEqualTo(2);
+            assertThat(exit.exitStatus()).isEqualTo(2);
             assertThat(exit.stdout()).isEmpty();
             assertThat(exit.stderr()).isEqualTo(USAGE + System.lineSeparator());
         }
@@ -392,35 +387,6 @@ class MzPeakFileInfoTest {
 
     private static PrintStream printStream(ByteArrayOutputStream buffer) {
         return new PrintStream(buffer, true, StandardCharsets.UTF_8);
-    }
-
-    private record Exit(int status, String stdout, String stderr) {
-    }
-
-    /**
-     * Runs {@code main(args)} in a JVM of its own, since it may call System.exit. The new JVM gets the Java agents of
-     * this one, so that a coverage agent counts what it runs as well.
-     */
-    private static Exit runInNewJvm(Path tmp, String... args) throws IOException, InterruptedException {
-        List<String> command = new ArrayList<>();
-        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
-        for (String jvmArg : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
-            if (jvmArg.startsWith("-javaagent:")) {
-                command.add(jvmArg);
-            }
-        }
-        command.addAll(List.of("-cp", System.getProperty("java.class.path"), MzPeakFileInfo.class.getName()));
-        command.addAll(List.of(args));
-        Path stdout = Files.createTempFile(tmp, "stdout", ".txt");
-        Path stderr = Files.createTempFile(tmp, "stderr", ".txt");
-        Process process = new ProcessBuilder(command)
-                .redirectOutput(stdout.toFile()).redirectError(stderr.toFile()).start();
-        try {
-            assertThat(process.waitFor(2, TimeUnit.MINUTES)).as("the JVM has ended").isTrue();
-        } finally {
-            process.destroyForcibly();
-        }
-        return new Exit(process.exitValue(), Files.readString(stdout), Files.readString(stderr));
     }
 
     /**
