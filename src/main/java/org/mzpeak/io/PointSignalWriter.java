@@ -9,6 +9,7 @@ import org.apache.parquet.schema.Types;
 import org.mzpeak.io.ArrayIndex.BufferFormat;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
@@ -27,43 +28,61 @@ import static org.mzpeak.io.ParquetOutput.signalFooter;
 /**
  * Writes the point layout of {@link MzPeakWriter}: one row per point, carrying the entity index, the axis value
  * and the intensity, for spectra (spectra_data and spectra_peaks), chromatograms and wavelength spectra; a spectrum
- * row also carries the plan's extra columns, null where the spectrum has no such array. Each file's footer holds the
- * array index of its columns and the counts ({@link ParquetOutput#signalFooter}).
+ * or chromatogram row also carries the plan's extra columns, null where the entity has no such array. A chromatogram
+ * row holds its intensity in the plan's intensity column of the chromatogram's unit and null in the others. Each
+ * file's footer holds the array index of its columns and the counts ({@link ParquetOutput#signalFooter}).
  */
 final class PointSignalWriter {
 
-    private static final MessageType CHROM_DATA_SCHEMA = pointSchema("chromatogram_index", "time", List.of());
+    /** The intensity column of the spectrum signal files: detector counts. */
+    private static final List<IntensityColumn> SPECTRUM_INTENSITY = List.of(
+            new IntensityColumn(ArrayIndex.COUNTS_UNIT, "intensity", true));
+    /** The intensity column of wavelength_spectra_data, whose unit is unknown. */
+    private static final List<IntensityColumn> WAVELENGTH_INTENSITY = List.of(
+            new IntensityColumn(null, "intensity", true));
+
     private static final MessageType WAVELENGTH_DATA_SCHEMA = pointSchema("wavelength_spectrum_index", "wavelength",
-            List.of());
+            WAVELENGTH_INTENSITY, List.of());
 
     /**
-     * The array indexes of the schemas above, whose intensity unit is unknown; spectrum intensity is in detector
-     * counts, and the spectrum schema and index are built for each write, with its extra columns.
+     * The array index of the schema above; the spectrum and chromatogram schemas and indexes are built for each write,
+     * with its intensity and extra columns.
      */
-    private static final ArrayIndex CHROM_DATA_INDEX = pointIndex(SignalEntity.CHROMATOGRAM, "time", null, List.of());
     private static final ArrayIndex WAVELENGTH_DATA_INDEX = pointIndex(SignalEntity.WAVELENGTH_SPECTRUM, "wavelength",
-            null, List.of());
+            WAVELENGTH_INTENSITY, List.of());
+
+    /** The values of no extra column, for the rows of wavelength_spectra_data. */
+    private static final double[][] NO_EXTRA_VALUES = new double[0][];
 
     private PointSignalWriter() {
     }
 
-    private static ArrayIndex pointIndex(SignalEntity entity, String xField, String intensityUnit,
+    private static ArrayIndex pointIndex(SignalEntity entity, String xField, List<IntensityColumn> intensities,
                                          List<ExtraColumn> extras) {
         ArrayIndex.Builder builder = ArrayIndex.builder(ArrayIndex.POINT_PREFIX, entity)
                 .index(entity.indexField())
-                .axis(xField, BufferFormat.POINT, null)
-                .intensity("intensity", BufferFormat.POINT, null, intensityUnit);
+                .axis(xField, BufferFormat.POINT, null);
+        for (IntensityColumn intensity : intensities) {
+            if (intensity.primary()) {
+                builder.intensity(intensity.column(), BufferFormat.POINT, null, intensity.unit());
+            } else {
+                builder.secondaryIntensity(intensity.column(), BufferFormat.POINT, intensity.unit());
+            }
+        }
         for (ExtraColumn extra : extras) {
             builder.extra(extra.column(), extra.arrayType(), extra.arrayName(), extra.unit(), BufferFormat.POINT);
         }
         return builder.build();
     }
 
-    private static MessageType pointSchema(String indexField, String xField, List<ExtraColumn> extras) {
+    private static MessageType pointSchema(String indexField, String xField, List<IntensityColumn> intensities,
+                                           List<ExtraColumn> extras) {
         var point = Types.requiredGroup()
                 .required(PrimitiveTypeName.INT64).as(UINT64).named(indexField)
-                .optional(PrimitiveTypeName.DOUBLE).named(xField)
-                .optional(PrimitiveTypeName.DOUBLE).named("intensity");
+                .optional(PrimitiveTypeName.DOUBLE).named(xField);
+        for (IntensityColumn intensity : intensities) {
+            point = point.optional(PrimitiveTypeName.DOUBLE).named(intensity.column());
+        }
         for (ExtraColumn extra : extras) {
             point = point.optional(PrimitiveTypeName.DOUBLE).named(extra.column());
         }
@@ -79,9 +98,9 @@ final class PointSignalWriter {
      */
     static void writeSpectrumPoints(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         List<ExtraColumn> extras = plan.spectrumExtras();
-        MessageType schema = pointSchema("spectrum_index", "mz", extras);
+        MessageType schema = pointSchema("spectrum_index", "mz", SPECTRUM_INTENSITY, extras);
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
-        Map<String, String> footer = signalFooter(pointIndex(SignalEntity.SPECTRUM, "mz", ArrayIndex.COUNTS_UNIT,
+        Map<String, String> footer = signalFooter(pointIndex(SignalEntity.SPECTRUM, "mz", SPECTRUM_INTENSITY,
                 extras), plan.spectra().size(), plan.spectrumPoints(centroidFile));
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
@@ -93,15 +112,15 @@ final class PointSignalWriter {
                 if (centroidFile && !entry.peaksFromArrays()) {
                     List<CentroidPeak> peaks = s.peaks();
                     for (int i = 0; i < peaks.size(); i++) {
-                        writeSpectrumPoint(writer, factory, entry.sourceIndex(), peaks.get(i).mz(),
-                                peaks.get(i).intensity(), extras, extraValues, i);
+                        writePoint(writer, factory, "spectrum_index", entry.sourceIndex(), "mz", peaks.get(i).mz(),
+                                "intensity", peaks.get(i).intensity(), extras, extraValues, i);
                     }
                 } else {
                     double[] mz = entry.arrays().x();
                     double[] intensity = entry.arrays().intensity();
                     for (int i = 0; i < mz.length; i++) {
-                        writeSpectrumPoint(writer, factory, entry.sourceIndex(), mz[i], intensity[i], extras,
-                                extraValues, i);
+                        writePoint(writer, factory, "spectrum_index", entry.sourceIndex(), "mz", mz[i], "intensity",
+                                intensity[i], extras, extraValues, i);
                     }
                 }
             }
@@ -109,36 +128,30 @@ final class PointSignalWriter {
     }
 
     /**
-     * One spectrum row: the point {@code row} of {@code extraValues}, each array the values of the extra column at
-     * its position of {@code extras}, written where the array is not null.
+     * Write the plan's chromatograms_data rows: each chromatogram's time and intensity in the order of its
+     * {@link WritePlan.SignalArrays}, the intensity in the column of its unit ({@link WritePlan#intensityColumn}),
+     * with the values of the plan's extra columns from its {@link Chromatogram#arrays()} in the same order.
      */
-    private static void writeSpectrumPoint(ParquetWriter<Group> writer, SimpleGroupFactory factory, long index,
-                                           double mz, double intensity, List<ExtraColumn> extras,
-                                           double[][] extraValues, int row) throws IOException {
-        Group group = factory.newGroup();
-        Group point = group.addGroup("point");
-        point.add("spectrum_index", index);
-        point.add("mz", mz);
-        point.add("intensity", intensity);
-        for (int k = 0; k < extraValues.length; k++) {
-            if (extraValues[k] != null) {
-                point.add(extras.get(k).column(), extraValues[k][row]);
-            }
-        }
-        writer.write(group);
-    }
-
     static void writeChromatogramData(Path file, WritePlan plan) throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_DATA_SCHEMA);
-        Map<String, String> footer = signalFooter(CHROM_DATA_INDEX, plan.chromatograms().size(),
-                points(plan.chromatograms()));
-        try (ParquetWriter<Group> writer = openWriter(file, CHROM_DATA_SCHEMA, footer, plan.options())) {
+        List<IntensityColumn> intensities = plan.chromatogramIntensities();
+        List<ExtraColumn> extras = plan.chromatogramExtras();
+        MessageType schema = pointSchema("chromatogram_index", "time", intensities, extras);
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        Map<String, String> footer = signalFooter(pointIndex(SignalEntity.CHROMATOGRAM, "time", intensities, extras),
+                plan.chromatograms().size(), points(plan.chromatograms()));
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
+                Chromatogram c = entry.source();
+                String intensityColumn = plan.intensityColumn(c);
+                double[][] extraValues = new double[extras.size()][];
+                for (int k = 0; k < extraValues.length; k++) {
+                    extraValues[k] = entry.arrays().inWrittenOrder(c.arrays().get(extras.get(k).key()));
+                }
                 double[] time = entry.arrays().x();
                 double[] intensity = entry.arrays().intensity();
                 for (int i = 0; i < time.length; i++) {
                     writePoint(writer, factory, "chromatogram_index", entry.sourceIndex(), "time", time[i],
-                            intensity[i]);
+                            intensityColumn, intensity[i], extras, extraValues, i);
                 }
             }
         }
@@ -154,7 +167,7 @@ final class PointSignalWriter {
                 double[] intensity = entry.arrays().intensity();
                 for (int i = 0; i < wl.length; i++) {
                     writePoint(writer, factory, "wavelength_spectrum_index", entry.sourceIndex(), "wavelength",
-                            wl[i], intensity[i]);
+                            wl[i], "intensity", intensity[i], List.of(), NO_EXTRA_VALUES, i);
                 }
             }
         }
@@ -169,14 +182,24 @@ final class PointSignalWriter {
         return points;
     }
 
-    private static void writePoint(ParquetWriter<Group> writer, SimpleGroupFactory factory,
-                                   String indexField, long index, String xField, double x, double intensity)
-            throws IOException {
-        Group row = factory.newGroup();
-        Group point = row.addGroup("point");
+    /**
+     * One row: the entity {@code index}, the axis value {@code x}, the {@code intensity} in {@code intensityField},
+     * and the point {@code row} of {@code extraValues}, each array the values of the extra column at its position of
+     * {@code extras}, written where the array is not null. Every other column of the row is null.
+     */
+    private static void writePoint(ParquetWriter<Group> writer, SimpleGroupFactory factory, String indexField,
+                                   long index, String xField, double x, String intensityField, double intensity,
+                                   List<ExtraColumn> extras, double[][] extraValues, int row) throws IOException {
+        Group group = factory.newGroup();
+        Group point = group.addGroup("point");
         point.add(indexField, index);
         point.add(xField, x);
-        point.add("intensity", intensity);
-        writer.write(row);
+        point.add(intensityField, intensity);
+        for (int k = 0; k < extraValues.length; k++) {
+            if (extraValues[k] != null) {
+                point.add(extras.get(k).column(), extraValues[k][row]);
+            }
+        }
+        writer.write(group);
     }
 }

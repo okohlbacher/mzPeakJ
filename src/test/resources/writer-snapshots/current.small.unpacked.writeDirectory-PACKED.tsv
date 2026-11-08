@@ -1,6 +1,6 @@
 # WriterSnapshotTest (WR-0a): current small.unpacked.mzpeak written by MzPeakWriter.writeDirectory PACKED
 member	kind	detail	sha256
-chromatograms_data.parquet	parquet	row_groups=1 rows=48 schema=4f41898c1e42c0db key_values=4:55b53e3a935d3c6c records=ebf51081d10d0dad	9ca4d40c20e8938b7c26268876b743804859996339b04c0d313f7d0c5e8a8271
+chromatograms_data.parquet	parquet	row_groups=1 rows=48 schema=5a38fdca66d32035 key_values=4:25ccfa74c22215af records=a0222fc71ee8f378	3d66e25dc3d01f59ac0cde113cab2870de02b0c273a0ff077a70ee25e45391ee
 chromatograms_metadata.parquet	parquet	row_groups=1 rows=1 schema=762480d3e0b95e92 key_values=1:7f730f59b7859bc8 records=442e3653dd3f7717	f591cd34af5111d5d4ab96e7dd8863d5ca5eae81d03da166a8ead9d28fb6986b
 mzpeak_index.json	bytes	size=6972 masked_checksums=5	6e59e29ee48987529e1c6af11dbc0fee2c0756368c41b78e582d235e2664e45a
 spectra_data.parquet	parquet	row_groups=1 rows=217710 schema=62bea4c686e38644 key_values=4:aaaf352d76a61229 records=a671269e9d02a17f	9e83fbe71835e4368c168a4b0c671de429516a7c6cc48283c7b6abdc65de0255

@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.within;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -54,13 +55,15 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       golden rules ({@link Golden.Comparator}, {@link Golden.Tolerance#DEFAULT}) against mzPeakJ's read of the
  *       source: one S line per spectrum written, keyed 0..n-1; a P line for each spectrum with peaks; an X line for
  *       each extra array of a spectrum ({@link Spectrum#arrays()}) and of a peak list ({@link Spectrum#peakArrays()}),
- *       which the writer keeps (MZ-1), and none for a chromatogram, whose extra arrays the writer drops until WR-11; a
- *       C line per chromatogram and a W line per wavelength spectrum; and R lines without a null cell. Numpress is
- *       lossy, so for its spectra only the number of points is compared;
+ *       which the writer keeps (MZ-1), and for each extra array of a chromatogram ({@link Chromatogram#arrays()}, the
+ *       TIC's {@code ms level}), which it keeps too (MZ-2); a C line per chromatogram and a W line per wavelength
+ *       spectrum; and R lines without a null cell. Numpress is lossy, so for its spectra only the number of points is
+ *       compared;
  *   <li>a probe script reports what the Python reader counts (spectra and their indices, precursors, selected ions,
  *       chromatograms, wavelength spectra) and {@code check_archive_integrity()}, which must be {@code (True, [])};
  *   <li>the counts of the unit's acceptance are pinned: 48 spectra, 34 precursors, 34 selected ions and one
- *       chromatogram of 48 points for small, 212 spectra, 2 chromatograms and the wavelength facet for has_uv, 9
+ *       chromatogram of 48 points for small, 212 spectra, 2 chromatograms (the DAD chromatogram's absorbances
+ *       summing to about 57.3587, from the column of its unit) and the wavelength facet for has_uv, 9
  *       spectra each for Example_Processed.img and diaPASEF.ref, 48 spectra for the Numpress archives and the archive
  *       without scans, and 34 spectra indexed 0..33 for the MS2 subset.
  * </ul>
@@ -222,9 +225,15 @@ class UpstreamInteropTest {
             }
         }
         expectKeys(out, golden, Kind.C, output.chromatograms().stream().map(Chromatogram::id).toList());
+        List<String> chromatogramExtras = new ArrayList<>();
         for (Chromatogram c : output.chromatograms()) {
             golden.line(Kind.C, c.id()).ifPresent(line ->
                     out.addAll(Golden.Comparator.compare(line, c.time(), c.intensity(), tolerance)));
+            for (Map.Entry<String, double[]> extra : c.arrays().entrySet()) {
+                chromatogramExtras.add("C:" + c.id() + " [" + extra.getKey() + "]");
+                golden.line(Kind.X, "C:" + c.id(), extra.getKey()).ifPresent(line ->
+                        out.addAll(Golden.Comparator.compare(line, c.time(), extra.getValue(), tolerance)));
+            }
         }
         List<WavelengthSpectrum> wavelength = output.wavelengthSpectra();
         expectKeys(out, golden, Kind.W, IntStream.range(0, wavelength.size()).mapToObj(Integer::toString).toList());
@@ -233,8 +242,10 @@ class UpstreamInteropTest {
             golden.line(Kind.W, Integer.toString(i)).ifPresent(line ->
                     out.addAll(Golden.Comparator.compare(line, w.wavelength(), w.intensity(), tolerance)));
         }
-        // The spectra's extra arrays are written (MZ-1), the chromatograms' not yet (WR-11).
+        // The extra arrays of spectra (MZ-1) and of chromatograms (MZ-2) are written; the generator writes the X
+        // lines of the chromatograms after those of the peak lists.
         extras.addAll(peakExtras);
+        extras.addAll(chromatogramExtras);
         List<String> xKeys = golden.lines(Kind.X).stream().map(l -> l.key() + " [" + l.arrayType() + "]").toList();
         if (!xKeys.equals(extras)) {
             out.add("X lines: expected " + extras + " but were " + xKeys);
@@ -282,6 +293,8 @@ class UpstreamInteropTest {
                         assertThat(spectra).as("spectra of %s", output).isEqualTo(212);
                         assertThat(counts.path("chromatograms").asInt()).as("chromatograms of %s", output)
                                 .isEqualTo(2);
+                        assertThat(golden.line(Kind.C, "DAD1 A: Sig=272,16 Ref=360,100")).as("DAD of %s", output)
+                                .hasValueSatisfying(l -> assertThat(l.sumY()).isCloseTo(57.3587, within(1e-4)));
                         assertThat(counts.path("wavelength_spectra").isInt()).as("wavelength facet of %s", output)
                                 .isTrue();
                         assertThat(golden.lines(Kind.W)).as("wavelength spectra of %s", output).isNotEmpty();

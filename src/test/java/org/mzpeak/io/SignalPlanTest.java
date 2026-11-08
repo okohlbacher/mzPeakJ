@@ -239,7 +239,9 @@ class SignalPlanTest {
 
     /**
      * mzPeakJ output carries an array index from WR-2 on, so its plans come from the footer; they resolve the same
-     * columns as the INFERRED plans that output without the index (mzPeakJ up to 0.10.3) gets.
+     * columns as the INFERRED plans that output without the index (mzPeakJ up to 0.10.3) gets. The chromatogram plan
+     * also has the TIC's {@code ms level} array and an intensity column for each unit (MZ-2), which the INFERRED plan
+     * reads as intensity fallback.
      */
     @Test
     void mzPeakJOutputGivesFooterPlansThatAgreeWithTheInferredOnes() {
@@ -274,7 +276,13 @@ class SignalPlanTest {
             assertThat(p.source()).isEqualTo(Source.FOOTER);
             assertThat(p.indexField()).isEqualTo(p.entity().indexField());
             assertThat(p.axis().arrayType()).isEqualTo(p.entity().defaultAxis());
-            assertThat(p.extras()).isEmpty();
+            if (p.entity() == SignalEntity.CHROMATOGRAM) {
+                assertThat(p.extras()).containsOnlyKeys("ms level");
+                assertThat(p.intensities()).extracting(Column::path, Column::unit).containsExactly(
+                        tuple("point.intensity", "MS:1000131"), tuple("point.intensity_UO_0000269", "UO:0000269"));
+            } else {
+                assertThat(p.extras()).isEmpty();
+            }
         });
 
         SignalPlan spectrumPoint = pointPlans.get("SPECTRUM/DATA_ARRAYS");

@@ -20,7 +20,8 @@ import java.util.Map;
  * @param intensityUnit unit CURIE of the intensity values as the file declares it (e.g. {@code MS:1000131} =
  *                      number of detector counts, {@code UO:0000269} = absorbance unit), or {@code null} when the
  *                      file names none, the values come from columns of different units, or the file has no array
- *                      index
+ *                      index. On read it is the unit of the intensity column that supplied the values, so a
+ *                      chromatogram without points reads back with {@code null}, whatever unit it was written with
  * @param arrays        the other per-point arrays, parallel to {@link #time}, keyed by array type CURIE, or by array
  *                      name for non-standard data arrays (MS:1000786, e.g. {@code "ms level"}); a further array of a
  *                      key is keyed {@code <key>@<column name>}. Missing cells are NaN. Unmodifiable, in the

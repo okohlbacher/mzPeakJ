@@ -10,13 +10,15 @@ import org.mzpeak.model.meta.ScanSettings;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Everything {@link DatasetWriter} writes, decided by {@link WritePlanner} before any I/O: the entities in the order
  * they are written and the index each is written with, the precursors as written, the signal files each spectrum goes
- * to, the order of each entity's rows, the extra columns of the spectrum signal files, which members exist, the footer
- * key-values of spectra_metadata and the manifest, and the report that collects the write's warnings. The entities of
- * each kind are in the order of the caller's indices and are written as 0..n-1 in that order (design §11.5, WR-8).
+ * to, the order of each entity's rows, the extra columns of the spectrum signal files, the intensity and extra columns
+ * of chromatograms_data, which members exist, the footer key-values of spectra_metadata and the manifest, and the
+ * report that collects the write's warnings. The entities of each kind are in the order of the caller's indices and
+ * are written as 0..n-1 in that order (design §11.5, WR-8).
  *
  * @param options            the settings of the write
  * @param spectra            the spectra in index order
@@ -28,6 +30,14 @@ import java.util.Map;
  *                           written spectra's {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()}, in
  *                           first-seen order: index order, and in a spectrum the arrays' map order, then the peak
  *                           arrays'
+ * @param chromatogramIntensities
+ *                           the intensity columns of chromatograms_data, one for each distinct
+ *                           {@link Chromatogram#intensityUnit()} of the chromatograms, null included: the primary
+ *                           {@code intensity} column first, then the others in the order their units first occur in
+ *                           index order; empty without chromatograms
+ * @param chromatogramExtras the extra columns of chromatograms_data, one for each key of the chromatograms'
+ *                           {@link Chromatogram#arrays()}, in first-seen order: index order, and in a chromatogram the
+ *                           map's order
  * @param scanSettings       the scan settings for the manifest, possibly {@code null}: the caller's, in the split
  *                           layout with an id given to each one without
  * @param footer             the file metadata serialized once, for the spectra_metadata footer and the manifest
@@ -35,14 +45,16 @@ import java.util.Map;
  */
 record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chromatogram>> chromatograms,
                  List<Entry<WavelengthSpectrum>> wavelengthSpectra, boolean writesSpectraData,
-                 boolean writesSpectraPeaks, List<ExtraColumn> spectrumExtras, List<ScanSettings> scanSettings,
-                 Map<String, String> footer, WriteReport report) {
+                 boolean writesSpectraPeaks, List<ExtraColumn> spectrumExtras,
+                 List<IntensityColumn> chromatogramIntensities, List<ExtraColumn> chromatogramExtras,
+                 List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
 
     /**
-     * An extra column of the spectrum signal files and its array-index entry (design §11.7, WR-11): the 64-bit float
-     * values of the arrays with {@code key}.
+     * An extra column of the spectrum signal files or of chromatograms_data and its array-index entry (design §11.7,
+     * WR-11): the 64-bit float values of the arrays with {@code key}.
      *
-     * @param key       the key in {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()}
+     * @param key       the key in {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()}, or in
+     *                  {@link Chromatogram#arrays()}
      * @param column    the column's name inside the prefix struct, unique among the file's columns
      * @param arrayType the {@code array_type}: the key when it is a CURIE, else MS:1000786 'non-standard data array'
      * @param arrayName the {@code array_name}: the {@link org.mzpeak.model.CvTerms#ARRAY_TYPES} name of the key, else
@@ -50,6 +62,19 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
      * @param unit      the {@code unit}, {@link org.mzpeak.model.CvTerms#DEFAULT_ARRAY_UNITS} of the key, or null
      */
     record ExtraColumn(String key, String column, String arrayType, String arrayName, String unit) {
+    }
+
+    /**
+     * An intensity column of a signal file and its array-index entry (design §11.7, WR-11): the 64-bit float
+     * intensities (MS:1000515) in {@code unit}. chromatograms_data has one for each distinct
+     * {@link Chromatogram#intensityUnit()}; every other signal file has one, {@code intensity}.
+     *
+     * @param unit    the unit of the values and of the entry, null when they have none
+     * @param column  the column's name inside the prefix struct, unique among the file's columns
+     * @param primary whether the entry has buffer priority primary, which only the column {@code intensity} has; the
+     *                others have none, as the reference writes has_uv's absorbance column
+     */
+    record IntensityColumn(String unit, String column, boolean primary) {
     }
 
     /**
@@ -185,6 +210,12 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
             points += peaksFile ? entry.peakRows() : entry.dataRows();
         }
         return points;
+    }
+
+    /** The column of {@link #chromatogramIntensities()} that holds the intensities of {@code c}, that of its unit. */
+    String intensityColumn(Chromatogram c) {
+        return chromatogramIntensities.stream().filter(i -> Objects.equals(i.unit(), c.intensityUnit())).findFirst()
+                .orElseThrow().column();
     }
 
     /** Whether chromatograms_metadata and chromatograms_data are written. */

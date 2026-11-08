@@ -20,8 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * What {@link WritePlanner} decides for the inputs the other writer tests leave out: the warnings for the extra
- * arrays of several chromatograms, while a spectrum's extra peak arrays are written without one (MZ-1), the packed
+ * What {@link WritePlanner} decides for the inputs the other writer tests leave out: no warning for the extra arrays
+ * of a spectrum's peak list (MZ-1) or of several chromatograms sharing a key and an intensity unit (MZ-2), the packed
  * layout's count of dropped selected ions when the primary precursor has none, the message for precursors that share
  * the written key without naming parents, and scan settings that are {@code null} in the split layout.
  *
@@ -34,13 +34,12 @@ class WritePlannerTest {
     private static final Options PACKED = Options.defaults().withMetadataLayout(MetadataLayout.PACKED);
 
     /**
-     * One spectrum with an extra array in {@code peakArrays()} only, and two chromatograms with an extra array and an
-     * intensity unit: one warning for each kind of chromatogram drop, in the plural, each naming every key and unit
-     * once, and none for the spectrum (MZ-1). The dataset reads back with the spectrum's peak array, its values at
-     * the peaks' positions, and without the chromatograms' arrays.
+     * One spectrum with an extra array in {@code peakArrays()} only, and two chromatograms with the same extra array
+     * and intensity unit: no warning (MZ-1, MZ-2). The dataset reads back with the spectrum's peak array, its values
+     * at the peaks' positions, and with each chromatogram's array and unit, written to one column each.
      */
     @Test
-    void extraArraysOfSeveralChromatogramsGetOneWarningEachWhileASpectrumKeepsItsPeakArray(@TempDir Path tmp) {
+    void extraArraysOfSeveralChromatogramsAndOfASpectrumAreKeptWithoutWarning(@TempDir Path tmp) {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
         List<Spectrum> spectra = new ArrayList<>(small.spectra);
         Spectrum centroid = spectra.get(2);
@@ -57,13 +56,13 @@ class WritePlannerTest {
                 tic.intensityUnit(), tic.arrays());
         List<Chromatogram> chromatograms = List.of(tic, copy);
 
-        List<String> warnings = WritePlanner.plan(spectra, chromatograms, List.of(), List.of(), small.fileMetadata,
-                SPLIT).report().warnings();
+        WritePlan plan = WritePlanner.plan(spectra, chromatograms, List.of(), List.of(), small.fileMetadata, SPLIT);
 
-        assertThat(warnings).containsExactly(
-                "2 chromatograms carry extra arrays (ms level), which are not written; their time and intensity are"
-                        + " written",
-                "2 chromatograms declare an intensity unit (MS:1000131), which is not written");
+        assertThat(plan.report().warnings()).isEmpty();
+        assertThat(plan.chromatogramIntensities()).containsExactly(
+                new WritePlan.IntensityColumn("MS:1000131", "intensity", true));
+        assertThat(plan.chromatogramExtras()).containsExactly(
+                new WritePlan.ExtraColumn("ms level", "ms_level", "MS:1000786", "ms level", "UO:0000186"));
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, spectra, chromatograms, List.of(), List.of(), small.fileMetadata, SPLIT);
         Source back = ForwardBackwardCorpusTest.readSource(out);
@@ -75,7 +74,11 @@ class WritePlannerTest {
                     .isEqualTo(peakWidth[centroid.peaks().get(i).index()]);
         }
         assertThat(back.chromatograms).extracting(Chromatogram::id).containsExactly("TIC", "TIC copy");
-        assertThat(back.chromatograms).allSatisfy(c -> assertThat(c.arrays()).isEmpty());
+        assertThat(back.chromatograms).allSatisfy(c -> {
+            assertThat(c.intensityUnit()).isEqualTo("MS:1000131");
+            assertThat(c.arrays()).containsOnlyKeys("ms level");
+            assertThat(c.arrays().get("ms level")).isEqualTo(tic.arrays().get("ms level"));
+        });
     }
 
     /**

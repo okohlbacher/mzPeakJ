@@ -6,6 +6,7 @@ import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SignalArrays;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.CentroidPeak;
@@ -41,14 +42,13 @@ import static org.mzpeak.io.NumpressSignalWriter.NUMPRESS_LINEAR_FIXED_POINT;
  * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent, refuses in the split
  * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
  * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, names the extra columns of the spectrum
- * signal files, decides which members are written and serializes the footer key-values once. A contract
- * violation throws {@link MzPeakException} before any file or temp directory exists. What the write loses gets one
- * warning in the report for each kind: the extra arrays of chromatograms and their intensity units, neither of which
- * is written yet (WR-11), and, in the packed layout, the scans after a spectrum's first, the precursors after its
- * primary one and the selected ions other than the primary precursor's first (one warning), and the Params of
- * wavelength spectra (another). Each re-sorted main axis gets a warning of its own, and so do, in the split layout,
- * the scan settings without an id, which get one. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs
- * cannot encode is refused as a contract violation.
+ * signal files and the intensity and extra columns of chromatograms_data, decides which members are written and
+ * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
+ * directory exists. What the packed layout loses gets one warning in the report for each kind: the scans after a
+ * spectrum's first, the precursors after its primary one and the selected ions other than the primary precursor's
+ * first (one warning), and the Params of wavelength spectra (another). Each re-sorted main axis gets a warning of its
+ * own, and so do, in the split layout, the scan settings without an id, which get one. With
+ * {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs cannot encode is refused as a contract violation.
  */
 final class WritePlanner {
 
@@ -60,6 +60,13 @@ final class WritePlanner {
     private static final Set<String> SPECTRUM_SIGNAL_COLUMNS = Set.of("spectrum_index", "mz", "intensity",
             "mz_chunk_start", "mz_chunk_end", "mz_chunk_values", "chunk_encoding", "mz_numpress_linear_bytes",
             "intensity_numpress_slof_bytes", "intensity_numpress_pic_bytes");
+    /**
+     * The columns of chromatograms_data other than its intensity columns, which neither an intensity column nor an
+     * extra column may take.
+     */
+    private static final Set<String> CHROMATOGRAM_SIGNAL_COLUMNS = Set.of("chromatogram_index", "time");
+    /** The column of the primary intensity of every signal file. */
+    private static final String INTENSITY_COLUMN = "intensity";
     /** The column names signal-data.md:119-139 recommends, for the array types an extra column may have. */
     private static final Map<String, String> SHORT_NAMES = Map.ofEntries(
             Map.entry("MS:1000516", "charge"),
@@ -148,32 +155,14 @@ final class WritePlanner {
         }
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
         List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());
-        // Extra chromatogram arrays and the intensity unit are not written yet (WR-11): one warning for each.
-        Set<String> droppedArrays = new LinkedHashSet<>();
-        Set<String> droppedUnits = new LinkedHashSet<>();
-        int withDroppedArrays = 0;
-        int withDroppedUnit = 0;
+        Set<String> chromatogramColumns = new HashSet<>(CHROMATOGRAM_SIGNAL_COLUMNS);
+        List<IntensityColumn> chromatogramIntensities = intensityColumns(chromatogramOrder, chromatogramColumns);
+        Map<String, ExtraColumn> chromatogramExtras = new LinkedHashMap<>();
         for (int i = 0; i < chromatogramOrder.size(); i++) {
             Chromatogram c = chromatogramOrder.get(i);
+            addExtraColumns(c, chromatogramExtras, chromatogramColumns);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
-            if (!c.arrays().isEmpty()) {
-                withDroppedArrays++;
-                droppedArrays.addAll(c.arrays().keySet());
-            }
-            if (c.intensityUnit() != null) {
-                withDroppedUnit++;
-                droppedUnits.add(c.intensityUnit());
-            }
-        }
-        if (withDroppedArrays > 0) {
-            report.warn(withDroppedArrays + (withDroppedArrays == 1 ? " chromatogram carries" : " chromatograms carry")
-                    + " extra arrays (" + String.join(", ", droppedArrays) + "), which are not written; "
-                    + "their time and intensity are written");
-        }
-        if (withDroppedUnit > 0) {
-            report.warn(withDroppedUnit + (withDroppedUnit == 1 ? " chromatogram declares" : " chromatograms declare")
-                    + " an intensity unit (" + String.join(", ", droppedUnits) + "), which is not written");
         }
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
@@ -195,7 +184,8 @@ final class WritePlanner {
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
-                writesSpectraData, writesSpectraPeaks, List.copyOf(extras.values()),
+                writesSpectraData, writesSpectraPeaks, List.copyOf(extras.values()), chromatogramIntensities,
+                List.copyOf(chromatogramExtras.values()),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
     }
@@ -374,13 +364,20 @@ final class WritePlanner {
      * {@link CvTerms#DEFAULT_ARRAY_UNITS} of the key, else null.
      */
     private static ExtraColumn extraColumn(String key, Set<String> columns) {
-        String base = columnName(key);
+        return new ExtraColumn(key, uniqueColumn(columnName(key), columns),
+                CURIE.matcher(key).matches() ? key : NON_STANDARD_ARRAY, CvTerms.ARRAY_TYPES.getOrDefault(key, key),
+                CvTerms.DEFAULT_ARRAY_UNITS.get(key));
+    }
+
+    /**
+     * {@code base} made unique among {@code columns} by appending {@code _2}, {@code _3}, ..., and added to them.
+     */
+    private static String uniqueColumn(String base, Set<String> columns) {
         String column = base;
         for (int n = 2; !columns.add(column); n++) {
             column = base + "_" + n;
         }
-        return new ExtraColumn(key, column, CURIE.matcher(key).matches() ? key : NON_STANDARD_ARRAY,
-                CvTerms.ARRAY_TYPES.getOrDefault(key, key), CvTerms.DEFAULT_ARRAY_UNITS.get(key));
+        return column;
     }
 
     /**
@@ -404,6 +401,62 @@ final class WritePlanner {
         }
         String column = name.replaceAll("[^A-Za-z0-9]", "_");
         return column.isEmpty() ? "non_standard_data" : column;
+    }
+
+    // Chromatogram columns (design §11.7, WR-11; mzML design §5.8). chromatograms_data gets one intensity column for
+    // each distinct intensityUnit, null included, so that each chromatogram's unit is the unit of the column its
+    // values are read from (ChromatogramDataDecoder); the reference writes has_uv's absorbance chromatogram to a
+    // second intensity column the same way. Its other arrays become extra columns as those of spectra do; a row
+    // holds null where its chromatogram has no such array, and in every intensity column but its unit's.
+
+    /**
+     * The intensity columns of {@code chromatograms}, which are in index order: one for each distinct
+     * {@link Chromatogram#intensityUnit()}, null included. The column of MS:1000131, else of the first chromatogram's
+     * unit, is {@code intensity} and primary, and comes first; the others follow in the order their units first occur.
+     * Each of them is named {@code intensity_} and its unit with every character other than an ASCII letter or digit
+     * as {@code _} (of a CURIE, the colon), or {@code intensity_unitless} for null, made unique among {@code columns}.
+     * Every name is added to {@code columns}.
+     */
+    private static List<IntensityColumn> intensityColumns(List<Chromatogram> chromatograms, Set<String> columns) {
+        Set<String> units = new LinkedHashSet<>();
+        for (Chromatogram c : chromatograms) {
+            units.add(c.intensityUnit());
+        }
+        if (units.isEmpty()) {
+            return List.of();
+        }
+        String primary = units.contains(ArrayIndex.COUNTS_UNIT) ? ArrayIndex.COUNTS_UNIT : units.iterator().next();
+        List<IntensityColumn> out = new ArrayList<>(units.size());
+        columns.add(INTENSITY_COLUMN);
+        out.add(new IntensityColumn(primary, INTENSITY_COLUMN, true));
+        for (String unit : units) {
+            if (!Objects.equals(unit, primary)) {
+                String name = unit == null ? "unitless" : unit.replaceAll("[^A-Za-z0-9]", "_");
+                out.add(new IntensityColumn(unit, uniqueColumn(INTENSITY_COLUMN + "_" + name, columns), false));
+            }
+        }
+        return Collections.unmodifiableList(out);
+    }
+
+    /**
+     * Adds to {@code extras} a column for every key of {@code c}'s arrays that it does not hold yet, named so that it
+     * takes none of {@code columns}, to which the name is added.
+     *
+     * @throws MzPeakException when a key is MS:1000595 or MS:1000515: a chromatogram holds those arrays in
+     *                         {@code time()} and {@code intensity()}, and a reader would take such a column for the
+     *                         main axis or an intensity
+     */
+    private static void addExtraColumns(Chromatogram c, Map<String, ExtraColumn> extras, Set<String> columns) {
+        for (String key : c.arrays().keySet()) {
+            if (!extras.containsKey(key)) {
+                if (key.equals(ArrayIndex.INTENSITY_ARRAY) || key.equals(SignalEntity.CHROMATOGRAM.defaultAxis())) {
+                    throw new MzPeakException("chromatogram " + c.index() + ": the extra array " + key + " ("
+                            + CvTerms.ARRAY_TYPES.get(key) + ") is a main array of a chromatogram, which time() and"
+                            + " intensity() hold; it cannot be written as an extra column");
+                }
+                extras.put(key, extraColumn(key, columns));
+            }
+        }
     }
 
     /**
