@@ -3,6 +3,7 @@ package org.mzpeak.mzml;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -11,13 +12,16 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
 /**
  * The vendored mzML inputs in {@code src/test/resources/mzml/} (MZ-12; sources, commits and checksums in
  * {@code UPSTREAM.txt} there, licences in NOTICE). {@link #TINY} is stored raw, the other three gzipped
  * ({@code gzip -9n}); {@link #extract(String, Path)} writes any of them, uncompressed, into a directory such as a
- * JUnit {@code @TempDir}. The fixtures are read from the test class path.
+ * JUnit {@code @TempDir}. The fixtures are read from the test class path. Documents derived from tiny by string
+ * edits, which every unit derives the same way (mzML design 12.1), are made by {@link #compactTiny(Path)}.
  */
 public final class MzMLFixtures {
 
@@ -43,6 +47,17 @@ public final class MzMLFixtures {
     /** Class-path folder of the fixtures. */
     static final String RESOURCE_DIR = "/mzml/";
 
+    /** The file name of {@link #compactTiny(Path)}. */
+    public static final String COMPACT_TINY = "tiny-compact.mzML";
+    /** The two adjacent run params {@link #compactTiny(Path)} inserts, in tiny's attribute style. */
+    static final String COMPACT_RUN_PARAMS =
+            "<cvParam cvRef=\"MS\" accession=\"MS:1000857\" name=\"run attribute\" value=\"\"/>"
+                    + "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"2\"/>";
+    /** A whitespace-only run between a {@code >} and the next {@code <}. */
+    private static final Pattern BETWEEN_TAGS = Pattern.compile(">[ \\t\\r\\n]+<");
+    /** A {@code run} start tag that is not an empty-element tag. */
+    private static final Pattern RUN_START = Pattern.compile("<run(?:[ \\t\\r\\n][^>]*)?(?<!/)>");
+
     private MzMLFixtures() {
     }
 
@@ -60,6 +75,36 @@ public final class MzMLFixtures {
             Files.copy(raw ? in : new GZIPInputStream(in), out, StandardCopyOption.REPLACE_EXISTING);
         }
         return out;
+    }
+
+    /**
+     * Writes {@code compactTiny} (MJ-3, mzML design 12.1) to {@code dir/}{@value #COMPACT_TINY}, replacing a file of
+     * that name, and returns its path: tiny, extracted into {@code dir} and read as ISO-8859-1, with every
+     * whitespace-only run between a {@code >} and the next {@code <} removed (Base64 text holds no {@code <}, so it
+     * is untouched), and directly after the {@code run} start tag the two adjacent params {@code MS:1000857} run
+     * attribute (empty value) and {@code MS:1000511} ms level 2; written as ISO-8859-1. No whitespace separates any
+     * two tags; the index offsets and the checksum are stale.
+     */
+    public static Path compactTiny(Path dir) throws IOException {
+        String tiny = Files.readString(extract(TINY, dir), StandardCharsets.ISO_8859_1);
+        Path out = dir.resolve(COMPACT_TINY);
+        Files.writeString(out, compact(tiny), StandardCharsets.ISO_8859_1);
+        return out;
+    }
+
+    /**
+     * {@code document} with every whitespace-only run between a {@code >} and the next {@code <} removed and
+     * {@link #COMPACT_RUN_PARAMS} inserted after the first {@code run} start tag.
+     *
+     * @throws IllegalArgumentException if {@code document} has no {@code run} start tag
+     */
+    static String compact(String document) {
+        String compact = BETWEEN_TAGS.matcher(document).replaceAll("><");
+        Matcher run = RUN_START.matcher(compact);
+        if (!run.find()) {
+            throw new IllegalArgumentException("no run start tag");
+        }
+        return compact.substring(0, run.end()) + COMPACT_RUN_PARAMS + compact.substring(run.end());
     }
 
     /** The lowercase hex SHA-256 of a file's bytes. */
