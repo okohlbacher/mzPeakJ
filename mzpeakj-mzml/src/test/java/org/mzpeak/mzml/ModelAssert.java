@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.WeakHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -120,12 +121,16 @@ public final class ModelAssert {
      *
      * <p>In the two mixed modes (one model from {@code MzMLReader}, the other from {@link MzPeakReader}), which
      * differ only in which side is the mzPeak one: {@code numberOfDataPoints} and {@code numberOfPeaks} are not
-     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12); on the mzPeak side, peaks that are a
-     * row copy of the arrays ({@link ModelAssert#isRowCopy}, design 5.4, the reader invariant for CENTROID spectra)
-     * are not compared, and peaks that are not are one difference at {@code spectrum[i].peaks} unless
-     * {@link ModelAssert#A_1} is passed. Term-marker names (a Param with a {@code null} name on the mzPeak side, A-4)
-     * are not compared, in any mode: the {@link Kind#PARAMS} rule never compares the name of a Param with an
-     * accession.
+     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12). When the mzPeak side has peaks, the
+     * peak lists ({@code peaks} and {@code peakArrays}) are not compared pairwise: the mzPeak side's peaks that are a
+     * row copy of its arrays ({@link ModelAssert#isRowCopy}, design 5.4, the reader invariant for CENTROID spectra)
+     * are skipped with their peak arrays, peaks that are not are one difference at {@code spectrum[i].peaks} unless
+     * {@link ModelAssert#A_1} is passed, and a non-empty {@code peaks()} or {@code peakArrays()} on the mzML side,
+     * which {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
+     * {@code spectrum[i].peakArrays} that {@link ModelAssert#A_1} does not hide (MJ-4). When the mzPeak side has no
+     * peaks, both peak lists are compared as they are, so a non-empty one on the mzML side differs too.
+     * Term-marker names (a Param with a {@code null} name on the mzPeak side, A-4) are not compared, in any mode: the
+     * {@link Kind#PARAMS} rule never compares the name of a Param with an accession.
      */
     public enum Mode {
         /** Both models from the same reader. */
@@ -578,6 +583,7 @@ public final class ModelAssert {
                                 + mzPeakSide(expected, actual).peaks().size()
                                 + " peaks are not a row copy of its arrays (design 5.4)");
                     }
+                    mzMLSide(path, name, expected, actual);
                     continue;
                 }
                 value(name.equals("description") ? path : path + "." + name, rule, c.getValue().apply(expected),
@@ -587,6 +593,21 @@ public final class ModelAssert {
 
         private Spectrum mzPeakSide(Spectrum expected, Spectrum actual) {
             return mode == Mode.MZML_VS_MZPEAK ? actual : expected;
+        }
+
+        /**
+         * In mixed mode, where the peak lists are not compared pairwise: the mzML side's {@code peaks} or
+         * {@code peakArrays} ({@code name}), which {@code MzMLReader} never builds, is a difference when not empty.
+         */
+        private void mzMLSide(String path, String name, Spectrum expected, Spectrum actual) {
+            Spectrum mzML = mode == Mode.MZML_VS_MZPEAK ? expected : actual;
+            if (name.equals("peaks") && !mzML.peaks().isEmpty()) {
+                differ(path + ".peaks", expected.peaks(), actual.peaks(), MZML_SIDE + mzML.peaks().size()
+                        + " peaks: MzMLReader builds none (design 5.4)");
+            } else if (name.equals("peakArrays") && !mzML.peakArrays().isEmpty()) {
+                differ(path + ".peakArrays", expected.peakArrays(), actual.peakArrays(), MZML_SIDE + "peak arrays "
+                        + new TreeSet<>(mzML.peakArrays().keySet()) + ": MzMLReader builds none (design 5.4)");
+            }
         }
 
         private PeakLists peakLists(Spectrum expected, Spectrum actual) {
@@ -672,6 +693,7 @@ public final class ModelAssert {
 
         private void list(String path, Rule element, List<?> expected, List<?> actual) {
             if (expected.equals(actual)) {
+                resolve(Rule.list(element), expected); // equal lists are equal under every rule; check the rules
                 return;
             }
             if (expected.size() != actual.size()) {
@@ -691,7 +713,8 @@ public final class ModelAssert {
             }
             List<Ruled> ruled = components(expected.getClass());
             if (expected.equals(actual)) {
-                return; // record equality implies equality under every rule
+                resolve(Rule.RECORD, expected); // record equality implies equality under every rule; check the rules
+                return;
             }
             for (Ruled c : ruled) {
                 if (mode != Mode.STRICT && MIXED_UNCOMPARED.contains(c.key())) {
@@ -699,6 +722,32 @@ public final class ModelAssert {
                 }
                 value(path + "." + c.name(), c.rule(), c.get(expected), c.get(actual));
             }
+        }
+
+        /**
+         * Looks up the rule of every component of every record that {@code value} holds under {@code rule}, nested
+         * records and list elements included, as comparing it with a different value would; so a component without
+         * a rule fails the comparison although both sides are equal (MJ-4). Components of other rules are not read.
+         */
+        private void resolve(Rule rule, Object value) {
+            if (value == null) {
+                return;
+            }
+            if (rule.kind() == Kind.RECORD) {
+                for (Ruled c : components(value.getClass())) {
+                    if (holdsRecords(c.rule())) {
+                        resolve(c.rule(), c.get(value));
+                    }
+                }
+            } else if (rule.kind() == Kind.LIST && holdsRecords(rule.element())) {
+                for (Object element : (List<?>) value) {
+                    resolve(rule.element(), element);
+                }
+            }
+        }
+
+        private static boolean holdsRecords(Rule rule) {
+            return rule.kind() == Kind.RECORD || rule.kind() == Kind.LIST && holdsRecords(rule.element());
         }
 
         private List<Ruled> components(Class<?> type) {
@@ -837,6 +886,10 @@ public final class ModelAssert {
     private static final Pattern SIGNAL = Pattern.compile("spectrum\\[\\d+]\\.(mz|intensity|arrays(\\[.*)?)");
     private static final Pattern MZ = Pattern.compile("spectrum\\[\\d+]\\.mz");
 
+    /** The start of the detail of a mixed-mode difference in the mzML side's own peak list, which A_1 never hides. */
+    static final String MZML_SIDE = "the mzML side has ";
+    /** The spectra combinations other than MS:1000795 'no combination': sum, median and mean of spectra. */
+    private static final Set<String> OTHER_COMBINATIONS = Set.of("MS:1000571", "MS:1000573", "MS:1000575");
     /** The spectrum types the mzML writer derives from the MS level: MS1 spectrum, MSn spectrum. */
     private static final Set<String> DERIVED_TYPES = Set.of("MS:1000579", "MS:1000580");
     /** The five summary params the mzPeak writer derives when a spectrum has none of them. */
@@ -847,9 +900,11 @@ public final class ModelAssert {
     public static final Exclusion A_1 = new Exclusion("A_1",
             "A-1: the peak list (peaks, peakArrays and numberOfPeaks) of a spectrum whose peaks on one side are not a"
                     + " row copy of its arrays (design 5.4) and on the other side are none or a row copy; in mixed"
-                    + " mode the one difference 'not a row copy': current and legacy small.chunked, 14 spectra each",
-            d -> PEAK_LIST.matcher(d.path()).matches() && d.expectedRoot() instanceof Spectrum e
-                    && d.actualRoot() instanceof Spectrum a && (notACopy(e, a) || notACopy(a, e)));
+                    + " mode the one difference 'not a row copy', never one in the mzML side's own peak list: current"
+                    + " and legacy small.chunked, 14 spectra each",
+            d -> PEAK_LIST.matcher(d.path()).matches() && !d.detail().startsWith(MZML_SIDE)
+                    && d.expectedRoot() instanceof Spectrum e && d.actualRoot() instanceof Spectrum a
+                    && (notACopy(e, a) || notACopy(a, e)));
 
     /** A-2: the run id encoded as an NCName. */
     public static final Exclusion A_2 = new Exclusion("A_2",
@@ -861,9 +916,11 @@ public final class ModelAssert {
     /** A-7: MS:1000795 'no combination' added. */
     public static final Exclusion A_7 = new Exclusion("A_7",
             "A-7: MS:1000795 'no combination' in the params of a spectrum or wavelength spectrum of actual and"
-                    + " absent from expected: every spectrum of every mzPeak fixture (small* 48, has_uv 212 + 520,"
-                    + " diaPASEF.ref and .grid 9, Example_Processed 9)",
-            d -> NO_COMBINATION.matcher(d.path()).matches() && onlyActual(d));
+                    + " absent from expected, whose params carry no other combination term (MS:1000571, MS:1000573,"
+                    + " MS:1000575): every spectrum of every mzPeak fixture (small* 48, has_uv 212 + 520, diaPASEF.ref"
+                    + " and .grid 9, Example_Processed 9)",
+            d -> NO_COMBINATION.matcher(d.path()).matches() && onlyActual(d)
+                    && noOtherCombination(d.expectedRoot()));
 
     /** A-8: the run's default data processing taken from the first data processing. */
     public static final Exclusion A_8 = new Exclusion("A_8",
@@ -891,9 +948,10 @@ public final class ModelAssert {
 
     /** A-17: an empty cv list filled. */
     public static final Exclusion A_17 = new Exclusion("A_17",
-            "A-17: the cv list, empty in expected: legacy fixtures [] -> [MS, UO], Example_Processed []"
-                    + " -> [MS, UO, IMS]",
-            d -> d.path().equals("cvList.size") && Integer.valueOf(0).equals(d.expected()));
+            "A-17: the cv list, empty in expected and in actual filled with entries of CvEntry.known(): legacy"
+                    + " fixtures [] -> [MS, UO], Example_Processed [] -> [MS, UO, IMS]",
+            d -> d.path().equals("cvList.size") && Integer.valueOf(0).equals(d.expected())
+                    && d.actualRoot() instanceof List<?> a && MzPeakManifest.CvEntry.known().containsAll(a));
 
     /** A-18: a dangling run default instrument configuration redirected to the first. */
     public static final Exclusion A_18 = new Exclusion("A_18",
@@ -930,6 +988,13 @@ public final class ModelAssert {
     /** A difference of the Params of one accession: none in expected, some in actual. */
     private static boolean onlyActual(Difference d) {
         return d.expected() instanceof List<?> e && e.isEmpty() && d.actual() instanceof List<?> a && !a.isEmpty();
+    }
+
+    /** {@code root} is a spectrum or wavelength spectrum whose params carry none of {@link #OTHER_COMBINATIONS}. */
+    private static boolean noOtherCombination(Object root) {
+        List<Param> params = root instanceof Spectrum s ? s.description().parameters()
+                : root instanceof WavelengthSpectrum w ? w.parameters() : null;
+        return params != null && params.stream().noneMatch(p -> OTHER_COMBINATIONS.contains(p.accession()));
     }
 
     private static boolean gainedTypeOrSummary(Difference d) {
