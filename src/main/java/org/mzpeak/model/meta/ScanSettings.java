@@ -2,6 +2,7 @@ package org.mzpeak.model.meta;
 
 import org.mzpeak.model.Param;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -10,7 +11,12 @@ import java.util.Optional;
  *
  * <p>Mirrors the imzML {@code <scanSettings>} concept: pixel grid dimensions, pixel size, and scan
  * direction. All measured values are surfaced as a {@link Param} list (accession + value + unit);
- * the most common ones have typed convenience accessors.
+ * the most common ones have typed convenience accessors. Like the mzML {@code <scanSettings>}, an entry also names
+ * the source files holding the acquisition settings ({@code source_file_refs}) and lists the targets of an inclusion
+ * list ({@code targets}), each target a param list.
+ *
+ * <p>The params are stored as JSON, which has no non-finite numbers: a {@code Double} that is infinite or NaN reads
+ * back as the {@code String} {@code Infinity}, {@code -Infinity} or {@code NaN}.
  *
  * <h3>Common accessions</h3>
  * <ul>
@@ -22,10 +28,28 @@ import java.util.Optional;
  *   <li>{@code IMS:1000047} — pixel size y (typically µm)
  * </ul>
  */
-public record ScanSettings(String id, List<Param> parameters) {
+public record ScanSettings(String id, List<Param> parameters, List<String> sourceFileRefs,
+                           List<List<Param>> targets) {
 
+    /**
+     * Copies every list, {@code targets} with each of its param lists; a {@code null} list, also a {@code null}
+     * target, becomes an empty one.
+     */
     public ScanSettings {
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
+        sourceFileRefs = sourceFileRefs == null ? List.of() : List.copyOf(sourceFileRefs);
+        List<List<Param>> copies = new ArrayList<>();
+        if (targets != null) {
+            for (List<Param> target : targets) {
+                copies.add(target == null ? List.of() : List.copyOf(target));
+            }
+        }
+        targets = List.copyOf(copies);
+    }
+
+    /** Scan settings without source file references or targets. */
+    public ScanSettings(String id, List<Param> parameters) {
+        this(id, parameters, List.of(), List.of());
     }
 
     /** Max pixel count in x (IMS:1000042), or empty if not recorded. */

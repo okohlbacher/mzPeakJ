@@ -147,12 +147,14 @@ class MzPeakManifestTest {
     }
 
     /**
-     * Scan-settings param values are coerced: a boolean or number keeps its type, numeric text becomes a
-     * {@code Long} or {@code Double}, other text stays a {@code String}, and an absent, null, array or object value is
-     * {@code null}. A {@code parameters} that is absent or not an array reads as empty.
+     * Scan-settings param values keep their JSON type, as file entry params do (MZ-7): a boolean or number keeps its
+     * type, text stays a {@code String} also when it reads as a number, an array or object value becomes its JSON
+     * text, and an absent or null value is {@code null}. A {@code parameters} that is absent or not an array reads as
+     * empty. Until MZ-7 numeric text became a {@code Long} or {@code Double} and an array or object value
+     * {@code null}.
      */
     @Test
-    void scanSettingsParamValuesAreCoerced() {
+    void scanSettingsParamValuesKeepTheirJsonType() {
         ObjectNode index = fixtureIndex();
         ArrayNode list = ((ObjectNode) index.get("metadata")).putArray("scan_settings_list");
         list.addObject().put("id", "no parameters");
@@ -180,14 +182,14 @@ class MzPeakManifestTest {
                 new ScanSettings("values", List.of(
                         new Param("absent", null, null, null),
                         new Param("null", null, null, null),
-                        new Param("array", null, null, null),
-                        new Param("object", null, null, null),
+                        new Param("array", null, "[1]", null),
+                        new Param("object", null, "{\"k\":\"v\"}", null),
                         new Param("true", null, true, null),
                         new Param("false", null, false, null),
                         new Param("integer", null, 42L, null),
                         new Param("double", null, 2.5, null),
-                        new Param("integer text", null, 123L, null),
-                        new Param("double text", null, 1.5, null),
+                        new Param("integer text", null, "123", null),
+                        new Param("double text", null, "1.5", null),
                         new Param("text", null, "top down", null),
                         new Param("pixel size x", "IMS:1000046", 100L, "UO:0000017"))));
     }

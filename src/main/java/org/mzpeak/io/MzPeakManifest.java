@@ -230,8 +230,8 @@ public final class MzPeakManifest {
     /**
      * Scan settings from {@code metadata.scan_settings_list} — present for imaging (MSI / imzML)
      * datasets; empty for conventional LC-MS files. A param's unit is read from {@code unit}, falling back to
-     * {@code unit_accession}. {@link MzPeakReader#scanSettings()} also finds scan settings that only the footer
-     * holds.
+     * {@code unit_accession}, and its value keeps its JSON type, in the params and in the targets.
+     * {@link MzPeakReader#scanSettings()} also finds scan settings that only the footer holds.
      */
     public List<ScanSettings> scanSettingsList() {
         return scanSettingsList;
@@ -290,7 +290,7 @@ public final class MzPeakManifest {
                         text(f, "entity_type"),
                         text(f, "data_kind"),
                         parseColumnMapping(mapping),
-                        parseEntryParams(f.get("parameters")),
+                        parseParamArray(f.get("parameters")),
                         text(f, "checksum")));
             }
 
@@ -342,38 +342,38 @@ public final class MzPeakManifest {
 
     /**
      * Parses a {@code scan_settings_list} document, from the manifest or a footer; anything but an array gives an
-     * empty list.
+     * empty list. An entry's {@code parameters} and each of its {@code targets} are read by
+     * {@link #parseParamArray}; a {@code source_file_refs} or {@code targets} that is absent or not an array reads as
+     * empty, and a {@code null} source file reference is skipped.
      */
     static List<ScanSettings> parseScanSettings(JsonNode ssList) {
         if (ssList == null || !ssList.isArray()) return List.of();
         List<ScanSettings> out = new ArrayList<>();
         for (JsonNode ss : ssList) {
-            String id = text(ss, "id");
-            List<Param> params = parseParamArray(ss.get("parameters"));
-            out.add(new ScanSettings(id, params));
+            List<String> refs = new ArrayList<>();
+            for (JsonNode ref : arrayOf(ss.get("source_file_refs"))) {
+                if (!ref.isNull()) refs.add(ref.asText());
+            }
+            List<List<Param>> targets = new ArrayList<>();
+            for (JsonNode target : arrayOf(ss.get("targets"))) {
+                targets.add(parseParamArray(target));
+            }
+            out.add(new ScanSettings(text(ss, "id"), parseParamArray(ss.get("parameters")), refs, targets));
         }
         return out;
     }
 
-    private static List<Param> parseParamArray(JsonNode arr) {
-        if (arr == null || !arr.isArray()) return List.of();
-        List<Param> out = new ArrayList<>();
-        for (JsonNode p : arr) {
-            String name = text(p, "name");
-            String accession = text(p, "accession");
-            String unit = text(p, "unit");
-            if (unit == null) unit = text(p, "unit_accession");
-            Object value = parseParamValue(p.get("value"));
-            out.add(new Param(name, accession, value, unit));
-        }
-        return out;
+    /** The elements of {@code node} if it is an array, else none. */
+    private static Iterable<JsonNode> arrayOf(JsonNode node) {
+        return node != null && node.isArray() ? node : List.of();
     }
 
     /**
-     * Parses a file entry's param list. The unit is read from {@code unit}, falling back to
-     * {@code unit_accession}; the value keeps its JSON type ({@link #jsonValue}).
+     * Parses a param list: a file entry's, or a scan setting's params or one of its targets. The unit is read from
+     * {@code unit}, falling back to {@code unit_accession}; the value keeps its JSON type ({@link #jsonValue}).
+     * Anything but an array gives an empty list.
      */
-    private static List<Param> parseEntryParams(JsonNode arr) {
+    private static List<Param> parseParamArray(JsonNode arr) {
         if (arr == null || !arr.isArray()) return List.of();
         List<Param> out = new ArrayList<>();
         for (JsonNode p : arr) {
@@ -396,18 +396,6 @@ public final class MzPeakManifest {
         if (v.isNumber()) return v.asDouble();
         if (v.isContainerNode()) return v.toString();
         return v.asText();
-    }
-
-    private static Object parseParamValue(JsonNode v) {
-        if (v == null || v.isNull() || !v.isTextual() && !v.isNumber() && !v.isBoolean()) return null;
-        if (v.isBoolean()) return v.asBoolean();
-        if (v.isIntegralNumber()) return v.asLong();
-        if (v.isNumber()) return v.asDouble();
-        // Textual: try parsing as number
-        String s = v.asText();
-        try { return Long.parseLong(s); } catch (NumberFormatException ignored) {}
-        try { return Double.parseDouble(s); } catch (NumberFormatException ignored) {}
-        return s;
     }
 
     private static List<ColumnMapping> parseColumnMapping(JsonNode arr) {

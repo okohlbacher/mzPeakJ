@@ -15,6 +15,10 @@ import java.util.Optional;
  * <p>The model mirrors the mzPeak schema / the Rust {@code mzpeak_prototyping} types: every object is a few
  * typed identity/reference fields plus a {@link Param} list carrying the controlled-vocabulary detail
  * (analyzer type, resolution, software name, etc. are all CV params, resolved by accession).
+ *
+ * <p>The params of these documents are stored as JSON, which has no non-finite numbers: a {@code Double} that is
+ * infinite or NaN is written as the string {@code Infinity}, {@code -Infinity} or {@code NaN} and reads back as that
+ * {@code String}.
  */
 public record FileMetadata(FileDescription fileDescription,
                            List<InstrumentConfiguration> instrumentConfigurations,
@@ -30,7 +34,31 @@ public record FileMetadata(FileDescription fileDescription,
     public record SourceFile(String id, String name, String location, List<Param> parameters) {
     }
 
-    public record FileDescription(List<Param> contents, List<SourceFile> sourceFiles) {
+    /**
+     * A contact person of the file, from {@code file_description.contacts}: the name ({@code MS:1000586} contact
+     * name), the affiliation ({@code MS:1000590} contact affiliation), each {@code null} if not recorded, and the
+     * other params, such as address, URL and email.
+     */
+    public record Contact(String name, String affiliation, List<Param> parameters) {
+
+        /** Copies the list; a {@code null} list becomes an empty one. */
+        public Contact {
+            parameters = parameters == null ? List.of() : List.copyOf(parameters);
+        }
+    }
+
+    /** The {@code file_description}: the file content params, the source files and the contacts. */
+    public record FileDescription(List<Param> contents, List<SourceFile> sourceFiles, List<Contact> contacts) {
+
+        /** Copies the contacts; a {@code null} list of them becomes an empty one. */
+        public FileDescription {
+            contacts = contacts == null ? List.of() : List.copyOf(contacts);
+        }
+
+        /** A file description without contacts. */
+        public FileDescription(List<Param> contents, List<SourceFile> sourceFiles) {
+            this(contents, sourceFiles, List.of());
+        }
     }
 
     public enum ComponentType {

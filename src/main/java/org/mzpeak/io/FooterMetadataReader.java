@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.ComponentType;
+import org.mzpeak.model.meta.FileMetadata.Contact;
 import org.mzpeak.model.meta.FileMetadata.DataProcessing;
 import org.mzpeak.model.meta.FileMetadata.FileDescription;
 import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
@@ -107,7 +108,8 @@ final class FooterMetadataReader {
     /**
      * The scan settings: the index's {@code scan_settings_list} when it has one (even an empty one), else the
      * footer's. Parsed by {@link MzPeakManifest#parseScanSettings}, so a param's unit is read from {@code unit},
-     * falling back to {@code unit_accession}. {@code footer} is called only when the index lacks the document.
+     * falling back to {@code unit_accession}, and its value keeps its JSON type. {@code footer} is called only when
+     * the index lacks the document.
      *
      * @throws MzPeakException if the footer document is needed and is not valid JSON
      */
@@ -170,7 +172,11 @@ final class FooterMetadataReader {
         for (JsonNode sf : array(n, "source_files")) {
             sources.add(new SourceFile(text(sf, "id"), text(sf, "name"), text(sf, "location"), params(sf)));
         }
-        return new FileDescription(paramsOf(n.get("contents")), sources);
+        List<Contact> contacts = new ArrayList<>();
+        for (JsonNode c : array(n, "contacts")) {
+            contacts.add(new Contact(text(c, "contact_name"), text(c, "contact_affiliation"), params(c)));
+        }
+        return new FileDescription(paramsOf(n.get("contents")), sources, contacts);
     }
 
     private static List<InstrumentConfiguration> instruments(JsonNode n) {
