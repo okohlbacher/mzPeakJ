@@ -367,14 +367,16 @@ final class WritePlanner {
         }
     }
 
-    /** The position of the first of {@code precursors} whose precursor_index equals {@code key}, else -1. */
+    /**
+     * The position of the first of {@code precursors} whose precursor_index equals {@code key}, the precursor_index of
+     * one of them.
+     */
     private static int firstWithKey(List<Precursor> precursors, Long key) {
-        for (int i = 0; i < precursors.size(); i++) {
-            if (Objects.equals(precursors.get(i).precursorIndex(), key)) {
-                return i;
-            }
+        int i = 0;
+        while (!Objects.equals(precursors.get(i).precursorIndex(), key)) {
+            i++;
         }
-        return -1;
+        return i;
     }
 
     /**

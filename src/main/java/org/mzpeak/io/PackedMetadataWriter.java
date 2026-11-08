@@ -243,10 +243,8 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         OptionalDouble im = se.ionMobilityValue();
         if (im.isPresent()) {
             scan.add("ion_mobility_value", im.getAsDouble());
-            String imType = se.ionMobilityType();
-            if (imType != null) {
-                scan.add("ion_mobility_type", imType);
-            }
+            // Never null with a value present: the type is the accession of the param the value comes from.
+            scan.add("ion_mobility_type", se.ionMobilityType());
         }
         // Typed imaging-position columns (required by the validator for imaging archives, which also checks
         // they are 1-based). Value preserved in params for round-trip.
@@ -260,7 +258,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
     }
 
     private static void writeScanWindows(Group scan, List<ScanWindow> windows) {
-        if (windows == null || windows.isEmpty()) {
+        if (windows.isEmpty()) {
             return;
         }
         Group wrapper = scan.addGroup("scan_windows");
@@ -294,7 +292,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         }
         // Precursor activation (dissociation method + collision energy). Round-trips via the reader's
         // Precursor.activation(); previously dropped entirely on write.
-        if (precursor.activation() != null && !precursor.activation().isEmpty()) {
+        if (!precursor.activation().isEmpty()) {
             Group activation = p.addGroup("activation");
             writeParams(activation, precursor.activation().parameters());
         }

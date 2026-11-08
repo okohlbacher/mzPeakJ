@@ -68,4 +68,17 @@ class MzPeakWriterTest {
             assertRoundTrip(reader);
         }
     }
+
+    /** Options are equal to themselves, and only to Options with the same settings. */
+    @Test
+    void optionsAreEqualToThemselves() {
+        MzPeakWriter.Options options = MzPeakWriter.Options.defaults().withRowGroupSize(1 << 20)
+                .withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED);
+
+        assertThat(options.equals(options)).isTrue();
+        assertThat(options.equals(MzPeakWriter.Options.defaults().withRowGroupSize(1 << 20)
+                .withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED))).isTrue();
+        assertThat(options.equals(MzPeakWriter.Options.defaults().withRowGroupSize(1 << 20))).isFalse();
+        assertThat(options.equals(null)).isFalse();
+    }
 }
