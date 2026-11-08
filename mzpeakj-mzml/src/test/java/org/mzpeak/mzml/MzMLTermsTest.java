@@ -616,6 +616,51 @@ class MzMLTermsTest {
         }
     }
 
+    // ---- (i) XSD whitespace collapse ----------------------------------------------------------------------------
+
+    @Test
+    void collapseRemovesLeadingAndTrailingWhitespaceAndShortensEachInnerRunToOneSpace() {
+        assertThat(MzMLTerms.collapse(" a \t\n  b ")).isEqualTo("a b");
+        assertThat(MzMLTerms.collapse("\r\na\rb\t")).isEqualTo("a b");
+        assertThat(MzMLTerms.collapse(" \t\n\r ")).isEmpty();
+        assertThat(MzMLTerms.collapse("a b")).isEqualTo("a b"); // NBSP is no XML whitespace
+        assertThat(MzMLTerms.collapse("")).isEmpty();
+        assertThat(MzMLTerms.collapse(null)).isNull();
+    }
+
+    @Test
+    void collapseGivesWhatTheEarlierEndsFirstOrderGave() {
+        // the order before MJ-5: ends removed first, then the inner runs; '$' also matches before a final line
+        // terminator, so U+0085, U+2028 and U+2029 are drawn too
+        Pattern ends = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$");
+        Pattern runs = Pattern.compile("[ \\t\\n\\r]+");
+        String alphabet = " \t\n\ra \u0085  ";
+        Random random = new Random(5);
+        for (int n = 0; n < 20_000; n++) {
+            char[] chars = new char[random.nextInt(9)];
+            for (int k = 0; k < chars.length; k++) {
+                chars[k] = alphabet.charAt(random.nextInt(alphabet.length()));
+            }
+            String text = new String(chars);
+            assertThat(MzMLTerms.collapse(text)).as(Arrays.toString(chars))
+                    .isEqualTo(runs.matcher(ends.matcher(text).replaceAll("")).replaceAll(" "));
+        }
+    }
+
+    @Test
+    void collapseHandlesLongWhitespaceRunsInLinearTime() {
+        // a long inner run that a trailing-whitespace pattern would retry from each of its positions
+        String run = " \t\n".repeat(66_667).substring(1); // 200,000 spaces, tabs and LFs
+        assertTimeoutPreemptively(Duration.ofSeconds(1),
+                () -> assertThat(MzMLTerms.collapse("x" + run + "y")).isEqualTo("x y"));
+    }
+
+    @Test
+    void dateTimesAreCollapsedBeforeTheyAreChecked() {
+        assertThat(MzMLTerms.dateTimeValid(" 2007-06-27T15:23:45.00035 ")).isTrue();
+        assertThat(jdkAccepts("time", " 2007-06-27T15:23:45.00035 ")).isTrue();
+    }
+
     // ---- (j) rule URI -------------------------------------------------------------------------------------------
 
     /** The source file location of the vendored Example_Processed.img.mzpeak: spaces and backslashes. */
@@ -632,6 +677,15 @@ class MzMLTermsTest {
             assertThat(jdkAccepts("uri", uri)).as("JDK " + uri).isTrue();
             assertThat(MzMLTerms.anyUri(uri)).as(uri).isEqualTo(new MzMLTerms.Repaired(uri, false));
         }
+    }
+
+    @Test
+    void anyUriHandlesLongWhitespaceRunsInLinearTime() {
+        // valid: the validator collapses the run and escapes the one space left, as the rule does
+        String uri = "a" + " ".repeat(100_000) + "b";
+        assertTimeoutPreemptively(Duration.ofSeconds(1),
+                () -> assertThat(MzMLTerms.anyUri(uri)).isEqualTo(new MzMLTerms.Repaired(uri, false)));
+        assertThat(jdkAccepts("uri", uri)).isTrue();
     }
 
     @Test
@@ -678,6 +732,17 @@ class MzMLTermsTest {
                     .isEqualTo(new MzMLTerms.Repaired(e.getValue(), true));
             assertThat(jdkAccepts("uri", e.getValue())).as("JDK " + e.getValue()).isTrue();
         }
+    }
+
+    @Test
+    void stageTwoEncodesALongInputCompletely() {
+        // 1,000 characters encoded as 2,755: the builder grows past its initial capacity of the input length
+        String uri = ":" + "ä b/".repeat(249) + "😀z";
+        String expected = "%3A" + "%C3%A4%20b/".repeat(249) + "%F0%9F%98%80z";
+        assertThat(uri).hasSize(1000);
+        assertThat(MzMLTerms.anyUri(uri)).isEqualTo(new MzMLTerms.Repaired(expected, true));
+        assertThat(jdkAccepts("uri", uri)).isFalse();
+        assertThat(jdkAccepts("uri", expected)).isTrue();
     }
 
     @Test

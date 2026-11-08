@@ -465,9 +465,13 @@ final class MzMLTerms {
     private static final Pattern XML_SPACE_ENDS = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$");
     private static final Pattern XML_SPACE = Pattern.compile("[ \\t\\n\\r]+");
 
-    /** XML Schema whitespace collapsing: no leading or trailing space, tab, LF or CR, each inner run one space. */
-    private static String collapse(String text) {
-        return XML_SPACE.matcher(XML_SPACE_ENDS.matcher(text).replaceAll("")).replaceAll(" ");
+    /**
+     * XSD whiteSpace collapse (also of every xs:ID and xs:IDREF value): no leading or trailing space, tab, LF or CR,
+     * each inner run one space; null for null. Runs are made one space before the ends go, so neither pattern
+     * backtracks over a long run (linear time).
+     */
+    static String collapse(String text) {
+        return text == null ? null : XML_SPACE_ENDS.matcher(XML_SPACE.matcher(text).replaceAll(" ")).replaceAll("");
     }
 
     // --- XML repairs ---
@@ -577,7 +581,7 @@ final class MzMLTerms {
     }
 
     private static String percentEncoded(String text, boolean keepSlash) {
-        StringBuilder out = new StringBuilder(3 * text.length());
+        StringBuilder out = new StringBuilder(text.length()); // grows; 3 * length overflows above 715,827,882 chars
         for (int i = 0; i < text.length(); ) {
             int c = text.codePointAt(i);
             i += Character.charCount(c);
