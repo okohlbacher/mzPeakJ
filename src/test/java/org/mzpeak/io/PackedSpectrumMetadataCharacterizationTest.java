@@ -229,14 +229,15 @@ class PackedSpectrumMetadataCharacterizationTest {
         assertThat(scanParams(scan -> {
             scan.add("ion_mobility_value", 1.25);
             scan.add("ion_mobility_type", "MS:1002815");
-        })).containsExactly(resolvingPower, "(ion mobility value|MS:1002815|Double:1.25|null)");
-        // no type, or a blank one: mean inverse reduced ion mobility
+        })).containsExactly(resolvingPower,
+                "(inverse reduced ion mobility drift time|MS:1002815|Double:1.25|MS:1002814)");
+        // no type, or a blank one: ion mobility drift time (FN-8: with its PSI-MS name and unit)
         assertThat(scanParams(scan -> scan.add("ion_mobility_value", 1.25)))
-                .containsExactly(resolvingPower, "(ion mobility value|MS:1002476|Double:1.25|null)");
+                .containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
         assertThat(scanParams(scan -> {
             scan.add("ion_mobility_value", 1.25);
             scan.add("ion_mobility_type", " ");
-        })).containsExactly(resolvingPower, "(ion mobility value|MS:1002476|Double:1.25|null)");
+        })).containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
         // a value that is not finite is dropped
         assertThat(scanParams(scan -> scan.add("ion_mobility_value", Double.NaN))).containsExactly(resolvingPower);
         assertThat(scanParams(scan -> scan.add("ion_mobility_value", Double.POSITIVE_INFINITY)))
@@ -251,7 +252,7 @@ class PackedSpectrumMetadataCharacterizationTest {
             addParam(scan, "MS:1002477", "mean ion mobility drift time", 2.5);
             scan.add("ion_mobility_value", 1.25);
         })).containsExactly(resolvingPower, "(mean ion mobility drift time|MS:1002477|Double:2.5|null)",
-                "(ion mobility value|MS:1002476|Double:1.25|null)");
+                "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
     }
 
     @Test
@@ -262,7 +263,7 @@ class PackedSpectrumMetadataCharacterizationTest {
             scan.add(POSITION_X, 3);
             scan.add("ion_mobility_value", 1.25);
         })).containsExactly(resolvingPower,
-                "(ion mobility value|MS:1002476|Double:1.25|null)",
+                "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)",
                 "(position x|IMS:1000050|Long:3|null)",
                 "(position y|IMS:1000051|Long:4|null)");
         // a position param already present wins over its column

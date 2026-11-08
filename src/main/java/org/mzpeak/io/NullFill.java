@@ -26,7 +26,8 @@ final class NullFill {
      * {@link #finalizeArrays(double[], double[], boolean)} for a spectrum with extra arrays, each parallel to
      * {@code mz}. With reconstruction on the extras are kept as read: a filled point keeps the value of its
      * null-marked row, NaN for a null cell. Otherwise the points dropped from {@code mz} are dropped from every extra
-     * too, so the extras stay parallel to the m/z either way.
+     * too, so the extras stay parallel to the m/z either way, and an extra left with only NaN values is dropped, as
+     * one is that has no value other than NaN to begin with.
      */
     static Arrays finalizeArrays(double[] mz, double[] intensity, Map<String, double[]> extras,
                                  boolean reconstructProfile) {
@@ -55,9 +56,22 @@ final class NullFill {
         }
         Map<String, double[]> ce = new LinkedHashMap<>();
         for (Map.Entry<String, double[]> extra : extras.entrySet()) {
-            ce.put(extra.getKey(), keepStored(mz, extra.getValue(), kept));
+            double[] values = keepStored(mz, extra.getValue(), kept);
+            if (hasNumber(values)) {
+                ce.put(extra.getKey(), values);
+            }
         }
         return new Arrays(cm, ci, ce.isEmpty() ? Map.of() : ce);
+    }
+
+    /** True when some value is not NaN. */
+    private static boolean hasNumber(double[] values) {
+        for (double v : values) {
+            if (!Double.isNaN(v)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The {@code kept} values of {@code values} at the positions where {@code mz} is not NaN. */

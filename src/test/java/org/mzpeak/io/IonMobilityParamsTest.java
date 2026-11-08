@@ -23,7 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * constructed packed scan struct.
  *
  * <p>Documented changes against the hand-written list: the array terms, the charge array MS:1002478 and the unit
- * MS:1002814 no longer keep the typed cells out, and the real children of MS:1002892 now do.
+ * MS:1002814 no longer keep the typed cells out, and the real children of MS:1002892 now do. FN-8: the appended Param
+ * has the PSI-MS name and unit the Rust reader gives its type, not {@code ion mobility value} without a unit.
  */
 class IonMobilityParamsTest {
 
@@ -32,7 +33,8 @@ class IonMobilityParamsTest {
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("ion_mobility_type")
             .named("scan");
 
-    private static final Param TYPED = new Param("ion mobility value", "MS:1002815", 1.25, null);
+    private static final Param TYPED =
+            new Param("inverse reduced ion mobility drift time", "MS:1002815", 1.25, "MS:1002814");
 
     /**
      * Params that hold {@code accession} keep the row's typed cells out exactly when the accession is recognised as
@@ -91,7 +93,24 @@ class IonMobilityParamsTest {
         assertThat(IonMobilityParams.withTypedIonMobility(row(null, "MS:1002815"), params)).isSameAs(params);
         assertThat(IonMobilityParams.withTypedIonMobility(row(Double.NaN, null), params)).isSameAs(params);
         assertThat(IonMobilityParams.withTypedIonMobility(row(0.5, null), params))
-                .containsExactly(params.get(0), new Param("ion mobility value", "MS:1002476", 0.5, null));
+                .containsExactly(params.get(0), new Param("ion mobility drift time", "MS:1002476", 0.5, "UO:0000028"));
+        assertThat(IonMobilityParams.withTypedIonMobility(row(0.5, " "), params))
+                .containsExactly(params.get(0), new Param("ion mobility drift time", "MS:1002476", 0.5, "UO:0000028"));
+    }
+
+    /** The appended Param has the name and unit of visitor.rs:878-920; any other type keeps the generic name. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(nullValues = "null", value = {
+            "MS:1002476, ion mobility drift time,                 UO:0000028",
+            "MS:1002815, inverse reduced ion mobility drift time, MS:1002814",
+            "MS:1001581, FAIMS compensation voltage,              UO:0000218",
+            "MS:1003371, SELEXION compensation voltage,           UO:0000218",
+            "MS:1003394, ion mobility value,                      null",
+            "MS:1003450, ion mobility value,                      null"
+    })
+    void theTypedParamHasThePsiNameAndUnitOfItsType(String type, String name, String unit) {
+        assertThat(IonMobilityParams.withTypedIonMobility(row(-3.5, type), List.of()))
+                .containsExactly(new Param(name, type, -3.5, unit));
     }
 
     private static FacetRow row(Double value, String type) {

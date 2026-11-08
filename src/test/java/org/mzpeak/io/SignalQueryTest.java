@@ -624,6 +624,10 @@ class SignalQueryTest {
         assertThat(narrowed).isEqualTo(SignalQuery.timeRange(0.3, 0.4).withMsLevels(2, 10).withMz(800, 820))
                 .hasSameHashCodeAs(SignalQuery.timeRange(0.3, 0.4).withMsLevels(2, 10).withMz(800, 820));
         assertThat(SignalQuery.indexRange(0, 1)).isNotEqualTo(SignalQuery.all());
+        // the ion mobility filter takes part in equality (Q7)
+        assertThat(SignalQuery.timeRange(0.3, 0.4).withIonMobility(0.8, 0.9))
+                .isNotEqualTo(SignalQuery.timeRange(0.3, 0.4))
+                .isEqualTo(SignalQuery.timeRange(0.3, 0.4).withIonMobility(0.8, 0.9));
         assertThat(narrowed.toString()).contains("time=[0.3, 0.4]").contains("msLevels=[2, 10]")
                 .contains("mz=[800.0, 820.0]");
         assertThat(byIndex.toString()).contains("index=[40, 47]");

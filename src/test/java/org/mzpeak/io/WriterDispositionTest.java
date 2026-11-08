@@ -83,7 +83,11 @@ class WriterDispositionTest {
         assertThat(rowsPerSpectrum(out.resolve(PEAKS), "chunk")).hasSize(34);
     }
 
-    /** Every spectrum of has_uv is a CENTROID peak copy: the point layout writes 212 peak lists and no spectra_data. */
+    /**
+     * Every spectrum of has_uv is a CENTROID peak copy: the point layout writes 212 peak lists and a spectra_data
+     * without a row, listed under its manifest role, because both Rust reference readers open spectra_data
+     * unconditionally (FN-10; before, it was not written and the output was unreadable for them).
+     */
     @Test
     void hasUvRowsPerFile(@TempDir Path tmp) {
         Source s = ForwardBackwardCorpusTest.readSource(HAS_UV);
@@ -91,9 +95,32 @@ class WriterDispositionTest {
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata);
 
-        assertThat(out.resolve(DATA)).doesNotExist();
+        try (MzPeakSource source = MzPeakSource.open(out)) {
+            assertThat(MzPeakManifest.fromSource(source).find(MzPeakManifest.EntityType.SPECTRUM,
+                    MzPeakManifest.DataKind.DATA_ARRAYS)).map(MzPeakManifest.Entry::name).contains(DATA);
+        }
+        assertThat(ParquetFooter.read(new LocalInputFile(out.resolve(DATA))).rowCount()).isZero();
         assertThat(summary(rowsPerSpectrum(out.resolve(PEAKS), "point"))).isEqualTo("24310/212");
         assertCountsMatchTheRowsWritten(out, "point");
+    }
+
+    /** A centroid-only write re-reads equal: mz() falls back to spectra_peaks, as for Numpress output. */
+    @Test
+    void aCentroidOnlyWriteReadsBackEqual(@TempDir Path tmp) {
+        Source s = ForwardBackwardCorpusTest.readSource(HAS_UV);
+        Path out = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata);
+
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.size()).isEqualTo(s.spectra.size()).isEqualTo(212);
+            for (Spectrum source : s.spectra) {
+                Spectrum back = r.getSpectrum(source.index()).orElseThrow();
+                assertThat(back.mz()).as("m/z of %d", source.index()).isEqualTo(source.mz());
+                assertThat(back.intensity()).as("intensity of %d", source.index()).isEqualTo(source.intensity());
+                assertThat(back.peaks()).as("peaks of %d", source.index()).isEqualTo(source.peaks());
+            }
+        }
     }
 
     // ---- spectra built by hand ----------------------------------------------------------------------------------
@@ -119,6 +146,43 @@ class WriterDispositionTest {
             assertThat(back.mz()).isEqualTo(srm.mz());
             assertThat(back.intensity()).isEqualTo(srm.intensity());
             assertThat(back.peaks()).isEqualTo(copyOf(srm.mz(), srm.intensity()));
+        }
+    }
+
+    /**
+     * FN-16: the opt-in forward-backward harness compares the peaks of an array-only CENTROID spectrum with the
+     * source's arrays, since WR-3 builds its re-read peak list from them; this runs that comparison in the default
+     * build, on both layouts, and checks that it still catches a wrong peak. Written alone, it is spectrum 0 (WR-8).
+     */
+    @ParameterizedTest
+    @EnumSource(ForwardBackwardCorpusTest.Layout.class)
+    void theForwardBackwardPeakComparisonOfAnArrayOnlyCentroidSpectrum(ForwardBackwardCorpusTest.Layout layout,
+                                                                       @TempDir Path tmp) {
+        Spectrum four = spectrum(ForwardBackwardCorpusTest.readSource(SMALL), 4);
+        Spectrum srm = new Spectrum(four.description(), four.mz(), four.intensity(), List.of());
+        Path out = tmp.resolve("out.mzpeak");
+        if (layout == ForwardBackwardCorpusTest.Layout.POINT) {
+            MzPeakWriter.writeDirectory(out, List.of(srm), List.of(), List.of(), List.of(), FileMetadata.EMPTY);
+        } else {
+            MzPeakWriter.writeDirectoryNumpress(out, List.of(srm), List.of(), List.of(), List.of(),
+                    FileMetadata.EMPTY, NumpressIntensityEncoding.SLOF);
+        }
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            Spectrum back = r.getSpectrum(0).orElseThrow();
+            // the count comparison alone would report 0 source peaks against the re-read ones
+            assertThat(srm.peaks()).isEmpty();
+            assertThat(back.peaks()).hasSize(srm.mz().length);
+
+            List<String> diffs = new ArrayList<>();
+            ForwardBackwardCorpusTest.comparePeaks(diffs, layout, "spectrum[4]", srm, back);
+            assertThat(diffs).isEmpty();
+
+            double[] other = srm.intensity().clone();
+            other[0] += 1000.0 * (1 + Arrays.stream(other).max().orElse(0));
+            Spectrum wrong = new Spectrum(srm.description(), srm.mz(), other, List.of());
+            List<String> caught = new ArrayList<>();
+            ForwardBackwardCorpusTest.comparePeaks(caught, layout, "spectrum[4]", wrong, back);
+            assertThat(caught).singleElement().asString().startsWith("spectrum[4].peaks.intensity");
         }
     }
 
@@ -230,7 +294,7 @@ class WriterDispositionTest {
 
         Path out = write(tmp, s);
 
-        assertThat(out.resolve(DATA)).doesNotExist();
+        assertThat(ParquetFooter.read(new LocalInputFile(out.resolve(DATA))).rowCount()).isZero();
         assertThat(route(out, 0)).isEqualTo("data=- peaks=3 number_of_data_points=- number_of_peaks=3");
         double[][] peaks = storedRows(out.resolve(PEAKS), 0);
         assertThat(peaks[0]).containsExactly(100.0, 200.0, 300.0);

@@ -49,7 +49,7 @@ class WriterOptionsTest {
     private static final Path IMAGING = Fixtures.current("Example_Processed.img.mzpeak");
     private static final String ROW_GROUP_SIZE = "mzpeak.writer.rowGroupSize";
     private static final String DATA = "spectra_data.parquet";
-    /** Where WR-3 writes the has_uv spectra, all CENTROID peak copies: no spectra_data in point layout. */
+    /** Where WR-3 writes the has_uv spectra, all CENTROID peak copies; spectra_data has no row (FN-10). */
     private static final String PEAKS = "spectra_peaks.parquet";
     private static final String INDEX = "mzpeak_index.json";
     private static final FileMetadata EMPTY = FileMetadata.EMPTY;
@@ -273,10 +273,14 @@ class WriterOptionsTest {
                                 tmp.resolve("default").resolve("out.mzpeak")));
                 continue;
             }
+            // a member without a row has no row group: every has_uv spectrum is a CENTROID peak copy, so spectra_data
+            // has none (FN-10), nor have the split layout's empty precursor and selected-ion tables
             assertThat(rowGroups(before)).as("default row groups of %s", name).isEqualTo(rows(before) == 0 ? 0 : 1);
             assertThat(withoutRowGroups(e.getValue().detail())).as("detail of %s", name)
                     .isEqualTo(withoutRowGroups(before.detail()));
         }
+        assertThat(plain.members()).as("members").containsKey(DATA);
+        assertThat(rows(plain.members().get(DATA))).as("rows of %s", DATA).isZero();
         for (String name : List.of(PEAKS, "wavelength_spectra_data.parquet")) {
             assertThat(rowGroups(split.members().get(name))).as("row groups of %s", name).isGreaterThan(1);
         }

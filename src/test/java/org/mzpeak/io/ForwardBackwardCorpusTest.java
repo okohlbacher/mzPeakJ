@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.ImagingPosition;
@@ -18,6 +19,7 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -279,7 +281,7 @@ class ForwardBackwardCorpusTest {
         // arrays
         eq(diffs, tag + ".mz.length", a.mz().length, b.mz().length);
         eq(diffs, tag + ".intensity.length", a.intensity().length, b.intensity().length);
-        eq(diffs, tag + ".peaks.count", a.peaks().size(), b.peaks().size());
+        comparePeaks(diffs, layout, tag, a, b);
 
         // record counts — surfaces any dropped secondary scans / precursors / selected ions. The writer
         // currently emits only the primary scan/precursor/ion (packed multi-facet writing is a deferred
@@ -332,6 +334,65 @@ class ForwardBackwardCorpusTest {
         } else if ((sa == null) != (sb == null)) {
             diffs.add(tag + ".scan[0] presence: src=" + (sa != null) + " out=" + (sb != null));
         }
+    }
+
+    /**
+     * The peaks of the re-read spectrum {@code b} against the source spectrum {@code a}. A CENTROID source without a
+     * peak list whose m/z are all finite (the SRM shape) is written from its arrays to spectra_peaks (WR-3), so the
+     * re-read spectrum has the peaks the reader builds from them: their count, m/z and intensity are compared with
+     * the source's mz()/intensity(), both sorted by m/z (in the Numpress layout the m/z within
+     * {@link #NUMPRESS_MZ_ABS_TOL} and the intensity sum within {@link #NUMPRESS_INTENSITY_REL_TOL}). Every other
+     * spectrum compares its peak count.
+     */
+    static void comparePeaks(List<String> diffs, Layout layout, String tag, Spectrum a, Spectrum b) {
+        if (!isArrayOnlyCentroid(a)) {
+            eq(diffs, tag + ".peaks.count", a.peaks().size(), b.peaks().size());
+            return;
+        }
+        double[][] expected = sortedByMz(a.mz(), a.intensity());
+        double[][] actual = sortedByMz(b.peaks().stream().mapToDouble(CentroidPeak::mz).toArray(),
+                b.peaks().stream().mapToDouble(CentroidPeak::intensity).toArray());
+        eq(diffs, tag + ".peaks.count", expected[0].length, actual[0].length);
+        if (expected[0].length != actual[0].length) {
+            return;
+        }
+        if (layout == Layout.POINT) {
+            eqArrayExact(diffs, tag + ".peaks.mz", expected[0], actual[0]);
+            eqArrayExact(diffs, tag + ".peaks.intensity", expected[1], actual[1]);
+        } else {
+            eqArrayAbsTol(diffs, tag + ".peaks.mz", expected[0], actual[0], NUMPRESS_MZ_ABS_TOL);
+            eqSumRelTol(diffs, tag + ".peaks.intensity.sum", expected[1], actual[1], NUMPRESS_INTENSITY_REL_TOL);
+        }
+    }
+
+    /** CENTROID, no peak list, and arrays whose m/z are all finite: WR-3 writes them to spectra_peaks. */
+    private static boolean isArrayOnlyCentroid(Spectrum s) {
+        if (s.description().signalContinuity() != SignalContinuity.CENTROID || !s.peaks().isEmpty()
+                || s.mz().length == 0) {
+            return false;
+        }
+        for (double v : s.mz()) {
+            if (!Double.isFinite(v)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The pairs of {@code mz} and {@code intensity} sorted by m/z, then intensity, as {mz[], intensity[]}. */
+    private static double[][] sortedByMz(double[] mz, double[] intensity) {
+        Integer[] order = new Integer[mz.length];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, java.util.Comparator.<Integer>comparingDouble(i -> mz[i])
+                .thenComparingDouble(i -> intensity[i]));
+        double[][] out = new double[2][mz.length];
+        for (int k = 0; k < order.length; k++) {
+            out[0][k] = mz[order[k]];
+            out[1][k] = intensity[order[k]];
+        }
+        return out;
     }
 
     private static void comparePrecursor(List<String> diffs, String tag, Precursor a, Precursor b) {

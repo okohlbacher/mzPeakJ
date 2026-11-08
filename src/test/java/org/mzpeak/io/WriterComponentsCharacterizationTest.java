@@ -111,17 +111,19 @@ class WriterComponentsCharacterizationTest {
         assertThat(peaksOnly).as("small.unpacked centroid spectra").hasSize(34)
                 .allSatisfy(x -> assertThat(x.peaks()).isNotEmpty());
 
+        // FN-10: both layouts always write spectra_data, here without a single row, as the Rust readers require.
         Path point = tmp.resolve("point.mzpeak");
         MzPeakWriter.writeDirectory(point, peaksOnly, List.of(), List.of(), List.of(), FileMetadata.EMPTY, PACKED);
         assertThat(manifestFiles(point)).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
+                "spectra_data.parquet|spectrum|data arrays",
                 "spectra_peaks.parquet|spectrum|peaks");
         assertThat(memberNames(point)).containsExactly(
-                "mzpeak_index.json", "spectra_metadata.parquet", "spectra_peaks.parquet");
+                "mzpeak_index.json", "spectra_data.parquet", "spectra_metadata.parquet", "spectra_peaks.parquet");
+        assertThat(rows(point.resolve("spectra_data.parquet"))).isEmpty();
         assertThat(fieldNames(manifest(point).path("metadata")))
                 .startsWith("version", "cv_list", "scan_settings_list");
 
-        // Numpress always writes spectra_data, here without a single row.
         Path numpress = tmp.resolve("numpress.mzpeak");
         MzPeakWriter.writeDirectory(numpress, peaksOnly, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
                 PACKED_NUMPRESS);
@@ -136,9 +138,11 @@ class WriterComponentsCharacterizationTest {
                 FileMetadata.EMPTY, PACKED);
         assertThat(manifestFiles(chromatogramsOnly)).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
+                "spectra_data.parquet|spectrum|data arrays",
                 "chromatograms_metadata.parquet|chromatogram|metadata",
                 "chromatograms_data.parquet|chromatogram|data arrays");
         assertThat(rows(chromatogramsOnly.resolve("spectra_metadata.parquet"))).isEmpty();
+        assertThat(rows(chromatogramsOnly.resolve("spectra_data.parquet"))).isEmpty();
     }
 
     // ---- packed spectrum metadata and point/chunk rows ----------------------------------------------------------
@@ -282,10 +286,12 @@ class WriterComponentsCharacterizationTest {
         Map<String, String> numpressGroups = compareWithSmallRowGroups(tmp.resolve("numpress"), numpressWrite,
                 "32768");
 
-        // WR-3: every has_uv spectrum is a CENTROID peak copy, so the point layout writes no spectra_data.
+        // WR-3: every has_uv spectrum is a CENTROID peak copy, so the point layout writes spectra_data without a row
+        // (FN-10).
         assertThat(pointGroups).isEqualTo(new TreeMap<>(Map.of(
                 "chromatograms_data.parquet", "row_groups=5",
                 "chromatograms_metadata.parquet", "row_groups=1",
+                "spectra_data.parquet", "row_groups=0",
                 "spectra_metadata.parquet", "row_groups=3",
                 "spectra_peaks.parquet", "row_groups=144",
                 "wavelength_spectra_data.parquet", "row_groups=296",
@@ -418,7 +424,9 @@ class WriterComponentsCharacterizationTest {
             }
             assertThat(withoutRowGroups(e.getValue().detail())).as("detail of %s", name)
                     .isEqualTo(withoutRowGroups(before.get(name).detail()));
-            assertThat(before.get(name).detail()).as("default detail of %s", name).startsWith("row_groups=1 ");
+            // a member without rows, such as a centroid-only spectra_data, has no row group
+            assertThat(before.get(name).detail()).as("default detail of %s", name)
+                    .matches("row_groups=(1|0 rows=0) .*");
             rowGroups.put(name, e.getValue().detail().substring(0, e.getValue().detail().indexOf(' ')));
         }
         return rowGroups;

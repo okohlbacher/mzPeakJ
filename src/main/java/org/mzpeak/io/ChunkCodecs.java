@@ -17,7 +17,8 @@ final class ChunkCodecs {
     private static final String DELTA_ENCODING = "MS:1003089";
     private static final String NO_COMPRESSION = "MS:1000576";
     private static final String TRUNCATION_ZLIB = "MS:1003088";
-    private static final String GRID_ENCODING = "MS:1003826";
+    /** MS:1003826, the coordinate-grid chunk encoding (a draft term). */
+    static final String GRID_ENCODING = "MS:1003826";
 
     private ChunkCodecs() {
     }
@@ -104,20 +105,37 @@ final class ChunkCodecs {
     }
 
     /**
-     * The error for a coordinate-grid chunk ({@code MS:1003826}, a draft encoding) that cannot be decoded: one whose
-     * {@code chunk_encoding} names the grid but whose main-axis grid is missing or has a grid_type that
-     * {@link GridModels#KINDS} does not hold, or one with a main-axis grid struct (such as {@code mz_grid}) and
-     * intensities but no chunk values and not the grid encoding. Without this check the intensities fail the length
-     * check with a misleading message.
+     * The error for a chunk whose {@code chunk_encoding} is the coordinate grid ({@code MS:1003826}, a draft encoding)
+     * but whose main-axis grid cannot be decoded: the plan names no grid column, the row's grid is null, or its
+     * grid_type is not one of {@link GridModels#KINDS}.
      *
-     * @param gridField the main-axis grid struct, or null when the member has none
+     * @param gridField the main-axis grid column, or null when the plan names none
+     * @param present   whether the row's grid cell is non-null
+     * @param gridType  the grid_type of the row's grid, or null
      */
-    static MzPeakException unsupportedGrid(Group chunk, String gridField, long si) {
-        Group grid = gridField == null ? null : ParquetGroups.optGroup(chunk, gridField);
-        String gridType = grid == null ? null : ParquetGroups.optString(grid, "grid_type");
-        return new MzPeakException("unsupported chunk encoding " + GRID_ENCODING
-                + " (coordinate grid, draft) with grid_type " + (gridType == null ? "(none)" : gridType)
-                + " for spectrum_index " + si + "; grid decoding is not implemented");
+    static MzPeakException undecodableGrid(String gridField, boolean present, String gridType, long si) {
+        if (gridField == null) {
+            return new MzPeakException("chunk_encoding " + GRID_ENCODING + " for spectrum_index " + si
+                    + ", but the signal plan has no grid column");
+        }
+        if (!present) {
+            return new MzPeakException("chunk_encoding " + GRID_ENCODING + " for spectrum_index " + si
+                    + ", but the row has no grid in " + gridField);
+        }
+        return new MzPeakException("grid_type " + (gridType == null ? "(none)" : gridType) + " of " + gridField
+                + " is not one of " + String.join(", ", GridModels.KINDS.keySet()) + " for spectrum_index " + si);
+    }
+
+    /**
+     * The error for a chunk row with a main-axis grid (such as {@code mz_grid}) and intensities but no axis values,
+     * whose {@code chunk_encoding} is not the grid encoding: its intensities pair with the grid indices, which only
+     * the grid encoding decodes. Without this check the intensities fail the length check with a misleading message.
+     *
+     * @param encoding the row's chunk_encoding, or null
+     */
+    static MzPeakException gridWithoutGridEncoding(String gridField, String encoding, long si) {
+        return new MzPeakException(gridField + " carries a grid but chunk_encoding is "
+                + (encoding == null ? "(none)" : encoding) + " for spectrum_index " + si);
     }
 
     /**

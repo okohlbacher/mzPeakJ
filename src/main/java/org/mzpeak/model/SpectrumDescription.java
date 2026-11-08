@@ -16,7 +16,11 @@ import java.util.List;
  * @param numberOfPeaks       declared centroid count (MS:1003059); 0 if absent
  * @param scans               acquisition events; never {@code null}
  * @param precursors          precursors (empty for MS1); never {@code null}
- * @param parameters          additional CV/user params from the spectrum facet; never {@code null}, may be empty
+ * @param parameters          additional CV/user params from the spectrum facet; never {@code null}, may be empty.
+ *                            The summary columns (lowest and highest observed m/z MS:1000528 and MS:1000527, base peak
+ *                            m/z MS:1000504, base peak intensity MS:1000505, total ion current MS:1000285) and the
+ *                            {@code spectrum_type} term marker appear here only when read from the split metadata
+ *                            layout; packed (pin-era) rows yield only their {@code parameters} list
  */
 public record SpectrumDescription(long index,
                                   String id,

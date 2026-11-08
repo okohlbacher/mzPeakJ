@@ -21,6 +21,7 @@ import org.mzpeak.model.SpectrumDescription;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,16 +57,22 @@ class SplitLeftoversTest {
             "scan_index", "precursor_index", "selected_ion_index", "parameters", "auxiliary_arrays",
             "number_of_auxiliary_arrays", "data_processing_id");
 
-    /** What SpectrumRowDecoder consumes (design 5.2): by accession through the mapping, else by field name. */
+    /**
+     * What SpectrumRowDecoder consumes (design 5.2): by accession through the mapping, else by field name, plus the
+     * one m/z delta-model column it reads ({@link #deltaModelField}).
+     */
     private static final Set<String> SPECTRUM_CONSUMED_ACCESSIONS = Set.of("MS:1000511", "MS:1000465", "MS:1000525",
-            "MS:1003060", "MS:1003059", "MS:1003821", "MS:1003820");
+            "MS:1003060", "MS:1003059");
     private static final Set<String> SPECTRUM_CONSUMED_FIELDS = Set.of("time");
 
-    /** What ScanRowDecoder consumes (design 5.2), the imaging positions included. */
+    /**
+     * What ScanRowDecoder consumes (design 5.2), the imaging positions included, plus the one instrument
+     * configuration alias it reads ({@link #instrumentConfigurationField}).
+     */
     private static final Set<String> SCAN_CONSUMED_ACCESSIONS = Set.of("MS:1000016", "MS:1000927", "MS:1000512",
             "MS:1000616", POSITION_X, POSITION_Y);
-    private static final Set<String> SCAN_CONSUMED_FIELDS = Set.of("instrument_configuration_id",
-            "instrument_configuration_ref", "spectrum_reference", "ion_mobility_value", "ion_mobility_type");
+    private static final Set<String> SCAN_CONSUMED_FIELDS = Set.of("spectrum_reference", "ion_mobility_value",
+            "ion_mobility_type");
 
     static Stream<String> smallFixtures() {
         return Stream.of("small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak", SMALL_UNPACKED);
@@ -149,8 +156,9 @@ class SplitLeftoversTest {
                 assertThat(row).as(where + " row").isNotNull();
                 List<Param> entries = entries(row);
                 List<Param> leftovers = leftovers(row, spectrumEntry, SPECTRUM_CONSUMED_ACCESSIONS,
-                        SPECTRUM_CONSUMED_FIELDS);
-                assertThat(d.parameters()).as(where).containsExactlyElementsOf(concat(entries, leftovers));
+                        with(SPECTRUM_CONSUMED_FIELDS, deltaModelField(row, spectrumEntry)));
+                assertThat(d.parameters()).as(where)
+                        .containsExactlyElementsOf(concat(withoutAccessionsOf(entries, leftovers), leftovers));
                 assertOnce(where, d.parameters(), leftovers);
                 seen[0]++;
                 seen[1] += leftovers.size();
@@ -164,7 +172,7 @@ class SplitLeftoversTest {
                     List<Param> listed = entries(scanRow);
                     List<Param> positions = positions(scanRow, scanEntry, listed);
                     List<Param> scanLeftovers = leftovers(scanRow, scanEntry, SCAN_CONSUMED_ACCESSIONS,
-                            SCAN_CONSUMED_FIELDS);
+                            with(SCAN_CONSUMED_FIELDS, instrumentConfigurationField(scanRow)));
                     List<Param> params = new ArrayList<>(d.scans().get(k).parameters());
                     Param mobility = typedIonMobility(scanRow);
                     if (mobility != null) {
@@ -277,7 +285,133 @@ class SplitLeftoversTest {
         }
     }
 
+    // ---- FN-9: a column wins over a list entry; the delta-model and instrument configuration choices ------------
+
+    /** A base_peak_mz column and a parameters-list entry of its accession give one Param, the column's. */
+    @Test
+    void aSpectrumColumnWinsOverAListEntryOfTheSameAccession() {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            Entry entry = Facet.SPECTRUM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
+            FacetRow spectrum0 = first(source, entry, Facet.SPECTRUM);
+            MessageType schema = extend(spectrum0.group().getType());
+            Group g = new SimpleGroup(schema);
+            copy(spectrum0.group(), g, Set.of());
+            addParam(g, "base peak m/z", "MS:1000504", 123.0, MZ);
+            addParam(g, "spectrum title", "MS:1000796", "first", null);
+
+            SpectrumRowDecoder.SpectrumHead head = SpectrumRowDecoder.decode(
+                    new FacetRow(Facet.SPECTRUM, g, ColumnResolver.split(schema, entry, Facet.SPECTRUM)), 0);
+
+            assertThat(head.spectrumParams).filteredOn(p -> p.hasAccession("MS:1000504"))
+                    .containsExactly(new Param("base peak m/z", "MS:1000504", 810.4154747204038, MZ));
+            assertThat(head.spectrumParams).first()
+                    .isEqualTo(new Param("spectrum title", "MS:1000796", "first", null));
+        }
+    }
+
+    /** A row whose only delta model is median_delta reads it as a one-coefficient model, not as a Param. */
+    @Test
+    void medianDeltaAloneIsTheDeltaModelAndNoParam() {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            Entry entry = Facet.SPECTRUM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
+            FacetRow spectrum0 = first(source, entry, Facet.SPECTRUM);
+            String list = "polynomial_delta_coordinate_interpolation";
+            assertThat(spectrum0.group().getType().containsField(list)).isTrue();
+            MessageType schema = extend(without(spectrum0.group().getType(), list),
+                    Types.optional(PrimitiveTypeName.DOUBLE).named("median_delta"));
+            Group g = new SimpleGroup(schema);
+            copy(spectrum0.group(), g, Set.of(list));
+            g.add("median_delta", 0.0025);
+
+            SpectrumRowDecoder.SpectrumHead head = SpectrumRowDecoder.decode(
+                    new FacetRow(Facet.SPECTRUM, g, ColumnResolver.split(schema, entry, Facet.SPECTRUM)), 0);
+
+            assertThat(head.mzDeltaModel).containsExactly(0.0025);
+            assertThat(head.spectrumParams).extracting(Param::name).doesNotContain("median_delta");
+            assertThat(head.spectrumParams).noneMatch(p -> Double.valueOf(0.0025).equals(p.value()));
+        }
+    }
+
+    /**
+     * A scan row with both instrument configuration aliases reads instrument_configuration_id; the other alias is
+     * not consumed and becomes a Param under its field name.
+     */
+    @Test
+    void theInstrumentConfigurationAliasTheDecoderDoesNotReadBecomesAParam() {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            Entry entry = Facet.SPECTRUM_SCAN.entry(MzPeakManifest.fromSource(source)).orElseThrow();
+            FacetRow scan0 = first(source, entry, Facet.SPECTRUM_SCAN);
+            assertThat(scan0.group().getType().containsField("instrument_configuration_id")).isTrue();
+            MessageType schema = extend(scan0.group().getType(),
+                    Types.optional(PrimitiveTypeName.INT32).named("instrument_configuration_ref"));
+            Group g = new SimpleGroup(schema);
+            copy(scan0.group(), g, Set.of());
+            g.add("instrument_configuration_ref", 5);
+
+            ScanEvent scan = ScanRowDecoder.decode(
+                    new FacetRow(Facet.SPECTRUM_SCAN, g, ColumnResolver.split(schema, entry, Facet.SPECTRUM_SCAN)));
+
+            assertThat(scan.instrumentConfigurationRef()).isNotNull().isNotEqualTo(5);
+            assertThat(scan.parameters()).last()
+                    .isEqualTo(new Param("instrument_configuration_ref", null, 5L, null));
+        }
+    }
+
     // ---- oracle --------------------------------------------------------------------------------------------------
+
+    /**
+     * The m/z delta-model column SpectrumRowDecoder reads from {@code row}: the column of MS:1003821, else of
+     * MS:1003820 (also named {@code coordinate_spacing_model} or {@code mz_delta_model}), else {@code median_delta};
+     * null when the row has none.
+     */
+    private static String deltaModelField(Row row, Entry entry) {
+        for (String accession : List.of("MS:1003821", "MS:1003820")) {
+            Optional<ColumnMapping> mapped = entry.columnForAccession(accession);
+            if (mapped.isPresent() && row.values().containsKey(mapped.get().path())) {
+                return mapped.get().path();
+            }
+            List<String> names = accession.equals("MS:1003821")
+                    ? List.of("polynomial_delta_coordinate_interpolation")
+                    : List.of("coordinate_spacing_model", "mz_delta_model");
+            for (String name : names) {
+                if (row.values().containsKey(name)) {
+                    return name;
+                }
+            }
+        }
+        return row.values().containsKey("median_delta") ? "median_delta" : null;
+    }
+
+    /** The instrument configuration alias ScanRowDecoder reads: the first of the two the row has, or null. */
+    private static String instrumentConfigurationField(Row row) {
+        for (String name : List.of("instrument_configuration_id", "instrument_configuration_ref")) {
+            if (row.values().containsKey(name)) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    /** {@code fields} plus {@code field}, unless null. */
+    private static Set<String> with(Set<String> fields, String field) {
+        if (field == null) {
+            return fields;
+        }
+        Set<String> out = new HashSet<>(fields);
+        out.add(field);
+        return out;
+    }
+
+    /** {@code entries} without those whose accession a column of {@code leftovers} carries: the column wins. */
+    private static List<Param> withoutAccessionsOf(List<Param> entries, List<Param> leftovers) {
+        Set<String> accessions = new HashSet<>();
+        for (Param p : leftovers) {
+            if (p.accession() != null) {
+                accessions.add(p.accession());
+            }
+        }
+        return entries.stream().filter(p -> p.accession() == null || !accessions.contains(p.accession())).toList();
+    }
 
     /** The scope's parameters list entries of {@code row} as the Params they decode to. */
     private static List<Param> entries(Row row) {
@@ -332,7 +466,15 @@ class SplitLeftoversTest {
             return null;
         }
         Object type = row.get("ion_mobility_type");
-        return new Param("ion mobility value", type == null ? DEFAULT_ION_MOBILITY_TYPE : (String) type, value, null);
+        String accession = type == null ? DEFAULT_ION_MOBILITY_TYPE : (String) type;
+        // FN-8: the name and unit of visitor.rs:878-920
+        return switch (accession) {
+            case "MS:1002476" -> new Param("ion mobility drift time", accession, value, "UO:0000028");
+            case "MS:1002815" -> new Param("inverse reduced ion mobility drift time", accession, value, "MS:1002814");
+            case "MS:1001581" -> new Param("FAIMS compensation voltage", accession, value, "UO:0000218");
+            case "MS:1003371" -> new Param("SELEXION compensation voltage", accession, value, "UO:0000218");
+            default -> new Param("ion mobility value", accession, value, null);
+        };
     }
 
     /** The Params the imaging position cells of a scan row give when its parameters list lacks them. */
@@ -396,6 +538,13 @@ class SplitLeftoversTest {
         assertThat(rows).isNotEmpty();
         assertThat(rows.get(0).key()).isEqualTo(0L);
         return rows.get(0);
+    }
+
+    /** {@code schema} without the top-level fields {@code names}. */
+    private static GroupType without(GroupType schema, String... names) {
+        List<Type> fields = new ArrayList<>(schema.getFields());
+        fields.removeIf(t -> List.of(names).contains(t.getName()));
+        return new MessageType(schema.getName(), fields);
     }
 
     /** {@code schema} with {@code extra} appended at the top level. */

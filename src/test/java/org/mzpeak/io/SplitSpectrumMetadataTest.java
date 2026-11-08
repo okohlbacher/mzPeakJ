@@ -13,6 +13,7 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.ImagingPosition;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
@@ -481,8 +482,11 @@ class SplitSpectrumMetadataTest {
 
         Object mobility = row.values().get("ion_mobility_value");
         if (mobility == null) {
+            // no typed ion mobility is appended: the scan's ion mobility Params are those of its parameters list
+            long listed = row.list("parameters.accession").stream()
+                    .filter(CvTerms.ION_MOBILITY_TYPES::contains).count();
             assertThat(s.parameters()).as(where + " typed ion mobility")
-                    .noneMatch(p -> "ion mobility value".equals(p.name()));
+                    .filteredOn(p -> CvTerms.ION_MOBILITY_TYPES.contains(p.accession())).hasSize((int) listed);
         } else {
             Object type = row.values().get("ion_mobility_type");
             String accession = type == null ? "MS:1002476" : (String) type;

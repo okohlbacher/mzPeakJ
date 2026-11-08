@@ -128,6 +128,28 @@ class GridModelsTest {
         assertThat(model("MS:9999002", TIMS_MZ).fromIndex(100_000)).isCloseTo(313.0985677335124, within(1e-9));
     }
 
+    /**
+     * A cubic term large enough that Newton needs several steps from {@code s0 = (tof - c0) / beta}: at index 396857
+     * the first step lands 112 m/z away, the fourth still 2.7e-9 away, the fifth on the root (kills GM4 and GM5, which
+     * stop after the first step). UNVERIFIED against the reference: the expected values are the roots of
+     * {@code c0 + beta·s + c2·s² + c3·s³ = tof} found by bisection in 60-digit decimal arithmetic (scratch script,
+     * not mzdata), then {@code s² - c4}.
+     */
+    @Test
+    void theTimsTofMzNewtonBranchTakesSeveralStepsUnverified() {
+        double[] p = TIMS_MZ.clone();
+        p[3] = 1.0;
+        GridModels.Model newton = model("MS:9999002", p);
+        assertThat(newton.fromIndex(100_000)).isCloseTo(257.65397279895666, within(1e-9));
+        assertThat(newton.fromIndex(396_857)).isCloseTo(916.2491700535076, within(1e-9));
+        assertThat(newton.fromIndex(60)).isCloseTo(88.73209515330551, within(1e-9));
+        // one Newton step is far from the root: a model that stopped there would be off by more than 1 m/z
+        double tof = Math.fma(396_857.0, p[5], p[6]);
+        double s = (tof - p[0]) / p[1];
+        s -= (p[0] + p[1] * s + p[2] * s * s + p[3] * s * s * s - tof) / (p[1] + 2 * p[2] * s + 3 * p[3] * s * s);
+        assertThat(Math.abs(s * s - p[4] - 916.2491700535076)).isGreaterThan(1.0);
+    }
+
     // ---- parameters -------------------------------------------------------------------------------------------------
 
     @Test

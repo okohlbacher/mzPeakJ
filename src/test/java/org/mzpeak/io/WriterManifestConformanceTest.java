@@ -69,12 +69,6 @@ class WriterManifestConformanceTest {
     private static final List<String> HAS_UV_ROLES = Stream.concat(SMALL_ROLES.stream(), Stream.of(
             "wavelength_spectra_metadata.parquet|wavelength spectrum|metadata",
             "wavelength_spectra_data.parquet|wavelength spectrum|data arrays")).toList();
-    /**
-     * Every has_uv spectrum is a CENTROID peak copy, which WR-3 writes to spectra_peaks only: the point layout writes
-     * no spectra_data (Numpress always writes it).
-     */
-    private static final List<String> HAS_UV_POINT_ROLES = HAS_UV_ROLES.stream()
-            .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
 
     /**
      * The roles of the split layout's output of small.unpacked, in manifest order. The chromatogram metadata is split
@@ -95,8 +89,6 @@ class WriterManifestConformanceTest {
             "wavelength_spectra_metadata.parquet|wavelength_spectrum|metadata",
             "wavelength_spectra_metadata_scans.parquet|wavelength_spectrum|scans",
             "wavelength_spectra_data.parquet|wavelength_spectrum|data_arrays")).toList();
-    private static final List<String> SPLIT_HAS_UV_POINT_ROLES = SPLIT_HAS_UV_ROLES.stream()
-            .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
 
     /** The members that carry a column mapping in the split layout. */
     private static final List<String> SPLIT_MAPPED = List.of("spectra_metadata.parquet",
@@ -232,18 +224,19 @@ class WriterManifestConformanceTest {
     @MethodSource("packedCases")
     void theRoleLiteralsAreThePinEraSpellings(String fixture, Form form, @TempDir Path tmp) throws IOException {
         Path out = write(fixture, form, tmp);
-        List<String> hasUvRoles = form.label.contains("Numpress") ? HAS_UV_ROLES : HAS_UV_POINT_ROLES;
+        // every has_uv spectrum is a CENTROID peak copy, which WR-3 writes to spectra_peaks only; spectra_data is
+        // still written, without a row (FN-10)
         assertThat(roles(out)).as("roles of %s via %s", fixture, form)
-                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? hasUvRoles : SMALL_ROLES);
+                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? HAS_UV_ROLES : SMALL_ROLES);
     }
 
     @ParameterizedTest(name = "{0} via {1}")
     @MethodSource("splitCases")
     void theSplitLayoutSpellsRolesWithUnderscores(String fixture, Form form, @TempDir Path tmp) throws IOException {
         Path out = write(fixture, form, tmp);
-        List<String> hasUvRoles = form.label.contains("Numpress") ? SPLIT_HAS_UV_ROLES : SPLIT_HAS_UV_POINT_ROLES;
+        // as in the packed layout, spectra_data is written for has_uv without a row (FN-10)
         assertThat(roles(out)).as("roles of %s via %s", fixture, form)
-                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? hasUvRoles : SPLIT_SMALL_ROLES);
+                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? SPLIT_HAS_UV_ROLES : SPLIT_SMALL_ROLES);
     }
 
     /**

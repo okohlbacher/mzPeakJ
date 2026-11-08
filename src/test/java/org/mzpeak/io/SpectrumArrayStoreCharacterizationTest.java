@@ -80,6 +80,37 @@ class SpectrumArrayStoreCharacterizationTest {
         }
     }
 
+    /**
+     * The chunk-layout variant: the statistics of {@code chunk.spectrum_index} bound the row groups as those of
+     * {@code point.spectrum_index} do (kills SA1, which read the point path for every layout). One chunk per point,
+     * each its own chunk start.
+     */
+    @Test
+    void theIndexStatisticsOfAChunkMemberSelectEveryRowGroupOfASpectrum() {
+        List<Group> rows = new ArrayList<>();
+        SPANNING.forEach((index, n) -> {
+            double[][] p = Peaks.points(index);
+            for (int i = 0; i < n; i++) {
+                rows.add(chunkPoint(index, p[i][0], (float) p[i][1]));
+            }
+        });
+        Path file = write(CHUNK_SCHEMA, rows, 2, true);
+        assertThat(rowGroups(file)).isEqualTo(5);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertThat(store.plan().layout()).isEqualTo(SignalPlan.Layout.CHUNK);
+            assertThat(store.contains(1)).isFalse();
+            assertThat(store.contains(2)).isTrue();
+            assertThat(store.contains(5)).as("inside the [4,6] row group").isTrue();
+            assertThat(store.contains(7)).isFalse();
+            assertPeaks(store.get(4), 4);
+            assertPeaks(store.get(6), 6);
+            assertPeaks(store.get(3), 3);
+            assertPeaks(store.get(2), 2);
+            assertThat(store.get(5)).isNull();
+            assertThat(store.get(7)).isNull();
+        }
+    }
+
     @Test
     void withoutStatisticsEveryRowGroupIsDecoded() {
         Path file = writePoints(POINT_SCHEMA, Peaks.rows(SPANNING), 2, false);
@@ -128,7 +159,8 @@ class SpectrumArrayStoreCharacterizationTest {
     }
 
     @Test
-    void aPointMemberWithoutAnIntensityColumnReadsZeroIntensities() {
+    void aPointMemberWithoutAnIntensityColumnFails() {
+        // FN-2: the intensities read as 0.0 before
         double[][] p = Peaks.points(2);
         List<Group> rows = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
@@ -138,9 +170,11 @@ class SpectrumArrayStoreCharacterizationTest {
             point.add("mz", p[i][0]);
             rows.add(record);
         }
-        SpectrumArrayStore.Arrays arrays = read(writePoints(MZ_ONLY_SCHEMA, rows, 100, true), 2, false);
-        assertExact("m/z", new double[] {p[0][0], p[1][0], p[2][0]}, arrays.mz());
-        assertExact("intensity", new double[] {0.0, 0.0, 0.0}, arrays.intensity());
+        Path file = writePoints(MZ_ONLY_SCHEMA, rows, 100, true);
+        assertThatThrownBy(() -> read(file, 2, false))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum signal member: the signal plan names no value-bearing intensity column, so the"
+                        + " point rows of spectrum_index 2 cannot be read");
     }
 
     // ---- structural errors --------------------------------------------------------------------------------------
@@ -265,6 +299,19 @@ class SpectrumArrayStoreCharacterizationTest {
                         + " intensity) for spectrum_index 0");
     }
 
+    /** SLOF intensity one value shorter than the linear m/z fails (kills CX2, which checked one direction only). */
+    @Test
+    void numpressSlofOneValueShorterThanTheMzFails() {
+        Row0 r = Row0.INSTANCE;
+        ChunkRow row = r.numpressMz();
+        row.slof = r.slof(r.intensity.length - 1);
+        Path file = writeChunk(row);
+        assertThatThrownBy(() -> read(file, 0, false))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("Numpress chunk m/z (" + r.mz.length + ") and intensity (" + (r.mz.length - 1)
+                        + ") lengths differ for spectrum_index 0");
+    }
+
     @Test
     void anUnknownNumpressColumnNamesTheDecodedColumns() {
         ChunkRow row = Row0.INSTANCE.numpressMz();
@@ -378,6 +425,13 @@ class SpectrumArrayStoreCharacterizationTest {
             return row;
         }
 
+        /** The first {@code n} decoded intensities encoded as Numpress SLOF. */
+        byte[] slof(int n) {
+            byte[] buffer = new byte[8 + n * 2];
+            int length = MSNumpress.encodeSlof(intensity, n, buffer, MSNumpress.optimalSlofFixedPoint(intensity, n));
+            return java.util.Arrays.copyOf(buffer, length);
+        }
+
         /** The decoded intensities encoded as Numpress PIC. */
         byte[] pic() {
             byte[] buffer = new byte[8 + intensity.length * 5];
@@ -470,6 +524,18 @@ class SpectrumArrayStoreCharacterizationTest {
         byte[] slof;
         byte[] pic;
         byte[] extraSlof;
+    }
+
+    /** A delta chunk row of {@code index} holding one point: its chunk start and one intensity. */
+    private static Group chunkPoint(long index, double mz, double intensity) {
+        Group record = new SimpleGroupFactory(CHUNK_SCHEMA).newGroup();
+        Group chunk = record.addGroup("chunk");
+        chunk.add("spectrum_index", index);
+        chunk.add("mz_chunk_start", mz);
+        addDoubles(chunk, "mz_chunk_values", new double[0]);
+        chunk.add("chunk_encoding", "MS:1003089");
+        addDoubles(chunk, "intensity", new double[] {intensity});
+        return record;
     }
 
     private Path writeChunk(ChunkRow row) {

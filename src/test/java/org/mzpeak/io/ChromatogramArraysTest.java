@@ -487,6 +487,64 @@ class ChromatogramArraysTest {
                 m -> assertThat(m).contains("chromatogram_index 3", "MS:1000131", "UO:0000269"));
     }
 
+    /** A chunk extra list one cell longer than its chunk drops that key for that chromatogram, with a WARNING (CD3). */
+    @Test
+    void aChunkExtraListOneCellLongerIsDroppedForThatChromatogram() {
+        SimpleGroupFactory rows = new SimpleGroupFactory(CHUNK_SCHEMA);
+        String index = arrayIndex("chunk",
+                entry("chunk.chromatogram_index", "index", "MS:1003870").put("sorting_rank", 0),
+                entry("chunk.time_chunk_start", "chunk_start", "MS:1000595").put("sorting_rank", 1),
+                entry("chunk.time_chunk_values", "chunk_values", "MS:1000595").put("sorting_rank", 1),
+                entry("chunk.intensity", "chunk_secondary", "MS:1000515"),
+                entry("chunk.ms_level", "chunk_secondary", "MS:1000786").put("array_name", "ms level"));
+        Path data = write("chromatograms_data.parquet", CHUNK_SCHEMA,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                row(rows, "chunk", "chromatogram_index", 0L, "time_chunk_start", 0, "time_chunk_values",
+                        List.of(1, 1), "intensity", List.of(1, 2, 3), "ms_level", List.of(1, 1, 1, 1)),
+                row(rows, "chunk", "chromatogram_index", 1L, "time_chunk_start", 0, "time_chunk_values",
+                        List.of(1), "intensity", List.of(4, 5), "ms_level", List.of(2, 2)));
+
+        List<List<Chromatogram>> out = new ArrayList<>();
+        List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
+                () -> out.add(chromatograms(data, 0, 1)));
+
+        assertArrays(out.get(0).get(0), new double[] {0, 1, 2}, new double[] {1, 2, 3});
+        assertThat(out.get(0).get(0).arrays()).isEmpty();
+        assertThat(out.get(0).get(1).arrays().get("ms level")).containsExactly(2, 2);
+        assertThat(warnings(records)).singleElement()
+                .satisfies(m -> assertThat(m).contains("chromatogram_index 0", "ms level", "has 4 values",
+                        "a chunk of 3 time points"));
+    }
+
+    /** An extra with a value column and a joined chunk transform is not decoded: dropped with a WARNING (CD5). */
+    @Test
+    void anExtraWithAValueColumnAndAJoinedTransformIsDropped() {
+        SimpleGroupFactory rows = new SimpleGroupFactory(CHUNK_SCHEMA);
+        String index = arrayIndex("chunk",
+                entry("chunk.chromatogram_index", "index", "MS:1003870").put("sorting_rank", 0),
+                entry("chunk.time_chunk_start", "chunk_start", "MS:1000595").put("sorting_rank", 1),
+                entry("chunk.time_chunk_values", "chunk_values", "MS:1000595").put("sorting_rank", 1),
+                entry("chunk.intensity", "chunk_secondary", "MS:1000515"),
+                entry("chunk.ms_level", "chunk_secondary", "MS:1000786").put("array_name", "ms level")
+                        .put("unit", "UO:0000186"),
+                entry("chunk.ms_level_slof", "chunk_transform", "MS:1000786").put("array_name", "ms level")
+                        .put("unit", "UO:0000186").put("transform", MSNumpress.ACC_NUMPRESS_SLOF));
+        Path data = write("chromatograms_data.parquet", CHUNK_SCHEMA,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                row(rows, "chunk", "chromatogram_index", 0L, "time_chunk_start", 0, "time_chunk_values",
+                        List.of(1), "intensity", List.of(1, 2), "ms_level", List.of(1, 2)));
+
+        List<List<Chromatogram>> out = new ArrayList<>();
+        List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
+                () -> out.add(chromatograms(data, 0)));
+
+        assertArrays(out.get(0).get(0), new double[] {0, 1}, new double[] {1, 2});
+        assertThat(out.get(0).get(0).arrays()).isEmpty();
+        assertThat(warnings(records)).singleElement()
+                .satisfies(m -> assertThat(m).contains("'ms level'", "chunk.ms_level_slof (MS:1002314)",
+                        "the array is dropped"));
+    }
+
     // ---- constructed members ----------------------------------------------------------------------------------
 
     /**

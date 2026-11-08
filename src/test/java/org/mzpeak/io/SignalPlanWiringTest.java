@@ -62,12 +62,15 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>mzPeakJ output reads back the arrays it was written from;
  *   <li>constructed members without an array index footer pin the decoding rules (Q-U5): a point row takes the
  *       literal {@code intensity}, else the first non-null numeric {@code intensity_*} column in schema order, else
- *       0, and a null time reads as NaN; a chunk row adds its time deltas to {@code time_chunk_start} whatever its
- *       {@code chunk_encoding} (a null delta adds 0), takes the plain {@code intensity} list, else the SLOF bytes,
- *       pads missing intensities with 0 and cuts surplus ones; rows without an index, and chunk rows without a
- *       start, are skipped; PIC bytes are not read; wavelength spectra read {@code wavelength} and the literal
- *       {@code intensity} only.
+ *       0, and a null time reads as NaN; a chunk row adds its time deltas to {@code time_chunk_start} (a null delta
+ *       adds 0), takes the plain {@code intensity} list, else the SLOF bytes, pads missing intensities with 0 and
+ *       cuts surplus ones; rows without an index, and chunk rows without a start, are skipped; wavelength spectra
+ *       read {@code wavelength} and the literal {@code intensity} only.
  * </ul>
+ * FN-4 made the chromatogram rows that were read as wrong or empty arrays fail: a chunk_encoding other than delta,
+ * PIC-only intensities, a Numpress-linear time axis, a plan without time or intensity, and a negative index. Its
+ * follow-up considers every intensity column of a kind: a second PIC or other undecoded intensity transform with the
+ * only values throws, a second SLOF column or intensity list is read, and so is a later wavelength intensity column.
  */
 class SignalPlanWiringTest {
 
@@ -265,6 +268,48 @@ class SignalPlanWiringTest {
         assertThat(store.plan().source()).isEqualTo(Source.FOOTER);
         assertThat(store.plan().indexField()).isEqualTo("trace");
         assertArrays(store.all().get(0), new double[] {1.0, 2.0}, new double[] {5.0, 0.5});
+        assertArrays(store.all().get(1), new double[] {Double.NaN}, new double[] {0.0});
+    }
+
+    /**
+     * The same point member with its footer entries in reverse schema order (RD-22 note 1): the index entry, listed
+     * last, still names the index field and the ranked {@code rt} the time axis, while the intensities follow the
+     * index order, absorbance before counts, so a row with both reads its absorbance.
+     */
+    @Test
+    void pointRowsAreReadFromTheColumnsOfAnIndexInReverseSchemaOrder() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 trace (INTEGER(64,false));
+                    optional double time;
+                    optional float intensity;
+                    optional double rt;
+                    optional float counts;
+                    optional float absorbance;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.absorbance", "point", "MS:1000515", null, null, "UO:0000269"),
+                indexEntry("point.counts", "point", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("point.rt", "point", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("point.trace", "index", "MS:1003870", 0, null, null));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                point(rows).append("trace", 0L).append("time", 98.0).append("intensity", 99f).append("rt", 1.0)
+                        .append("counts", 5f).append("absorbance", 7f).parent,
+                point(rows).append("trace", 0L).append("time", 97.0).append("intensity", 96f).append("rt", 2.0)
+                        .append("counts", 3f).parent,
+                point(rows).append("trace", 1L).append("time", 95.0).append("intensity", 94f).parent);
+
+        ChromatogramStore store = chromatogramStore(data, 0, 1);
+
+        assertThat(store.plan().indexField()).isEqualTo("trace");
+        assertThat(store.plan().axis().values().field()).isEqualTo("rt");
+        assertThat(store.plan().intensities()).extracting(Column::field).containsExactly("absorbance", "counts");
+        assertArrays(store.all().get(0), new double[] {1.0, 2.0}, new double[] {7.0, 3.0});
+        assertThat(store.all().get(0).intensityUnit()).as("absorbance, then counts").isNull();
         assertArrays(store.all().get(1), new double[] {Double.NaN}, new double[] {0.0});
     }
 
@@ -475,10 +520,10 @@ class SignalPlanWiringTest {
     }
 
     /**
-     * Chunk rows: the time axis is {@code time_chunk_start} plus the running sum of the deltas whatever the
-     * chunk_encoding, a null delta adds 0; intensities come from the plain list, else the SLOF bytes, are padded
-     * with 0 and cut to the time axis; PIC bytes are not read. Rows without an index or a start are skipped; chunks
-     * of one index are appended in row order.
+     * Chunk rows: the time axis is {@code time_chunk_start} plus the running sum of the deltas (chunk_encoding null or
+     * MS:1003089), a null delta adds 0; intensities come from the plain list, else the SLOF bytes, are padded with 0
+     * and cut to the time axis. Rows without an index or a start are skipped; chunks of one index are appended in row
+     * order. Chromatogram 3 was MS:1000576 and chromatogram 6 PIC-only before FN-4; both now throw (see below).
      */
     @Test
     void chunkRowsWithoutAnArrayIndex() {
@@ -493,14 +538,14 @@ class SignalPlanWiringTest {
                 chunk(rows, 0L, 20.0, null).list("time_chunk_values").list("intensity").parent,
                 chunk(rows, 2L, null, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent,
                 chunk(rows, null, 1.0, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent,
-                chunk(rows, 3L, 1.0, "MS:1000576").list("time_chunk_values", 1.0, 1.0)
+                chunk(rows, 3L, 1.0, null).list("time_chunk_values", 1.0, 1.0)
                         .list("intensity", 7.0, 8.0, 9.0, 10.0).parent,
                 chunk(rows, 4L, 0.0, null).list("time_chunk_values", 2.0)
                         .bytes("intensity_numpress_slof_bytes", new byte[0]).parent,
                 chunk(rows, 5L, 0.0, null).list("time_chunk_values", 1.0).list("intensity", 4.0, 5.0)
                         .bytes("intensity_numpress_slof_bytes", slof).parent,
                 chunk(rows, 6L, 0.0, null).list("time_chunk_values", 1.0)
-                        .bytes("intensity_numpress_pic_bytes", new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}).parent,
+                        .bytes("intensity_numpress_pic_bytes", new byte[0]).parent,
                 chunk(rows, 7L, 0.0, null).list("intensity", 6.0).parent);
 
         List<Chromatogram> all = chromatograms(data, 0, 1, 2, 3, 4, 5, 6, 7);
@@ -517,6 +562,324 @@ class SignalPlanWiringTest {
         assertArrays(all.get(5), new double[] {0.0, 1.0}, new double[] {4.0, 5.0});
         assertArrays(all.get(6), new double[] {0.0, 1.0}, new double[] {0.0, 0.0});
         assertArrays(all.get(7), new double[] {0.0}, new double[] {6.0});
+    }
+
+    @Test
+    void aChunkWhoseEncodingIsNotDeltaThrows() {
+        // before FN-4 the absolute values were summed as deltas: times [1, 11, 31]
+        MessageType schema = chunkSchema();
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                chunk(rows, 3L, 1.0, "MS:1000576").list("time_chunk_values", 10.0, 20.0)
+                        .list("intensity", 7.0, 8.0, 9.0).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 3))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk encoding MS:1000576 for chromatogram_index 3");
+    }
+
+    @Test
+    void aChunkWithOnlyPicIntensitiesThrows() {
+        // before FN-4 its intensities read as zeros
+        MessageType schema = chunkSchema();
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                chunk(rows, 6L, 0.0, null).list("time_chunk_values", 1.0)
+                        .bytes("intensity_numpress_pic_bytes", new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("PIC-encoded chromatogram intensities are not supported (column"
+                        + " intensity_numpress_pic_bytes) for chromatogram_index 6");
+    }
+
+    /**
+     * A footer may list several PIC columns, as one per unit. A chunk whose only intensities are in the second one
+     * throws, naming it; before the fix only the first PIC column was checked and the chunk read as zeros. PIC data
+     * next to an intensity list that carries values do not throw: the list is read.
+     */
+    @Test
+    void aChunkWhoseOnlyIntensitiesAreInASecondPicColumnThrows() {
+        MessageType schema = twoTransformSchema("pic");
+        String index = twoTransformIndex("pic", MSNumpress.ACC_NUMPRESS_PIC);
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                chunk(rows, 0L, 1.0, null).list("time_chunk_values", 1.0).bytes("pic_b", pic(10.0, 20.0)).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("PIC-encoded chromatogram intensities are not supported (column pic_b) for"
+                        + " chromatogram_index 0");
+
+        Path withList = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                chunk(rows, 0L, 1.0, null).list("time_chunk_values", 1.0).list("intensity", 3.0, 4.0)
+                        .bytes("pic_b", pic(10.0, 20.0)).parent);
+        Chromatogram c = chromatograms(withList, 0).get(0);
+        assertArrays(c, new double[] {1.0, 2.0}, new double[] {3.0, 4.0});
+        assertThat(c.intensityUnit()).isEqualTo("MS:1000131");
+    }
+
+    /**
+     * With two SLOF columns, the first one that carries a value is decoded: chromatogram 0 has its SLOF bytes in the
+     * second column only, chromatogram 1 an empty first column and its bytes in the second. Before the fix only the
+     * first SLOF column was read and both read as zeros.
+     */
+    @Test
+    void aSecondSlofColumnIsDecoded() {
+        MessageType schema = twoTransformSchema("slof");
+        String index = twoTransformIndex("slof", MSNumpress.ACC_NUMPRESS_SLOF);
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        byte[] slof = slof(10.0, 20.0);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                chunk(rows, 0L, 1.0, null).list("time_chunk_values", 1.0).bytes("slof_b", slof).parent,
+                chunk(rows, 1L, 5.0, null).list("time_chunk_values", 2.0).bytes("slof_a", new byte[0])
+                        .bytes("slof_b", slof).parent);
+
+        List<Chromatogram> all = chromatograms(data, 0, 1);
+
+        double[] decoded = MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, slof, slof.length);
+        assertThat(decoded[0]).isCloseTo(10.0, within(0.1));
+        assertThat(decoded[1]).isCloseTo(20.0, within(0.1));
+        assertArrays(all.get(0), new double[] {1.0, 2.0}, decoded);
+        assertArrays(all.get(1), new double[] {5.0, 7.0}, decoded);
+        assertThat(all).extracting(Chromatogram::intensityUnit).containsExactly("UO:0000269", "UO:0000269");
+    }
+
+    /**
+     * A SLOF payload of only its 8-byte header (what the SLOF encoders write for no values) carries no intensities, so
+     * it does not hide a later source: chromatogram 0 reads the values of the second SLOF column, and a chunk whose
+     * other intensities are PIC bytes throws. Before the fix the header was decoded as the chunk's intensities and
+     * both read as zeros. A chunk with only the header still reads as zeros in the header column's unit
+     * (chromatogram 1), as before.
+     */
+    @Test
+    void aSlofHeaderWithoutValuesDoesNotHideALaterSource() {
+        MessageType schema = twoTransformSchema("slof");
+        String index = twoTransformIndex("slof", MSNumpress.ACC_NUMPRESS_SLOF);
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        byte[] header = slof();
+        byte[] slof = slof(10.0, 20.0);
+        assertThat(header).hasSize(8);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                chunk(rows, 0L, 1.0, null).list("time_chunk_values", 1.0).bytes("slof_a", header)
+                        .bytes("slof_b", slof).parent,
+                chunk(rows, 1L, 5.0, null).list("time_chunk_values", 2.0).bytes("slof_a", header).parent);
+
+        List<Chromatogram> all = chromatograms(data, 0, 1);
+
+        assertArrays(all.get(0), new double[] {1.0, 2.0},
+                MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, slof, slof.length));
+        assertArrays(all.get(1), new double[] {5.0, 7.0}, new double[] {0.0, 0.0});
+        assertThat(all).extracting(Chromatogram::intensityUnit).containsExactly("UO:0000269", "MS:1000131");
+
+        MessageType inferred = chunkSchema();
+        SimpleGroupFactory inferredRows = new SimpleGroupFactory(inferred);
+        Path headerAndPic = write("chromatograms_data.parquet", inferred,
+                chunk(inferredRows, 6L, 0.0, null).list("time_chunk_values", 1.0)
+                        .bytes("intensity_numpress_slof_bytes", header)
+                        .bytes("intensity_numpress_pic_bytes", pic(10.0, 20.0)).parent);
+        assertThatThrownBy(() -> chromatograms(headerAndPic, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("PIC-encoded chromatogram intensities are not supported (column"
+                        + " intensity_numpress_pic_bytes) for chromatogram_index 6");
+    }
+
+    /**
+     * A chunk whose only intensities are in an intensity chunk transform the decoder does not know, or in one that
+     * names no transform, throws naming the column; before the fix such a chunk read as zeros.
+     */
+    @Test
+    void aChunkWhoseOnlyIntensitiesAreInAnUndecodedTransformThrows() {
+        MessageType schema = twoTransformSchema("lossy");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = chunk(rows, 4L, 1.0, null).list("time_chunk_values", 1.0).bytes("lossy_b", pic(10.0, 20.0))
+                .parent;
+        Path unknown = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), twoTransformIndex("lossy", "MS:9999999")), row);
+
+        assertThatThrownBy(() -> chromatograms(unknown, 4))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram_index 4 stores its intensities with the chunk transform MS:9999999 (column"
+                        + " lossy_b), which is not decoded for chromatograms");
+
+        Path unnamed = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), twoTransformIndex("lossy", null)), row);
+        assertThatThrownBy(() -> chromatograms(unnamed, 4))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram_index 4 stores its intensities with an unnamed chunk transform (column"
+                        + " lossy_b), which is not decoded for chromatograms");
+    }
+
+    /**
+     * An intensity source that is present but empty does not hide one that carries values: an empty first intensity
+     * list gives way to the second list and to the SLOF bytes, and an empty SLOF payload next to PIC data throws.
+     * Before the fix the empty source was taken and the chunks read as zeros.
+     */
+    @Test
+    void anEmptyIntensitySourceDoesNotHideALaterOne() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time_chunk_start;
+                    optional group time_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional group counts (LIST) { repeated group list { optional float item; } }
+                    optional group absorbance (LIST) { repeated group list { optional float item; } }
+                  }
+                }""");
+        String index = arrayIndex("chunk",
+                indexEntry("chunk.chromatogram_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.time_chunk_start", "chunk_start", "MS:1000595", 1, null, null),
+                indexEntry("chunk.time_chunk_values", "chunk_values", "MS:1000595", 1, null, null),
+                indexEntry("chunk.counts", "chunk_secondary", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("chunk.absorbance", "chunk_secondary", "MS:1000515", null, null, "UO:0000269"));
+        SimpleGroupFactory listRows = new SimpleGroupFactory(schema);
+        Path lists = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                chunk(listRows, 0L, 1.0, null).list("time_chunk_values", 1.0).list("counts")
+                        .list("absorbance", 0.5, 0.25).parent);
+        Chromatogram c = chromatograms(lists, 0).get(0);
+        assertArrays(c, new double[] {1.0, 2.0}, new double[] {0.5, 0.25});
+        assertThat(c.intensityUnit()).isEqualTo("UO:0000269");
+
+        MessageType inferred = chunkSchema();
+        SimpleGroupFactory rows = new SimpleGroupFactory(inferred);
+        byte[] slof = slof(100.0, 200.0);
+        Path emptyList = write("chromatograms_data.parquet", inferred,
+                chunk(rows, 0L, 0.0, null).list("time_chunk_values", 1.0).list("intensity")
+                        .bytes("intensity_numpress_slof_bytes", slof).parent);
+        assertArrays(chromatograms(emptyList, 0).get(0), new double[] {0.0, 1.0},
+                MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, slof, slof.length));
+
+        Path emptySlof = write("chromatograms_data.parquet", inferred,
+                chunk(rows, 6L, 0.0, null).list("time_chunk_values", 1.0)
+                        .bytes("intensity_numpress_slof_bytes", new byte[0])
+                        .bytes("intensity_numpress_pic_bytes", pic(10.0, 20.0)).parent);
+        assertThatThrownBy(() -> chromatograms(emptySlof, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("PIC-encoded chromatogram intensities are not supported (column"
+                        + " intensity_numpress_pic_bytes) for chromatogram_index 6");
+    }
+
+    @Test
+    void aChunkWithNumpressLinearTimeThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time_chunk_start;
+                    optional group time_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional binary chunk_encoding (STRING);
+                    optional group time_numpress_linear_bytes (LIST) {
+                      repeated group list { required int32 item (INTEGER(8,false)); }
+                    }
+                    optional group intensity (LIST) { repeated group list { optional float item; } }
+                  }
+                }""");
+        String index = arrayIndex("chunk",
+                indexEntry("chunk.chromatogram_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.time_chunk_start", "chunk_start", "MS:1000595", 1, null, null),
+                indexEntry("chunk.time_chunk_values", "chunk_values", "MS:1000595", 1, null, null),
+                indexEntry("chunk.chunk_encoding", "chunk_encoding", "MS:1000595", 1, null, null),
+                indexEntry("chunk.time_numpress_linear_bytes", "chunk_transform", "MS:1000595", 1,
+                        MSNumpress.ACC_NUMPRESS_LINEAR, null),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, null));
+        double[] times = {1.0, 2.0, 3.0};
+        byte[] buffer = new byte[8 + times.length * 5];
+        int n = MSNumpress.encodeLinear(times, times.length, buffer,
+                MSNumpress.optimalLinearFixedPoint(times, times.length));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = rows.newGroup();
+        new Row(row, row.addGroup("chunk")).append("chromatogram_index", 2L).append("time_chunk_start", 1.0)
+                .append("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR)
+                .bytes("time_numpress_linear_bytes", Arrays.copyOf(buffer, n)).list("intensity", 4.0, 5.0, 6.0);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index), row);
+
+        assertThatThrownBy(() -> chromatograms(data, 2))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("unsupported chunk encoding MS:1002312 for chromatogram_index 2");
+
+        // the transform column alone, under the delta encoding, throws too
+        Group delta = rows.newGroup();
+        new Row(delta, delta.addGroup("chunk")).append("chromatogram_index", 2L).append("time_chunk_start", 1.0)
+                .bytes("time_numpress_linear_bytes", Arrays.copyOf(buffer, n)).list("intensity", 4.0, 5.0, 6.0);
+        Path deltaData = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index), delta);
+        assertThatThrownBy(() -> chromatograms(deltaData, 2))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram_index 2 stores its time axis with the chunk transform MS:1002312 (column"
+                        + " time_numpress_linear_bytes), which is not decoded for chromatograms");
+    }
+
+    @Test
+    void aPointPlanWithoutTimeThrows() {
+        // before FN-4 every time read as NaN
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time;
+                    optional float intensity;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.chromatogram_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("point.intensity", "point", "MS:1000515", null, null, null));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                point(rows).append("chromatogram_index", 0L).append("time", 1.0).append("intensity", 2f).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("the chromatogram signal plan names no time values column, so the rows of"
+                        + " chromatogram_index 0 cannot be read");
+    }
+
+    @Test
+    void aPlanWithoutAnIntensityColumnThrows() {
+        // before FN-4 every intensity read as 0
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("chromatograms_data.parquet", schema,
+                point(rows).append("chromatogram_index", 0L).append("time", 1.0).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("the chromatogram signal plan names neither a value-bearing intensity column nor an"
+                        + " MS-Numpress SLOF column, so the rows of chromatogram_index 0 cannot be read");
+    }
+
+    @Test
+    void aNegativeChromatogramIndexThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int32 chromatogram_index (INTEGER(32,false));
+                    optional double time;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        // the uint32 2^31 + 1, sign-extended
+        Path data = write("chromatograms_data.parquet", schema,
+                point(rows).append("chromatogram_index", (int) 0x8000_0001L).append("time", 1.0)
+                        .append("intensity", 2f).parent);
+
+        assertThatThrownBy(() -> chromatograms(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chromatogram_index -2147483647 is out of range");
     }
 
     /** SLOF bytes that do not decode throw, naming the chromatogram index. */
@@ -575,9 +938,12 @@ class SignalPlanWiringTest {
         assertThat(all.get(2).intensity()).isEmpty();
     }
 
-    /** Wavelength spectra are read from point rows only: a chunk member gives empty arrays. */
+    /**
+     * Wavelength spectra are read from point rows only. A chunk member without an array index has no 'point' struct,
+     * the prefix inferred for wavelength spectra, and throws; before FN-5 it gave empty arrays.
+     */
     @Test
-    void aChunkWavelengthMemberGivesEmptyArrays() {
+    void aChunkWavelengthMemberWithoutAnArrayIndexThrows() {
         MessageType schema = MessageTypeParser.parseMessageType("""
                 message m {
                   optional group chunk {
@@ -594,11 +960,136 @@ class SignalPlanWiringTest {
                 .list("intensity", 1.0, 2.0);
         Path data = write("wavelength_spectra_data.parquet", schema, row);
 
+        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member has no 'point' struct, so its wavelength spectra cannot"
+                        + " be read");
+    }
+
+    /**
+     * A chunk member whose wavelength_spectrum_array_index has the prefix 'chunk', the shape of the has_uv_chunkwl
+     * reproduction (520 spectra with no points and no log line before FN-5), throws.
+     */
+    @Test
+    void aChunkWavelengthMemberWithAnArrayIndexThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 wavelength_spectrum_index (INTEGER(64,false));
+                    optional double wavelength_chunk_start;
+                    optional double wavelength_chunk_end;
+                    optional group wavelength_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional binary chunk_encoding (STRING);
+                    optional group intensity (LIST) { repeated group list { optional float item; } }
+                  }
+                }""");
+        String index = arrayIndex("chunk",
+                indexEntry("chunk.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.wavelength_chunk_start", "chunk_start", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("chunk.wavelength_chunk_end", "chunk_end", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("chunk.wavelength_chunk_values", "chunk_values", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("chunk.chunk_encoding", "chunk_encoding", "MS:1000617", 1, null, null),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, "UO:0000269"));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = rows.newGroup();
+        new Row(row, row.addGroup("chunk")).append("wavelength_spectrum_index", 0L)
+                .append("wavelength_chunk_start", 200.0).append("wavelength_chunk_end", 201.0)
+                .list("wavelength_chunk_values", 1.0).append("chunk_encoding", "MS:1003089")
+                .list("intensity", 1.0, 2.0);
+        Path data = write("wavelength_spectra_data.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index), row);
+
+        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member: chunked wavelength spectra are not supported");
+    }
+
+    @Test
+    void aWavelengthPlanWithoutWavelengthOrIntensityThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 wavelength_spectrum_index (INTEGER(64,false));
+                    optional float wavelength;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = point(rows).append("wavelength_spectrum_index", 0L).append("wavelength", 200f)
+                .append("intensity", 1f).parent;
+        Path noWavelength = write("no_wavelength.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), arrayIndex("point",
+                        indexEntry("point.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                        indexEntry("point.intensity", "point", "MS:1000515", null, null, null))), row);
+        Path noIntensity = write("no_intensity.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), arrayIndex("point",
+                        indexEntry("point.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                        indexEntry("point.wavelength", "point", "MS:1000617", 1, null, null))), row);
+
+        assertThatThrownBy(() -> wavelengthSpectra(noWavelength, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member: the signal plan names no wavelength values column");
+        assertThatThrownBy(() -> wavelengthSpectra(noIntensity, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member: the signal plan names no value-bearing intensity"
+                        + " column");
+    }
+
+    /**
+     * A wavelength point row takes the first non-null value among the plan's intensity columns in index order, as
+     * spectrum and chromatogram point rows do; before the fix only the first column was read and the second point,
+     * whose value is in {@code au} only, read as 0.
+     */
+    @Test
+    void aWavelengthPointRowReadsTheFirstNonNullIntensityColumn() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 wavelength_spectrum_index (INTEGER(64,false));
+                    optional float wavelength;
+                    optional float counts;
+                    optional float au;
+                  }
+                }""");
+        String index = arrayIndex("point",
+                indexEntry("point.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("point.wavelength", "point", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("point.counts", "point", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("point.au", "point", "MS:1000515", null, null, "UO:0000269"));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Path data = write("wavelength_spectra_data.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index),
+                point(rows).append("wavelength_spectrum_index", 0L).append("wavelength", 200f).append("counts", 5f)
+                        .append("au", 0.75f).parent,
+                point(rows).append("wavelength_spectrum_index", 0L).append("wavelength", 210f).append("au", 0.5f)
+                        .parent,
+                point(rows).append("wavelength_spectrum_index", 0L).append("wavelength", 220f).parent);
+
         List<WavelengthSpectrum> all = wavelengthSpectra(data, 0);
 
-        assertThat(all).hasSize(1);
-        assertThat(all.get(0).wavelength()).isEmpty();
-        assertThat(all.get(0).intensity()).isEmpty();
+        assertThat(all.get(0).wavelength()).containsExactly(200.0, 210.0, 220.0);
+        assertThat(all.get(0).intensity()).containsExactly(5.0, 0.5, 0.0);
+    }
+
+    @Test
+    void aNegativeWavelengthSpectrumIndexThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int32 wavelength_spectrum_index (INTEGER(32,false));
+                    optional float wavelength;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        // the uint32 2^31, sign-extended: it missed the header of index 2^31 before FN-5
+        Path data = write("wavelength_spectra_data.parquet", schema,
+                point(rows).append("wavelength_spectrum_index", Integer.MIN_VALUE).append("wavelength", 200f)
+                        .append("intensity", 1f).parent);
+
+        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("wavelength_spectrum_index -2147483648 is out of range");
     }
 
     // ---- helpers --------------------------------------------------------------------------------------------
@@ -649,6 +1140,39 @@ class SignalPlanWiringTest {
                     }
                   }
                 }""");
+    }
+
+    /**
+     * A chromatogram chunk schema with the time axis, the intensity list {@code intensity} and two byte-list columns
+     * {@code <name>_a} and {@code <name>_b}.
+     */
+    private static MessageType twoTransformSchema(String name) {
+        return MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 chromatogram_index (INTEGER(64,false));
+                    optional double time_chunk_start;
+                    optional group time_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional group intensity (LIST) { repeated group list { optional float item; } }
+                    optional group %1$s_a (LIST) { repeated group list { required int32 item (INTEGER(8,false)); } }
+                    optional group %1$s_b (LIST) { repeated group list { required int32 item (INTEGER(8,false)); } }
+                  }
+                }""".formatted(name));
+    }
+
+    /**
+     * The array index of {@link #twoTransformSchema}: {@code intensity} (chunk secondary, MS:1000131), then
+     * {@code <name>_a} (MS:1000131) and {@code <name>_b} (UO:0000269), both intensity chunk transforms
+     * {@code transform}.
+     */
+    private static String twoTransformIndex(String name, String transform) {
+        return arrayIndex("chunk",
+                indexEntry("chunk.chromatogram_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.time_chunk_start", "chunk_start", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("chunk.time_chunk_values", "chunk_values", "MS:1000595", 1, null, "UO:0000031"),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, "MS:1000131"),
+                indexEntry("chunk." + name + "_a", "chunk_transform", "MS:1000515", null, transform, "MS:1000131"),
+                indexEntry("chunk." + name + "_b", "chunk_transform", "MS:1000515", null, transform, "UO:0000269"));
     }
 
     /** A new row with its {@code point} struct. */
@@ -741,6 +1265,13 @@ class SignalPlanWiringTest {
         byte[] buffer = new byte[8 + 2 * values.length];
         int n = MSNumpress.encodeSlof(values, values.length, buffer,
                 MSNumpress.optimalSlofFixedPoint(values, values.length));
+        return Arrays.copyOf(buffer, n);
+    }
+
+    /** MS-Numpress PIC bytes of {@code values}. */
+    private static byte[] pic(double... values) {
+        byte[] buffer = new byte[8 + 5 * values.length];
+        int n = MSNumpress.encodePic(values, values.length, buffer);
         return Arrays.copyOf(buffer, n);
     }
 

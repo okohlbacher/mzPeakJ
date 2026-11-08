@@ -43,8 +43,6 @@ import static org.assertj.core.api.Assertions.within;
  */
 class UnsupportedEncodingTest {
 
-    private static final String GRID_ERROR = "unsupported chunk encoding MS:1003826 (coordinate grid, draft) with "
-            + "grid_type MS:9999002 for spectrum_index 0; grid decoding is not implemented";
 
     @TempDir
     Path tmp;
@@ -61,10 +59,10 @@ class UnsupportedEncodingTest {
         row.gridType = "MS:9999999";
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageContaining("MS:1003826")
                 .hasMessageContaining("spectrum_index 0")
                 .hasMessageNotContaining("must equal")
-                .hasMessage(GRID_ERROR.replace("MS:9999002", "MS:9999999"));
+                .hasMessage("grid_type MS:9999999 of mz_grid is not one of MS:1003824, MS:1003825, MS:9999002,"
+                        + " MS:9999001 for spectrum_index 0");
     }
 
     @Test
@@ -73,7 +71,8 @@ class UnsupportedEncodingTest {
         // intensities alone identify a grid chunk.
         ChunkRow row = gridRow0();
         row.encoding = null;
-        assertThatThrownBy(() -> read(row)).isInstanceOf(MzPeakException.class).hasMessage(GRID_ERROR);
+        assertThatThrownBy(() -> read(row)).isInstanceOf(MzPeakException.class)
+                .hasMessage("mz_grid carries a grid but chunk_encoding is (none) for spectrum_index 0");
     }
 
     // ---- Numpress intensity without a Numpress m/z source -----------------------------------------------------
@@ -252,8 +251,7 @@ class UnsupportedEncodingTest {
         row.encoding = "MS:1003826";
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type (none)"
-                        + " for spectrum_index 0; grid decoding is not implemented");
+                .hasMessage("chunk_encoding MS:1003826 for spectrum_index 0, but the row has no grid in mz_grid");
     }
 
     @Test

@@ -2,7 +2,6 @@ package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
-import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SignalArrays;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
@@ -53,8 +52,9 @@ final class WritePlanner {
         }
         WriteReport report = new WriteReport();
         List<SpectrumEntry> spectrumEntries = new ArrayList<>(ordered.size());
-        // Numpress always writes spectra_data, if need be without a single row; point layout only when it has rows.
-        boolean writesSpectraData = options.signalEncoding() == SignalEncoding.NUMPRESS;
+        // spectra_data is always written, if need be without a single row (every spectrum centroid): both Rust
+        // reference readers open it unconditionally (load_indices_from begins with spectrum_data()?).
+        boolean writesSpectraData = true;
         boolean writesSpectraPeaks = false;
         Set<String> droppedExtras = new LinkedHashSet<>();
         int withDroppedExtras = 0;
@@ -67,7 +67,6 @@ final class WritePlanner {
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumEntry entry = disposition(s).renumbered(i, precursors)
                     .withArrays(mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
-            writesSpectraData |= entry.data();
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
             if (!s.arrays().isEmpty() || !s.peakArrays().isEmpty()) {

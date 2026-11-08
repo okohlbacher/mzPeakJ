@@ -191,7 +191,7 @@ Leftovers of the precursor scope have no place in the model; they are logged at 
 
 | Decoder | Fields |
 |---|---|
-| `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers |
+| `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers (a column wins over a list entry with the same accession) |
 | `ScanRowDecoder` | MS:1000016 scan start time in minutes (converted from its mapping's unit: second, millisecond or hour; another unit, or a unit column, throws), MS:1000927 ion injection time, MS:1000512 filter string, MS:1000616 preset scan configuration; `instrument_configuration_id`; `spectrum_reference`; `scan_windows` (MS:1000501/MS:1000500, a window needs both); `parameters`; typed ion mobility (§5); IMS:1000050/51 positions as Long Params when the list lacks them; leftovers |
 | `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29, then `parameters` and leftovers); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
 | `SelectedIonRowDecoder` | MS:1000744 (a row without it is skipped), MS:1000041, MS:1000042, `parameters`, typed ion mobility, leftovers |
@@ -301,7 +301,10 @@ conformance rules require readers to resolve signal columns through it rather th
    `MS:1003826` → `mz_grid`).
 3. **Intensities:** every `MS:1000515` entry, in index order.
 4. **Extras:** every other entry, keyed as in §3.6.
-5. Entries whose path names no column of the member are skipped with a WARNING.
+5. Every entry's path must lie under the prefix, and the buffer formats must agree with it (no chunk format
+   under `point`, no `point` format under `chunk`); otherwise the plan throws. An entry whose path names no
+   column of the member is skipped with a WARNING when it is an extra; a main-axis or intensity entry without a
+   column throws, because skipping it would read NaN m/z, zero intensities or absolute values as deltas.
 
 **Role flags never pick an array.** Arrays are told apart by array type and buffer format, not by
 `buffer_priority`: small.chunked's intensity is `chunk_secondary`, and diaPASEF.ref's ion mobility is
@@ -324,14 +327,19 @@ transforms the other way round. Rule 1 and the lowest-rank rule cover them uncha
 
 | Row | Axis | Intensity |
 |---|---|---|
-| a Numpress column carries a value (the axis's `MS:1002312` transform, or a SLOF/PIC intensity transform) | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
+| the axis's `MS:1002312` transform column is non-null | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
 | `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | plain list, as long as the values or one longer |
 | `MS:1000576` or `MS:1003088` | absolute values | same |
 | `MS:1003826` (coordinate grid) | the grid's model applied to its cumulative indices (below) | plain list, 1:1 |
 | any other CURIE | throws `unsupported chunk encoding <curie> for spectrum_index <n>` | |
 
 Column presence picks the Numpress decoder, but an unknown `chunk_encoding` throws on every row. A row that
-names `MS:1002312` without carrying a Numpress column decodes as delta.
+names `MS:1002312` without carrying a Numpress column decodes as delta. A row without Numpress m/z is never
+decoded as Numpress: SLOF or PIC intensity that decodes to values throws, and a payload without values is
+skipped, so it cannot hide the row's delta m/z and plain intensities. A plan may list several plain lists, SLOF
+or PIC columns: the first plain list that carries a value (non-null and not empty) is read, else the first
+non-null one, and the first SLOF or PIC column whose payload decodes to values. An empty payload, or a SLOF
+payload of its 8-byte header only, has no values and does not hide a later column of any kind.
 
 **Delta encoding** (`MS:1003089`, "truncation, delta prediction and zlib compression"): differences from a
 predictor seeded at `mz_chunk_start`. **Null-aware**, per the spec's `null_delta_decode`: a null (NaN) breaks
@@ -358,7 +366,9 @@ encoded values fit in uint16; this is transparent to the reader.
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
 misdecoded: a grid chunk without a grid or with an unknown `grid_type` (below), an unknown `chunk_encoding`,
 Numpress intensity that decodes to values without a Numpress m/z source, Numpress m/z that decodes to values
-without an intensity column, and a value in a `*numpress*` column the plan does not decode.
+without an intensity column, a value in a `*numpress*` column the plan does not decode, and a value in an
+intensity chunk transform other than SLOF and PIC when no plain list of the row carries a value and no SLOF or
+PIC payload decodes to values.
 
 **Coordinate grids** (`MS:1003826`, draft). A grid chunk stores its axis as a struct `{grid_type, parameters,
 indices}` in the column that the array index lists as the axis's `MS:1003826` chunk transform (`mz_grid` in
@@ -386,14 +396,15 @@ change in `KINDS`. The arithmetic follows the reference's scalar decoders, fused
 9 spectra of diaPASEF.grid decode to those of diaPASEF.ref bit for bit: m/z, intensity and ion mobility
 (`GridDecodeTest`).
 
-**Grid errors.** On the main axis, a grid row without a grid, or one whose `grid_type` is not in `KINDS`, throws
-RD-12's message `unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type <type> for
-spectrum_index <n>; grid decoding is not implemented`, kept verbatim although the known types are decoded now. A
-row without the grid `chunk_encoding` that carries a grid instead of chunk values throws the same message. A grid
-that cannot be read as the struct, an index that is not an unsigned 32-bit integer, a running sum beyond 2³²−1,
-a parameter count the model does not take, or an intensity list of another length throws an `MzPeakException`
-that names the grid column. A secondary grid of an unknown `grid_type`, or one that cannot be decoded, only drops
-that extra array with a WARNING (§3.6).
+**Grid errors.** On the main axis, a row whose `chunk_encoding` equals the grid encoding but whose grid cannot be
+decoded throws `chunk_encoding MS:1003826 for spectrum_index <n>, but the signal plan has no grid column`, `...,
+but the row has no grid in <column>`, or, for a `grid_type` that is not in `KINDS`, `grid_type <type> of <column>
+is not one of MS:1003824, MS:1003825, MS:9999002, MS:9999001 for spectrum_index <n>`. A row with a grid,
+intensities and no axis values whose `chunk_encoding` is not the grid encoding throws `<column> carries a grid
+but chunk_encoding is <encoding> for spectrum_index <n>`. A grid that cannot be read as the struct, an index that
+is not an unsigned 32-bit integer, a running sum beyond 2³²−1, a parameter count the model does not take, or an
+intensity list of another length throws an `MzPeakException` that names the grid column. A secondary grid of an
+unknown `grid_type`, or one that cannot be decoded, only drops that extra array with a WARNING (§3.6).
 
 ### 3.4 Assembling a spectrum
 
@@ -409,12 +420,23 @@ members (§8.2). A signal member must be sorted by spectrum index; an index in t
 - **point:** the time value, and the first non-null value among the value-bearing intensity columns in index
   order. has_uv's 'DAD1 A' absorbance comes from `intensity_f32_au` (unit UO:0000269) where `intensity` is
   null. A null time reads as NaN, an intensity without any value as 0.
-- **chunk:** the chunk start followed by the running sum of the chunk values as deltas, whatever the chunk
-  encoding; the intensities are the first non-null intensity list, else the Numpress SLOF bytes. Missing
+- **chunk:** the chunk start followed by the running sum of the chunk values as deltas (`chunk_encoding` null
+  or `MS:1003089`); the intensities are the first intensity list that carries a value (non-null and not
+  empty), else the values of the first Numpress SLOF column whose bytes decode to any (an empty payload, or a
+  SLOF header without values, has none), considering every list and SLOF column of the plan. Missing
   intensities are padded with 0 and surplus ones dropped.
 
+What the decoder cannot decode throws instead of reading as wrong or empty arrays: another `chunk_encoding`, a
+value in a chunk transform column of the time axis (such as Numpress linear time), a chunk in which no list
+carries a value and no SLOF column decodes to values but another intensity chunk transform does (any PIC
+column, another transform, or one that names none), a negative index, and, on the first row, a plan without a
+time values column (point layout) or without any intensity source.
+
 `Chromatogram.intensityUnit()` is the unit of the plan entry that supplied the values (null for an INFERRED
-plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`).
+plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`), read
+like chromatogram point rows: the first non-null value among the intensity columns in index order; a
+data member in chunk layout, or one without the plan's prefix struct, wavelength column or intensity column,
+throws when the wavelength spectra are first requested.
 
 ### 3.6 Extra arrays
 
@@ -521,9 +543,13 @@ order:
 | `ION_MOBILITY_ARRAYS` | MS:1002893 'ion mobility array' and its descendants | 10 |
 | `DISSOCIATION_METHODS` | descendants of MS:1000044 'dissociation method', with names | 22 |
 
-- `ScanEvent.ionMobilityValue()`/`ionMobilityType()` read the first Param whose accession is an ion mobility
-  type. Typed `ion_mobility_value`/`ion_mobility_type` columns of scans and selected ions become such a Param
-  (`IonMobilityParams`) when the list holds none; a value without a type is MS:1002476 (drift time).
+- `ScanEvent.ionMobilityValue()` reads the first Param with a finite value whose accession is an ion mobility
+  type, the types taken in mzdata's priority order (MS:1002476, MS:1002815, MS:1001581, MS:1003371, then the
+  table order); `ionMobilityType()` is the type of that Param. Typed `ion_mobility_value`/`ion_mobility_type`
+  columns of scans and selected ions become such a Param (`IonMobilityParams`) when the list holds none, with
+  the PSI-MS name and unit the Rust reader gives the type (MS:1002815 'inverse reduced ion mobility drift time'
+  in MS:1002814, for example; another type is 'ion mobility value' without a unit); a value without a type is
+  MS:1002476 (drift time, in milliseconds).
 - `Spectrum.ionMobility()` looks for an ion mobility array key (§3.6).
 - `Activation.methods()` reports only `DISSOCIATION_METHODS`, which also name the dissociation-method marker's
   Param. MS:1002631 (EThcD) is a child of MS:1003181 'combined dissociation method', not of MS:1000044: it is
@@ -669,10 +695,12 @@ encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` v
 I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
 precursor), numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
 (CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
-re-sorts a main axis that is not ascending and decides which members are written. `DatasetWriter` then writes
-the metadata members, the signal members (point layout, or MS-Numpress chunks of up to 500 points with linear
-m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point layout, and the manifest last;
-`ArchivePacker` packs a directory into a STORED ZIP whose last entry is the manifest.
+re-sorts a main axis that is not ascending and decides which members are written. `spectra_data` is always
+written, in both layouts and both signal encodings, without a row when every spectrum is centroid, because both
+Rust reference readers open it unconditionally. `DatasetWriter` then writes the metadata members, the signal
+members (point layout, or MS-Numpress chunks of up to 500 points with linear m/z and SLOF or PIC intensity),
+chromatograms and wavelength spectra in point layout, and the manifest last; `ArchivePacker` packs a directory
+into a STORED ZIP whose last entry is the manifest.
 
 **Metadata layouts** (`Options.withMetadataLayout`):
 
@@ -711,9 +739,13 @@ the places where mzPeakJ deliberately differs from the Rust and Python readers.
 
 **Opening and options.** `open(Path)`, `open(Path, Options)`, `open(MzPeakSource)` and
 `open(MzPeakSource, Options)`; `open(Path, boolean)` sets `reconstructProfile`. A reader owns its source and
-closes it exactly once: when the open fails, or on the first `close()`. `MzPeakReader.Options` is an immutable
-final class with value equality: `Options.defaults()`, `withReconstructProfile(boolean)` (default `true`, §4.2)
-and `withSignalMode(SignalMode)` (default `BOTH`). `options()` returns the options a reader was opened with.
+closes it exactly once: when the open fails (also with an `Error`), or on the first `close()`, which closes both
+signal readers and the source even when one of them fails and throws the first failure. After `close()`, the
+methods that read the dataset throw `IllegalStateException` (spectra, chromatograms, wavelength spectra, queries,
+footer-backed metadata not cached yet); what the reader holds in memory stays available.
+`MzPeakReader.Options` is an immutable final class with value equality: `Options.defaults()`,
+`withReconstructProfile(boolean)` (default `true`, §4.2) and `withSignalMode(SignalMode)` (default `BOTH`).
+`options()` returns the options a reader was opened with.
 
 | `SignalMode` | Members read | `mz()`, `intensity()`, `arrays()` | `peaks()`, `peakArrays()` |
 |---|---|---|---|

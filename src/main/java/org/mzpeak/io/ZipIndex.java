@@ -259,6 +259,11 @@ final class ZipIndex {
                 throw new MzPeakException("unexpected end of ZIP archive while reading " + length
                         + " bytes at " + position);
             }
+            if (n == 0) {
+                // the RandomAccessBytes contract allows 0 only when the buffer has no room; looping would hang
+                throw new MzPeakException("zero-length read of the ZIP archive at position " + pos + " while reading "
+                        + length + " bytes at " + position + "; a read must return at least one byte or -1");
+            }
             pos += n;
         }
         return buf.flip().order(ByteOrder.LITTLE_ENDIAN);

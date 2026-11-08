@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.io.InputFile;
+import org.apache.parquet.schema.MessageType;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
@@ -18,12 +19,15 @@ import java.util.Optional;
  * {@link WavelengthMetadataDecoder}; spectra keep its order, and an index without data rows reads as empty arrays.
  * UV/DAD data is dense {@code point} layout (no null-marking, no precursors), grouped by {@link PointArrays} through
  * the data member's {@link SignalPlan}: from its {@code wavelength_spectrum_array_index} footer, else inferred from
- * its column names.
+ * its column names. A data member that cannot be read that way throws an {@link MzPeakException} naming it, instead
+ * of giving empty arrays: one in chunk layout (chunked wavelength spectra are not decoded), one without the plan's
+ * prefix struct, and one whose plan names no wavelength values column or no value-bearing intensity column.
  */
 final class WavelengthSpectrumStore {
 
     /** Names a member given directly as an {@link InputFile} in error messages, by its manifest role. */
     private static final String MEMBER = "wavelength spectrum metadata member";
+    private static final String DATA_MEMBER = "wavelength spectrum data member";
 
     private final List<WavelengthSpectrum> all;
     private final Map<Long, WavelengthSpectrum> byIndex;
@@ -64,24 +68,32 @@ final class WavelengthSpectrumStore {
         if (metadata == null || dataName == null) {
             return null;
         }
-        return load(WavelengthMetadataDecoder.decode(source, metadata), source.inputFile(dataName));
+        return load(WavelengthMetadataDecoder.decode(source, metadata), source.inputFile(dataName), dataName);
     }
 
     /**
-     * Loads a metadata member of either layout and a data member given directly; error messages name the metadata
-     * member by its role.
+     * Loads a metadata member of either layout and a data member given directly; error messages name the members by
+     * their roles.
      */
     static WavelengthSpectrumStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.WAVELENGTH_SPECTRUM.canonical(), DataKind.METADATA.canonical());
-        return load(WavelengthMetadataDecoder.decode(singleMember(metadataFile), metadata), dataFile);
+        return load(WavelengthMetadataDecoder.decode(singleMember(metadataFile), metadata), dataFile, DATA_MEMBER);
     }
 
-    /** Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. */
-    private static WavelengthSpectrumStore load(List<WavelengthMetadataDecoder.Header> headers, InputFile dataFile) {
+    /**
+     * Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. Errors
+     * name the data member {@code dataName}.
+     */
+    private static WavelengthSpectrumStore load(List<WavelengthMetadataDecoder.Header> headers, InputFile dataFile,
+                                                String dataName) {
         if (headers.isEmpty()) {
             return new WavelengthSpectrumStore(List.of(), null);
         }
-        SignalPlan plan = plan(dataFile);
+        ParquetFooter footer = ParquetFooter.read(dataFile);
+        SignalPlan plan = SignalPlan.of(
+                ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM), footer.schema(),
+                SignalEntity.WAVELENGTH_SPECTRUM);
+        requireReadable(plan, footer.schema(), dataName);
         Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, plan);
 
         List<WavelengthSpectrum> all = new ArrayList<>(headers.size());
@@ -94,11 +106,21 @@ final class WavelengthSpectrumStore {
         return new WavelengthSpectrumStore(all, plan);
     }
 
-    /** The signal plan of a data member: from its array index footer, else inferred from its column names. */
-    private static SignalPlan plan(InputFile dataFile) {
-        ParquetFooter footer = ParquetFooter.read(dataFile);
-        return SignalPlan.of(ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM),
-                footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM);
+    /** Throws unless {@code plan} reads the point rows of the data member {@code dataName} of schema {@code schema}. */
+    private static void requireReadable(SignalPlan plan, MessageType schema, String dataName) {
+        if (plan.layout() == SignalPlan.Layout.CHUNK) {
+            throw new MzPeakException(dataName + ": chunked wavelength spectra are not supported");
+        }
+        if (!schema.containsField(plan.prefix()) || schema.getType(plan.prefix()).isPrimitive()) {
+            throw new MzPeakException(dataName + " has no '" + plan.prefix() + "' struct, so its wavelength spectra"
+                    + " cannot be read");
+        }
+        if (plan.axis().values() == null) {
+            throw new MzPeakException(dataName + ": the signal plan names no wavelength values column");
+        }
+        if (plan.plainIntensity().isEmpty()) {
+            throw new MzPeakException(dataName + ": the signal plan names no value-bearing intensity column");
+        }
     }
 
     /** A source whose every member is {@code file}; it has no manifest. */

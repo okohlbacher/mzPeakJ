@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 
@@ -52,8 +53,9 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>Constructed members, written with parquet-java into a {@link TempDir} from row 0 of diaPASEF.grid's peaks
  *       member or from the spec's worked example, cover the unsigned index read, the cumulative main axis next to the
  *       absolute secondary grid, grid and delta rows in one spectrum, and the errors: an unknown main-axis grid_type
- *       keeps RD-12's error, while an unknown ion mobility grid only drops that extra array; a grid column that cannot
- *       be read fails naming the column on the main axis and only drops that extra array as an ion mobility grid.
+ *       fails naming the known ones, while an unknown ion mobility grid only drops that extra array; a grid column that
+ *       cannot be read fails naming the column on the main axis and only drops that extra array as an ion mobility
+ *       grid, also when the row's chunk_encoding is not the grid encoding.
  * </ul>
  */
 class GridDecodeTest {
@@ -254,23 +256,41 @@ class GridDecodeTest {
     }
 
     @Test
-    void anUnknownMainAxisGridTypeKeepsRd12sError() {
+    void anUnknownMainAxisGridTypeFailsNamingTheKnownOnes() {
         GridRow row = Row0.INSTANCE.copy();
         row.mzType = UNKNOWN;
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type "
-                        + UNKNOWN + " for spectrum_index 0; grid decoding is not implemented");
+                .hasMessage("grid_type " + UNKNOWN + " of mz_grid is not one of MS:1003824, MS:1003825, MS:9999002,"
+                        + " MS:9999001 for spectrum_index 0");
     }
 
     @Test
-    void aGridRowWithoutItsGridStructKeepsRd12sError() {
+    void aGridRowWithoutItsGridStructFails() {
         GridRow row = Row0.INSTANCE.copy();
         row.mzType = null;
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type (none)"
-                        + " for spectrum_index 0; grid decoding is not implemented");
+                .hasMessage("chunk_encoding MS:1003826 for spectrum_index 0, but the row has no grid in mz_grid");
+    }
+
+    @Test
+    void aGridEncodingWithoutAGridColumnInThePlanFails() {
+        assertThat(ChunkCodecs.undecodableGrid(null, false, null, 4))
+                .hasMessage("chunk_encoding MS:1003826 for spectrum_index 4, but the signal plan has no grid column");
+    }
+
+    @Test
+    void aGridColumnThatIsNotAStructWithoutTheGridEncodingFailsNamingTheColumn() {
+        // before FN-3 the error re-read the column as a struct and failed with a ClassCastException
+        GridRow row = Row0.INSTANCE.copy();
+        row.encoding = "MS:1003089";
+        Path file = write(schema(malformed(MZ_GRID, NOT_A_STRUCT), grid(IM_GRID, UINT32)), row);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), MEMBER, false, Map.of())) {
+            assertThatThrownBy(() -> store.get(0))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("mz_grid carries a grid but chunk_encoding is MS:1003089 for spectrum_index 0");
+        }
     }
 
     @Test
@@ -371,6 +391,55 @@ class GridDecodeTest {
                 .hasMessageContaining(Integer.toString(row.intensity.length))
                 .hasMessageContaining(Integer.toString(row.mzIndices.length))
                 .hasMessageContaining("spectrum_index 0");
+    }
+
+    /** One surplus intensity fails too (kills C5, which checked the grid lengths in one direction only). */
+    @Test
+    void aGridWithOneSurplusIntensityFails() {
+        GridRow row = Row0.INSTANCE.copy();
+        row.intensity = Arrays.copyOf(row.intensity, row.intensity.length + 1);
+        assertThatThrownBy(() -> read(row))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid chunk intensity length (" + row.intensity.length + ") must equal its " + MZ_GRID
+                        + " indices (" + row.mzIndices.length + ") for spectrum_index 0");
+    }
+
+    /** An INT64 index list holding 2^32 is outside the uint32 range (kills G2). */
+    @Test
+    void anInt64GridIndexOfTwoToThe32Fails() {
+        Group chunk = gridCell("required int64 element;", indices -> indices.addGroup("list")
+                .add("element", 4_294_967_296L));
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid " + MZ_GRID + " has the index 4294967296 at position 0, outside 0..4294967295,"
+                        + " for spectrum_index 0");
+    }
+
+    /** A DOUBLE index list holding 1.5 is not an integer (kills G3, which truncated it to 1). */
+    @Test
+    void aDoubleGridIndexOfOnePointFiveFails() {
+        Group chunk = gridCell("required double element;", indices -> {
+            indices.addGroup("list").add("element", 2.0);
+            indices.addGroup("list").add("element", 1.5);
+        });
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid " + MZ_GRID + " has the index 1.5 at position 1, not an unsigned 32-bit integer,"
+                        + " for spectrum_index 0");
+    }
+
+    /** The chunk struct of a row whose {@code mz_grid} indices are {@code element}s, added by {@code fill}. */
+    private static Group gridCell(String element, Consumer<Group> fill) {
+        MessageType schema = MessageTypeParser.parseMessageType("message m { optional group chunk { "
+                + grid(MZ_GRID, element) + " } }");
+        Group record = new SimpleGroupFactory(schema).newGroup();
+        Group grid = record.addGroup("chunk").addGroup(MZ_GRID);
+        grid.add("grid_type", GridModels.LINEAR);
+        Group parameters = grid.addGroup("parameters");
+        parameters.addGroup("list").add("element", 95.0);
+        parameters.addGroup("list").add("element", 3.75e-7);
+        fill.accept(grid.addGroup("indices"));
+        return record.getGroup("chunk", 0);
     }
 
     @Test

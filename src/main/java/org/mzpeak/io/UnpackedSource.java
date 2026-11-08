@@ -13,8 +13,8 @@ import java.util.Map;
 /**
  * {@link MzPeakSource} over an unpacked dataset whose members a {@link MzPeakSource.MemberOpener} opens as
  * {@link RandomAccessBytes}, e.g. the objects under one prefix of an object store. Each member is opened on first
- * use, at most once, and served as a {@link FileSliceInputFile} over its whole length; {@link #close()} closes the
- * members opened.
+ * use, and not again once it opened successfully (a failed open is retried on the next request), and served as a
+ * {@link FileSliceInputFile} over its whole length; {@link #close()} closes the members opened.
  */
 final class UnpackedSource implements MzPeakSource {
 
@@ -51,6 +51,10 @@ final class UnpackedSource implements MzPeakSource {
                 int n = m.bytes().read(buf, pos);
                 if (n < 0) {
                     throw new MzPeakException("unexpected end of member " + MANIFEST + " in " + description);
+                }
+                if (n == 0) {
+                    throw new MzPeakException("zero-length read of member " + MANIFEST + " in " + description
+                            + " at position " + pos + "; a read must return at least one byte or -1");
                 }
                 pos += n;
             }
