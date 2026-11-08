@@ -45,8 +45,12 @@ class WriterDispositionTest {
     private static final String METADATA = "spectra_metadata.parquet";
     private static final String DATA = "spectra_data.parquet";
     private static final String PEAKS = "spectra_peaks.parquet";
+    /** The count columns of the packed spectrum struct. */
     private static final String DATA_POINTS = "MS_1003060_number_of_data_points";
     private static final String NUMBER_OF_PEAKS = "MS_1003059_number_of_peaks";
+    /** The count columns of the split spectra_metadata table. */
+    private static final String SPLIT_DATA_POINTS = "number_of_data_points";
+    private static final String SPLIT_NUMBER_OF_PEAKS = "number_of_peaks";
 
     // ---- fixtures -----------------------------------------------------------------------------------------------
 
@@ -262,8 +266,8 @@ class WriterDispositionTest {
         assertThat(peaks.mz()).containsExactly(100.0, 200.0, 300.0);
         assertNumpressIntensities(peaks.intensity(), 3e8, 4e8, 5e8);
         Group spectrum = metadataRows(out).get(0L);
-        assertThat(ParquetGroups.optLong(spectrum, DATA_POINTS)).isNull();
-        assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isEqualTo((long) peaks.mz().length);
+        assertThat(dataPoints(spectrum)).isNull();
+        assertThat(numberOfPeaks(spectrum)).isEqualTo((long) peaks.mz().length);
     }
 
     static Stream<Arguments> numpressNonFiniteMzRows() {
@@ -298,15 +302,15 @@ class WriterDispositionTest {
             assertNumpressIntensities(intensities(back.peaks()), intensities(s.peaks()));
         }
         Group spectrum = metadataRows(out).get(0L);
-        assertThat(ParquetGroups.optLong(spectrum, DATA_POINTS)).isEqualTo(3L);
+        assertThat(dataPoints(spectrum)).isEqualTo(3L);
         if (peakCopy) {
             SpectrumArrayStore.Arrays peaks = decoded(out.resolve(PEAKS), 0);
             assertThat(peaks.mz()).containsExactly(100.0, 300.0);
             assertNumpressIntensities(peaks.intensity(), 3e8, 5e8);
-            assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isEqualTo(2L);
+            assertThat(numberOfPeaks(spectrum)).isEqualTo(2L);
         } else {
             assertThat(out.resolve(PEAKS)).doesNotExist();
-            assertThat(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS)).isNull();
+            assertThat(numberOfPeaks(spectrum)).isNull();
         }
     }
 
@@ -498,8 +502,8 @@ class WriterDispositionTest {
         Group spectrum = metadataRows(out).get(index);
         return "data=" + orDash(rowsPerSpectrum(out.resolve(DATA), "point").get(index))
                 + " peaks=" + orDash(rowsPerSpectrum(out.resolve(PEAKS), "point").get(index))
-                + " number_of_data_points=" + orDash(ParquetGroups.optLong(spectrum, DATA_POINTS))
-                + " number_of_peaks=" + orDash(ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS));
+                + " number_of_data_points=" + orDash(dataPoints(spectrum))
+                + " number_of_peaks=" + orDash(numberOfPeaks(spectrum));
     }
 
     private static String orDash(Long value) {
@@ -521,14 +525,30 @@ class WriterDispositionTest {
         return rows;
     }
 
-    /** The spectrum facet of every spectra_metadata row, by index. */
+    /**
+     * The spectrum facet of every spectra_metadata row, by index: the spectrum struct of the packed layout, or the row
+     * itself in the split layout.
+     */
     private static Map<Long, Group> metadataRows(Path out) {
         Map<Long, Group> rows = new TreeMap<>();
         ParquetGroups.forEach(out.resolve(METADATA), row -> {
-            Group spectrum = ParquetGroups.optGroup(row, "spectrum");
+            Group packed = ParquetGroups.optGroup(row, "spectrum");
+            Group spectrum = packed != null ? packed : row;
             rows.put(ParquetGroups.optLong(spectrum, "index"), spectrum);
         });
         return rows;
+    }
+
+    /** The number_of_data_points of a {@link #metadataRows} facet in either layout; null if absent. */
+    private static Long dataPoints(Group spectrum) {
+        Long packed = ParquetGroups.optLong(spectrum, DATA_POINTS);
+        return packed != null ? packed : ParquetGroups.optLong(spectrum, SPLIT_DATA_POINTS);
+    }
+
+    /** The number_of_peaks of a {@link #metadataRows} facet in either layout; null if absent. */
+    private static Long numberOfPeaks(Group spectrum) {
+        Long packed = ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS);
+        return packed != null ? packed : ParquetGroups.optLong(spectrum, SPLIT_NUMBER_OF_PEAKS);
     }
 
     /** number_of_data_points and number_of_peaks of every spectrum equal its rows in spectra_data and spectra_peaks. */
@@ -536,11 +556,11 @@ class WriterDispositionTest {
         Map<Long, Long> dataPoints = new TreeMap<>();
         Map<Long, Long> peaks = new TreeMap<>();
         metadataRows(out).forEach((index, spectrum) -> {
-            Long n = ParquetGroups.optLong(spectrum, DATA_POINTS);
+            Long n = dataPoints(spectrum);
             if (n != null) {
                 dataPoints.put(index, n);
             }
-            Long p = ParquetGroups.optLong(spectrum, NUMBER_OF_PEAKS);
+            Long p = numberOfPeaks(spectrum);
             if (p != null) {
                 peaks.put(index, p);
             }

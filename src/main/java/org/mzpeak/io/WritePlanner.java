@@ -34,7 +34,7 @@ import java.util.function.ToLongFunction;
  * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
  * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, decides which members are written and
  * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
- * directory exists.
+ * directory exists. Extra signal arrays of spectra are not written; the report gets one warning when there are any.
  */
 final class WritePlanner {
 
@@ -56,6 +56,8 @@ final class WritePlanner {
         // Numpress always writes spectra_data, if need be without a single row; point layout only when it has rows.
         boolean writesSpectraData = options.signalEncoding() == SignalEncoding.NUMPRESS;
         boolean writesSpectraPeaks = false;
+        Set<String> droppedExtras = new LinkedHashSet<>();
+        int withDroppedExtras = 0;
         for (int i = 0; i < ordered.size(); i++) {
             Spectrum s = ordered.get(i);
             List<Precursor> precursors = writtenPrecursors(s.description().precursors(), writtenIndex);
@@ -68,6 +70,17 @@ final class WritePlanner {
             writesSpectraData |= entry.data();
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
+            if (!s.arrays().isEmpty() || !s.peakArrays().isEmpty()) {
+                withDroppedExtras++;
+                droppedExtras.addAll(s.arrays().keySet());
+                droppedExtras.addAll(s.peakArrays().keySet());
+            }
+        }
+        // Extra signal arrays (Spectrum.arrays(), peakArrays()) are not written yet: one warning for the whole write.
+        if (withDroppedExtras > 0) {
+            report.warn(withDroppedExtras + (withDroppedExtras == 1 ? " spectrum carries" : " spectra carry")
+                    + " extra signal arrays (" + String.join(", ", droppedExtras) + "), which are not written; "
+                    + "their m/z and intensity are");
         }
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
         List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());

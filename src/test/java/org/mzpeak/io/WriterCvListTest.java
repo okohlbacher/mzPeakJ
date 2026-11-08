@@ -66,6 +66,9 @@ class WriterCvListTest {
 
     private static final String INDEX = "mzpeak_index.json";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** The pin-era packed metadata layout, selected explicitly. */
+    private static final MzPeakWriter.Options PACKED =
+            MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED);
 
     /** The reference's table in its order, one JSON object per CV as the reference serialises it. */
     private static final List<String> REFERENCE_TABLE = List.of(
@@ -134,9 +137,9 @@ class WriterCvListTest {
         Source s = source(Fixtures.current("Example_Processed.img.mzpeak"));
         assertThat(s.scanSettings).as("Example_Processed.img scan settings").isNotEmpty();
         Path out = tmp.resolve("img.mzpeak");
-        // writeDirectory writes the packed metadata layout with the pin-era manifest dialect.
+        // The packed metadata layout writes the pin-era manifest dialect.
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
-                s.fileMetadata);
+                s.fileMetadata, PACKED);
 
         assertThat(cvList(out)).containsExactly(MS, UO, IMS);
         assertEveryWrittenPrefixIsDeclared(out);
@@ -307,8 +310,9 @@ class WriterCvListTest {
     @Test
     void aKnownPrefixUsedOnlyAsAManifestUnitIsDeclared(@TempDir Path tmp) throws IOException {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
-        // MS accessions; EFO is only the unit_accession of a scan-settings param, OBI only the unit of a sample
-        // param, which the file-metadata footer and so the manifest's metadata carry.
+        // MS accessions; EFO is only the unit_accession of a scan-settings param (the packed layout's pin-era
+        // dialect), OBI only the unit of a sample param, which the file-metadata footer and so the manifest's
+        // metadata carry.
         ScanSettings settings = new ScanSettings("settings", List.of(
                 new Param("sample volume", "MS:1000005", 10.0, "EFO:0000001")));
         FileMetadata m = s.fileMetadata;
@@ -319,7 +323,7 @@ class WriterCvListTest {
         Path out = tmp.resolve("manifest-units.mzpeak");
 
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra,
-                s.chromatograms, s.wavelengthSpectra, List.of(settings), metadata));
+                s.chromatograms, s.wavelengthSpectra, List.of(settings), metadata, PACKED));
 
         assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(2), REFERENCE_TABLE.get(3));
         assertThat(warnings).isEmpty();

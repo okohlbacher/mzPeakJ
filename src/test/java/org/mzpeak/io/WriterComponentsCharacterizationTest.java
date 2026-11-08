@@ -44,7 +44,9 @@ import static org.assertj.core.api.Assertions.offset;
  * overloads and the temp-directory handling of the archive writers.
  *
  * <p>Inputs are the legacy {@code small.unpacked} and {@code has_uv} fixtures, read with
- * {@link ForwardBackwardCorpusTest#readSource}, with a few spectra or scan settings added or edited.
+ * {@link ForwardBackwardCorpusTest#readSource}, with a few spectra or scan settings added or edited. The tests that
+ * pin the manifest, the metadata columns, the row groups and the Numpress archive members select the packed metadata
+ * layout explicitly, the layout these components were pinned with.
  */
 class WriterComponentsCharacterizationTest {
 
@@ -52,6 +54,11 @@ class WriterComponentsCharacterizationTest {
     private static final Path HAS_UV = Fixtures.legacy("has_uv.mzpeak");
     private static final String ROW_GROUP_SIZE = "mzpeak.writer.rowGroupSize";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** The packed metadata layout these components write, selected explicitly. */
+    private static final MzPeakWriter.Options PACKED =
+            MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED);
+    private static final MzPeakWriter.Options PACKED_NUMPRESS =
+            PACKED.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS);
 
     // ---- manifest -----------------------------------------------------------------------------------------------
 
@@ -80,16 +87,16 @@ class WriterComponentsCharacterizationTest {
                 + "{\"parameters\":[]}]";
 
         Path point = tmp.resolve("point.mzpeak");
-        MzPeakWriter.writeDirectory(point, s.spectra, s.chromatograms, List.of(), settings, s.fileMetadata);
+        MzPeakWriter.writeDirectory(point, s.spectra, s.chromatograms, List.of(), settings, s.fileMetadata, PACKED);
         Path numpress = tmp.resolve("numpress.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(numpress, s.spectra, s.chromatograms, List.of(), settings,
-                s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.PIC);
+        MzPeakWriter.writeDirectory(numpress, s.spectra, s.chromatograms, List.of(), settings, s.fileMetadata,
+                PACKED_NUMPRESS.withNumpressIntensity(MzPeakWriter.NumpressIntensityEncoding.PIC));
 
         assertThat(manifest(point).path("metadata").path("scan_settings_list").toString()).isEqualTo(expected);
         assertThat(manifest(numpress).path("metadata").path("scan_settings_list").toString()).isEqualTo(expected);
 
         Path none = tmp.resolve("null-settings.mzpeak");
-        MzPeakWriter.writeDirectory(none, s.spectra, s.chromatograms, List.of(), null, s.fileMetadata);
+        MzPeakWriter.writeDirectory(none, s.spectra, s.chromatograms, List.of(), null, s.fileMetadata, PACKED);
         assertThat(manifest(none).path("metadata").path("scan_settings_list").toString()).isEqualTo("[]");
     }
 
@@ -105,7 +112,7 @@ class WriterComponentsCharacterizationTest {
                 .allSatisfy(x -> assertThat(x.peaks()).isNotEmpty());
 
         Path point = tmp.resolve("point.mzpeak");
-        MzPeakWriter.writeDirectory(point, peaksOnly, List.of(), List.of(), List.of(), FileMetadata.EMPTY);
+        MzPeakWriter.writeDirectory(point, peaksOnly, List.of(), List.of(), List.of(), FileMetadata.EMPTY, PACKED);
         assertThat(manifestFiles(point)).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
                 "spectra_peaks.parquet|spectrum|peaks");
@@ -116,8 +123,8 @@ class WriterComponentsCharacterizationTest {
 
         // Numpress always writes spectra_data, here without a single row.
         Path numpress = tmp.resolve("numpress.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(numpress, peaksOnly, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
-                MzPeakWriter.NumpressIntensityEncoding.SLOF);
+        MzPeakWriter.writeDirectory(numpress, peaksOnly, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                PACKED_NUMPRESS);
         assertThat(manifestFiles(numpress)).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
                 "spectra_data.parquet|spectrum|data arrays",
@@ -126,7 +133,7 @@ class WriterComponentsCharacterizationTest {
 
         Path chromatogramsOnly = tmp.resolve("chromatograms-only.mzpeak");
         MzPeakWriter.writeDirectory(chromatogramsOnly, List.of(), s.chromatograms, List.of(), List.of(),
-                FileMetadata.EMPTY);
+                FileMetadata.EMPTY, PACKED);
         assertThat(manifestFiles(chromatogramsOnly)).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
                 "chromatograms_metadata.parquet|chromatogram|metadata",
@@ -161,10 +168,10 @@ class WriterComponentsCharacterizationTest {
                 new double[0], new double[0], List.of()));
 
         Path point = tmp.resolve("point.mzpeak");
-        MzPeakWriter.writeDirectory(point, spectra, s.chromatograms, List.of(), List.of(), s.fileMetadata);
+        MzPeakWriter.writeDirectory(point, spectra, s.chromatograms, List.of(), List.of(), s.fileMetadata, PACKED);
         Path numpress = tmp.resolve("numpress.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(numpress, spectra, s.chromatograms, List.of(), List.of(),
-                s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.PIC);
+        MzPeakWriter.writeDirectory(numpress, spectra, s.chromatograms, List.of(), List.of(), s.fileMetadata,
+                PACKED_NUMPRESS.withNumpressIntensity(MzPeakWriter.NumpressIntensityEncoding.PIC));
 
         for (Path out : List.of(point, numpress)) {
             Map<Long, Group> meta = metadataRows(out.resolve("spectra_metadata.parquet"));
@@ -266,10 +273,10 @@ class WriterComponentsCharacterizationTest {
         Source uv = ForwardBackwardCorpusTest.readSource(HAS_UV);
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
         Consumer<Path> pointWrite = out -> MzPeakWriter.writeDirectory(out, uv.spectra, uv.chromatograms,
-                uv.wavelengthSpectra, uv.scanSettings, uv.fileMetadata);
-        Consumer<Path> numpressWrite = out -> MzPeakWriter.writeDirectoryNumpress(out, small.spectra,
+                uv.wavelengthSpectra, uv.scanSettings, uv.fileMetadata, PACKED);
+        Consumer<Path> numpressWrite = out -> MzPeakWriter.writeDirectory(out, small.spectra,
                 small.chromatograms, small.wavelengthSpectra, small.scanSettings, small.fileMetadata,
-                MzPeakWriter.NumpressIntensityEncoding.SLOF);
+                PACKED_NUMPRESS);
 
         Map<String, String> pointGroups = compareWithSmallRowGroups(tmp.resolve("point"), pointWrite, "4096");
         Map<String, String> numpressGroups = compareWithSmallRowGroups(tmp.resolve("numpress"), numpressWrite,
@@ -297,12 +304,12 @@ class WriterComponentsCharacterizationTest {
     void numpressArchiveHoldsTheSlofDirectoryMembersInNameOrder(@TempDir Path tmp) throws IOException {
         Source s = ForwardBackwardCorpusTest.readSource(SMALL);
         Path dir = tmp.resolve("dir.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
-                s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.SLOF);
+        MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, PACKED_NUMPRESS);
         Path parent = Files.createDirectories(tmp.resolve("archives"));
         Path archive = parent.resolve("out.mzpeak");
-        MzPeakWriter.writeArchiveNumpress(archive, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
-                s.fileMetadata);
+        MzPeakWriter.writeArchive(archive, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, PACKED_NUMPRESS);
 
         Snapshot fromDirectory = WriterSnapshotTest.snapshot(dir, false);
         Snapshot fromArchive = WriterSnapshotTest.snapshot(archive, true);
@@ -318,7 +325,8 @@ class WriterComponentsCharacterizationTest {
         assertThat(memberNames(parent)).as("the archive's directory after the write").containsExactly("out.mzpeak");
 
         // Writing again replaces the archive.
-        MzPeakWriter.writeArchiveNumpress(archive, s.spectra.subList(0, 3), List.of());
+        MzPeakWriter.writeArchive(archive, s.spectra.subList(0, 3), List.of(), List.of(), List.of(),
+                FileMetadata.EMPTY, PACKED_NUMPRESS);
         assertThat(WriterSnapshotTest.snapshot(archive, true).zipEntries()).containsExactly(
                 "spectra_data.parquet:STORED",
                 "spectra_metadata.parquet:STORED",

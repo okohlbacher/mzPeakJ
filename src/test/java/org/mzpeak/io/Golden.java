@@ -134,6 +134,20 @@ final class Golden {
         return new Golden(name, header, lines, full, digests);
     }
 
+    /**
+     * The summary lines of a generator run without {@code --out}, whose standard output was saved as {@code tsv}; the
+     * writer interop tests (WR-7) read the datasets mzPeakJ wrote this way. The name is the file name, and there are no
+     * full arrays and no digests.
+     */
+    static Golden loadSummary(Path tsv) {
+        Map<String, String> header = new LinkedHashMap<>();
+        List<Line> lines = new ArrayList<>();
+        for (String row : rows(tsv, header)) {
+            lines.add(parseLine(row));
+        }
+        return new Golden(tsv.getFileName().toString(), header, lines, List.of(), List.of());
+    }
+
     /** The dataset name without {@code .mzpeak}. */
     String name() {
         return name;

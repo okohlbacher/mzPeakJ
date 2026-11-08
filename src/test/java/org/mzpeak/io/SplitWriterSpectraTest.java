@@ -247,19 +247,20 @@ class SplitWriterSpectraTest {
         }
     }
 
+    /** WR-7 made the split layout the default; naming it explicitly changes nothing. */
     @Test
-    void theDefaultOptionsStillWriteThePackedLayout() {
-        assertThat(Options.defaults().metadataLayout()).isEqualTo(MetadataLayout.PACKED);
-        assertThat(SPLIT.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
-        assertThat(SPLIT).isNotEqualTo(Options.defaults());
-        assertThat(SPLIT.withMetadataLayout(MetadataLayout.PACKED)).isEqualTo(Options.defaults())
-                .hasSameHashCodeAs(Options.defaults());
+    void theDefaultOptionsWriteTheSplitLayout() {
+        assertThat(Options.defaults().metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
+        assertThat(SPLIT).isEqualTo(Options.defaults()).hasSameHashCodeAs(Options.defaults());
+        Options packed = SPLIT.withMetadataLayout(MetadataLayout.PACKED);
+        assertThat(packed).isNotEqualTo(Options.defaults());
+        assertThat(packed.withMetadataLayout(MetadataLayout.SPLIT)).isEqualTo(Options.defaults());
         assertThat(SPLIT.withSignalEncoding(SignalEncoding.NUMPRESS).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(SPLIT.withRowGroupSize(4096).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
-        assertThat(Options.defaults()).hasToString(
-                "Options[signalEncoding=POINT, numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty]");
-        assertThat(SPLIT).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
+        assertThat(Options.defaults()).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
                 + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT]");
+        assertThat(packed).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED]");
     }
 
     @Test

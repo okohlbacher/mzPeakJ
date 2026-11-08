@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
@@ -23,8 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
- * Round-trip validation: reads each corpus file, writes it back with {@link MzPeakWriter}, and
- * passes the output through the {@code mzpeak-validate} Python validator CLI.
+ * Round-trip validation: reads each corpus file, writes it back with {@link MzPeakWriter} (the default options, so
+ * the split metadata layout) as an unpacked directory and as a single-file archive, and passes each output through
+ * the {@code mzpeak-validate} Python validator CLI.
  *
  * <p><strong>Disabled by default.</strong> Enable with {@code -Dmzpeak.roundtrip=true}. The
  * corpus directory must also be present (same location as {@link CorpusTest}). Validator command
@@ -49,7 +51,10 @@ class ValidatedRoundTripTest {
     /** Full validation (no --quick) for files under this size; above it --quick is used. */
     private static final long FULL_VALIDATION_THRESHOLD = 5L * 1024 * 1024;
 
-    static Stream<Path> corpusFilesForRoundTrip() throws IOException {
+    /** The container the round trip writes: an unpacked directory or a single-file STORED ZIP archive. */
+    enum Form { DIRECTORY, ARCHIVE }
+
+    static Stream<Arguments> corpusFilesForRoundTrip() throws IOException {
         return CorpusTest.orSentinel(CorpusTest.corpusFiles()
                 .filter(p -> !CorpusTest.isSentinel(p))
                 .filter(p -> {
@@ -59,12 +64,13 @@ class ValidatedRoundTripTest {
                         return false;
                     }
                 })
-                .toList());
+                .toList())
+                .flatMap(p -> Stream.of(Form.values()).map(form -> Arguments.of(p, form)));
     }
 
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "{0} as {1}")
     @MethodSource("corpusFilesForRoundTrip")
-    void roundTrip_validatesClean(Path src, @TempDir Path tmpDir) throws Exception {
+    void roundTrip_validatesClean(Path src, Form form, @TempDir Path tmpDir) throws Exception {
         assumeThat(CorpusTest.isSentinel(src)).as("no corpus files — skip").isFalse();
         String validatorCmd = System.getProperty("mzpeak.validator.command", "mzpeak-validate");
         assumeThat(validatorAvailable(validatorCmd))
@@ -95,9 +101,13 @@ class ValidatedRoundTripTest {
             meta = r.fileMetadata();
         }
 
-        // 2. Write to a directory inside tmpDir
+        // 2. Write to a directory or an archive inside tmpDir
         Path outDir = tmpDir.resolve("output.mzpeak");
-        MzPeakWriter.writeDirectory(outDir, spectra, chromatograms, meta);
+        if (form == Form.ARCHIVE) {
+            MzPeakWriter.writeArchive(outDir, spectra, chromatograms, meta);
+        } else {
+            MzPeakWriter.writeDirectory(outDir, spectra, chromatograms, meta);
+        }
 
         // 3. Validate the written output
         Path reportJson = tmpDir.resolve("report.json");

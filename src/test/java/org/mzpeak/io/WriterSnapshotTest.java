@@ -42,7 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Each case reads a fixture with {@link ForwardBackwardCorpusTest#readSource}, writes it with one of the
  * full-form overloads (wavelength spectra, scan settings and file metadata included), or for the split metadata layout
- * (WR-5a, label suffix {@code -SPLIT}) with the {@code Options} form, and digests every member of the
+ * (WR-5a, label suffix {@code -SPLIT}) and the packed one (label suffix {@code -PACKED}) with the {@code Options} form
+ * naming the layout explicitly, and digests every member of the
  * output with {@link ContentDigest}, which ignores ZSTD bytes and ZIP timestamps. The archive case also records the
  * ZIP entries in file order with their method. The pinned line of the manifest digests it with every member checksum
  * masked ({@link #maskedIndex}). The expected lines live in
@@ -105,7 +106,18 @@ class WriterSnapshotTest {
                 MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                         s.fileMetadata, split().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS))),
         WRITE_ARCHIVE_SPLIT("writeArchive-SPLIT", true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
-                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split()));
+                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split())),
+        WRITE_DIRECTORY_PACKED("writeDirectory-PACKED", false, (out, s) -> MzPeakWriter.writeDirectory(out,
+                s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, packed())),
+        WRITE_DIRECTORY_NUMPRESS_SLOF_PACKED("writeDirectoryNumpress-SLOF-PACKED", false, (out, s) ->
+                MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                        s.fileMetadata, packed().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS))),
+        WRITE_DIRECTORY_NUMPRESS_PIC_PACKED("writeDirectoryNumpress-PIC-PACKED", false, (out, s) ->
+                MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                        s.fileMetadata, packed().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS)
+                                .withNumpressIntensity(MzPeakWriter.NumpressIntensityEncoding.PIC))),
+        WRITE_ARCHIVE_PACKED("writeArchive-PACKED", true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
+                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, packed()));
 
         final String label;
         final boolean archive;
@@ -120,6 +132,11 @@ class WriterSnapshotTest {
         /** The split metadata layout (WR-5a), which only the package-private option selects. */
         private static MzPeakWriter.Options split() {
             return MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.SPLIT);
+        }
+
+        /** The packed metadata layout, selected explicitly, so that the case does not follow the default. */
+        private static MzPeakWriter.Options packed() {
+            return MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED);
         }
     }
 
@@ -136,7 +153,14 @@ class WriterSnapshotTest {
                 Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_SPLIT),
                 Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_ARCHIVE_SPLIT),
                 Arguments.of(FixtureSet.CURRENT, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_SPLIT),
-                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY_SPLIT));
+                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY_SPLIT),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_PACKED),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_SLOF_PACKED),
+                Arguments.of(FixtureSet.LEGACY, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_NUMPRESS_PIC_PACKED),
+                Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_DIRECTORY_PACKED),
+                Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_ARCHIVE_PACKED),
+                Arguments.of(FixtureSet.CURRENT, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_PACKED),
+                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY_PACKED));
     }
 
     @ParameterizedTest(name = "{0} {1} via {2}")
