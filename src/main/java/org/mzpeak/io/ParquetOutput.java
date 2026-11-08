@@ -2,9 +2,9 @@ package org.mzpeak.io;
 
 import org.apache.parquet.conf.PlainParquetConfiguration;
 import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.SimpleGroupFactory;
 import org.apache.parquet.hadoop.ParquetFileWriter;
 import org.apache.parquet.hadoop.ParquetWriter;
-import org.apache.parquet.hadoop.example.ExampleParquetWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.LocalOutputFile;
 import org.apache.parquet.schema.GroupType;
@@ -17,16 +17,16 @@ import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Param;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 
 /**
  * Parquet output shared by the {@link MzPeakWriter} components: opening a ZSTD-compressed writer with optional
- * footer key-values and the row-group size of the write, the footer key-values of a signal file, the UINT64
+ * footer key-values and the row-group size of the write, a signal file with its footer key-values, the UINT64
  * annotation, and the {@code parameters} and {@code scan_windows} list fields with the {@code parameters} encoder.
  */
 final class ParquetOutput {
@@ -81,9 +81,19 @@ final class ParquetOutput {
      */
     static ParquetWriter<Group> openWriter(Path file, MessageType schema,
                                            Map<String, String> footerMetadata, Options options) throws IOException {
+        return openWriter(file, schema, footerMetadata, new CountingGroupWriteSupport(), options);
+    }
+
+    /**
+     * {@link #openWriter(Path, MessageType, Map, Options)} writing through {@code writeSupport}, whose counts are added
+     * to the footer key-values when the writer closes.
+     */
+    private static ParquetWriter<Group> openWriter(Path file, MessageType schema, Map<String, String> footerMetadata,
+                                                   CountingGroupWriteSupport writeSupport, Options options)
+            throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
         conf.set(SCHEMA_PROPERTY, schema.toString());
-        var builder = ExampleParquetWriter.builder(new LocalOutputFile(file))
+        var builder = new GroupWriterBuilder(new LocalOutputFile(file), writeSupport)
                 .withConf(conf)
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
@@ -100,17 +110,55 @@ final class ParquetOutput {
     }
 
     /**
-     * The footer key-values of a signal file (design §11.7, WR-2), computed from the plan before its writer opens:
-     * {@code <entity>_array_index}, the file's {@code index} as JSON; {@code <entity>_count}, the {@code entityCount}
-     * entities of that type in the archive; and {@code <entity>_data_point_count}, the {@code dataPointCount} points
-     * the file holds. A file without rows gets them too.
+     * A signal file being written (design §11.7, WR-2; design §7, MZ-10): its rows, and its footer key-values,
+     * {@code <entity>_array_index}, the file's array index as JSON, given when the writer opens, and the counts given
+     * when it closes, once its last row is written: {@code <entity>_count}, the entities of that type in the archive
+     * ({@link #setEntityCount}), and {@code <entity>_data_point_count}, the points the file holds ({@link #addPoints}).
+     * A file without rows gets them too.
      */
-    static Map<String, String> signalFooter(ArrayIndex index, long entityCount, long dataPointCount) {
-        Map<String, String> footer = new LinkedHashMap<>();
-        footer.put(index.entity().arrayIndexKey(), index.toJson());
-        footer.put(countKey(index.entity()), Long.toString(entityCount));
-        footer.put(index.entity().key() + "_data_point_count", Long.toString(dataPointCount));
-        return footer;
+    static final class SignalFile implements Closeable {
+
+        private final SignalEntity entity;
+        private final CountingGroupWriteSupport counts = new CountingGroupWriteSupport();
+        private final SimpleGroupFactory rows;
+        private final ParquetWriter<Group> writer;
+        private long entityCount;
+        private long points;
+
+        /** Opens {@code file} with {@code schema}, whose array index is {@code index}. */
+        SignalFile(Path file, MessageType schema, ArrayIndex index, Options options) throws IOException {
+            entity = index.entity();
+            rows = new SimpleGroupFactory(schema);
+            writer = openWriter(file, schema, Map.of(entity.arrayIndexKey(), index.toJson()), counts, options);
+        }
+
+        /** A new, empty row of the file's schema. */
+        Group newRow() {
+            return rows.newGroup();
+        }
+
+        /** Writes {@code row}. */
+        void write(Group row) throws IOException {
+            writer.write(row);
+        }
+
+        /** Adds {@code n} to the points the file holds. */
+        void addPoints(long n) {
+            points += n;
+        }
+
+        /** Sets the entities of the file's type in the archive. */
+        void setEntityCount(long n) {
+            entityCount = n;
+        }
+
+        /** Closes the file, with its counts as footer key-values. */
+        @Override
+        public void close() throws IOException {
+            counts.setCount(countKey(entity), entityCount);
+            counts.setCount(entity.key() + "_data_point_count", points);
+            writer.close();
+        }
     }
 
     /** The footer key of the entity count, {@code <entity>_count}. */

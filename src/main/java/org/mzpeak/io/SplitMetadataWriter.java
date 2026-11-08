@@ -24,7 +24,6 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
-import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
@@ -371,7 +370,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_SCHEMA, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                SpectrumDescription d = entry.source().description();
+                SpectrumDescription d = entry.description();
                 Group row = factory.newGroup();
                 row.add(INDEX, entry.sourceIndex());
                 if (d.id() != null) {
@@ -396,7 +395,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 } else if (!params.hasAny(SpectrumSummary.SPECTRUM_TYPES)) {
                     row.add(field(SPECTRUM_TYPE), SpectrumSummary.spectrumType(d.msLevel()));
                 }
-                List<Double> summary = summary(entry.source(), params);
+                List<Double> summary = summary(entry.summary(), params);
                 for (int i = 0; i < SUMMARY.size(); i++) {
                     addIfPresent(row, field(SUMMARY.get(i)), summary.get(i));
                 }
@@ -414,12 +413,12 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     }
 
     /**
-     * The five summary values of {@code s}, in {@link #SUMMARY} order, each {@code null} when absent: derived from the
-     * payload when its Params have none of the five, else the Params promoted to their columns.
+     * The five summary values of a spectrum, in {@link #SUMMARY} order, each {@code null} when absent: {@code v},
+     * those derived from its payload, when its Params have none of the five, else the Params promoted to their
+     * columns.
      */
-    private static List<Double> summary(Spectrum s, Promotion params) {
+    private static List<Double> summary(SpectrumSummary.Values v, Promotion params) {
         if (!params.hasAny(SUMMARY_ACCESSIONS)) {
-            SpectrumSummary.Values v = SpectrumSummary.derive(s);
             return Arrays.asList(v.lowestMz(), v.highestMz(), v.basePeakMz(), v.basePeakIntensity(), v.tic());
         }
         List<Double> out = new ArrayList<>(SUMMARY.size());
@@ -458,7 +457,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         long scanIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                SpectrumDescription d = entry.source().description();
+                SpectrumDescription d = entry.description();
                 if (d.scans().isEmpty()) {
                     // One scan row anyway, as PACKED writes (PackedMetadataWriter.populateScan): the HEAD Python
                     // reader cannot open a spectrum without one, and the Rust reader takes its time from the scans.
@@ -722,7 +721,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         for (Column position : List.of(POSITION_X, POSITION_Y)) {
             boolean promoted = false;
             for (SpectrumEntry entry : plan.spectra()) {
-                for (ScanEvent scan : entry.source().description().scans()) {
+                for (ScanEvent scan : entry.description().scans()) {
                     promoted |= new Promotion(scan.parameters()).promote(positionIn(position)) != null;
                 }
             }

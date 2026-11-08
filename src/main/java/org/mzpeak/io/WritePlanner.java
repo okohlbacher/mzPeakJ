@@ -9,6 +9,7 @@ import org.mzpeak.io.WritePlan.ExtraColumn;
 import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SignalArrays;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.io.WritePlan.SpectrumSignal;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
@@ -122,10 +123,10 @@ final class WritePlanner {
         }
         WriteReport report = new WriteReport();
         List<SpectrumEntry> spectrumEntries = new ArrayList<>(ordered.size());
+        List<SpectrumSignal> spectrumSignals = new ArrayList<>(ordered.size());
         // spectra_data is always written, if need be without a single row (every spectrum centroid): both Rust
         // reference readers open it unconditionally (load_indices_from begins with spectrum_data()?).
         boolean writesSpectraData = true;
-        boolean writesSpectraPeaks = false;
         Map<String, ExtraColumn> extras = new LinkedHashMap<>();
         Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
         // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
@@ -141,14 +142,15 @@ final class WritePlanner {
             }
             addExtraColumns(s, extras, columns);
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
-            SpectrumEntry entry = disposition(s).renumbered(i, precursors)
-                    .withArrays(mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
+            SpectrumEntry entry = disposition(s).renumbered(i, precursors);
+            SpectrumSignal signal = new SpectrumSignal(s, entry,
+                    mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
             if (entry.peaks() && !entry.peaksFromArrays() && !s.peakArrays().isEmpty()) {
                 requirePeakPositions(s);
             }
-            requireNumpressEncodable(entry, options);
-            writesSpectraPeaks |= entry.peaks();
+            requireNumpressEncodable(signal, options);
             spectrumEntries.add(entry);
+            spectrumSignals.add(signal);
         }
         if (packedDrops[0] + packedDrops[1] + packedDrops[2] > 0) {
             report.warn("the packed metadata layout writes only the first scan, the primary precursor and its first"
@@ -197,9 +199,9 @@ final class WritePlanner {
                     + " parameters (" + params + " in all), which the packed metadata layout does not write");
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
-                Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
-                writesSpectraData, writesSpectraPeaks, List.copyOf(extras.values()), chromatogramIntensities,
-                List.copyOf(chromatogramExtras.values()),
+                Collections.unmodifiableList(spectrumSignals), Collections.unmodifiableList(chromatogramEntries),
+                Collections.unmodifiableList(wavelengthEntries), writesSpectraData, List.copyOf(extras.values()),
+                chromatogramIntensities, List.copyOf(chromatogramExtras.values()),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
     }
@@ -576,23 +578,24 @@ final class WritePlanner {
     // written; the point layout writes them.
 
     /**
-     * Throws {@link MzPeakException} when {@code options} write Numpress chunks and a value that {@code entry} writes
+     * Throws {@link MzPeakException} when {@code options} write Numpress chunks and a value that {@code signal} writes
      * to one cannot be encoded: an m/z or intensity that is not finite or is below 0, an m/z whose fixed-point value
      * {@code (long) (mz * 1e5 + 0.5)} exceeds 4294967295, an m/z after the first two of a chunk whose fixed-point
      * difference from its extrapolation (2 * previous - the one before) is outside the signed 32-bit range, or with
      * {@link NumpressIntensityEncoding#PIC} an intensity whose rounded count {@code (long) (v + 0.5)} exceeds
-     * 2147483647. The values checked are those the entry writes: its arrays, to spectra_data or as a peak copy to
+     * 2147483647. The values checked are those the spectrum writes: its arrays, to spectra_data or as a peak copy to
      * spectra_peaks, and its peak list to spectra_peaks, in the chunks {@link NumpressSignalWriter#chunkEnd} splits
      * them into. The message names the spectrum's index, the array, the value, the member and the alternative.
      */
-    static void requireNumpressEncodable(SpectrumEntry entry, Options options) {
+    static void requireNumpressEncodable(SpectrumSignal signal, Options options) {
         if (options.signalEncoding() != SignalEncoding.NUMPRESS) {
             return;
         }
-        Spectrum s = entry.source();
+        Spectrum s = signal.source();
+        SpectrumEntry entry = signal.entry();
         boolean pic = options.numpressIntensity() == NumpressIntensityEncoding.PIC;
         if (entry.data() || entry.peaksFromArrays()) {
-            requireNumpressEncodable(s.index(), entry.arrays().x(), entry.arrays().intensity(),
+            requireNumpressEncodable(s.index(), signal.arrays().x(), signal.arrays().intensity(),
                     entry.data() ? "spectra_data" : "spectra_peaks", pic);
         }
         if (entry.peaks() && !entry.peaksFromArrays()) {

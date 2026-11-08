@@ -225,7 +225,7 @@ final class ManifestWriter {
     private static Map<String, String> prefixesOf(WritePlan plan) {
         Map<String, String> used = new LinkedHashMap<>();
         for (SpectrumEntry entry : plan.spectra()) {
-            SpectrumDescription d = entry.source().description();
+            SpectrumDescription d = entry.description();
             addParamPrefixes(d.parameters(), used);
             for (ScanEvent scan : d.scans()) {
                 addParamPrefixes(scan.parameters(), used);

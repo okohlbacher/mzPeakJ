@@ -65,9 +65,11 @@ final class SpectrumSummary {
         return msLevel > 1 ? MSN_SPECTRUM : MS1_SPECTRUM;
     }
 
-    /** Append the derived spectrum columns (observed m/z range, base peak, TIC) when the spectrum has payload. */
-    static void writeDerivedColumns(Group spectrum, Spectrum s) {
-        Values v = derive(s);
+    /**
+     * Append the derived spectrum columns (observed m/z range, base peak, TIC), each of {@code v}, the values
+     * {@link #derive} gives for the spectrum, that is present.
+     */
+    static void writeDerivedColumns(Group spectrum, Values v) {
         addIfPresent(spectrum, "MS_1000528_lowest_observed_mz_unit_MS_1000040", v.lowestMz());
         addIfPresent(spectrum, "MS_1000527_highest_observed_mz_unit_MS_1000040", v.highestMz());
         addIfPresent(spectrum, "MS_1000504_base_peak_mz_unit_MS_1000040", v.basePeakMz());

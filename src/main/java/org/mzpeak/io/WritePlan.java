@@ -5,6 +5,7 @@ import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.ScanSettings;
 
@@ -18,14 +19,15 @@ import java.util.Objects;
  * to, the order of each entity's rows, the extra columns of the spectrum signal files, the intensity and extra columns
  * of chromatograms_data, which members exist, the footer key-values of spectra_metadata and the manifest, and the
  * report that collects the write's warnings. The entities of each kind are in the order of the caller's indices and
- * are written as 0..n-1 in that order (design §11.5, WR-8).
+ * are written as 0..n-1 in that order (design §11.5, WR-8). spectra_peaks is written when a spectrum's rows go there.
  *
  * @param options            the settings of the write
- * @param spectra            the spectra in index order
+ * @param spectra            the spectra in index order, as the metadata members and the manifest write them
+ * @param spectrumSignals    the signal of each of {@code spectra}, in the same order, which {@link DatasetWriter}
+ *                           appends to spectra_data and spectra_peaks
  * @param chromatograms      the chromatograms in index order
  * @param wavelengthSpectra  the wavelength spectra in index order
  * @param writesSpectraData  whether spectra_data is written
- * @param writesSpectraPeaks whether spectra_peaks is written
  * @param spectrumExtras     the extra columns that spectra_data and spectra_peaks both get, one for each key of the
  *                           written spectra's {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()}, in
  *                           first-seen order: index order, and in a spectrum the arrays' map order, then the peak
@@ -43,9 +45,9 @@ import java.util.Objects;
  * @param footer             the file metadata serialized once, for the spectra_metadata footer and the manifest
  * @param report             the warnings of the write
  */
-record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chromatogram>> chromatograms,
-                 List<Entry<WavelengthSpectrum>> wavelengthSpectra, boolean writesSpectraData,
-                 boolean writesSpectraPeaks, List<ExtraColumn> spectrumExtras,
+record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSignal> spectrumSignals,
+                 List<Entry<Chromatogram>> chromatograms, List<Entry<WavelengthSpectrum>> wavelengthSpectra,
+                 boolean writesSpectraData, List<ExtraColumn> spectrumExtras,
                  List<IntensityColumn> chromatogramIntensities, List<ExtraColumn> chromatogramExtras,
                  List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
 
@@ -78,52 +80,53 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
     }
 
     /**
-     * A spectrum to write: the caller's spectrum, the index it is written with (the {@code source_index} of its facet
-     * rows), its precursors as written, and where its rows go (design §11.5): {@code data} sends
-     * {@code mz()}/{@code intensity()} to spectra_data; {@code peaks} sends to spectra_peaks either
-     * {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}. {@code precursors} are those of
-     * the caller's description, in its order, each with the precursor_index it is written with (WR-8).
-     * {@code arrays} holds {@code mz()}/{@code intensity()} in the order they are written.
+     * A spectrum as the metadata members and the manifest write it, without its signal (design §7, MZ-10): the
+     * caller's description, the index it is written with (the {@code source_index} of its facet rows), its precursors
+     * as written, where its rows go (design §11.5), the rows it writes to each signal file and the summary values
+     * derived from its payload. {@code data} sends {@code mz()}/{@code intensity()} to spectra_data; {@code peaks}
+     * sends to spectra_peaks either {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}.
+     * {@code precursors} are those of the caller's description, in its order, each with the precursor_index it is
+     * written with (WR-8).
+     *
+     * @param dataRows the rows this spectrum writes to spectra_data, its number_of_data_points; 0 without
+     *                 {@code data}
+     * @param peakRows the rows this spectrum writes to spectra_peaks, its number_of_peaks; 0 without {@code peaks}
+     * @param summary  the summary values of the caller's spectrum ({@link SpectrumSummary#derive})
      */
-    record SpectrumEntry(Spectrum source, long sourceIndex, List<Precursor> precursors, boolean data, boolean peaks,
-                         boolean peaksFromArrays, SignalArrays arrays) {
+    record SpectrumEntry(SpectrumDescription description, long sourceIndex, List<Precursor> precursors, boolean data,
+                         boolean peaks, boolean peaksFromArrays, int dataRows, int peakRows,
+                         SpectrumSummary.Values summary) {
 
         /**
-         * An entry that writes the caller's precursors as given and {@code mz()}/{@code intensity()} in the caller's
-         * order.
+         * The entry of {@code source}, written as {@code sourceIndex} with the caller's precursors as given, whose rows
+         * go where {@code data}, {@code peaks} and {@code peaksFromArrays} say. It keeps nothing of the signal of
+         * {@code source} but the row counts and summary values derived from it.
          */
         SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
-            this(source, sourceIndex, source.description().precursors(), data, peaks, peaksFromArrays,
-                    SignalArrays.asGiven(source.mz(), source.intensity()));
-        }
-
-        /** This entry with {@code arrays} written in place of its own. */
-        SpectrumEntry withArrays(SignalArrays arrays) {
-            return new SpectrumEntry(source, sourceIndex, precursors, data, peaks, peaksFromArrays, arrays);
+            this(source.description(), sourceIndex, source.description().precursors(), data, peaks, peaksFromArrays,
+                    data ? source.mz().length : 0,
+                    peaks ? (peaksFromArrays ? source.mz().length : source.peaks().size()) : 0,
+                    SpectrumSummary.derive(source));
         }
 
         /** This entry written as {@code index}, with {@code precursors} written in place of its own. */
         SpectrumEntry renumbered(long index, List<Precursor> precursors) {
-            return new SpectrumEntry(source, index, precursors, data, peaks, peaksFromArrays, arrays);
+            return new SpectrumEntry(description, index, precursors, data, peaks, peaksFromArrays, dataRows, peakRows,
+                    summary);
         }
 
         /** The first of {@link #precursors()}, the only one the packed layout writes, or {@code null}. */
         Precursor primaryPrecursor() {
             return precursors.isEmpty() ? null : precursors.get(0);
         }
+    }
 
-        /** The rows this spectrum writes to spectra_data, its number_of_data_points. */
-        int dataRows() {
-            return data ? source.mz().length : 0;
-        }
-
-        /** The rows this spectrum writes to spectra_peaks, its number_of_peaks. */
-        int peakRows() {
-            if (!peaks) {
-                return 0;
-            }
-            return peaksFromArrays ? source.mz().length : source.peaks().size();
-        }
+    /**
+     * The signal of one spectrum, held until its rows are appended to spectra_data and spectra_peaks (design §7,
+     * MZ-10): the caller's spectrum, its {@link SpectrumEntry}, which says where the rows go, and
+     * {@code mz()}/{@code intensity()} in the order they are written.
+     */
+    record SpectrumSignal(Spectrum source, SpectrumEntry entry, SignalArrays arrays) {
 
         /**
          * The values of each of {@code extras} in the rows this spectrum writes to spectra_peaks ({@code peaksFile})
@@ -133,7 +136,7 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
          * are. The caller's arrays are never modified.
          */
         double[][] extraValues(List<ExtraColumn> extras, boolean peaksFile) {
-            boolean fromPeaks = peaksFile && !peaksFromArrays;
+            boolean fromPeaks = peaksFile && !entry.peaksFromArrays();
             double[][] out = new double[extras.size()][];
             for (int k = 0; k < out.length; k++) {
                 String key = extras.get(k).key();
@@ -199,18 +202,6 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
             }
             return out;
         }
-    }
-
-    /**
-     * The points spectra_data holds, or spectra_peaks for {@code peaksFile}: the rows every spectrum writes there
-     * ({@link SpectrumEntry#dataRows()} or {@link SpectrumEntry#peakRows()}), summed.
-     */
-    long spectrumPoints(boolean peaksFile) {
-        long points = 0;
-        for (SpectrumEntry entry : spectra) {
-            points += peaksFile ? entry.peakRows() : entry.dataRows();
-        }
-        return points;
     }
 
     /** The column of {@link #chromatogramIntensities()} that holds the intensities of {@code c}, that of its unit. */
