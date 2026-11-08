@@ -193,12 +193,13 @@ final class MetadataColumns {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(accession, "accession");
         Facet facet = facet(entity, kind);
+        // present when facet is: the entity of every facet has a metadata facet
         Facet primary = facet(entity, DataKind.METADATA);
-        if (kind == DataKind.DATA_ARRAYS || kind == DataKind.PEAKS || facet == null || primary == null) {
+        if (kind == DataKind.DATA_ARRAYS || kind == DataKind.PEAKS || facet == null) {
             return Optional.empty();
         }
-        Optional<Entry> own = named(manifest.find(entity, kind));
-        Optional<Entry> entry = own.isPresent() ? own : named(manifest.find(entity, DataKind.METADATA));
+        Optional<Entry> own = manifest.find(entity, kind);
+        Optional<Entry> entry = own.isPresent() ? own : manifest.find(entity, DataKind.METADATA);
         if (entry.isEmpty()) {
             return Optional.empty();
         }
@@ -266,10 +267,6 @@ final class MetadataColumns {
         return null;
     }
 
-    private static Optional<Entry> named(Optional<Entry> entry) {
-        return entry.filter(e -> e.name() != null);
-    }
-
     /** The only primitive field of {@code scope} whose name starts with {@code prefix}, or {@code null}. */
     private static String uniqueWithPrefix(GroupType scope, String prefix) {
         String found = null;
@@ -334,15 +331,12 @@ final class MetadataColumns {
             return new RowGroup(block.getRowCount(), null, null, null);
         }
         Long nulls = stats.isNumNullsSet() ? stats.getNumNulls() : null;
+        // only nulls, or a NaN bound: parquet-java drops NaN bounds, whose order is undefined, as it reads the footer
         if (!stats.hasNonNullValue()) {
             return new RowGroup(block.getRowCount(), nulls, null, null);
         }
         double min = value(stats.genericGetMin(), c, "minimum");
         double max = value(stats.genericGetMax(), c, "maximum");
-        if (Double.isNaN(min) || Double.isNaN(max)) {
-            // parquet-java already drops NaN bounds, whose order is undefined
-            return new RowGroup(block.getRowCount(), nulls, null, null);
-        }
         return new RowGroup(block.getRowCount(), nulls, min, max);
     }
 
@@ -362,10 +356,8 @@ final class MetadataColumns {
         if (statistic instanceof Float f) {
             return f;
         }
-        if (statistic instanceof Double d) {
-            return d;
-        }
-        throw new MzPeakException(c.member() + ": column " + c.column() + " has a " + which + " statistic of type "
-                + statistic.getClass().getSimpleName() + ", not a number");
+        // numeric() admits INT32, INT64, FLOAT and DOUBLE columns only, whose statistics are Integer, Long, Float or
+        // Double
+        return (Double) statistic;
     }
 }

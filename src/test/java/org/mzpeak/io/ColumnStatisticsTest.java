@@ -624,6 +624,14 @@ class ColumnStatisticsTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    /** A NaN maximum is rejected as a NaN minimum is. */
+    @Test
+    void aNaNMaximumIsRejected() {
+        assertThatThrownBy(() -> new RowGroup(1, 0L, 1.0, Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("invalid bounds: [1.0, NaN]");
+    }
+
     @Test
     void nullArgumentsAndAClosedReaderAreRejected() {
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.mzpeak"))) {
