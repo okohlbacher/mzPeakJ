@@ -2,6 +2,7 @@ package org.mzpeak.mzml;
 
 import ms.numpress.MSNumpress;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -312,6 +313,14 @@ class BinaryCodecTest {
                 Arguments.of(new double[] {-0.038, 0.1, 0.2}, LINEAR, "MS-Numpress linear not applied: negative value"),
                 Arguments.of(new double[] {100.0}, LINEAR, "MS-Numpress linear not applied: single value"),
                 Arguments.of(new double[] {0.0, 1.0e10}, LINEAR, "MS-Numpress linear not applied: fixed point below 1"),
+                // (2^31 - 1) / max(v0, v1) overflows to +Infinity, which would encode both values as 0
+                Arguments.of(new double[] {1.0e-300, 1.0e-300}, LINEAR,
+                        "MS-Numpress linear not applied: fixed point not finite"),
+                Arguments.of(new double[] {0.0, 0.0}, LINEAR, "MS-Numpress linear not applied: fixed point not finite"),
+                // fixed point 715827882 from the first two values and the residuals; from i = 113512 on,
+                // i * i * fixedPoint is 2^63 or more and encodeLinear saturates it at Long.MAX_VALUE
+                Arguments.of(Named.of("i * i for i < 120000", squares(120000)), LINEAR,
+                        "MS-Numpress linear not applied: value too large for the fixed point"),
                 Arguments.of(new double[] {1.0, -2.0}, SLOF,
                         "MS-Numpress SLOF not applied: negative or non-finite value"),
                 Arguments.of(new double[] {1.0, Double.POSITIVE_INFINITY}, SLOF,
@@ -339,6 +348,19 @@ class BinaryCodecTest {
             assertThat(encoded.compressionTerm()).isEqualTo(zlib ? ZLIB : NO_COMPRESSION);
             assertThat(encoded.dataTypeTerm()).isEqualTo(auto);
             assertBitEqual(decodeEncoded(encoded, values.length), values);
+        }
+    }
+
+    @Test
+    void linearKeepsValuesUpToTheLastOneItsFixedPointEncodes() {
+        double[] values = squares(113512); // i = 113511: i * i * 715827882 is still below 2^63
+        for (boolean zlib : new boolean[] {false, true}) {
+            Encoded encoded = BinaryCodec.encode(values, Kind.AXIS, 0, zlib, LINEAR);
+
+            assertThat(encoded.note()).isNull();
+            assertThat(encoded.compressionTerm()).isEqualTo(zlib ? LINEAR_ZLIB : LINEAR);
+            assertThat(MSNumpress.decodeFixedPoint(payload(encoded))).isEqualTo(715827882.0);
+            assertWithinBounds(LINEAR, decodeEncoded(encoded, values.length), values, payload(encoded));
         }
     }
 
@@ -845,6 +867,15 @@ class BinaryCodecTest {
         double[] out = new double[values.length];
         for (int i = 0; i < values.length; i++) {
             out[i] = (float) values[i];
+        }
+        return out;
+    }
+
+    /** i * i for i from 0 below {@code n}. */
+    private static double[] squares(int n) {
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) {
+            out[i] = (double) i * i;
         }
         return out;
     }

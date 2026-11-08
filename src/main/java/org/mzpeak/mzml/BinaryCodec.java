@@ -144,9 +144,12 @@ final class BinaryCodec {
         }
         String note = numpressTerm == null ? null : refusal(values, numpressTerm);
         if (numpressTerm != null && note == null) {
-            byte[] bytes = encodeNumpress(values, numpressTerm);
-            return new Encoded(Base64.getEncoder().encodeToString(zlib ? deflate(bytes) : bytes), FLOAT64,
-                    zlib ? WITH_ZLIB.get(numpressTerm) : numpressTerm, null);
+            byte[] payload = encodeNumpress(values, numpressTerm);
+            if (payload != null) {
+                return new Encoded(Base64.getEncoder().encodeToString(zlib ? deflate(payload) : payload), FLOAT64,
+                        zlib ? WITH_ZLIB.get(numpressTerm) : numpressTerm, null);
+            }
+            note = "MS-Numpress linear not applied: value too large for the fixed point";
         }
         byte[] bytes = encodeRaw(values, dataType);
         return new Encoded(Base64.getEncoder().encodeToString(zlib ? deflate(bytes) : bytes), dataType,
@@ -330,9 +333,10 @@ final class BinaryCodec {
 
     /**
      * Why {@code codec} cannot encode {@code values}, or null if it can (design 5.7): linear stores the first two
-     * values as unsigned 32-bit integers, a single value as a payload pynumpress cannot decode, and needs a fixed
-     * point of at least 1; SLOF takes the logarithm of {@code 1 + v}; PIC stores counts up to 2147483647 so that
-     * readers built on the reference Java decoder, which sign-extends larger ones, read them (design Q26).
+     * values as unsigned 32-bit integers, a single value as a payload pynumpress cannot decode, and needs a finite
+     * fixed point of at least 1 (two values below about 1e-299, or both 0, give an infinite one); SLOF takes the
+     * logarithm of {@code 1 + v}; PIC stores counts up to 2147483647 so that readers built on the reference Java
+     * decoder, which sign-extends larger ones, read them (design Q26). {@link #encodeNumpress} checks the rest.
      */
     private static String refusal(double[] values, String codec) {
         boolean nonFinite = false;
@@ -349,10 +353,13 @@ final class BinaryCodec {
         }
         String reason;
         if (codec.equals(LINEAR)) {
+            double fixedPoint = nonFinite || negative || values.length == 1 ? 1
+                    : MSNumpress.optimalLinearFixedPoint(values, values.length);
             reason = nonFinite ? "non-finite value"
                     : negative ? "negative value"
                     : values.length == 1 ? "single value"
-                    : MSNumpress.optimalLinearFixedPoint(values, values.length) < 1 ? "fixed point below 1" : null;
+                    : fixedPoint < 1 ? "fixed point below 1"
+                    : !Double.isFinite(fixedPoint) ? "fixed point not finite" : null;
         } else {
             reason = nonFinite || negative ? "negative or non-finite value"
                     : codec.equals(PIC) && aboveInt ? "count above 2147483647" : null;
@@ -360,12 +367,30 @@ final class BinaryCodec {
         return reason == null ? null : "MS-Numpress " + NAMES.get(codec) + " not applied: " + reason;
     }
 
+    /**
+     * The Numpress payload of {@code values}, or null when a linear payload does not decode to within
+     * {@code 0.5 / fixedPoint + 1e-12 |v|} of every value (the bound of design 5.7). The fixed point only bounds the
+     * first two values and the residuals; {@code encodeLinear} saturates {@code (long) (v * fixedPoint + 0.5)} at
+     * {@code Long.MAX_VALUE} for a larger value and writes only the low 32 bits of a residual outside the int range,
+     * both silently, so the payload is decoded again to check it. A payload of this encoder decodes to exactly
+     * {@code n} values.
+     */
     private static byte[] encodeNumpress(double[] values, String codec) {
         int n = values.length;
         byte[] out = new byte[8 + 5 * n]; // the longest payload: linear 8 + 5n, SLOF 8 + 2n, PIC 5n bytes at most
-        int length = codec.equals(LINEAR)
-                ? MSNumpress.encodeLinear(values, n, out, MSNumpress.optimalLinearFixedPoint(values, n))
-                : codec.equals(SLOF)
+        if (codec.equals(LINEAR)) {
+            double fixedPoint = MSNumpress.optimalLinearFixedPoint(values, n);
+            byte[] payload = Arrays.copyOf(out, MSNumpress.encodeLinear(values, n, out, fixedPoint));
+            double[] back = new double[n];
+            MSNumpress.decodeLinear(payload, payload.length, back);
+            for (int i = 0; i < n; i++) {
+                if (Math.abs(back[i] - values[i]) > 0.5 / fixedPoint + 1e-12 * values[i]) {
+                    return null;
+                }
+            }
+            return payload;
+        }
+        int length = codec.equals(SLOF)
                 ? MSNumpress.encodeSlof(values, n, out, MSNumpress.optimalSlofFixedPoint(values, n))
                 : MSNumpress.encodePic(values, n, out);
         return Arrays.copyOf(out, length);
