@@ -75,7 +75,8 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * its {@code parameters} list, ion mobility included. The summary values are derived from the payload only when the
  * spectrum's Params have none of the five, and the spectrum type from the MS level only when they have no spectrum
  * type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
- * as in the reference's output; the isolation window's {@code parameters} list is always empty.
+ * as in the reference's output; the isolation window's {@code parameters} list holds its Params, none promoted
+ * (AP-7).
  *
  * <p>Every precursor is written as the plan gives it ({@link WritePlan.SpectrumEntry#precursors()}): as the caller
  * gave it, with the {@code precursor_index} the planner maps to the new index of its parent, or null (WR-8). Both
@@ -504,8 +505,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                         addIfPresent(iso, field(ISOLATION_TARGET), window.targetMz());
                         addIfPresent(iso, field(ISOLATION_LOWER), window.lowerOffset());
                         addIfPresent(iso, field(ISOLATION_UPPER), window.upperOffset());
-                        // The model has no isolation-window Params yet.
-                        params(iso, List.of());
+                        params(iso, window.parameters());
                     }
                     Group activation = row.addGroup(ACTIVATION);
                     Promotion params = new Promotion(precursor.activation().parameters());

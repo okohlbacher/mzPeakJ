@@ -57,6 +57,8 @@ class SplitSpectrumMetadataTest {
     private static final String SMALL = "small.mzpeak";
     private static final String DIA_REF = "diaPASEF.ref.mzpeak";
     private static final String DIA_GRID = "diaPASEF.grid.mzpeak";
+    /** The isolation-window param of every precursor of current small. */
+    private static final Param WINDOW_MS_LEVEL = new Param("ms level", null, 1L, null);
 
     /**
      * The measured Numpress tolerance for intensities: the Python reader rounds the decoded SLOF intensities of
@@ -275,7 +277,8 @@ class SplitSpectrumMetadataTest {
 
     /**
      * Current and legacy small.unpacked hold the same 48 spectra. The legacy scan start time is a float32 column,
-     * so it equals the current double rounded to float. Activation is not compared; RD-7 decodes it. The current
+     * so it equals the current double rounded to float. Activation is not compared; RD-7 decodes it. Every current
+     * isolation window stores the user param 'ms level', which the legacy windows lack (AP-7). The current
      * spectrum Params continue the legacy ones with the split leftovers (RD-6, pinned by SplitLeftoversTest), which
      * the packed layout does not have.
      */
@@ -309,9 +312,11 @@ class SplitSpectrumMetadataTest {
                             s.scanWindows(), s.parameters()))
                             .as("spectrum %d scan %d", ld.index(), k).isEqualTo(ld.scans().get(k));
                 }
+                // Current small stores the user param 'ms level' in every window, legacy small none (AP-7).
                 assertThat(cd.precursors().stream().map(SplitSpectrumMetadataTest::withoutActivation).toList())
                         .as("spectrum %d precursors", ld.index())
-                        .isEqualTo(ld.precursors().stream().map(SplitSpectrumMetadataTest::withoutActivation).toList());
+                        .isEqualTo(ld.precursors().stream()
+                                .map(p -> withWindowParams(withoutActivation(p), List.of(WINDOW_MS_LEVEL))).toList());
                 precursors += ld.precursors().size();
 
                 LayoutEquivalenceTest.assertIdentical("spectrum " + i + " m/z", l.mz(), c.mz());
@@ -508,7 +513,10 @@ class SplitSpectrumMetadataTest {
                 (Double) cell(row, entry, "MS:1000827"),
                 (Double) cell(row, entry, "MS:1000828"),
                 (Double) cell(row, entry, "MS:1000829"));
-        assertThat(p.isolationWindow()).as(where + " isolation window").isEqualTo(expected);
+        // The window's parameters (AP-7) are checked against these cells by IsolationWindowParamsTest.
+        IsolationWindow w = p.isolationWindow();
+        assertThat(w == null ? null : new IsolationWindow(w.targetMz(), w.lowerOffset(), w.upperOffset()))
+                .as(where + " isolation window").isEqualTo(expected);
     }
 
     private static void assertSelectedIon(String where, SelectedIon ion, Row row, Entry entry) {
@@ -528,6 +536,14 @@ class SplitSpectrumMetadataTest {
     private static Precursor withoutActivation(Precursor p) {
         return new Precursor(p.precursorIndex(), p.precursorId(), p.isolationWindow(), p.selectedIons(),
                 Activation.EMPTY);
+    }
+
+    /** {@code p} with {@code params} as the parameters of its isolation window. */
+    private static Precursor withWindowParams(Precursor p, List<Param> params) {
+        IsolationWindow w = p.isolationWindow();
+        return new Precursor(p.precursorIndex(), p.precursorId(),
+                new IsolationWindow(w.targetMz(), w.lowerOffset(), w.upperOffset(), params), p.selectedIons(),
+                p.activation());
     }
 
     /** The cell of {@code row} at the path {@code entry}'s column_mapping gives for {@code accession}. */

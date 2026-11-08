@@ -54,8 +54,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       leftovers, and the activation {@code parameters} list, whose entries yield to a column with the same
  *       accession.
  *   <li>Selected ions carry their typed ion mobility (both layouts) and their leftovers (split).
- *   <li>Precursor-scope and isolation-window leftovers have no place in the model: they are logged at DEBUG and
- *       dropped.
+ *   <li>Precursor-scope leftovers have no place in the model: they are logged at DEBUG and dropped. Since AP-7,
+ *       isolation-window leftovers follow the window's parameters list.
  *   <li>A selected ion joins the first precursor of its spectrum with an equal {@code precursor_index}, null equal
  *       to null, and falls back to the spectrum's first precursor.
  * </ul>
@@ -74,6 +74,8 @@ class SplitPrecursorsTest {
     private static final String COLLISION_ENERGY = "MS:1000045";
     private static final String ELECTRONVOLT = "UO:0000266";
     private static final String DEFAULT_ION_MOBILITY_TYPE = "MS:1002476";
+    /** The isolation-window param of every precursor of current small. */
+    private static final Param WINDOW_MS_LEVEL = new Param("ms level", null, 1L, null);
 
     static Stream<String> smallFixtures() {
         return Stream.of("small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak", SMALL_UNPACKED);
@@ -109,7 +111,10 @@ class SplitPrecursorsTest {
                 Precursor lp = l.precursors().get(0);
                 assertThat(cp.precursorIndex()).as(where + " precursor index").isEqualTo(lp.precursorIndex());
                 assertThat(cp.precursorId()).as(where + " precursor id").isEqualTo(lp.precursorId());
-                assertThat(cp.isolationWindow()).as(where + " isolation window").isEqualTo(lp.isolationWindow());
+                // Current small stores the user param 'ms level' in every window, legacy small none (AP-7).
+                IsolationWindow lw = lp.isolationWindow();
+                assertThat(cp.isolationWindow()).as(where + " isolation window").isEqualTo(new IsolationWindow(
+                        lw.targetMz(), lw.lowerOffset(), lw.upperOffset(), List.of(WINDOW_MS_LEVEL)));
 
                 assertThat(cp.selectedIons()).as(where + " selected ions").hasSize(1);
                 assertThat(lp.selectedIons()).as(where + " legacy selected ions").hasSize(1);
@@ -270,7 +275,7 @@ class SplitPrecursorsTest {
         Double target = rows.precursorOf(5).isolationWindow().targetMz();
         assertThat(target).isNotNull();
         assertThat(only(rows.assemble(5, List.of(asymmetric), List.of())).isolationWindow())
-                .isEqualTo(new IsolationWindow(target, 0.5, 1.5));
+                .isEqualTo(new IsolationWindow(target, 0.5, 1.5, List.of(WINDOW_MS_LEVEL)));
     }
 
     // ---- leftovers and the column-over-list rule, on constructed split rows --------------------------------------
@@ -373,11 +378,11 @@ class SplitPrecursorsTest {
     }
 
     /**
-     * Precursor-scope and isolation-window leftovers have no place in the model: they leave the decoded precursor
-     * as it was and are logged at DEBUG.
+     * Precursor-scope leftovers have no place in the model: they leave the decoded precursor as it was and are logged
+     * at DEBUG. Isolation-window leftovers follow the window's parameters list (AP-7) and are not logged.
      */
     @Test
-    void precursorAndIsolationWindowLeftoversAreLoggedAtDebugAndDropped() {
+    void precursorLeftoversAreLoggedAtDebugAndDroppedAndIsolationWindowLeftoversFollowItsParameters() {
         ExtendedPrecursors ext = ExtendedPrecursors.load();
         FacetRow plain = ext.precursor(5);
         FacetRow row = ext.precursor(5);
@@ -415,13 +420,18 @@ class SplitPrecursorsTest {
             log.setLevel(level);
         }
 
-        assertThat(decoded).isEqualTo(unextended);
-        assertThat(records).hasSize(2).allSatisfy(r -> assertThat(r.getLevel()).isEqualTo(Level.FINE));
-        assertThat(records).extracting(LogRecord::getMessage)
-                .anySatisfy(m -> assertThat(m).contains("spectra_metadata_precursors.parquet", "source_index 5",
-                        "isolation_window", "opt_window_width_ratio", "0.5").doesNotContain("opt_precursor_note"))
-                .anySatisfy(m -> assertThat(m).contains("spectra_metadata_precursors.parquet", "source_index 5",
-                        "opt_precursor_note", "from the instrument").doesNotContain("opt_window_width_ratio"));
+        IsolationWindow window = unextended.isolationWindow();
+        assertThat(window.parameters()).containsExactly(WINDOW_MS_LEVEL);
+        assertThat(decoded).isEqualTo(new PrecursorRowDecoder.PrecursorPart(unextended.precursorIndex(),
+                unextended.precursorId(),
+                new IsolationWindow(window.targetMz(), window.lowerOffset(), window.upperOffset(),
+                        List.of(WINDOW_MS_LEVEL, new Param("opt_window_width_ratio", null, 0.5, null))),
+                unextended.activation()));
+        assertThat(records).singleElement().satisfies(r -> {
+            assertThat(r.getLevel()).isEqualTo(Level.FINE);
+            assertThat(r.getMessage()).contains("spectra_metadata_precursors.parquet", "source_index 5",
+                    "opt_precursor_note", "from the instrument").doesNotContain("opt_window_width_ratio");
+        });
     }
 
     /**

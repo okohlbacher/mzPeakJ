@@ -40,14 +40,16 @@ class LegacyMetadataSnapshotTest {
     /** SHA-256 of zero lines, for a fixture without chromatograms or wavelength spectra. */
     private static final String NONE = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-    private static final String SMALL_METADATA = "9d6cbbf96cb371153d83f3a85db7226f91402df0181da49bae94ff6141039efa";
+    // AP-7: the line of each of the 34 MS2 spectra of small gained "|[]", the empty parameters of its isolation
+    // window; nothing else changed (has_uv has no precursors).
+    private static final String SMALL_METADATA = "9e5afcf531df50c5eecf462f12be7f534dc01c64e557fa18bd29d8648150425e";
     private static final String SMALL_TIC = "8a8fa9c38b9eb11c3b0bb2465b884a21250efa89e2f08853e1a64be80e6b2111";
 
     private static final Map<String, Snapshot> EXPECTED = Map.of(
             "small.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             // small.chunked also declares MS:1003059 number of peaks on its profile spectra
             "small.chunked.mzpeak", new Snapshot(48, 1, 0,
-                    "b0950fe45267e2760a935b97f819b3c3c90646af8132e5fcbfaa355d9ca015c7", SMALL_TIC, NONE),
+                    "81e9a3c4b1f715b18c0dbe8f67b222eaa967ac85d00613ff71e86e2555ea067c", SMALL_TIC, NONE),
             "small.numpress.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             "small.unpacked.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             "has_uv.mzpeak", new Snapshot(212, 2, 520,
@@ -95,7 +97,7 @@ class LegacyMetadataSnapshotTest {
                             + "|[(140.0|1130.0)]"
                             + "|[([Thermo Trailer Extra]Monoisotopic M/Z:|null|Long:0|null)])]"
                             + "|[(1|controllerType=0 controllerNumber=1 scan=2"
-                            + "|(558.8689575195312|1.0|1.0)"
+                            + "|(558.8689575195312|1.0|1.0|[])"
                             + "|[(558.868957519531|null|202177.84375|[])]"
                             + "|([(collision-induced dissociation|MS:1000133|null|null)"
                             + ";(collision energy|MS:1000045|Double:35.0|UO:0000266)]))]"
@@ -147,7 +149,8 @@ class LegacyMetadataSnapshotTest {
         assertThat(components(ScanWindow.class)).containsExactly("lowerLimit", "upperLimit");
         assertThat(components(Precursor.class)).containsExactly("precursorIndex", "precursorId", "isolationWindow",
                 "selectedIons", "activation");
-        assertThat(components(IsolationWindow.class)).containsExactly("targetMz", "lowerOffset", "upperOffset");
+        assertThat(components(IsolationWindow.class)).containsExactly("targetMz", "lowerOffset", "upperOffset",
+                "parameters");
         assertThat(components(SelectedIon.class)).containsExactly("mz", "charge", "intensity", "parameters");
         assertThat(components(Activation.class)).containsExactly("parameters");
         assertThat(components(Param.class)).containsExactly("name", "accession", "value", "unit");

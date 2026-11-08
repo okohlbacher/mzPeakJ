@@ -25,8 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ul>
  *   <li>typed fields are compared exactly, doubles NaN-aware ({@link Double#compare}), nested lists (scans, scan
  *       windows, precursors, selected ions) pairwise in order;
- *   <li>Params are compared as multisets of (accession, else name; value; unit), so their order and a name next to
- *       an accession do not count;
+ *   <li>isolation windows are compared as records, field by field, so their parameters (AP-7) must be equal lists;
+ *   <li>the other Params are compared as multisets of (accession, else name; value; unit), so their order and a
+ *       name next to an accession do not count;
  *   <li>in a spectrum's own Params, a read-back summary value ({@link #DERIVED_SUMMARY}) is ignored when the source
  *       has none of the five, and a read-back MS1 or MSn spectrum type ({@link #DERIVED_SPECTRUM_TYPES}) when the
  *       source has no spectrum type ({@link SpectrumSummary#SPECTRUM_TYPES}): the writer derives these values, and
@@ -122,6 +123,7 @@ final class DescriptionAssert {
             equal(diffs, path + ".isolationWindow.targetMz", ew.targetMz(), aw.targetMz());
             equal(diffs, path + ".isolationWindow.lowerOffset", ew.lowerOffset(), aw.lowerOffset());
             equal(diffs, path + ".isolationWindow.upperOffset", ew.upperOffset(), aw.upperOffset());
+            equal(diffs, path + ".isolationWindow.parameters", ew.parameters(), aw.parameters());
         }
         params(diffs, path + ".activation", expected.activation().parameters(), actual.activation().parameters(),
                 Set.of());
