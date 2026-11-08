@@ -510,6 +510,127 @@ class SignalPlanTest {
                 .satisfies(r -> assertThat(r.getMessage()).contains("spectrum_array_index", "point.missing_im"));
     }
 
+    // ---- FN-1: footers that name missing core columns or disagree with their prefix -------------------
+
+    private static final MessageType CHUNK_SCHEMA = MessageTypeParser.parseMessageType("""
+            message m {
+              optional group chunk {
+                optional int64 spectrum_index;
+                optional double mz_chunk_start;
+                optional group mz_chunk_values (LIST) { repeated group list { optional double item; } }
+                optional binary chunk_encoding (STRING);
+                optional group intensity (LIST) { repeated group list { optional float item; } }
+                optional group im_grid { required binary grid_type (STRING); }
+              }
+            }""");
+
+    @Test
+    void aFooterNamingAMissingMainAxisValuesColumnThrows() {
+        assertThatThrownBy(() -> plan(index("point",
+                indexEntry("point.spectrum_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("point.m_z", "point", "MS:1000514", "primary", 1),
+                indexEntry("point.intensity", "point", "MS:1000515", "primary", null)),
+                IM_SCHEMA, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum_array_index (FOOTER) lists point.m_z (MS:1000514, point), which is not a column"
+                        + " of the member");
+    }
+
+    @Test
+    void aFooterNamingAMissingChunkEncodingColumnThrows() {
+        // the member stores its encoding in chunk.chunk_encoding; without the throw an MS:1000576 chunk decodes as
+        // deltas ([100, 201, 303] instead of [100, 101, 102])
+        assertThatThrownBy(() -> plan(index("chunk",
+                indexEntry("chunk.spectrum_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("chunk.mz_chunk_start", "chunk_start", "MS:1000514", "primary", 1),
+                indexEntry("chunk.mz_chunk_values", "chunk_values", "MS:1000514", "primary", 1),
+                indexEntry("chunk.encoding", "chunk_encoding", "MS:1000514", "primary", 1),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", "primary", null)),
+                CHUNK_SCHEMA, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum_array_index (FOOTER) lists chunk.encoding (MS:1000514, chunk_encoding), which"
+                        + " is not a column of the member");
+    }
+
+    @Test
+    void aFooterNamingAMissingIntensityColumnThrows() {
+        assertThatThrownBy(() -> plan(index("point",
+                indexEntry("point.spectrum_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("point.mz", "point", "MS:1000514", "primary", 1),
+                indexEntry("point.intensity_f64", "point", "MS:1000515", "primary", null)),
+                IM_SCHEMA, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum_array_index (FOOTER) lists point.intensity_f64 (MS:1000515, point), which is"
+                        + " not a column of the member");
+    }
+
+    @Test
+    void aChromatogramFooterNamingAMissingTimeColumnThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 chromatogram_index;
+                    optional double time;
+                    optional float intensity;
+                  }
+                }""");
+        assertThatThrownBy(() -> SignalPlan.of(ArrayIndex.parse(index("point",
+                indexEntry("point.chromatogram_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("point.time_s", "point", "MS:1000595", "primary", 1),
+                indexEntry("point.intensity", "point", "MS:1000515", "primary", null)), SignalEntity.CHROMATOGRAM),
+                schema, SignalEntity.CHROMATOGRAM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram_array_index (FOOTER) lists point.time_s (MS:1000595, point), which is not"
+                        + " a column of the member");
+    }
+
+    @Test
+    void aPathOutsideThePrefixThrows() {
+        assertThatThrownBy(() -> plan(pointIndex(indexEntry("chunk.im_a", "point", "MS:1003006", "primary", null)),
+                IM_SCHEMA, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum_array_index (FOOTER) lists chunk.im_a, which is not under its prefix point");
+    }
+
+    @Test
+    void thePointPrefixWithAChunkFormatThrows() {
+        String grid = "{\"path\": \"point.im_a\", \"buffer_format\": \"chunk_transform\","
+                + " \"array_type\": \"MS:1003006\", \"transform\": \"MS:1003826\"}";
+        assertThatThrownBy(() -> plan(pointIndex(grid), IM_SCHEMA, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum_array_index (FOOTER) lists point.im_a with the chunk buffer format"
+                        + " chunk_transform under the prefix point");
+    }
+
+    @Test
+    void theChunkPrefixWithThePointFormatThrows() {
+        assertThatThrownBy(() -> plan(index("chunk",
+                indexEntry("chunk.spectrum_index", "index", "MS:1003870", "primary", 0),
+                indexEntry("chunk.mz_chunk_values", "point", "MS:1000514", "primary", 1),
+                indexEntry("chunk.intensity", "point", "MS:1000515", "primary", null)),
+                CHUNK_SCHEMA, SignalEntity.SPECTRUM))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum_array_index (FOOTER) lists chunk.mz_chunk_values with the point buffer format"
+                        + " under the prefix chunk");
+    }
+
+    @Test
+    void aChunkTransformWithoutATransformCreatesNoExtra() {
+        String grid = "{\"path\": \"chunk.im_grid\", \"buffer_format\": \"chunk_transform\","
+                + " \"array_type\": \"MS:1003006\", \"transform\": null}";
+        List<LogRecord> records = ArrayIndexTest.captureLog(SignalPlan.class, () -> {
+            SignalPlan plan = plan(index("chunk",
+                    indexEntry("chunk.spectrum_index", "index", "MS:1003870", "primary", 0),
+                    indexEntry("chunk.mz_chunk_start", "chunk_start", "MS:1000514", "primary", 1),
+                    indexEntry("chunk.mz_chunk_values", "chunk_values", "MS:1000514", "primary", 1),
+                    indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", "primary", null),
+                    grid), CHUNK_SCHEMA, SignalEntity.SPECTRUM);
+            assertThat(plan.extras()).isEmpty();
+        });
+        assertThat(records).filteredOn(r -> r.getLevel() == Level.WARNING).singleElement()
+                .satisfies(r -> assertThat(r.getMessage()).contains("chunk.im_grid", "names no transform"));
+    }
+
     @Test
     void planCollectionsAreUnmodifiable() {
         SignalPlan plan = plan(pointIndex(indexEntry("point.im_a", "point", "MS:1003006", "primary", null)),

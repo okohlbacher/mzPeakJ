@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -115,7 +116,10 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
     /**
      * Derives the plan of a member from its index and schema (design §8.1).
      * <ol>
-     *   <li>Entries whose path names no field of {@code schema} are skipped with a WARNING.
+     *   <li>Every entry's path must lie under the prefix ({@code <prefix>.}). An entry whose path names no field of
+     *       {@code schema} is skipped with a WARNING, unless it holds the entity's default axis or MS:1000515
+     *       (intensity), in any buffer format: then the plan cannot be built. Only a footer can list such an entry;
+     *       an INFERRED index is built from the schema.
      *   <li>The first {@code index} entry names the index field; without one it is
      *       {@link SignalEntity#indexField()}.
      *   <li>The main axis is the array type with the lowest {@code sorting_rank} among the other entries (rank 1
@@ -130,9 +134,12 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
      *       with the same data type, unit and data processing, else the plain-key array.
      * </ol>
      * The layout is CHUNK when an entry has a chunk format, or when there is none and the prefix is {@code chunk}.
+     * The prefix {@code point} admits no chunk format, the prefix {@code chunk} no {@code point} format.
      *
-     * @throws MzPeakException when the main axis is not the entity's default axis, or when two value-bearing
-     *                         entries hold the main axis (the message names both columns); never for extras
+     * @throws MzPeakException when an entry's path is not under the prefix; when a main-axis or intensity entry names
+     *                         no column of the member; when the buffer formats disagree with the prefix; when the main
+     *                         axis is not the entity's default axis; or when two value-bearing entries hold the main
+     *                         axis (the message names both columns); never for a missing extra column
      */
     static SignalPlan of(ArrayIndex index, MessageType schema, SignalEntity entity) {
         Objects.requireNonNull(schema, "schema");
@@ -142,8 +149,16 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
         String what = entity.arrayIndexKey() + " (" + index.source() + ")";
         List<Entry> present = new ArrayList<>();
         for (Entry e : index.entries()) {
+            if (!e.path().startsWith(index.prefix() + ".")) {
+                throw new MzPeakException(what + " lists " + e.path() + ", which is not under its prefix "
+                        + index.prefix());
+            }
             if (hasPath(schema, e.path())) {
                 present.add(e);
+            } else if (entity.defaultAxis().equals(e.arrayType())
+                    || ArrayIndex.INTENSITY_ARRAY.equals(e.arrayType())) {
+                throw new MzPeakException(what + " lists " + e.path() + " (" + e.arrayType() + ", "
+                        + formatName(e.format()) + "), which is not a column of the member");
             } else {
                 LOG.log(Level.WARNING, () -> what + " lists " + e.path() + " (" + e.arrayType()
                         + "), which is not a column of the member; the entry is ignored");
@@ -152,7 +167,7 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
 
         String indexField = null;
         List<Entry> arrays = new ArrayList<>();
-        boolean chunked = false;
+        Entry chunkEntry = null;
         for (Entry e : present) {
             if (e.format() == BufferFormat.INDEX) {
                 if (indexField == null) {
@@ -160,13 +175,23 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
                 }
             } else {
                 arrays.add(e);
-                chunked |= e.format() != BufferFormat.POINT && e.format() != BufferFormat.UNKNOWN;
+                if (chunkEntry == null && e.format() != BufferFormat.POINT && e.format() != BufferFormat.UNKNOWN) {
+                    chunkEntry = e;
+                }
+                if (e.format() == BufferFormat.POINT && ArrayIndex.CHUNK_PREFIX.equals(index.prefix())) {
+                    throw new MzPeakException(what + " lists " + e.path() + " with the point buffer format under"
+                            + " the prefix " + index.prefix());
+                }
             }
         }
         if (indexField == null) {
             indexField = entity.indexField();
         }
-        Layout layout = chunked || (arrays.isEmpty() && ArrayIndex.CHUNK_PREFIX.equals(index.prefix()))
+        if (chunkEntry != null && ArrayIndex.POINT_PREFIX.equals(index.prefix())) {
+            throw new MzPeakException(what + " lists " + chunkEntry.path() + " with the chunk buffer format "
+                    + formatName(chunkEntry.format()) + " under the prefix " + index.prefix());
+        }
+        Layout layout = chunkEntry != null || (arrays.isEmpty() && ArrayIndex.CHUNK_PREFIX.equals(index.prefix()))
                 ? Layout.CHUNK : Layout.POINT;
 
         String axisType = mainAxisType(arrays, entity, what);
@@ -261,8 +286,13 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
                     b.values = Column.of(e);
                 }
             } else if (e.format() == BufferFormat.CHUNK_TRANSFORM) {
+                if (e.transform() == null) {
+                    LOG.log(Level.WARNING, () -> what + " chunk transform " + e.path() + " of " + key
+                            + " names no transform; it is ignored");
+                    continue;
+                }
                 ExtraBuilder b = transformTarget(builders, plain, entries, e, key);
-                if (b.transformFields.containsKey(e.transform()) || e.transform() == null) {
+                if (b.transformFields.containsKey(e.transform())) {
                     LOG.log(Level.WARNING, () -> what + " chunk transform " + e.path() + " of " + key
                             + " cannot be placed; it is ignored");
                 } else {
@@ -294,6 +324,11 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
             }
         }
         return builders.computeIfAbsent(key, x -> new ExtraBuilder(x, plain.getOrDefault(key, transform)));
+    }
+
+    /** The {@code buffer_format} name of {@code format}, such as {@code chunk_encoding}. */
+    private static String formatName(BufferFormat format) {
+        return format.name().toLowerCase(Locale.ROOT);
     }
 
     /** The extra key of an entry: its array name for MS:1000786 (array type when it has none), else its type. */

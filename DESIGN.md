@@ -299,7 +299,10 @@ conformance rules require readers to resolve signal columns through it rather th
    `MS:1003826` → `mz_grid`).
 3. **Intensities:** every `MS:1000515` entry, in index order.
 4. **Extras:** every other entry, keyed as in §3.6.
-5. Entries whose path names no column of the member are skipped with a WARNING.
+5. Every entry's path must lie under the prefix, and the buffer formats must agree with it (no chunk format
+   under `point`, no `point` format under `chunk`); otherwise the plan throws. An entry whose path names no
+   column of the member is skipped with a WARNING when it is an extra; a main-axis or intensity entry without a
+   column throws, because skipping it would read NaN m/z, zero intensities or absolute values as deltas.
 
 **Role flags never pick an array.** Arrays are told apart by array type and buffer format, not by
 `buffer_priority`: small.chunked's intensity is `chunk_secondary`, and diaPASEF.ref's ion mobility is
