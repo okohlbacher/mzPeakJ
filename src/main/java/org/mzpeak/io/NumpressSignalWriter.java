@@ -146,8 +146,9 @@ final class NumpressSignalWriter {
                 int pos = 0;
                 while (pos < n) {
                     int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
-                    if (n - end == 1 && end - pos > 1) {
+                    if (n - end == 1) {
                         // No single-point last chunk: its 12-byte linear payload is one pynumpress cannot decode.
+                        // This chunk is a full one here, so it keeps NUMPRESS_CHUNK_SIZE - 1 points.
                         end--;
                     }
                     int chunkLen = end - pos;

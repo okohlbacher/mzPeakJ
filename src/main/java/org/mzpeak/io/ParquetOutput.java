@@ -89,7 +89,7 @@ final class ParquetOutput {
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withStatisticsEnabled(true)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE);
-        if (footerMetadata != null && !footerMetadata.isEmpty()) {
+        if (!footerMetadata.isEmpty()) {
             builder = builder.withExtraMetaData(footerMetadata);
         }
         OptionalLong rowGroupSize = rowGroupSize(options);
@@ -136,7 +136,7 @@ final class ParquetOutput {
      * Symmetric to {@link org.mzpeak.io.parquet.ParquetGroups#readParams}.
      */
     static void writeParams(Group owner, List<Param> params) {
-        if (params == null || params.isEmpty()) {
+        if (params.isEmpty()) {
             return;
         }
         Group wrapper = owner.addGroup("parameters");

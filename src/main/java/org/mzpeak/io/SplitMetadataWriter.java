@@ -824,25 +824,23 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         };
     }
 
-    /** The {@link ColumnTable} column of {@code facet} whose term is {@code accession}. */
+    /**
+     * The {@link ColumnTable} column of {@code facet} whose term is {@code accession}; every term this class names has
+     * one, which loading this class checks.
+     */
     private static Column column(Facet facet, String accession) {
-        return ColumnTable.byAccession(facet, accession).orElseThrow(
-                () -> new IllegalStateException("no " + accession + " column in " + facet));
+        return ColumnTable.byAccession(facet, accession).orElseThrow();
     }
 
     /**
      * The columns of {@code facet} with the terms of {@code columns}, which belong to another facet, for a member
-     * written with that facet's fields; each must have the same path.
+     * written with that facet's fields. They have the same paths: {@link ColumnTable} builds the chromatogram
+     * precursor and selected-ion facets from the column lists of the spectrum facets.
      */
     private static Set<Column> sameColumns(Facet facet, Set<Column> columns) {
         Set<Column> out = new HashSet<>();
         for (Column c : columns) {
-            Column same = column(facet, c.accession());
-            if (!same.path().equals(c.path())) {
-                throw new IllegalStateException(c.accession() + " is at " + same.path() + " in " + facet + " but at "
-                        + c.path() + " in " + c.facet());
-            }
-            out.add(same);
+            out.add(column(facet, c.accession()));
         }
         return out;
     }
