@@ -278,6 +278,99 @@ class WriterCvListTest {
         assertThat(plan.report().warnings().get(0)).contains("XYZ");
     }
 
+    // ---- prefixes used only by a unit ---------------------------------------------------------------------------
+
+    @Test
+    void aKnownPrefixUsedOnlyAsAParamUnitIsDeclared(@TempDir Path tmp) throws IOException {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        // MS accessions; BTO and NCIT appear only as the units, BTO first although NCIT comes first in the table.
+        Param spectrumParam = new Param("sample mass", "MS:1000004", 1.5, "BTO:0000089");
+        Param scanParam = new Param("sample volume", "MS:1000005", 2.5, "NCIT:C48505");
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        spectra.set(0, withParam(spectra.get(0), spectrumParam));
+        spectra.set(1, withScanParam(spectra.get(1), scanParam));
+        Path out = tmp.resolve("units.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+
+        assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(6), REFERENCE_TABLE.get(7));
+        assertThat(warnings).isEmpty();
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000089")
+                .containsEntry("NCIT", "NCIT:C48505");
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.getSpectrumAt(0).description().parameters()).contains(spectrumParam);
+            assertThat(r.getSpectrumAt(1).description().scans().get(0).parameters()).contains(scanParam);
+        }
+    }
+
+    @Test
+    void aKnownPrefixUsedOnlyAsAManifestUnitIsDeclared(@TempDir Path tmp) throws IOException {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        // MS accessions; EFO is only the unit_accession of a scan-settings param, OBI only the unit of a sample
+        // param, which the file-metadata footer and so the manifest's metadata carry.
+        ScanSettings settings = new ScanSettings("settings", List.of(
+                new Param("sample volume", "MS:1000005", 10.0, "EFO:0000001")));
+        FileMetadata m = s.fileMetadata;
+        FileMetadata metadata = new FileMetadata(m.fileDescription(), m.instrumentConfigurations(),
+                m.dataProcessingMethods(), List.of(new FileMetadata.Sample("sample", "sample", List.of(
+                        new Param("sample mass", "MS:1000004", 1.0, "OBI:0000070")))),
+                m.software(), m.run());
+        Path out = tmp.resolve("manifest-units.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra,
+                s.chromatograms, s.wavelengthSpectra, List.of(settings), metadata));
+
+        assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(2), REFERENCE_TABLE.get(3));
+        assertThat(warnings).isEmpty();
+        assertEveryWrittenPrefixIsDeclared(out);
+        // Each of the two prefixes is the value of a different manifest key.
+        JsonNode meta = index(out).path("metadata");
+        assertThat(meta.findValuesAsText("unit_accession")).containsExactly("EFO:0000001");
+        assertThat(meta.findValuesAsText("unit")).contains("OBI:0000070").doesNotContain("EFO:0000001");
+    }
+
+    @Test
+    void columnMappingUnitPrefixesAreDeclaredOrReportedOnTheirOwn(@TempDir Path dir) throws IOException {
+        Files.write(dir.resolve("spectra_metadata.parquet"), new byte[0]);
+        List<ColumnMapping> mapping = List.of(
+                new ColumnMapping("tissue mass", "tissue_mass", "MS:1000004", "BTO:0000089", null),
+                new ColumnMapping("quality mass", "quality_mass", "MS:1000004", "PATO:0000117", null));
+        WritePlan plan = WritePlanner.plan(List.of(), List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                MzPeakWriter.Options.defaults());
+
+        ManifestWriter.writeManifest(dir, List.of(new WrittenMember("spectra_metadata.parquet", EntityType.SPECTRUM,
+                DataKind.METADATA, mapping)), plan, Dialect.CURRENT);
+
+        assertThat(cvList(dir)).containsExactly(MS, UO, REFERENCE_TABLE.get(7));
+        assertThat(plan.report().warnings()).hasSize(1);
+        assertThat(plan.report().warnings().get(0)).contains("PATO:0000117");
+    }
+
+    @Test
+    void anUnknownPrefixUsedOnlyAsAParamUnitGivesExactlyOneWarningAndStaysUndeclared(@TempDir Path tmp)
+            throws IOException {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        Param pato = new Param("sample mass", "MS:1000004", 1.5, "PATO:0000117");
+        // The same unknown unit on two spectra: still one warning.
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        spectra.set(0, withParam(spectra.get(0), pato));
+        spectra.set(1, withParam(spectra.get(1), pato));
+        Path out = tmp.resolve("pato-unit.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.get(0).getMessage()).contains("PATO:0000117");
+        assertThat(cvList(out)).containsExactly(MS, UO);
+        assertThat(writtenPrefixes(out)).containsEntry("PATO", "PATO:0000117");
+        assertThat(declaredIds(out)).doesNotContain("PATO");
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.getSpectrumAt(0).description().parameters()).contains(pato);
+        }
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
 
     /**
@@ -426,6 +519,22 @@ class WriterCvListTest {
         SpectrumDescription changed = new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
                 d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
                 d.precursors(), params);
+        return new Spectrum(changed, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+    }
+
+    /** {@code s} with {@code param} added to its first scan. */
+    private static Spectrum withScanParam(Spectrum s, Param param) {
+        SpectrumDescription d = s.description();
+        List<ScanEvent> scans = new ArrayList<>(d.scans());
+        ScanEvent first = scans.get(0);
+        List<Param> params = new ArrayList<>(first.parameters());
+        params.add(param);
+        scans.set(0, new ScanEvent(first.startTime(), first.injectionTime(), first.filterString(),
+                first.presetScanConfiguration(), first.instrumentConfigurationRef(), first.spectrumReference(),
+                first.scanWindows(), params));
+        SpectrumDescription changed = new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), scans,
+                d.precursors(), d.parameters());
         return new Spectrum(changed, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
     }
 
