@@ -23,6 +23,7 @@ import org.mzpeak.model.meta.ScanSettings;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -53,6 +54,10 @@ import static org.mzpeak.io.NumpressSignalWriter.NUMPRESS_LINEAR_FIXED_POINT;
  * chromatograms (a third). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
  * scan settings without an id, which get one. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs
  * cannot encode is refused as a contract violation.
+ *
+ * <p>A {@link MzPeakWriter.Session} is planned one spectrum at a time ({@link #sessionSignal}) with the same checks,
+ * its spectrum signal files get the extra columns of the keys it is opened with ({@link #spectrumExtras}), and its
+ * chromatograms and wavelength spectra are planned at its finish ({@link #planFinish}) as here.
  */
 final class WritePlanner {
 
@@ -124,9 +129,6 @@ final class WritePlanner {
         WriteReport report = new WriteReport();
         List<SpectrumEntry> spectrumEntries = new ArrayList<>(ordered.size());
         List<SpectrumSignal> spectrumSignals = new ArrayList<>(ordered.size());
-        // spectra_data is always written, if need be without a single row (every spectrum centroid): both Rust
-        // reference readers open it unconditionally (load_indices_from begins with spectrum_data()?).
-        boolean writesSpectraData = true;
         Map<String, ExtraColumn> extras = new LinkedHashMap<>();
         Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
         // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
@@ -142,22 +144,41 @@ final class WritePlanner {
             }
             addExtraColumns(s, extras, columns);
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
-            SpectrumEntry entry = disposition(s).renumbered(i, precursors);
-            SpectrumSignal signal = new SpectrumSignal(s, entry,
-                    mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
-            if (entry.peaks() && !entry.peaksFromArrays() && !s.peakArrays().isEmpty()) {
-                requirePeakPositions(s);
-            }
-            requireNumpressEncodable(signal, options);
-            spectrumEntries.add(entry);
+            SpectrumSignal signal = signal(s, disposition(s).renumbered(i, precursors), options, report);
+            spectrumEntries.add(signal.entry());
             spectrumSignals.add(signal);
         }
-        if (packedDrops[0] + packedDrops[1] + packedDrops[2] > 0) {
-            report.warn("the packed metadata layout writes only the first scan, the primary precursor and its first"
-                    + " selected ion of a spectrum: " + counted(packedDrops[0], "later scan", "later scans") + ", "
-                    + counted(packedDrops[1], "later precursor", "later precursors") + " and "
-                    + counted(packedDrops[2], "other selected ion", "other selected ions") + " are not written");
-        }
+        warnPackedDrops(packedDrops, report);
+        return complete(options, Collections.unmodifiableList(spectrumEntries),
+                Collections.unmodifiableList(spectrumSignals), List.copyOf(extras.values()), chromatograms,
+                wavelengthSpectra, scanSettings, FooterMetadataWriter.serialize(fileMetadata), report);
+    }
+
+    /**
+     * The plan of a {@link MzPeakWriter.Session} at its finish (design §7, MZ-11): its {@code spectra}, appended and
+     * numbered 0..n-1 as added, with their signal already written and their precursors as given, the
+     * {@code spectrumExtras} of its spectrum signal files, and the chromatograms and wavelength spectra added to it,
+     * which are checked, ordered and numbered as {@link #plan} does it. The plan has no spectrum signals.
+     * {@code footer} is the session's serialized file metadata, and {@code report} holds the warnings of the
+     * spectra added.
+     */
+    static WritePlan planFinish(Options options, List<SpectrumEntry> spectra, List<ExtraColumn> spectrumExtras,
+                                List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
+                                List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
+        validateOthers(chromatograms, wavelengthSpectra, options.metadataLayout());
+        return complete(options, spectra, List.of(), spectrumExtras, chromatograms, wavelengthSpectra, scanSettings,
+                footer, report);
+    }
+
+    /**
+     * The plan of the planned spectra with their signals, the chromatograms and wavelength spectra, which are already
+     * checked by {@link #validateOthers} and are here ordered, numbered and checked further, and the scan settings,
+     * which the split layout gives ids.
+     */
+    private static WritePlan complete(Options options, List<SpectrumEntry> spectra, List<SpectrumSignal> signals,
+                                      List<ExtraColumn> spectrumExtras, List<Chromatogram> chromatograms,
+                                      List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
+                                      Map<String, String> footer, WriteReport report) {
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
         List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());
         Set<String> chromatogramColumns = new HashSet<>(CHROMATOGRAM_SIGNAL_COLUMNS);
@@ -198,12 +219,111 @@ final class WritePlanner {
             report.warn(counted(withParams, "wavelength spectrum carries", "wavelength spectra carry")
                     + " parameters (" + params + " in all), which the packed metadata layout does not write");
         }
-        return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
-                Collections.unmodifiableList(spectrumSignals), Collections.unmodifiableList(chromatogramEntries),
-                Collections.unmodifiableList(wavelengthEntries), writesSpectraData, List.copyOf(extras.values()),
+        // spectra_data is always written, if need be without a single row (every spectrum centroid): both Rust
+        // reference readers open it unconditionally (load_indices_from begins with spectrum_data()?).
+        boolean writesSpectraData = true;
+        return new WritePlan(options, spectra, signals, Collections.unmodifiableList(chromatogramEntries),
+                Collections.unmodifiableList(wavelengthEntries), writesSpectraData, spectrumExtras,
                 chromatogramIntensities, List.copyOf(chromatogramExtras.values()),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
-                Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
+                Collections.unmodifiableMap(footer), report);
+    }
+
+    // Session spectra (design §7, MZ-11). A session writes each spectrum as it is added, so the spectra come in
+    // index order numbered 0..n-1, each written with its own index and its precursors as given, and the extra columns
+    // of the spectrum signal files are declared when the session opens. A spectrum is checked as the batch plan
+    // checks it, before anything of it is written; whether each precursor_index names a spectrum of the dataset is
+    // known only at the finish.
+
+    /**
+     * The extra columns of the spectrum signal files of a session opened with the spectrum array {@code keys}: one
+     * for each key, in their order, named as {@link #plan} names the keys it meets in that order.
+     *
+     * @throws MzPeakException when a key is MS:1000514 or MS:1000515, which a spectrum holds in {@code mz()} and
+     *                         {@code intensity()}
+     */
+    static List<ExtraColumn> spectrumExtras(Collection<String> keys) {
+        Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
+        List<ExtraColumn> out = new ArrayList<>(keys.size());
+        for (String key : keys) {
+            requireExtraSpectrumKey("spectrumArrays", key);
+            out.add(extraColumn(key, columns));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * The signal of {@code s}, the next spectrum of a session whose spectrum signal files have a column for each of
+     * the {@code declared} spectrum arrays, written with its own index and its precursors as given. Its warnings go to
+     * {@code report}; in the packed layout, what that layout does not write of it is added to {@code packedDrops}
+     * ({@link #countPackedDrops}) once every check has passed.
+     *
+     * @throws MzPeakException when a key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} is not
+     *                         declared, when a precursor_index that the layout writes is negative, or when it breaks
+     *                         another rule of {@link #plan}: in the split layout, precursors that share a
+     *                         precursor_index while a later one carries selected ions; peak indices that are no
+     *                         position of its peak arrays; a value Numpress cannot encode
+     */
+    static SpectrumSignal sessionSignal(Spectrum s, Set<String> declared, Options options, WriteReport report,
+                                        int[] packedDrops) {
+        for (Map<String, double[]> arrays : List.of(s.arrays(), s.peakArrays())) {
+            for (String key : arrays.keySet()) {
+                if (!declared.contains(key)) {
+                    throw new MzPeakException("spectrum " + s.index() + ": the array " + key + " is not one of the"
+                            + " spectrum arrays the session was opened with " + declared);
+                }
+            }
+        }
+        List<Precursor> precursors = s.description().precursors();
+        boolean split = options.metadataLayout() == MetadataLayout.SPLIT;
+        if (split) {
+            for (Precursor p : precursors) {
+                requireNonNegativePrecursorIndex(p);
+            }
+            requireOwnKeys(Owner.SPECTRUM, s.index(), s.index(), precursors, precursors);
+        } else {
+            requireNonNegativePrecursorIndex(s.description().primaryPrecursor());
+        }
+        SpectrumSignal signal = signal(s, disposition(s), options, report);
+        if (!split) {
+            countPackedDrops(s, precursors, packedDrops);
+        }
+        return signal;
+    }
+
+    /**
+     * Throws {@link MzPeakException} when a precursor_index of {@code spectra}, a session's spectra numbered
+     * 0..n-1, that the {@code layout} writes (every precursor's in the split layout, the primary one's in the packed
+     * layout) names no spectrum of them.
+     */
+    static void requireWrittenParents(List<SpectrumEntry> spectra, MetadataLayout layout) {
+        for (SpectrumEntry entry : spectra) {
+            List<Precursor> precursors = entry.precursors();
+            int written = layout == MetadataLayout.SPLIT ? precursors.size() : Math.min(1, precursors.size());
+            for (int i = 0; i < written; i++) {
+                Long parent = precursors.get(i).precursorIndex();
+                if (parent != null && parent >= spectra.size()) {
+                    throw new MzPeakException("spectrum " + entry.sourceIndex() + ": precursor_index " + parent
+                            + " names no spectrum of the " + spectra.size() + " written; a precursor_index is the"
+                            + " index of a spectrum of the dataset");
+                }
+            }
+        }
+    }
+
+    /**
+     * The signal of {@code s}, whose {@code entry} says where its rows go and how it is written: its main axis in
+     * the order it is written, whose re-sort gets a warning in {@code report}, after the checks that its peak
+     * indices are positions of its peak arrays and, with Numpress, that its values can be encoded.
+     */
+    private static SpectrumSignal signal(Spectrum s, SpectrumEntry entry, Options options, WriteReport report) {
+        SpectrumSignal signal = new SpectrumSignal(s, entry,
+                mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
+        if (entry.peaks() && !entry.peaksFromArrays() && !s.peakArrays().isEmpty()) {
+            requirePeakPositions(s);
+        }
+        requireNumpressEncodable(signal, options);
+        return signal;
     }
 
     /**
@@ -259,6 +379,19 @@ final class WritePlanner {
             ions += p.selectedIons().size();
         }
         drops[2] += precursors.isEmpty() || precursors.get(0).selectedIons().isEmpty() ? ions : ions - 1;
+    }
+
+    /**
+     * Records in {@code report} the one warning about what the packed layout does not write of the spectra counted in
+     * {@code drops} ({@link #countPackedDrops}), if anything.
+     */
+    static void warnPackedDrops(int[] drops, WriteReport report) {
+        if (drops[0] + drops[1] + drops[2] > 0) {
+            report.warn("the packed metadata layout writes only the first scan, the primary precursor and its first"
+                    + " selected ion of a spectrum: " + counted(drops[0], "later scan", "later scans") + ", "
+                    + counted(drops[1], "later precursor", "later precursors") + " and "
+                    + counted(drops[2], "other selected ion", "other selected ions") + " are not written");
+        }
     }
 
     /**
@@ -393,14 +526,22 @@ final class WritePlanner {
         for (Map<String, double[]> arrays : List.of(s.arrays(), s.peakArrays())) {
             for (String key : arrays.keySet()) {
                 if (!extras.containsKey(key)) {
-                    if (key.equals(ArrayIndex.INTENSITY_ARRAY) || key.equals(SignalEntity.SPECTRUM.defaultAxis())) {
-                        throw new MzPeakException("spectrum " + s.index() + ": the extra array " + key + " ("
-                                + CvTerms.ARRAY_TYPES.get(key) + ") is a main array of a spectrum, which mz() and"
-                                + " intensity() hold; it cannot be written as an extra column");
-                    }
+                    requireExtraSpectrumKey("spectrum " + s.index(), key);
                     extras.put(key, extraColumn(key, columns));
                 }
             }
+        }
+    }
+
+    /**
+     * Throws {@link MzPeakException}, its message starting with {@code owner}, when {@code key} is MS:1000514 or
+     * MS:1000515, a main array of a spectrum.
+     */
+    private static void requireExtraSpectrumKey(String owner, String key) {
+        if (key.equals(ArrayIndex.INTENSITY_ARRAY) || key.equals(SignalEntity.SPECTRUM.defaultAxis())) {
+            throw new MzPeakException(owner + ": the extra array " + key + " (" + CvTerms.ARRAY_TYPES.get(key)
+                    + ") is a main array of a spectrum, which mz() and intensity() hold; it cannot be written as an"
+                    + " extra column");
         }
     }
 
@@ -847,6 +988,29 @@ final class WritePlanner {
             inIndexOrder &= s.index() >= previous;
             previous = s.index();
         }
+        validateOthers(chromatograms, wavelengthSpectra, layout);
+        List<Spectrum> ordered = spectra;
+        if (!inIndexOrder) {
+            ordered = new ArrayList<>(spectra);
+            ordered.sort(Comparator.comparingLong(Spectrum::index)); // List.sort is stable
+        }
+        previous = -1;
+        for (Spectrum s : ordered) {
+            if (s.index() == previous) {
+                throw new MzPeakException("duplicate spectrum index: " + s.index() + " (mzPeak indices are unique)");
+            }
+            previous = s.index();
+        }
+        return ordered;
+    }
+
+    /**
+     * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
+     * unique within each kind, and in the {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index
+     * non-negative.
+     */
+    private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
+                                       MetadataLayout layout) {
         Set<Long> seen = new HashSet<>();
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
@@ -862,19 +1026,6 @@ final class WritePlanner {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
         }
-        List<Spectrum> ordered = spectra;
-        if (!inIndexOrder) {
-            ordered = new ArrayList<>(spectra);
-            ordered.sort(Comparator.comparingLong(Spectrum::index)); // List.sort is stable
-        }
-        previous = -1;
-        for (Spectrum s : ordered) {
-            if (s.index() == previous) {
-                throw new MzPeakException("duplicate spectrum index: " + s.index() + " (mzPeak indices are unique)");
-            }
-            previous = s.index();
-        }
-        return ordered;
     }
 
     private static void requireNonNegative(long value, String what) {
