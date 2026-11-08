@@ -50,8 +50,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code isolation_window.parameters} cells;
  *   <li>(b) default to an empty list: the 3-argument constructor equals the 4-argument one with {@code List.of()},
  *       and the bounds do not depend on them;
- *   <li>(c) are written in both writer layouts: windows read back equal, as records, to their source's, and the
- *       PACKED member stores them in the pin-era {@code isolation_window.parameters} list.
+ *   <li>(c) are written in both writer layouts, also when they are a window's only content: windows read back
+ *       equal, as records, to their source's, and the PACKED member stores them in the pin-era
+ *       {@code isolation_window.parameters} list.
  * </ul>
  */
 class IsolationWindowParamsTest {
@@ -372,6 +373,68 @@ class IsolationWindowParamsTest {
                 assertThat(windowType.getType("parameters")).isEqualTo(pinned);
             }
         }
+    }
+
+    /**
+     * (c) A window whose only content is its parameters is still written in either layout: legacy small.unpacked,
+     * with the first precursor of its first MS2 spectrum given the window 'ms level' = 1 and nothing else, reads back
+     * with every window equal, as a record, to its source's, and the precursor row of that spectrum, found by
+     * source_index, stores the {@code isolation_window} group with the param.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(MetadataLayout.class)
+    void aWindowOfOnlyParametersIsWritten(MetadataLayout layout, @TempDir Path tmp) {
+        IsolationWindow onlyParams = new IsolationWindow(null, null, null, List.of(MS_LEVEL_1));
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.legacy(SMALL_UNPACKED));
+        int at = -1;
+        for (int i = 0; i < source.spectra.size() && at < 0; i++) {
+            if (source.spectra.get(i).msLevel() == 2 && !source.spectra.get(i).description().precursors().isEmpty()) {
+                at = i;
+            }
+        }
+        assertThat(at).as("an MS2 spectrum of legacy small.unpacked").isNotNegative();
+        Spectrum ms2 = source.spectra.get(at);
+        SpectrumDescription d = ms2.description();
+        List<Precursor> precursors = new ArrayList<>(d.precursors());
+        Precursor first = precursors.get(0);
+        precursors.set(0, new Precursor(first.precursorIndex(), first.precursorId(), onlyParams,
+                first.selectedIons(), first.activation()));
+        SpectrumDescription changed = new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(), precursors,
+                d.parameters());
+        source.spectra.set(at, new Spectrum(changed, ms2.mz(), ms2.intensity(), ms2.peaks(), ms2.arrays(),
+                ms2.peakArrays()));
+        Path out = tmp.resolve("out");
+        MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, Options.defaults().withMetadataLayout(layout));
+        List<SpectrumDescription> written = new ArrayList<>();
+        for (Spectrum s : source.spectra) {
+            written.add(s.description());
+        }
+        long sourceIndex;
+        try (MzPeakReader back = MzPeakReader.open(out)) {
+            SpectrumDescription read = back.metadata().stream().filter(x -> d.id().equals(x.id())).findFirst()
+                    .orElseThrow();
+            assertThat(read.precursors().get(0).isolationWindow()).isEqualTo(onlyParams);
+            assertThat(windows(back.metadata())).hasSize(34).isEqualTo(windows(written));
+            sourceIndex = read.index();
+        }
+        DataKind kind = layout == MetadataLayout.PACKED ? DataKind.METADATA : DataKind.PRECURSORS;
+        List<Group> rows = new ArrayList<>();
+        try (MzPeakSource dataset = MzPeakSource.open(out)) {
+            String member = MzPeakManifest.fromSource(dataset).find(EntityType.SPECTRUM, kind).orElseThrow().name();
+            ParquetGroups.forEach(dataset.inputFile(member), row -> {
+                Group precursor = layout == MetadataLayout.PACKED ? ParquetGroups.optGroup(row, "precursor") : row;
+                if (precursor != null && Long.valueOf(sourceIndex).equals(
+                        ParquetGroups.optLong(precursor, "source_index"))) {
+                    rows.add(precursor);
+                }
+            });
+        }
+        assertThat(rows).as("precursor rows of source_index %d", sourceIndex).hasSameSizeAs(precursors);
+        Group window = ParquetGroups.optGroup(rows.get(0), "isolation_window");
+        assertThat(window).as("isolation_window of source_index %d", sourceIndex).isNotNull();
+        assertThat(ParquetGroups.readParams(window, "parameters")).containsExactly(MS_LEVEL_1);
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------
