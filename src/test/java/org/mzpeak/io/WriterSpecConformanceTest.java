@@ -34,7 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * version {@code 0.9.0} and the controlled vocabularies the dataset uses (MS and UO for these fixtures), and the
  * footer metadata always gives the run a resolvable default data processing and default source file id.
  *
- * <p>The expected UINT64 columns are spelled out per file and layout. Signed INT64 leaves such as the parameter
+ * <p>The expected UINT64 columns are spelled out per file and layout: the default overloads write the split metadata
+ * tables (WR-7), and options naming the packed layout write its structs. Signed INT64 leaves such as the parameter
  * {@code value.integer} union member are deliberately not covered by the naming rule.
  */
 class WriterSpecConformanceTest {
@@ -48,8 +49,21 @@ class WriterSpecConformanceTest {
     private static final MzPeakWriter.Options PACKED =
             MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED);
 
-    /** UINT64 columns of the spectrum metadata table, identical for every layout. */
-    private static final List<String> SPECTRUM_METADATA_UINT64 = List.of(
+    /** UINT64 columns of the split spectrum metadata tables, identical for every signal encoding. */
+    private static final List<String> SPLIT_SPECTRUM_METADATA_UINT64 = List.of(
+            "spectra_metadata.parquet: index",
+            "spectra_metadata.parquet: number_of_data_points",
+            "spectra_metadata.parquet: number_of_peaks",
+            "spectra_metadata_scans.parquet: source_index",
+            "spectra_metadata_scans.parquet: scan_index",
+            "spectra_metadata_precursors.parquet: source_index",
+            "spectra_metadata_precursors.parquet: precursor_index",
+            "spectra_metadata_selected_ions.parquet: source_index",
+            "spectra_metadata_selected_ions.parquet: precursor_index",
+            "spectra_metadata_selected_ions.parquet: selected_ion_index");
+
+    /** UINT64 columns of the packed spectrum metadata table, identical for every signal encoding. */
+    private static final List<String> PACKED_SPECTRUM_METADATA_UINT64 = List.of(
             "spectra_metadata.parquet: spectrum.index",
             "spectra_metadata.parquet: spectrum.MS_1003060_number_of_data_points",
             "spectra_metadata.parquet: spectrum.MS_1003059_number_of_peaks",
@@ -64,17 +78,38 @@ class WriterSpecConformanceTest {
             "spectra_data.parquet: point.spectrum_index",
             "spectra_peaks.parquet: point.spectrum_index");
 
-    /** UINT64 columns of the chromatogram tables (always written in point layout). */
-    private static final List<String> CHROMATOGRAM_UINT64 = List.of(
+    /** UINT64 columns of the split chromatogram tables (the data always written in point layout). */
+    private static final List<String> SPLIT_CHROMATOGRAM_UINT64 = List.of(
+            "chromatograms_metadata.parquet: index",
+            "chromatograms_metadata.parquet: number_of_data_points",
+            "chromatograms_metadata_precursors.parquet: source_index",
+            "chromatograms_metadata_precursors.parquet: precursor_index",
+            "chromatograms_metadata_selected_ions.parquet: source_index",
+            "chromatograms_metadata_selected_ions.parquet: precursor_index",
+            "chromatograms_metadata_selected_ions.parquet: selected_ion_index",
+            "chromatograms_data.parquet: point.chromatogram_index");
+
+    /** UINT64 columns of the packed chromatogram tables (the data always written in point layout). */
+    private static final List<String> PACKED_CHROMATOGRAM_UINT64 = List.of(
             "chromatograms_metadata.parquet: chromatogram.index",
             "chromatograms_metadata.parquet: chromatogram.MS_1003060_number_of_data_points",
             "chromatograms_data.parquet: point.chromatogram_index");
 
-    /** UINT64 columns of the wavelength-spectrum tables. */
-    private static final List<String> WAVELENGTH_UINT64 = List.of(
+    /** UINT64 columns of the split wavelength-spectrum tables. */
+    private static final List<String> SPLIT_WAVELENGTH_UINT64 = List.of(
+            "wavelength_spectra_metadata.parquet: index",
+            "wavelength_spectra_metadata.parquet: number_of_data_points",
+            "wavelength_spectra_metadata_scans.parquet: source_index",
+            "wavelength_spectra_metadata_scans.parquet: scan_index",
+            "wavelength_spectra_data.parquet: point.wavelength_spectrum_index");
+
+    /** UINT64 columns of the packed wavelength-spectrum tables. */
+    private static final List<String> PACKED_WAVELENGTH_UINT64 = List.of(
             "wavelength_spectra_metadata.parquet: spectrum.index",
             "wavelength_spectra_metadata.parquet: spectrum.MS_1003060_number_of_data_points",
             "wavelength_spectra_data.parquet: point.wavelength_spectrum_index");
+
+    // ---- the default overloads: the split metadata layout ----------------------------------------------------
 
     @Test
     void pointLayoutDeclaresUint64IndexAndCountColumns(@TempDir Path tmp) throws IOException {
@@ -83,7 +118,8 @@ class WriterSpecConformanceTest {
         MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata);
 
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64, POINT_SPECTRUM_DATA_UINT64, CHROMATOGRAM_UINT64));
+        assertUint64Columns(dir, concat(SPLIT_SPECTRUM_METADATA_UINT64, POINT_SPECTRUM_DATA_UINT64,
+                SPLIT_CHROMATOGRAM_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 
@@ -94,10 +130,10 @@ class WriterSpecConformanceTest {
         MzPeakWriter.writeDirectoryNumpress(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.SLOF);
 
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
+        assertUint64Columns(dir, concat(SPLIT_SPECTRUM_METADATA_UINT64,
                 List.of("spectra_data.parquet: chunk.spectrum_index",
                         "spectra_peaks.parquet: chunk.spectrum_index"),
-                CHROMATOGRAM_UINT64));
+                SPLIT_CHROMATOGRAM_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 
@@ -110,8 +146,9 @@ class WriterSpecConformanceTest {
                 s.fileMetadata);
 
         // has_uv's spectra are all CENTROID peak copies, so WR-3 writes them to spectra_peaks only.
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
-                List.of("spectra_peaks.parquet: point.spectrum_index"), CHROMATOGRAM_UINT64, WAVELENGTH_UINT64));
+        assertUint64Columns(dir, concat(SPLIT_SPECTRUM_METADATA_UINT64,
+                List.of("spectra_peaks.parquet: point.spectrum_index"), SPLIT_CHROMATOGRAM_UINT64,
+                SPLIT_WAVELENGTH_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 
@@ -124,7 +161,8 @@ class WriterSpecConformanceTest {
         MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, PACKED);
 
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64, POINT_SPECTRUM_DATA_UINT64, CHROMATOGRAM_UINT64));
+        assertUint64Columns(dir, concat(PACKED_SPECTRUM_METADATA_UINT64, POINT_SPECTRUM_DATA_UINT64,
+                PACKED_CHROMATOGRAM_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 
@@ -135,10 +173,10 @@ class WriterSpecConformanceTest {
         MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, PACKED.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS));
 
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
+        assertUint64Columns(dir, concat(PACKED_SPECTRUM_METADATA_UINT64,
                 List.of("spectra_data.parquet: chunk.spectrum_index",
                         "spectra_peaks.parquet: chunk.spectrum_index"),
-                CHROMATOGRAM_UINT64));
+                PACKED_CHROMATOGRAM_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 
@@ -150,8 +188,9 @@ class WriterSpecConformanceTest {
         MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, PACKED);
 
-        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
-                List.of("spectra_peaks.parquet: point.spectrum_index"), CHROMATOGRAM_UINT64, WAVELENGTH_UINT64));
+        assertUint64Columns(dir, concat(PACKED_SPECTRUM_METADATA_UINT64,
+                List.of("spectra_peaks.parquet: point.spectrum_index"), PACKED_CHROMATOGRAM_UINT64,
+                PACKED_WAVELENGTH_UINT64));
         assertManifestVersionAndCvList(dir);
     }
 
@@ -218,8 +257,8 @@ class WriterSpecConformanceTest {
 
     /**
      * Asserts that every expected (file, column) pair is an INT64 leaf annotated UINT64, and that across all
-     * written files every INT64 leaf named {@code index}, {@code *_index}, {@code MS_1003059_*} or
-     * {@code MS_1003060_*} is UINT64.
+     * written files every INT64 leaf named {@code index}, {@code *_index}, {@code MS_1003059_*},
+     * {@code MS_1003060_*}, {@code number_of_data_points} or {@code number_of_peaks} is UINT64.
      */
     private static void assertUint64Columns(Path dir, List<String> expected) throws IOException {
         Set<String> uint64 = new LinkedHashSet<>();
@@ -243,7 +282,8 @@ class WriterSpecConformanceTest {
                     }
                     String leaf = path[path.length - 1];
                     boolean mustBeUint64 = leaf.equals("index") || leaf.endsWith("_index")
-                            || leaf.startsWith("MS_1003059_") || leaf.startsWith("MS_1003060_");
+                            || leaf.startsWith("MS_1003059_") || leaf.startsWith("MS_1003060_")
+                            || leaf.equals("number_of_data_points") || leaf.equals("number_of_peaks");
                     if (mustBeUint64 && !isUint64) {
                         ruleViolations.add(column + " is " + type.getLogicalTypeAnnotation());
                     }

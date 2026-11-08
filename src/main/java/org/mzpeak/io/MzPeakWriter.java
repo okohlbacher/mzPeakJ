@@ -21,11 +21,17 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * metadata; round-trips through {@link MzPeakReader}. Numpress layout additionally encodes m/z with Numpress
  * linear (MS:1002312) and intensity with Numpress SLOF (MS:1002314) per chunk.
  *
+ * <p>The metadata members are written in the split layout of the current mzPeak format unless the {@link Options}
+ * say otherwise ({@link MetadataLayout#SPLIT}): one table per facet, every scan, precursor and selected ion of a
+ * spectrum, and a manifest in the current dialect, which the HEAD reference Python reader reads.
+ * {@link MetadataLayout#PACKED} writes the pin-era packed layout that mzPeakJ 0.10.3 and earlier wrote.
+ *
  * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
  * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
  * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
  * imaging-position columns, scan settings, and wavelength facets — so a read &rarr; write cycle preserves
- * everything {@link MzPeakReader} surfaces.
+ * everything {@link MzPeakReader} surfaces except the extra signal arrays of {@link Spectrum#arrays()} and
+ * {@link Spectrum#peakArrays()}, which are not written yet; a write that drops them logs one WARNING.
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -260,18 +266,23 @@ public final class MzPeakWriter {
      */
     public enum NumpressIntensityEncoding { SLOF, PIC }
 
-    /**
-     * How the metadata members are laid out (design §11.4). Package-private until the split writer is complete
-     * (WR-7); until then the public overloads always write {@link #PACKED}.
-     */
-    enum MetadataLayout {
+    /** How the metadata members are laid out; {@link #SPLIT} unless the {@link Options} say otherwise. */
+    public enum MetadataLayout {
         /**
-         * The current layout (HUPO-PSI/mzPeak 0a28759 and later): one flat table per metadata facet, listed in the
-         * current manifest dialect with underscore roles and a column mapping. So far it writes spectra_metadata and
-         * spectra_metadata_scans; the chromatogram and wavelength-spectrum metadata are still packed.
+         * The current layout (HUPO-PSI/mzPeak 0a28759 and later), the default: one flat table per metadata facet,
+         * listed in the current manifest dialect with underscore roles and a column mapping. Spectra get
+         * spectra_metadata, spectra_metadata_scans, spectra_metadata_precursors and spectra_metadata_selected_ions,
+         * with every scan, precursor and selected ion; chromatograms get chromatograms_metadata and empty precursor
+         * and selected-ion tables; wavelength spectra get wavelength_spectra_metadata and its scans table. The HEAD
+         * reference Python reader reads this layout.
          */
         SPLIT,
-        /** The pin-era packed layout (HUPO-PSI/mzPeak 29e59b2): one struct per facet in one member per entity. */
+        /**
+         * The pin-era packed layout (HUPO-PSI/mzPeak 29e59b2), kept for readers of that era, mzPeakJ 0.10.3 and
+         * earlier among them: one struct per facet in one member per entity, the pin-era role spellings and no column
+         * mapping. Only the first scan and the primary precursor and selected ion of a spectrum are written. The HEAD
+         * reference Python reader rejects this layout.
+         */
         PACKED
     }
 
@@ -302,7 +313,7 @@ public final class MzPeakWriter {
     public static final class Options {
 
         private static final Options DEFAULTS = new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF,
-                OptionalLong.empty(), MetadataLayout.PACKED);
+                OptionalLong.empty(), MetadataLayout.SPLIT);
 
         private final SignalEncoding signalEncoding;
         private final NumpressIntensityEncoding numpressIntensity;
@@ -317,7 +328,10 @@ public final class MzPeakWriter {
             this.metadataLayout = metadataLayout;
         }
 
-        /** Point layout, SLOF Numpress intensity, no row-group size: what the plain overloads write. */
+        /**
+         * Point layout, SLOF Numpress intensity, no row-group size and the split metadata layout: what the plain
+         * overloads write.
+         */
         public static Options defaults() {
             return DEFAULTS;
         }
@@ -344,8 +358,8 @@ public final class MzPeakWriter {
             return rowGroupSize;
         }
 
-        /** How the metadata members are laid out; {@link MetadataLayout#PACKED} by default. */
-        MetadataLayout metadataLayout() {
+        /** How the metadata members are laid out; {@link MetadataLayout#SPLIT} by default. */
+        public MetadataLayout metadataLayout() {
             return metadataLayout;
         }
 
@@ -385,11 +399,12 @@ public final class MzPeakWriter {
         }
 
         /**
-         * These options with {@code layout} for the metadata members.
+         * These options with {@code layout} for the metadata members; {@link MetadataLayout#PACKED} writes the pin-era
+         * layout of mzPeakJ 0.10.3 and earlier.
          *
          * @throws NullPointerException if {@code layout} is {@code null}
          */
-        Options withMetadataLayout(MetadataLayout layout) {
+        public Options withMetadataLayout(MetadataLayout layout) {
             return new Options(signalEncoding, numpressIntensity, rowGroupSize,
                     Objects.requireNonNull(layout, "layout"));
         }
@@ -411,11 +426,8 @@ public final class MzPeakWriter {
 
         @Override
         public String toString() {
-            // The metadata layout is named only when it is not the default: while it is package-private (until
-            // WR-7), every Options the public API can build prints as it always has.
             return "Options[signalEncoding=" + signalEncoding + ", numpressIntensity=" + numpressIntensity
-                    + ", rowGroupSize=" + rowGroupSize
-                    + (metadataLayout == MetadataLayout.PACKED ? "" : ", metadataLayout=" + metadataLayout) + "]";
+                    + ", rowGroupSize=" + rowGroupSize + ", metadataLayout=" + metadataLayout + "]";
         }
     }
 

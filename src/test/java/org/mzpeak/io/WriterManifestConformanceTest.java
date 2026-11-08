@@ -45,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  *
  * <p>Each case reads a legacy fixture with {@link ForwardBackwardCorpusTest#readSource} and writes it with the full
- * form of one of the four legacy writer families, or with options that name the split or the packed layout. The
- * checksums are recomputed
+ * form of one of the four legacy writer families, which write the split layout by default since WR-7, or with
+ * options that name the split or the packed layout. The checksums are recomputed
  * here with {@link MessageDigest}: from the file bytes of a directory, and through {@link MzPeakSource#inputFile} for
  * an archive.
  */
@@ -110,14 +110,14 @@ class WriterManifestConformanceTest {
      * the split or the packed layout.
      */
     enum Form {
-        WRITE_DIRECTORY("writeDirectory", false, false, (out, s) -> MzPeakWriter.writeDirectory(out, s.spectra,
+        WRITE_DIRECTORY("writeDirectory", false, true, (out, s) -> MzPeakWriter.writeDirectory(out, s.spectra,
                 s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata)),
-        WRITE_ARCHIVE("writeArchive", true, false, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
+        WRITE_ARCHIVE("writeArchive", true, true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
                 s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata)),
-        WRITE_DIRECTORY_NUMPRESS("writeDirectoryNumpress", false, false, (out, s) ->
+        WRITE_DIRECTORY_NUMPRESS("writeDirectoryNumpress", false, true, (out, s) ->
                 MzPeakWriter.writeDirectoryNumpress(out, s.spectra, s.chromatograms, s.wavelengthSpectra,
                         s.scanSettings, s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.SLOF)),
-        WRITE_ARCHIVE_NUMPRESS("writeArchiveNumpress", true, false, (out, s) ->
+        WRITE_ARCHIVE_NUMPRESS("writeArchiveNumpress", true, true, (out, s) ->
                 MzPeakWriter.writeArchiveNumpress(out, s.spectra, s.chromatograms, s.wavelengthSpectra,
                         s.scanSettings, s.fileMetadata)),
         WRITE_DIRECTORY_SPLIT("writeDirectory-SPLIT", false, true, (out, s) -> MzPeakWriter.writeDirectory(out,

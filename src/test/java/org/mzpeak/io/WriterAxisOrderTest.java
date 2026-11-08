@@ -244,14 +244,18 @@ class WriterAxisOrderTest {
                 Fixtures.CURRENT_NAMES.stream().map(Fixtures::current));
     }
 
-    /** The fixtures' main axes are already ascending: planning their write re-sorts nothing. */
+    /**
+     * The fixtures' main axes are already ascending: planning their write re-sorts nothing. (The diaPASEF fixtures
+     * get the warning about their extra signal arrays, which the writer drops until WR-11.)
+     */
     @ParameterizedTest
     @MethodSource("fixtures")
     void fixtureAxesAreAlreadyAscending(Path fixture) {
         Source s = ForwardBackwardCorpusTest.readSource(fixture);
 
         assertThat(WritePlanner.plan(s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
-                s.fileMetadata, Options.defaults()).report().warnings()).isEmpty();
+                s.fileMetadata, Options.defaults()).report().warnings())
+                .filteredOn(w -> !w.contains("extra signal arrays")).isEmpty();
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

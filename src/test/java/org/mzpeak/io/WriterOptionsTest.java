@@ -7,6 +7,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
@@ -343,13 +344,34 @@ class WriterOptionsTest {
     // ---- Options values ---------------------------------------------------------------------------------------
 
     @Test
-    void defaultsArePointLayoutSlofAndNoRowGroupSize() {
+    void defaultsArePointLayoutSlofNoRowGroupSizeAndSplitMetadata() {
         assertThat(DEFAULTS.signalEncoding()).isEqualTo(SignalEncoding.POINT);
         assertThat(DEFAULTS.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.SLOF);
         assertThat(DEFAULTS.rowGroupSize()).isEqualTo(OptionalLong.empty());
+        assertThat(DEFAULTS.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(Options.defaults()).isSameAs(DEFAULTS);
-        assertThat(DEFAULTS).hasToString(
-                "Options[signalEncoding=POINT, numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty]");
+        assertThat(DEFAULTS).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF, "
+                + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT]");
+    }
+
+    @Test
+    void theMetadataLayoutIsASettingLikeTheOthers() {
+        Options packed = DEFAULTS.withMetadataLayout(MetadataLayout.PACKED);
+
+        assertThat(packed.metadataLayout()).isEqualTo(MetadataLayout.PACKED);
+        assertThat(packed.signalEncoding()).isEqualTo(SignalEncoding.POINT);
+        assertThat(packed.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.SLOF);
+        assertThat(packed.rowGroupSize()).isEmpty();
+        assertThat(DEFAULTS.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
+        assertThat(packed).isNotEqualTo(DEFAULTS).hasToString("Options[signalEncoding=POINT, "
+                + "numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty, metadataLayout=PACKED]");
+        assertThat(packed.withMetadataLayout(MetadataLayout.SPLIT)).isEqualTo(DEFAULTS).hasSameHashCodeAs(DEFAULTS);
+        assertThat(NUMPRESS.withMetadataLayout(MetadataLayout.PACKED).withRowGroupSize(4096))
+                .isEqualTo(NUMPRESS.withRowGroupSize(4096).withMetadataLayout(MetadataLayout.PACKED));
+        assertThat(packed.withSignalEncoding(SignalEncoding.NUMPRESS).metadataLayout())
+                .isEqualTo(MetadataLayout.PACKED);
+        assertThatThrownBy(() -> DEFAULTS.withMetadataLayout(null)).isInstanceOf(NullPointerException.class)
+                .hasMessage("layout");
     }
 
     @Test
@@ -366,8 +388,8 @@ class WriterOptionsTest {
         assertThat(sized.rowGroupSize()).hasValue(32768);
         assertThat(sized.signalEncoding()).isEqualTo(SignalEncoding.NUMPRESS);
         assertThat(sized.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.PIC);
-        assertThat(sized).hasToString(
-                "Options[signalEncoding=NUMPRESS, numpressIntensity=PIC, rowGroupSize=OptionalLong[32768]]");
+        assertThat(sized).hasToString("Options[signalEncoding=NUMPRESS, numpressIntensity=PIC, "
+                + "rowGroupSize=OptionalLong[32768], metadataLayout=SPLIT]");
 
         assertThat(DEFAULTS.signalEncoding()).isEqualTo(SignalEncoding.POINT);
         assertThat(DEFAULTS.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.SLOF);
