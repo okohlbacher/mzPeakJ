@@ -1,19 +1,28 @@
 package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakManifest.CvEntry;
+import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.SpectrumSignal;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
+import java.io.IOException;
 import java.lang.System.Logger.Level;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
-
-import static org.mzpeak.io.ArchivePacker.packArchive;
+import java.util.Set;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 /**
  * Writes mzPeak datasets in either {@code point} layout (the default) or MS-Numpress {@code chunk} layout.
@@ -43,7 +52,11 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
- * Each other overload is a shorthand for one of them; its documentation names the call it stands for.
+ * Each other overload is a shorthand for one of them; its documentation names the call it stands for. These batch
+ * overloads take the whole dataset as lists. {@link #openDirectory(Path, FileMetadata, List, Set, Options)} and
+ * {@link #openArchive(Path, FileMetadata, List, Set, Options)} open a {@link Session} instead, which writes the same
+ * dataset one spectrum at a time and holds no spectrum's signal once it is added, so that a dataset of any size can
+ * be written; unlike the batch overloads, they refuse an existing archive and a directory that is not empty.
  *
  * <p>An archive holds the members in name order and the manifest last, each STORED with the time 2000-01-01T00:00
  * and no extra field but the zip64 one that sizes and offsets over 4 GiB need, so its ZIP layer does not depend on
@@ -308,6 +321,57 @@ public final class MzPeakWriter {
                 Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS));
     }
 
+    // ---- Streaming session API --------------------------------------------------------------------
+
+    /**
+     * Opens a {@link Session} that writes an unpacked {@code *.mzpeak/} directory at {@code target} one spectrum at a
+     * time. {@code target} must not exist, and is then created with any missing parent directory, or be an empty
+     * directory; this is checked before anything is written. The session writes the members into it as it goes, and
+     * {@link Session#close()} without {@link Session#finish()} deletes them, and the directory if the session created
+     * it.
+     *
+     * @param target         the dataset directory
+     * @param fileMetadata   the file and run metadata, {@link FileMetadata#EMPTY} for none
+     * @param scanSettings   the scan settings, written as {@link #writeDirectory(Path, List, List, List, List,
+     *                       FileMetadata, Options) writeDirectory} writes them
+     * @param spectrumArrays the keys of every {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} the spectra
+     *                       may carry, each written as one extra column of spectra_data and spectra_peaks in the set's
+     *                       iteration order, whether a spectrum has it or not, and named as {@code writeDirectory}
+     *                       names the keys it meets in that order
+     * @param options        the settings of the write
+     * @return the open session
+     * @throws MzPeakException      when {@code target} exists and is not an empty directory, when it cannot be read,
+     *                              created or written, or when a key of {@code spectrumArrays} is MS:1000514 or
+     *                              MS:1000515, which a spectrum holds in {@code mz()} and {@code intensity()}
+     * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
+     */
+    public static Session openDirectory(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
+                                        Set<String> spectrumArrays, Options options) {
+        return Session.open(target, false, fileMetadata, scanSettings, spectrumArrays, options);
+    }
+
+    /**
+     * Opens a {@link Session} that writes a single-file STORED {@code .mzpeak} ZIP at {@code target} one spectrum at
+     * a time. {@code target} must not exist; this is checked before anything is written. The session writes the
+     * members into a temp directory next to {@code target}, and {@link Session#finish()} packs them into a temp file
+     * next to it, which it moves to {@code target} by renaming it; {@link Session#close()} without a finish deletes
+     * both, leaving {@code target} absent.
+     *
+     * @param target         the archive file
+     * @param fileMetadata   as for {@link #openDirectory(Path, FileMetadata, List, Set, Options) openDirectory}
+     * @param scanSettings   as for {@code openDirectory}
+     * @param spectrumArrays as for {@code openDirectory}
+     * @param options        the settings of the write
+     * @return the open session
+     * @throws MzPeakException      when {@code target} exists, when the temp directory cannot be created or written,
+     *                              or when a key of {@code spectrumArrays} is MS:1000514 or MS:1000515
+     * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
+     */
+    public static Session openArchive(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
+                                      Set<String> spectrumArrays, Options options) {
+        return Session.open(target, true, fileMetadata, scanSettings, spectrumArrays, options);
+    }
+
     /**
      * Intensity encoding for Numpress chunks. {@link #SLOF} is the standard choice for floating-point
      * intensities; {@link #PIC} is appropriate for integer ion-count arrays.
@@ -522,26 +586,348 @@ public final class MzPeakWriter {
         }
     }
 
+    /**
+     * The write of one mzPeak dataset one spectrum at a time (design §7, MZ-11), opened by
+     * {@link MzPeakWriter#openDirectory openDirectory} or {@link MzPeakWriter#openArchive openArchive}: add the
+     * spectra in index order with {@link #addSpectrum}, the chromatograms and wavelength spectra with
+     * {@link #addChromatogram} and {@link #addWavelengthSpectrum} at any point before the finish, then call
+     * {@link #finish()}. Open it in try-with-resources, so that a session that does not finish is closed:
+     *
+     * <pre>{@code
+     * try (MzPeakWriter.Session session = MzPeakWriter.openArchive(target, FileMetadata.EMPTY, List.of(),
+     *         Set.of(), MzPeakWriter.Options.defaults())) {
+     *     for (Spectrum spectrum : spectra) {
+     *         session.addSpectrum(spectrum);
+     *     }
+     *     session.finish();
+     * }
+     * }</pre>
+     *
+     * <p><b>Contract.</b> The spectra are added in index order, numbered 0, 1, 2, ...: a spectrum whose
+     * {@link Spectrum#index()} is not the number of spectra added so far is refused. Each spectrum is written as given,
+     * with its index and every precursor_index, which must name a spectrum of the dataset: when the session finishes,
+     * each precursor_index the metadata layout writes must be less than the number of spectra (the parent may come
+     * after the spectrum that names it). Every key of a spectrum's {@link Spectrum#arrays()} and
+     * {@link Spectrum#peakArrays()} must be one of the spectrum arrays the session was opened with. The other rules are
+     * those of {@link MzPeakWriter#writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory}:
+     * each precursor_index the layout writes is non-negative; in the split layout, precursors of a spectrum that share
+     * their precursor_index carry no selected ions after the first of them; a peak's index is a position of the peak
+     * arrays; with {@link SignalEncoding#NUMPRESS}, every value written can be encoded. A spectrum that breaks one is
+     * refused with an {@link MzPeakException}, nothing of it is written, and the session goes on with the next
+     * spectrum. A main axis that is not ascending is written re-sorted, with a WARNING. Chromatograms and wavelength
+     * spectra are held until the finish and written then as {@code writeDirectory} writes them: in the order of their
+     * indices, which must be unique and non-negative, numbered 0..n-1, each precursor_index of a chromatogram as the
+     * new index of the chromatogram it names, or null; a violation fails the finish.
+     *
+     * <p><b>Targets.</b> {@link MzPeakWriter#openDirectory openDirectory} writes the members into the directory as the
+     * session goes; the directory must not exist (it is then created) or be empty. {@link MzPeakWriter#openArchive
+     * openArchive} writes them into a temp directory next to the archive, which must not exist, and {@link #finish()}
+     * packs them into a temp file next to it and renames that to the archive. The batch overloads
+     * ({@code writeDirectory}, {@code writeArchive} and their Numpress forms) run on this class in a replace mode
+     * instead: an archive replaces an existing file at the final move, and a directory is created or reused, each
+     * member replacing a file of its name and every other file left alone.
+     *
+     * <p><b>Ending.</b> {@link #finish()} closes spectra_data and spectra_peaks, writes the metadata members,
+     * chromatograms_data, wavelength_spectra_data and the manifest, packs and moves an archive, and logs the warnings
+     * of the write. {@link #close()} without a finish abandons the write: an archive session deletes its temp directory
+     * and temp file, so the target stays absent, and a directory session deletes the members it wrote, and the
+     * directory if it created it (its missing parents stay). In replace mode an existing archive stays untouched and a
+     * directory stays as it is. A finish that throws, and an I/O failure while a spectrum is added, leave what
+     * {@link #close()} leaves and close the session. After {@link #finish()} or {@link #close()}, adding or finishing
+     * throws {@link IllegalStateException}, and closing does nothing. A session is not safe for use by several threads.
+     *
+     * <p><b>Memory.</b> A session holds about 2 KB per spectrum added (its description with its precursors, five
+     * summary values and its row counts), the chromatograms and wavelength spectra added, and the open row groups of
+     * spectra_data and spectra_peaks, up to the row-group size each (parquet-java's default of 128 MiB, which
+     * {@link Options#withRowGroupSize} lowers); never the signal of a spectrum once {@link #addSpectrum} has returned.
+     * Packing an archive needs disk space for about twice its size.
+     */
+    public static final class Session implements AutoCloseable {
+
+        private enum State { OPEN, FINISHED, CLOSED }
+
+        private final Path target;
+        private final boolean archive;
+        /** Replace mode, the batch overloads': an archive replaces a file, and a directory is left as it is. */
+        private final boolean replace;
+        /** Whether a strict directory session created its directory, which closing it then deletes. */
+        private final boolean createdDirectory;
+        /** The directory the members are written into: the target, or the temp directory of an archive. */
+        private final Path directory;
+        private final Options options;
+        private final Set<String> spectrumArrays;
+        private final List<ExtraColumn> extras;
+        private final List<ScanSettings> scanSettings;
+        private final Map<String, String> footer;
+        private final WriteReport report;
+        private final DatasetWriter dataset;
+        private final List<Chromatogram> chromatograms = new ArrayList<>();
+        private final List<WavelengthSpectrum> wavelengthSpectra = new ArrayList<>();
+        /** What the packed layout does not write of the spectra added: later scans, precursors, selected ions. */
+        private final int[] packedDrops = new int[3];
+        private State state = State.OPEN;
+
+        /**
+         * Opens the session: creates the temp directory of an archive and opens spectra_data in the directory of the
+         * members, creating that directory if need be. A failure there leaves what {@link #close()} leaves.
+         */
+        private Session(Path target, boolean archive, boolean replace, boolean createdDirectory, Options options,
+                        List<ExtraColumn> extras, boolean writesSpectraData, List<ScanSettings> scanSettings,
+                        Map<String, String> footer, WriteReport report) {
+            this.target = target;
+            this.archive = archive;
+            this.replace = replace;
+            this.createdDirectory = createdDirectory;
+            this.options = options;
+            this.spectrumArrays = new LinkedHashSet<>();
+            for (ExtraColumn extra : extras) {
+                spectrumArrays.add(extra.key());
+            }
+            this.extras = extras;
+            this.scanSettings = scanSettings;
+            this.footer = footer;
+            this.report = report;
+            this.directory = archive ? ArchivePacker.stagingDirectory(target) : target;
+            this.dataset = new DatasetWriter(directory, options, extras, writesSpectraData);
+            try (Step step = new Step()) {
+                dataset.open();
+                step.done();
+            }
+        }
+
+        /** The session of the public factories, whose target is checked strictly. */
+        private static Session open(Path target, boolean archive, FileMetadata fileMetadata,
+                                    List<ScanSettings> scanSettings, Set<String> spectrumArrays, Options options) {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(fileMetadata, "fileMetadata");
+            List<ScanSettings> settings = List.copyOf(Objects.requireNonNull(scanSettings, "scanSettings"));
+            Set<String> keys = new LinkedHashSet<>();
+            for (String key : Objects.requireNonNull(spectrumArrays, "spectrumArrays")) {
+                keys.add(Objects.requireNonNull(key, "spectrumArrays key"));
+            }
+            Objects.requireNonNull(options, "options");
+            List<ExtraColumn> extras = WritePlanner.spectrumExtras(keys);
+            boolean exists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
+            if (exists && (archive || !isEmptyDirectory(target))) {
+                throw new MzPeakException(archive
+                        ? "mzPeak session target " + target + " already exists; openArchive writes only a new archive"
+                        : "mzPeak session target " + target + " exists and is not an empty directory; openDirectory"
+                        + " writes only into a new or empty directory");
+            }
+            return new Session(target, archive, false, !archive && !exists, options, extras, true, settings,
+                    FooterMetadataWriter.serialize(fileMetadata), new WriteReport());
+        }
+
+        /**
+         * The session the batch overloads write {@code plan} on, in replace mode: an archive at {@code target} is
+         * replaced by the final move, and a directory at {@code target} is created or reused, its members written over
+         * files of their names and other files left alone; closing the session without a finish deletes only the temp
+         * files of an archive. Its spectrum signal files get the plan's extra columns, the union of the keys of the
+         * planned spectra in first-seen order. The plan's spectrum signals are added with {@link #append} and the
+         * session finishes with {@link #finish(WritePlan)}.
+         */
+        static Session replacing(Path target, boolean archive, WritePlan plan) {
+            return new Session(target, archive, true, false, plan.options(), plan.spectrumExtras(),
+                    plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report());
+        }
+
+        /** Whether {@code target}, which exists, is a directory without an entry. */
+        private static boolean isEmptyDirectory(Path target) {
+            if (!Files.isDirectory(target)) {
+                return false;
+            }
+            try (Stream<Path> entries = Files.list(target)) {
+                return entries.findAny().isEmpty();
+            } catch (IOException e) {
+                throw new MzPeakException("Cannot list mzPeak session target " + target, e);
+            }
+        }
+
+        /**
+         * Writes the signal of {@code spectrum}, the next spectrum, and keeps its metadata for the finish.
+         *
+         * @throws MzPeakException       when {@code spectrum} breaks the session's contract, before anything of it is
+         *                               written, or when its write fails, which closes the session
+         * @throws IllegalStateException after {@link #finish()} or {@link #close()}
+         * @throws NullPointerException  if {@code spectrum} is {@code null}
+         */
+        public void addSpectrum(Spectrum spectrum) {
+            requireOpen();
+            Objects.requireNonNull(spectrum, "spectrum");
+            long expected = dataset.entries().size();
+            if (spectrum.index() != expected) {
+                throw new MzPeakException("expected spectrum index " + expected + ", got " + spectrum.index());
+            }
+            WriteReport warnings = new WriteReport();
+            append(WritePlanner.sessionSignal(spectrum, spectrumArrays, options, warnings, packedDrops));
+            for (String warning : warnings.warnings()) {
+                report.warn(warning);
+            }
+        }
+
+        /**
+         * Adds {@code chromatogram}, which is written at the finish.
+         *
+         * @throws IllegalStateException after {@link #finish()} or {@link #close()}
+         * @throws NullPointerException  if {@code chromatogram} is {@code null}
+         */
+        public void addChromatogram(Chromatogram chromatogram) {
+            requireOpen();
+            chromatograms.add(Objects.requireNonNull(chromatogram, "chromatogram"));
+        }
+
+        /**
+         * Adds {@code spectrum}, which is written at the finish.
+         *
+         * @throws IllegalStateException after {@link #finish()} or {@link #close()}
+         * @throws NullPointerException  if {@code spectrum} is {@code null}
+         */
+        public void addWavelengthSpectrum(WavelengthSpectrum spectrum) {
+            requireOpen();
+            wavelengthSpectra.add(Objects.requireNonNull(spectrum, "spectrum"));
+        }
+
+        /**
+         * Completes the dataset: closes spectra_data and spectra_peaks, writes the metadata members, the chromatograms,
+         * the wavelength spectra and the manifest, and packs an archive and moves it into place; then logs the
+         * warnings of the write. A failure leaves what {@link #close()} leaves.
+         *
+         * @throws MzPeakException       when a precursor_index names no spectrum of the dataset, when the
+         *                               chromatograms or wavelength spectra break the contract, or when a write fails
+         * @throws IllegalStateException after {@link #finish()} or {@link #close()}
+         */
+        public void finish() {
+            finish(() -> {
+                WritePlanner.warnPackedDrops(packedDrops, report);
+                return WritePlanner.planFinish(options, dataset.entries(), extras, chromatograms, wavelengthSpectra,
+                        scanSettings, footer, report);
+            });
+        }
+
+        /**
+         * Abandons the write unless it has finished: deletes what the session wrote, as the class documentation
+         * says; does nothing after {@link #finish()} or {@link #close()}.
+         *
+         * @throws MzPeakException when the open signal files cannot be closed; what the session wrote is deleted all
+         *                         the same
+         */
+        @Override
+        public void close() {
+            if (state == State.OPEN) {
+                abort();
+            }
+        }
+
+        /** Appends {@code signal}, the next spectrum's; a failure closes the session. */
+        void append(SpectrumSignal signal) {
+            try (Step step = new Step()) {
+                dataset.append(signal);
+                step.done();
+            }
+        }
+
+        /** Finishes with {@code plan}, a batch plan whose spectrum signals were appended. */
+        void finish(WritePlan plan) {
+            finish(() -> plan);
+        }
+
+        /**
+         * Closes the signal files, checks the precursor indices, writes the metadata of the plan {@code planner}
+         * makes and packs an archive; then deletes the temp directory and logs the plan's warnings.
+         */
+        private void finish(Supplier<WritePlan> planner) {
+            requireOpen();
+            WritePlan plan;
+            try (Step step = new Step()) {
+                dataset.closeSignals();
+                WritePlanner.requireWrittenParents(dataset.entries(), options.metadataLayout());
+                plan = planner.get();
+                dataset.writeMetadata(plan);
+                if (archive) {
+                    ArchivePacker.pack(directory, target, replace);
+                }
+                step.done();
+            }
+            state = State.FINISHED;
+            if (archive) {
+                ArchivePacker.deleteRecursively(directory);
+            }
+            for (String warning : plan.report().warnings()) {
+                LOG.log(Level.WARNING, warning);
+            }
+        }
+
+        private void requireOpen() {
+            if (state != State.OPEN) {
+                throw new IllegalStateException("the mzPeak session for " + target + " is "
+                        + (state == State.FINISHED ? "finished" : "closed"));
+            }
+        }
+
+        /**
+         * Closes the session without a finish: closes the open signal files and deletes the temp directory of an
+         * archive, or in strict directory mode the files the session wrote and the directory it created.
+         */
+        private void abort() {
+            state = State.CLOSED;
+            try {
+                dataset.closeSignals();
+            } finally {
+                if (archive) {
+                    ArchivePacker.deleteRecursively(directory);
+                } else if (!replace) {
+                    dataset.deleteFiles(createdDirectory);
+                }
+            }
+        }
+
+        /**
+         * A step of the session that writes, run in try-with-resources: closed before {@link #done()}, that is when
+         * the step throws, it closes the session as {@link Session#close()} does, and an exception of that is added
+         * to the step's as suppressed.
+         */
+        private final class Step implements AutoCloseable {
+
+            private boolean done;
+
+            void done() {
+                done = true;
+            }
+
+            @Override
+            public void close() {
+                if (!done) {
+                    abort();
+                }
+            }
+        }
+    }
+
     // ---- helpers ----------------------------------------------------------------------------------
 
     /**
-     * The one path behind every public overload: plan without any I/O (a contract violation throws here, before
+     * The one path behind every batch overload: plan without any I/O (a contract violation throws here, before
      * any file or temp directory exists), then write the plan into {@code target}, as a directory or, for
-     * {@code archive}, as a STORED ZIP built in a temp directory and moved into place. The report's warnings are
-     * logged once the dataset is written.
+     * {@code archive}, as a STORED ZIP built in a temp directory and moved into place.
      */
     private static void write(Path target, boolean archive, List<Spectrum> spectra, List<Chromatogram> chromatograms,
                               List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                               FileMetadata fileMetadata, Options options) {
-        WritePlan plan = WritePlanner.plan(spectra, chromatograms, wavelengthSpectra, scanSettings, fileMetadata,
-                options);
-        if (archive) {
-            packArchive(target, dir -> DatasetWriter.write(dir, plan));
-        } else {
-            DatasetWriter.write(target, plan);
-        }
-        for (String warning : plan.report().warnings()) {
-            LOG.log(Level.WARNING, warning);
+        write(target, archive, WritePlanner.plan(spectra, chromatograms, wavelengthSpectra, scanSettings,
+                fileMetadata, options));
+    }
+
+    /**
+     * Writes {@code plan} into {@code target} on a session in replace mode ({@link Session#replacing}): its spectrum
+     * signals appended in order, then its finish with the plan's chromatograms, wavelength spectra and warnings, which
+     * are logged once the dataset is written.
+     */
+    static void write(Path target, boolean archive, WritePlan plan) {
+        try (Session session = Session.replacing(target, archive, plan)) {
+            for (SpectrumSignal signal : plan.spectrumSignals()) {
+                session.append(signal);
+            }
+            session.finish(plan);
         }
     }
 

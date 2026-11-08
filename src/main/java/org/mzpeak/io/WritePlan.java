@@ -24,7 +24,8 @@ import java.util.Objects;
  * @param options            the settings of the write
  * @param spectra            the spectra in index order, as the metadata members and the manifest write them
  * @param spectrumSignals    the signal of each of {@code spectra}, in the same order, which {@link DatasetWriter}
- *                           appends to spectra_data and spectra_peaks
+ *                           appends to spectra_data and spectra_peaks; empty in the plan of a
+ *                           {@link MzPeakWriter.Session}, which appends each signal as the spectrum is added
  * @param chromatograms      the chromatograms in index order
  * @param wavelengthSpectra  the wavelength spectra in index order
  * @param writesSpectraData  whether spectra_data is written

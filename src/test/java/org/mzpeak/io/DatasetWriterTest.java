@@ -49,9 +49,9 @@ class DatasetWriterTest {
                 plan.report());
 
         Path planned = tmp.resolve("planned.mzpeak");
-        DatasetWriter.write(planned, plan);
+        MzPeakWriter.write(planned, false, plan);
         Path without = tmp.resolve("without.mzpeak");
-        DatasetWriter.write(without, withoutData);
+        MzPeakWriter.write(without, false, withoutData);
 
         assertThat(planned.resolve("spectra_data.parquet")).isRegularFile();
         assertThat(without.resolve("spectra_data.parquet")).doesNotExist();
