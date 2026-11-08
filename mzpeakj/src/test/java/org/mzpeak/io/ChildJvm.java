@@ -15,16 +15,16 @@ import java.util.concurrent.TimeUnit;
  * the child's coverage reaches the report, and the zstd-jni opt-in), then the caller's JVM options, and the test's
  * working directory. Its stdout and stderr go to files in a directory of the caller.
  */
-final class ChildJvm {
+public final class ChildJvm {
 
     private static final long TIMEOUT_SECONDS = 300;
 
     /** Exit status and the complete stdout and stderr of one run. */
-    record Result(int exitStatus, String stdout, String stderr) {
+    public record Result(int exitStatus, String stdout, String stderr) {
     }
 
     /** A started child; {@link #await} waits for it. */
-    static final class Run {
+    public static final class Run {
         private final List<String> command;
         private final Process process;
         private final Path stdout;
@@ -38,7 +38,7 @@ final class ChildJvm {
         }
 
         /** Waits for the child to end; throws if it runs longer than the timeout, after killing it. */
-        Result await() throws IOException, InterruptedException {
+        public Result await() throws IOException, InterruptedException {
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 throw new IllegalStateException("timed out after " + TIMEOUT_SECONDS + " s: " + command);
@@ -52,7 +52,7 @@ final class ChildJvm {
     }
 
     /** Starts {@code main.main(args)} with {@code jvmOptions}; stdout and stderr go through files in {@code logs}. */
-    static Run start(Path logs, List<String> jvmOptions, Class<?> main, String... args) throws IOException {
+    public static Run start(Path logs, List<String> jvmOptions, Class<?> main, String... args) throws IOException {
         List<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         for (String option : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
@@ -73,7 +73,7 @@ final class ChildJvm {
     }
 
     /** Runs {@code main.main(args)} with {@code jvmOptions} and waits for it. */
-    static Result run(Path logs, List<String> jvmOptions, Class<?> main, String... args)
+    public static Result run(Path logs, List<String> jvmOptions, Class<?> main, String... args)
             throws IOException, InterruptedException {
         return start(logs, jvmOptions, main, args).await();
     }

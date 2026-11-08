@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.mzpeak</groupId>
+    <artifactId>mzpeakj-parent</artifactId>
+    <version>0.10.3</version>
+  </parent>
+
+  <artifactId>mzpeakj</artifactId>
+  <packaging>jar</packaging>
+
+  <name>mzPeakJ</name>
+  <description>A demonstrator Java reader and writer for the HUPO-PSI mzPeak mass-spectrometry format (Parquet-based).</description>
+
+  <dependencies>
+    <!-- Parquet via parquet-java. We read/write through LocalInputFile/LocalOutputFile + the parquet-column
+         Group API and a custom zstd-jni codec, so no Hadoop FileSystem or Configuration is ever touched. -->
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-hadoop</artifactId>
+      <version>${parquet.version}</version>
+      <exclusions>
+        <exclusion><groupId>org.apache.hadoop</groupId><artifactId>*</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-column</artifactId>
+      <version>${parquet.version}</version>
+    </dependency>
+    <!-- parquet-java's classes statically reference Hadoop types, so hadoop-client-api must be on the
+         classpath at runtime. It is a single self-contained shaded jar; we never use the Hadoop FileSystem,
+         Configuration, native libs, or any cluster setup. -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-api</artifactId>
+      <version>3.5.0</version>
+    </dependency>
+
+    <!-- Pure-Java/self-contained-native ZSTD (mzPeak Parquet columns are ZSTD-compressed). Lets us supply
+         parquet a Configuration-free CompressionCodecFactory so the Hadoop CodecFactory is never used. -->
+    <dependency>
+      <groupId>com.github.luben</groupId>
+      <artifactId>zstd-jni</artifactId>
+      <version>1.5.7-3</version>
+    </dependency>
+
+    <!-- JSON: mzpeak_index.json manifest -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+
+    <!-- No-op SLF4J binding: parquet-java logs via SLF4J; this binds it silently (no "StaticLoggerBinder"
+         warning, no log output). Matches the slf4j-api 1.7.x that parquet-java pulls in. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>1.7.33</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- mzpeakj-<version>-all.jar (configuration in the parent POM). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+      </plugin>
+      <!-- mzpeakj-<version>-tests.jar: the test classes (Fixtures, ContentDigest, ChildJvm, ...) for the
+           converter's tests, without the fixtures, which the converter reads from this module's directory. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>test-jar</id>
+            <goals><goal>test-jar</goal></goals>
+            <configuration>
+              <includes>
+                <include>org/mzpeak/**/*.class</include>
+              </includes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- The library stays free of jmzML, JAXB and the activation API: they belong to the converter only. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>no-converter-dependencies</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <!-- groupId patterns, every artifact of the group, also transitively -->
+                  <excludes>
+                    <exclude>uk.ac.ebi.*</exclude>
+                    <exclude>psidev.*</exclude>
+                    <exclude>javax.xml.bind</exclude>
+                    <exclude>jakarta.xml.bind</exclude>
+                    <exclude>org.glassfish.jaxb</exclude>
+                    <exclude>com.sun.xml.bind</exclude>
+                    <exclude>com.sun.activation</exclude>
+                    <exclude>jakarta.activation</exclude>
+                    <exclude>javax.activation</exclude>
+                    <exclude>com.sun.istack</exclude>
+                  </excludes>
+                  <message>the library mzpeakj must not depend on jmzML, JAXB or the activation API (they belong in mzpeakj-mzml/)</message>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

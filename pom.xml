@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"
+         child.project.url.inherit.append.path="false">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>org.mzpeak</groupId>
-  <artifactId>mzpeakj</artifactId>
+  <artifactId>mzpeakj-parent</artifactId>
   <version>0.10.3</version>
-  <packaging>jar</packaging>
+  <packaging>pom</packaging>
 
-  <name>mzPeakJ</name>
-  <description>A demonstrator Java reader and writer for the HUPO-PSI mzPeak mass-spectrometry format (Parquet-based).</description>
+  <name>mzPeakJ (parent)</name>
+  <description>Reactor of mzPeakJ: the mzPeak library (mzpeakj/) and the mzML converter (mzpeakj-mzml/).</description>
   <url>https://github.com/okohlbacher/mzPeakJ</url>
 
   <licenses>
@@ -20,6 +21,11 @@
       <distribution>repo</distribution>
     </license>
   </licenses>
+
+  <modules>
+    <module>mzpeakj</module>
+    <module>mzpeakj-mzml</module>
+  </modules>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -34,53 +40,6 @@
   </properties>
 
   <dependencies>
-    <!-- Parquet via parquet-java. We read/write through LocalInputFile/LocalOutputFile + the parquet-column
-         Group API and a custom zstd-jni codec, so no Hadoop FileSystem or Configuration is ever touched. -->
-    <dependency>
-      <groupId>org.apache.parquet</groupId>
-      <artifactId>parquet-hadoop</artifactId>
-      <version>${parquet.version}</version>
-      <exclusions>
-        <exclusion><groupId>org.apache.hadoop</groupId><artifactId>*</artifactId></exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.parquet</groupId>
-      <artifactId>parquet-column</artifactId>
-      <version>${parquet.version}</version>
-    </dependency>
-    <!-- parquet-java's classes statically reference Hadoop types, so hadoop-client-api must be on the
-         classpath at runtime. It is a single self-contained shaded jar; we never use the Hadoop FileSystem,
-         Configuration, native libs, or any cluster setup. -->
-    <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-client-api</artifactId>
-      <version>3.5.0</version>
-    </dependency>
-
-    <!-- Pure-Java/self-contained-native ZSTD (mzPeak Parquet columns are ZSTD-compressed). Lets us supply
-         parquet a Configuration-free CompressionCodecFactory so the Hadoop CodecFactory is never used. -->
-    <dependency>
-      <groupId>com.github.luben</groupId>
-      <artifactId>zstd-jni</artifactId>
-      <version>1.5.7-3</version>
-    </dependency>
-
-    <!-- JSON: mzpeak_index.json manifest -->
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-      <version>${jackson.version}</version>
-    </dependency>
-
-    <!-- No-op SLF4J binding: parquet-java logs via SLF4J; this binds it silently (no "StaticLoggerBinder"
-         warning, no log output). Matches the slf4j-api 1.7.x that parquet-java pulls in. -->
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-nop</artifactId>
-      <version>1.7.33</version>
-    </dependency>
-
     <!-- Test -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -97,25 +56,71 @@
   </dependencies>
 
   <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.2</version>
+          <configuration>
+            <!-- zstd-jni loads a bundled native library; opt in to silence the JDK 25 warning.
+                 @{argLine} carries the JaCoCo agent set by jacoco:prepare-agent. -->
+            <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.4.2</version>
+        </plugin>
+        <!-- Self-contained runnable jar of each module: <artifactId>-<version>-all.jar, so examples/CLI run with
+             `java -cp mzpeakj/target/mzpeakj-<version>-all.jar org.mzpeak.cli.MzPeakInfo ...` (no classpath
+             assembly). A module activates it by naming the plugin in its <plugins>. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.0</version>
+          <executions>
+            <execution>
+              <phase>package</phase>
+              <goals><goal>shade</goal></goals>
+              <configuration>
+                <shadedArtifactAttached>true</shadedArtifactAttached>
+                <shadedClassifierName>all</shadedClassifierName>
+                <createDependencyReducedPom>false</createDependencyReducedPom>
+                <transformers>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                </transformers>
+                <filters>
+                  <filter>
+                    <artifact>*:*</artifact>
+                    <excludes>
+                      <exclude>META-INF/*.SF</exclude>
+                      <exclude>META-INF/*.DSA</exclude>
+                      <exclude>META-INF/*.RSA</exclude>
+                      <exclude>module-info.class</exclude>
+                      <exclude>META-INF/versions/*/module-info.class</exclude>
+                    </excludes>
+                  </filter>
+                </filters>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
     <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.5.2</version>
-        <configuration>
-          <!-- zstd-jni loads a bundled native library; opt in to silence the JDK 25 warning.
-               @{argLine} carries the JaCoCo agent set by jacoco:prepare-agent. -->
-          <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
-        </configuration>
-      </plugin>
-      <!-- Test coverage: instruments only the project's own classes, so no JDK class is touched, writes
-           target/site/jacoco/ (index.html, jacoco.xml, jacoco.csv) during verify and then fails the build
-           unless every org.mzpeak class is fully covered (check execution below). -->
+      <!-- Test coverage, inherited by both modules: instruments only the project's own classes, so no JDK or
+           third-party class is touched, writes <module>/target/site/jacoco/ (index.html, jacoco.xml, jacoco.csv)
+           during verify and then fails the build unless every org.mzpeak class of the module is fully covered
+           (check execution below). Coverage evidence comes from `clean verify` only: prepare-agent appends to
+           target/jacoco.exec, so a run without clean can report an earlier run's coverage. -->
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
@@ -165,11 +170,11 @@
                     <limit><counter>METHOD</counter><value>COVEREDRATIO</value><minimum>1.0000</minimum></limit>
                   </limits>
                 </rule>
-                <!-- Vendored ms.numpress, which stays byte-identical, at exactly the coverage reached:
-                     207 of 208 lines, 131 of 132 branches, 16 of 16 methods. The gap is MSNumpress.java line
-                     73-74 in decode(String, byte[], int): the true branch of `if (nbrOfDoubles < 0)` and its
-                     `throw new IllegalArgumentException("Corrupt numPic data!")`. decodePic never returns a
-                     negative count, so no input reaches it. -->
+                <!-- Vendored ms.numpress (library only; vacuous in the converter), which stays byte-identical, at
+                     exactly the coverage reached: 207 of 208 lines, 131 of 132 branches, 16 of 16 methods. The gap
+                     is MSNumpress.java line 73-74 in decode(String, byte[], int): the true branch of
+                     `if (nbrOfDoubles < 0)` and its `throw new IllegalArgumentException("Corrupt numPic data!")`.
+                     decodePic never returns a negative count, so no input reaches it. -->
                 <rule>
                   <element>PACKAGE</element>
                   <includes>
@@ -186,35 +191,26 @@
           </execution>
         </executions>
       </plugin>
-      <!-- Self-contained runnable jar: mzpeakj-<version>-all.jar, so examples/CLI run with
-           `java -cp target/mzpeakj-<version>-all.jar org.mzpeak.cli.MzPeakInfo ...` (no classpath assembly). -->
+      <!-- The reactor root holds no sources: a src/ here (left over from a merge of a pre-module branch, say) would
+           silently not be built. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-shade-plugin</artifactId>
-        <version>3.6.0</version>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.5.0</version>
         <executions>
           <execution>
-            <phase>package</phase>
-            <goals><goal>shade</goal></goals>
+            <id>no-sources-at-root</id>
+            <inherited>false</inherited>
+            <goals><goal>enforce</goal></goals>
             <configuration>
-              <shadedArtifactAttached>true</shadedArtifactAttached>
-              <shadedClassifierName>all</shadedClassifierName>
-              <createDependencyReducedPom>false</createDependencyReducedPom>
-              <transformers>
-                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-              </transformers>
-              <filters>
-                <filter>
-                  <artifact>*:*</artifact>
-                  <excludes>
-                    <exclude>META-INF/*.SF</exclude>
-                    <exclude>META-INF/*.DSA</exclude>
-                    <exclude>META-INF/*.RSA</exclude>
-                    <exclude>module-info.class</exclude>
-                    <exclude>META-INF/versions/*/module-info.class</exclude>
-                  </excludes>
-                </filter>
-              </filters>
+              <rules>
+                <requireFilesDontExist>
+                  <files>
+                    <file>${project.basedir}/src</file>
+                  </files>
+                  <message>sources belong in mzpeakj/ or mzpeakj-mzml/</message>
+                </requireFilesDontExist>
+              </rules>
             </configuration>
           </execution>
         </executions>

@@ -1,11 +1,15 @@
 package org.mzpeak.io;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
 /**
- * The two vendored HUPO-PSI example sets. Paths are relative to the project root, the working directory
- * of the Maven test run.
+ * The two vendored HUPO-PSI example sets, in the test resources of the library module {@code mzpeakj}. Their
+ * root is the system property {@code mzpeak.test.resources} (the converter module's surefire configuration points
+ * it at the library's), else {@code src/test/resources}, relative to the module directory, the working directory of
+ * the Maven test run. When that directory has no {@code mzpeak/}, as in a test that an IDE starts in the converter
+ * module without the property, the root is {@code ../mzpeakj/src/test/resources}.
  *
  * <ul>
  *   <li>{@link #CURRENT}: the 8 examples of HUPO-PSI/mzPeak 2ee2589 (split metadata facets, array index,
@@ -20,11 +24,14 @@ import java.util.List;
  */
 public final class Fixtures {
 
+    /** Root of the library's test resources; see the class comment. */
+    private static final Path ROOT = root();
+
     /** Directory of the current upstream examples (HUPO-PSI/mzPeak 2ee2589). */
-    public static final Path CURRENT = Path.of("src/test/resources/mzpeak");
+    public static final Path CURRENT = ROOT.resolve("mzpeak");
 
     /** Directory of the pinned packed-layout examples (HUPO-PSI/mzPeak 29e59b2). */
-    public static final Path LEGACY = Path.of("src/test/resources/mzpeak-legacy");
+    public static final Path LEGACY = ROOT.resolve("mzpeak-legacy");
 
     /** The datasets in {@link #CURRENT}: 7 single-file ZIPs and one unpacked directory. */
     public static final List<String> CURRENT_NAMES = List.of(
@@ -46,6 +53,11 @@ public final class Fixtures {
             "has_uv.mzpeak");
 
     private Fixtures() {
+    }
+
+    private static Path root() {
+        Path root = Path.of(System.getProperty("mzpeak.test.resources", "src/test/resources"));
+        return Files.isDirectory(root.resolve("mzpeak")) ? root : Path.of("../mzpeakj/src/test/resources");
     }
 
     /** The current dataset {@code name}, one of {@link #CURRENT_NAMES}. */

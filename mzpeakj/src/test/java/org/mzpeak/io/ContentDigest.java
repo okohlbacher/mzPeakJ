@@ -48,7 +48,7 @@ import java.util.TreeMap;
  *               the key-values and the records (Parquet), or the size (bytes)
  * @param sha256 the content digest, lowercase hex
  */
-record ContentDigest(String member, String kind, String detail, String sha256) {
+public record ContentDigest(String member, String kind, String detail, String sha256) {
 
     private static final byte[] PARQUET_MAGIC = "PAR1".getBytes(StandardCharsets.US_ASCII);
     private static final HexFormat HEX = HexFormat.of();
@@ -56,7 +56,7 @@ record ContentDigest(String member, String kind, String detail, String sha256) {
     private static final int SHORT = 16;
 
     /** The digest of {@code member}, read from {@code source}. */
-    static ContentDigest of(MzPeakSource source, String member) {
+    public static ContentDigest of(MzPeakSource source, String member) {
         InputFile input = source.inputFile(member);
         try {
             return isParquet(input) ? parquet(member, input) : bytes(member, input);
@@ -66,7 +66,7 @@ record ContentDigest(String member, String kind, String detail, String sha256) {
     }
 
     /** One TSV line: member, kind, detail, sha256. */
-    String tsvLine() {
+    public String tsvLine() {
         return member + '\t' + kind + '\t' + detail + '\t' + sha256;
     }
 

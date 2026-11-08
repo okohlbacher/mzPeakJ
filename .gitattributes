@@ -1,0 +1,3 @@
+# Vendored mzML fixtures stay byte-exact on every checkout: no line-ending conversion, which would break their
+# pinned SHA-256s, index offsets and stored SHA-1s.
+mzpeakj-mzml/src/test/resources/mzml/** -text
