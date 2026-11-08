@@ -44,6 +44,9 @@ class WriterSpecConformanceTest {
 
     private static final LogicalTypeAnnotation UINT64 = LogicalTypeAnnotation.intType(64, false);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** The pin-era packed metadata layout, selected explicitly. */
+    private static final MzPeakWriter.Options PACKED =
+            MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED);
 
     /** UINT64 columns of the spectrum metadata table, identical for every layout. */
     private static final List<String> SPECTRUM_METADATA_UINT64 = List.of(
@@ -107,6 +110,46 @@ class WriterSpecConformanceTest {
                 s.fileMetadata);
 
         // has_uv's spectra are all CENTROID peak copies, so WR-3 writes them to spectra_peaks only.
+        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
+                List.of("spectra_peaks.parquet: point.spectrum_index"), CHROMATOGRAM_UINT64, WAVELENGTH_UINT64));
+        assertManifestVersionAndCvList(dir);
+    }
+
+    // ---- the packed metadata layout, selected explicitly ---------------------------------------------------
+
+    @Test
+    void pointLayoutWithPackedMetadataDeclaresUint64IndexAndCountColumns(@TempDir Path tmp) throws IOException {
+        Source s = ForwardBackwardCorpusTest.readSource(UNPACKED);
+        Path dir = tmp.resolve("point.mzpeak");
+        MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, PACKED);
+
+        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64, POINT_SPECTRUM_DATA_UINT64, CHROMATOGRAM_UINT64));
+        assertManifestVersionAndCvList(dir);
+    }
+
+    @Test
+    void numpressLayoutWithPackedMetadataDeclaresUint64IndexAndCountColumns(@TempDir Path tmp) throws IOException {
+        Source s = ForwardBackwardCorpusTest.readSource(UNPACKED);
+        Path dir = tmp.resolve("numpress.mzpeak");
+        MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, PACKED.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS));
+
+        assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
+                List.of("spectra_data.parquet: chunk.spectrum_index",
+                        "spectra_peaks.parquet: chunk.spectrum_index"),
+                CHROMATOGRAM_UINT64));
+        assertManifestVersionAndCvList(dir);
+    }
+
+    @Test
+    void wavelengthTablesWithPackedMetadataDeclareUint64IndexAndCountColumns(@TempDir Path tmp) throws IOException {
+        Source s = ForwardBackwardCorpusTest.readSource(HAS_UV);
+        assertThat(s.wavelengthSpectra).as("has_uv wavelength spectra").isNotEmpty();
+        Path dir = tmp.resolve("has_uv.mzpeak");
+        MzPeakWriter.writeDirectory(dir, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, PACKED);
+
         assertUint64Columns(dir, concat(SPECTRUM_METADATA_UINT64,
                 List.of("spectra_peaks.parquet: point.spectrum_index"), CHROMATOGRAM_UINT64, WAVELENGTH_UINT64));
         assertManifestVersionAndCvList(dir);
