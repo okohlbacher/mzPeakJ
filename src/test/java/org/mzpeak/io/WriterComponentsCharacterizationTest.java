@@ -246,8 +246,10 @@ class WriterComponentsCharacterizationTest {
         assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_end")).as("last value of the re-sorted chunk")
                 .isEqualTo(200.0);
         assertThat(ParquetGroups.optString(chunk, "chunk_encoding")).isEqualTo("MS:1002312");
+        // WR-10: every Numpress row carries mz_chunk_values as an empty list (present, so listed here).
         assertThat(fieldsPresent(chunk)).containsExactly("spectrum_index", "mz_chunk_start", "mz_chunk_end",
-                "chunk_encoding", "mz_numpress_linear_bytes", "intensity_numpress_pic_bytes");
+                "mz_chunk_values", "chunk_encoding", "mz_numpress_linear_bytes", "intensity_numpress_pic_bytes");
+        assertThat(ParquetGroups.doubleListNullable(chunk, "mz_chunk_values")).isEmpty();
         byte[] mzBytes = ParquetGroups.byteList(chunk, "mz_numpress_linear_bytes");
         assertThat(MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, mzBytes, mzBytes.length))
                 .containsExactly(new double[] {100.0, 150.0, 200.0}, offset(1e-5));
