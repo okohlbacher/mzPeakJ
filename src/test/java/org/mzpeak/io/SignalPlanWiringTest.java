@@ -722,9 +722,12 @@ class SignalPlanWiringTest {
         assertThat(all.get(2).intensity()).isEmpty();
     }
 
-    /** Wavelength spectra are read from point rows only: a chunk member gives empty arrays. */
+    /**
+     * Wavelength spectra are read from point rows only. A chunk member without an array index has no 'point' struct,
+     * the prefix inferred for wavelength spectra, and throws; before FN-5 it gave empty arrays.
+     */
     @Test
-    void aChunkWavelengthMemberGivesEmptyArrays() {
+    void aChunkWavelengthMemberWithoutAnArrayIndexThrows() {
         MessageType schema = MessageTypeParser.parseMessageType("""
                 message m {
                   optional group chunk {
@@ -741,11 +744,100 @@ class SignalPlanWiringTest {
                 .list("intensity", 1.0, 2.0);
         Path data = write("wavelength_spectra_data.parquet", schema, row);
 
-        List<WavelengthSpectrum> all = wavelengthSpectra(data, 0);
+        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member has no 'point' struct, so its wavelength spectra cannot"
+                        + " be read");
+    }
 
-        assertThat(all).hasSize(1);
-        assertThat(all.get(0).wavelength()).isEmpty();
-        assertThat(all.get(0).intensity()).isEmpty();
+    /**
+     * A chunk member whose wavelength_spectrum_array_index has the prefix 'chunk', the shape of the has_uv_chunkwl
+     * reproduction (520 spectra with no points and no log line before FN-5), throws.
+     */
+    @Test
+    void aChunkWavelengthMemberWithAnArrayIndexThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 wavelength_spectrum_index (INTEGER(64,false));
+                    optional double wavelength_chunk_start;
+                    optional double wavelength_chunk_end;
+                    optional group wavelength_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional binary chunk_encoding (STRING);
+                    optional group intensity (LIST) { repeated group list { optional float item; } }
+                  }
+                }""");
+        String index = arrayIndex("chunk",
+                indexEntry("chunk.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                indexEntry("chunk.wavelength_chunk_start", "chunk_start", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("chunk.wavelength_chunk_end", "chunk_end", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("chunk.wavelength_chunk_values", "chunk_values", "MS:1000617", 1, null, "UO:0000018"),
+                indexEntry("chunk.chunk_encoding", "chunk_encoding", "MS:1000617", 1, null, null),
+                indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, "UO:0000269"));
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = rows.newGroup();
+        new Row(row, row.addGroup("chunk")).append("wavelength_spectrum_index", 0L)
+                .append("wavelength_chunk_start", 200.0).append("wavelength_chunk_end", 201.0)
+                .list("wavelength_chunk_values", 1.0).append("chunk_encoding", "MS:1003089")
+                .list("intensity", 1.0, 2.0);
+        Path data = write("wavelength_spectra_data.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index), row);
+
+        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member: chunked wavelength spectra are not supported");
+    }
+
+    @Test
+    void aWavelengthPlanWithoutWavelengthOrIntensityThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int64 wavelength_spectrum_index (INTEGER(64,false));
+                    optional float wavelength;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        Group row = point(rows).append("wavelength_spectrum_index", 0L).append("wavelength", 200f)
+                .append("intensity", 1f).parent;
+        Path noWavelength = write("no_wavelength.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), arrayIndex("point",
+                        indexEntry("point.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                        indexEntry("point.intensity", "point", "MS:1000515", null, null, null))), row);
+        Path noIntensity = write("no_intensity.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), arrayIndex("point",
+                        indexEntry("point.wavelength_spectrum_index", "index", "MS:1003870", 0, null, null),
+                        indexEntry("point.wavelength", "point", "MS:1000617", 1, null, null))), row);
+
+        assertThatThrownBy(() -> wavelengthSpectra(noWavelength, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member: the signal plan names no wavelength values column");
+        assertThatThrownBy(() -> wavelengthSpectra(noIntensity, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum data member: the signal plan names no value-bearing intensity"
+                        + " column");
+    }
+
+    @Test
+    void aNegativeWavelengthSpectrumIndexThrows() {
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group point {
+                    optional int32 wavelength_spectrum_index (INTEGER(32,false));
+                    optional float wavelength;
+                    optional float intensity;
+                  }
+                }""");
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        // the uint32 2^31, sign-extended: it missed the header of index 2^31 before FN-5
+        Path data = write("wavelength_spectra_data.parquet", schema,
+                point(rows).append("wavelength_spectrum_index", Integer.MIN_VALUE).append("wavelength", 200f)
+                        .append("intensity", 1f).parent);
+
+        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("wavelength_spectrum_index -2147483648 is out of range");
     }
 
     // ---- helpers --------------------------------------------------------------------------------------------

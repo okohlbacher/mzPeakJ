@@ -391,7 +391,9 @@ source is a non-empty PIC list, a negative index, and, on the first row, a plan 
 (point layout) or without any intensity source.
 
 `Chromatogram.intensityUnit()` is the unit of the plan entry that supplied the values (null for an INFERRED
-plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`).
+plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`); a
+data member in chunk layout, or one without the plan's prefix struct, wavelength column or intensity column,
+throws when the wavelength spectra are first requested.
 
 ### 3.6 Extra arrays
 
