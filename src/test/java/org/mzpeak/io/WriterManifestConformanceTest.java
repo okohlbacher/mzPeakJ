@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.parquet.io.SeekableInputStream;
+import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.Type;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -31,15 +33,21 @@ import java.util.zip.ZipInputStream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The manifest of a written dataset conforms to the spec in the dialect the writer uses (WR-1, design §11.4 and
- * §11.6): every entry carries the SHA-512 of its member as 128 lowercase hex characters, an empty
- * {@code column_mapping} and an empty {@code parameters} list; the pin-era role spellings ({@code data arrays},
- * {@code wavelength spectrum}) are kept; and in an archive {@code mzpeak_index.json} is the last ZIP entry, after the
- * members in name order.
+ * The manifest of a written dataset conforms to the spec in the dialect of its metadata layout (WR-1, WR-5a, design
+ * §11.4 and §11.6): every entry carries the SHA-512 of its member as 128 lowercase hex characters and an empty
+ * {@code parameters} list; in an archive {@code mzpeak_index.json} is the last ZIP entry, after the members in name
+ * order.
+ * <ul>
+ *   <li>The packed layout keeps the pin-era role spellings ({@code data arrays}, {@code wavelength spectrum}) and an
+ *       empty {@code column_mapping} on every entry.
+ *   <li>The split layout spells roles with underscores, and each split metadata member maps every CV-mapped column
+ *       it writes, with the row of {@link ColumnTable} and of the current HUPO-PSI manifests.
+ * </ul>
  *
  * <p>Each case reads a legacy fixture with {@link ForwardBackwardCorpusTest#readSource} and writes it with the full
- * form of one of the four legacy writer families. The checksums are recomputed here with {@link MessageDigest}: from
- * the file bytes of a directory, and through {@link MzPeakSource#inputFile} for an archive.
+ * form of one of the four legacy writer families, or with the split layout's options. The checksums are recomputed
+ * here with {@link MessageDigest}: from the file bytes of a directory, and through {@link MzPeakSource#inputFile} for
+ * an archive.
  */
 class WriterManifestConformanceTest {
 
@@ -67,27 +75,61 @@ class WriterManifestConformanceTest {
     private static final List<String> HAS_UV_POINT_ROLES = HAS_UV_ROLES.stream()
             .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
 
-    /** The full form of each legacy writer family. */
+    /**
+     * The roles of the split layout's output of small.unpacked, in manifest order. Precursors and selected ions follow
+     * in WR-5b; the chromatogram metadata stays packed until WR-6.
+     */
+    private static final List<String> SPLIT_SMALL_ROLES = List.of(
+            "spectra_metadata.parquet|spectrum|metadata",
+            "spectra_metadata_scans.parquet|spectrum|scans",
+            "spectra_data.parquet|spectrum|data_arrays",
+            "spectra_peaks.parquet|spectrum|peaks",
+            "chromatograms_metadata.parquet|chromatogram|metadata",
+            "chromatograms_data.parquet|chromatogram|data_arrays");
+    private static final List<String> SPLIT_HAS_UV_ROLES = Stream.concat(SPLIT_SMALL_ROLES.stream(), Stream.of(
+            "wavelength_spectra_metadata.parquet|wavelength_spectrum|metadata",
+            "wavelength_spectra_data.parquet|wavelength_spectrum|data_arrays")).toList();
+    private static final List<String> SPLIT_HAS_UV_POINT_ROLES = SPLIT_HAS_UV_ROLES.stream()
+            .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
+
+    /** The members that carry a column mapping in the split layout. */
+    private static final List<String> SPLIT_MAPPED = List.of("spectra_metadata.parquet",
+            "spectra_metadata_scans.parquet");
+
+    /** The full form of each legacy writer family, and the split layout's directory, archive and Numpress forms. */
     enum Form {
-        WRITE_DIRECTORY("writeDirectory", false, (out, s) -> MzPeakWriter.writeDirectory(out, s.spectra,
+        WRITE_DIRECTORY("writeDirectory", false, false, (out, s) -> MzPeakWriter.writeDirectory(out, s.spectra,
                 s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata)),
-        WRITE_ARCHIVE("writeArchive", true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
+        WRITE_ARCHIVE("writeArchive", true, false, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
                 s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata)),
-        WRITE_DIRECTORY_NUMPRESS("writeDirectoryNumpress", false, (out, s) ->
+        WRITE_DIRECTORY_NUMPRESS("writeDirectoryNumpress", false, false, (out, s) ->
                 MzPeakWriter.writeDirectoryNumpress(out, s.spectra, s.chromatograms, s.wavelengthSpectra,
                         s.scanSettings, s.fileMetadata, MzPeakWriter.NumpressIntensityEncoding.SLOF)),
-        WRITE_ARCHIVE_NUMPRESS("writeArchiveNumpress", true, (out, s) ->
+        WRITE_ARCHIVE_NUMPRESS("writeArchiveNumpress", true, false, (out, s) ->
                 MzPeakWriter.writeArchiveNumpress(out, s.spectra, s.chromatograms, s.wavelengthSpectra,
-                        s.scanSettings, s.fileMetadata));
+                        s.scanSettings, s.fileMetadata)),
+        WRITE_DIRECTORY_SPLIT("writeDirectory-SPLIT", false, true, (out, s) -> MzPeakWriter.writeDirectory(out,
+                s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split())),
+        WRITE_ARCHIVE_SPLIT("writeArchive-SPLIT", true, true, (out, s) -> MzPeakWriter.writeArchive(out,
+                s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split())),
+        WRITE_DIRECTORY_NUMPRESS_SPLIT("writeDirectoryNumpress-SPLIT", false, true, (out, s) ->
+                MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                        s.fileMetadata, split().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS)));
 
         final String label;
         final boolean archive;
+        final boolean split;
         final BiConsumer<Path, Source> write;
 
-        Form(String label, boolean archive, BiConsumer<Path, Source> write) {
+        Form(String label, boolean archive, boolean split, BiConsumer<Path, Source> write) {
             this.label = label;
             this.archive = archive;
+            this.split = split;
             this.write = write;
+        }
+
+        private static MzPeakWriter.Options split() {
+            return MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.SPLIT);
         }
 
         @Override
@@ -108,6 +150,14 @@ class WriterManifestConformanceTest {
 
     static Stream<Arguments> archiveCases() {
         return cases().filter(a -> ((Form) a.get()[1]).archive);
+    }
+
+    static Stream<Arguments> packedCases() {
+        return cases().filter(a -> !((Form) a.get()[1]).split);
+    }
+
+    static Stream<Arguments> splitCases() {
+        return cases().filter(a -> ((Form) a.get()[1]).split);
     }
 
     @ParameterizedTest(name = "{0} via {1}")
@@ -136,7 +186,7 @@ class WriterManifestConformanceTest {
     }
 
     @ParameterizedTest(name = "{0} via {1}")
-    @MethodSource("cases")
+    @MethodSource("packedCases")
     void everyEntryHasAnEmptyColumnMappingAndParameterList(String fixture, Form form, @TempDir Path tmp)
             throws IOException {
         Path out = write(fixture, form, tmp);
@@ -153,17 +203,84 @@ class WriterManifestConformanceTest {
     }
 
     @ParameterizedTest(name = "{0} via {1}")
-    @MethodSource("cases")
+    @MethodSource("packedCases")
     void theRoleLiteralsAreThePinEraSpellings(String fixture, Form form, @TempDir Path tmp) throws IOException {
         Path out = write(fixture, form, tmp);
-        List<String> roles = new ArrayList<>();
-        for (JsonNode entry : index(out).path("files")) {
-            roles.add(entry.path("name").asText() + "|" + entry.path("entity_type").asText() + "|"
-                    + entry.path("data_kind").asText());
-        }
         List<String> hasUvRoles = form.label.contains("Numpress") ? HAS_UV_ROLES : HAS_UV_POINT_ROLES;
-        assertThat(roles).as("roles of %s via %s", fixture, form)
+        assertThat(roles(out)).as("roles of %s via %s", fixture, form)
                 .containsExactlyElementsOf(fixture.startsWith("has_uv") ? hasUvRoles : SMALL_ROLES);
+    }
+
+    @ParameterizedTest(name = "{0} via {1}")
+    @MethodSource("splitCases")
+    void theSplitLayoutSpellsRolesWithUnderscores(String fixture, Form form, @TempDir Path tmp) throws IOException {
+        Path out = write(fixture, form, tmp);
+        List<String> hasUvRoles = form.label.contains("Numpress") ? SPLIT_HAS_UV_ROLES : SPLIT_HAS_UV_POINT_ROLES;
+        assertThat(roles(out)).as("roles of %s via %s", fixture, form)
+                .containsExactlyElementsOf(fixture.startsWith("has_uv") ? hasUvRoles : SPLIT_SMALL_ROLES);
+    }
+
+    /**
+     * Each split metadata member maps the CV-mapped columns of its schema, no others, in {@link ColumnTable} order and
+     * each with its {@link ColumnTable} row; every row equals the row at its path in each current HUPO-PSI manifest
+     * that maps it for the same role, and at least one does. Every other entry has an empty mapping, and every entry
+     * an empty parameter list.
+     */
+    @ParameterizedTest(name = "{0} via {1}")
+    @MethodSource("splitCases")
+    void theSplitMetadataMembersMapTheirColumnsAsTheCurrentManifestsDo(String fixture, Form form, @TempDir Path tmp)
+            throws IOException {
+        Path out = write(fixture, form, tmp);
+        List<JsonNode> currentManifests = currentManifests();
+        try (MzPeakSource dataset = MzPeakSource.open(out)) {
+            for (JsonNode entry : index(out).path("files")) {
+                String name = entry.path("name").asText();
+                assertThat(fieldNames(entry)).as("%s via %s: keys of %s", fixture, form, name)
+                        .containsExactly("name", "entity_type", "data_kind", "column_mapping", "parameters",
+                                "checksum");
+                assertThat(entry.get("parameters").isArray()).isTrue();
+                assertThat(entry.get("parameters")).as("%s via %s: parameters of %s", fixture, form, name).isEmpty();
+                JsonNode mapping = entry.get("column_mapping");
+                assertThat(mapping.isArray()).isTrue();
+                if (!SPLIT_MAPPED.contains(name)) {
+                    assertThat(mapping).as("%s via %s: column_mapping of %s", fixture, form, name).isEmpty();
+                    continue;
+                }
+                Facet facet = facet(entry);
+                List<String> paths = new ArrayList<>();
+                for (JsonNode row : mapping) {
+                    String path = row.path("path").asText();
+                    paths.add(path);
+                    ColumnTable.Column column = ColumnTable.byPath(facet, path).orElseThrow();
+                    assertThat(column.path()).as("%s: %s is a canonical path", name, path).isEqualTo(path);
+                    assertThat(fieldNames(row)).as("%s: keys of %s", name, path).containsExactlyElementsOf(
+                            column.termMarker() ? List.of("name", "path", "accession", "unit", "term_marker")
+                                    : List.of("name", "path", "accession", "unit"));
+                    assertThat(row.path("name").asText()).isEqualTo(column.name());
+                    assertThat(row.path("accession").asText()).isEqualTo(column.accession());
+                    assertThat(row.get("unit").isNull() ? null : row.get("unit").asText()).isEqualTo(column.unit());
+                    int matched = 0;
+                    for (JsonNode current : currentManifests) {
+                        JsonNode currentRow = currentRow(current, entry, path);
+                        if (currentRow != null) {
+                            assertThat(row).as("%s: %s against a current manifest", name, path)
+                                    .isEqualTo(currentRow);
+                            matched++;
+                        }
+                    }
+                    assertThat(matched).as("%s: current manifests that map %s", name, path).isPositive();
+                }
+                List<String> expected = new ArrayList<>();
+                List<String> schemaPaths = leafPaths(ParquetFooter.read(dataset.inputFile(name)).schema());
+                for (ColumnTable.Column column : ColumnTable.columns(facet)) {
+                    if (schemaPaths.contains(column.path())) {
+                        expected.add(column.path());
+                    }
+                }
+                assertThat(paths).as("%s via %s: mapped paths of %s", fixture, form, name)
+                        .isNotEmpty().containsExactlyElementsOf(expected);
+            }
+        }
     }
 
     @ParameterizedTest(name = "{0} via {1}")
@@ -189,6 +306,74 @@ class WriterManifestConformanceTest {
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------
+
+    /** Each entry as {@code name|entity_type|data_kind}, in manifest order. */
+    private static List<String> roles(Path out) throws IOException {
+        List<String> roles = new ArrayList<>();
+        for (JsonNode entry : index(out).path("files")) {
+            roles.add(entry.path("name").asText() + "|" + entry.path("entity_type").asText() + "|"
+                    + entry.path("data_kind").asText());
+        }
+        return roles;
+    }
+
+    /** The facet whose canonical role the manifest entry has. */
+    private static Facet facet(JsonNode entry) {
+        for (Facet f : Facet.values()) {
+            if (f.entityType().equals(entry.path("entity_type").asText())
+                    && f.dataKind().equals(entry.path("data_kind").asText())) {
+                return f;
+            }
+        }
+        throw new AssertionError("no facet has the role of " + entry);
+    }
+
+    /** The manifests of the 8 current HUPO-PSI example datasets. */
+    private static List<JsonNode> currentManifests() throws IOException {
+        List<JsonNode> out = new ArrayList<>();
+        for (String name : Fixtures.CURRENT_NAMES) {
+            out.add(index(Fixtures.current(name)));
+        }
+        return out;
+    }
+
+    /**
+     * The column mapping row at {@code path} of the entry of {@code manifest} that has the role of {@code entry}, or
+     * {@code null} when the manifest has no such entry or the entry no such row.
+     */
+    private static JsonNode currentRow(JsonNode manifest, JsonNode entry, String path) {
+        for (JsonNode candidate : manifest.path("files")) {
+            if (candidate.path("entity_type").asText().equals(entry.path("entity_type").asText())
+                    && candidate.path("data_kind").asText().equals(entry.path("data_kind").asText())) {
+                for (JsonNode row : candidate.path("column_mapping")) {
+                    if (path.equals(row.path("path").asText())) {
+                        return row;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The dotted paths of every primitive leaf of {@code schema}, omitting list and element levels. */
+    private static List<String> leafPaths(GroupType schema) {
+        List<String> out = new ArrayList<>();
+        leafPaths(schema, "", out);
+        return out;
+    }
+
+    private static void leafPaths(GroupType group, String prefix, List<String> out) {
+        for (Type t : group.getFields()) {
+            boolean listLevel = t.isRepetition(Type.Repetition.REPEATED) && t.getName().equals("list")
+                    || t.getName().equals("item") || t.getName().equals("element");
+            String path = listLevel ? prefix : prefix.isEmpty() ? t.getName() : prefix + "." + t.getName();
+            if (t.isPrimitive()) {
+                out.add(path);
+            } else {
+                leafPaths(t.asGroupType(), path, out);
+            }
+        }
+    }
 
     /**
      * The index of a written dataset with every entry's {@code checksum} removed, for comparing two writes whose

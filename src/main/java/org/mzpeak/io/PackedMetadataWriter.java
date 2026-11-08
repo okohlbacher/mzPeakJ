@@ -7,6 +7,9 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Types;
+import org.mzpeak.io.ManifestWriter.Dialect;
+import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Chromatogram;
@@ -26,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 
+import static org.mzpeak.io.DatasetWriter.member;
 import static org.mzpeak.io.ParquetOutput.UINT64;
 import static org.mzpeak.io.ParquetOutput.countKey;
 import static org.mzpeak.io.ParquetOutput.openWriter;
@@ -37,9 +41,13 @@ import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
 /**
  * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
  * spectrum, primary scan, primary precursor and primary selected-ion facets, and one chromatograms_metadata and
- * wavelength_spectra_metadata row per chromatogram and wavelength spectrum.
+ * wavelength_spectra_metadata row per chromatogram and wavelength spectrum. Its members are listed in the pin-era
+ * dialect, {@link Dialect#PIN_29E59B2}.
  */
-final class PackedMetadataWriter {
+final class PackedMetadataWriter implements MetadataTablesWriter {
+
+    /** The packed layout's writer; it holds no state. */
+    static final PackedMetadataWriter INSTANCE = new PackedMetadataWriter();
 
     private static final MessageType METADATA_SCHEMA = Types.buildMessage()
             .addField(Types.optionalGroup()
@@ -121,11 +129,37 @@ final class PackedMetadataWriter {
     private PackedMetadataWriter() {
     }
 
+    @Override
+    public Dialect dialect() {
+        return Dialect.PIN_29E59B2;
+    }
+
+    @Override
+    public void writeSpectrumMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
+            throws IOException {
+        writeSpectrumFile(member(directory, members, "spectra_metadata.parquet", EntityType.SPECTRUM,
+                DataKind.METADATA), plan);
+    }
+
+    @Override
+    public void writeChromatogramMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
+            throws IOException {
+        writeChromatogramFile(member(directory, members, "chromatograms_metadata.parquet", EntityType.CHROMATOGRAM,
+                DataKind.METADATA), plan);
+    }
+
+    @Override
+    public void writeWavelengthMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
+            throws IOException {
+        writeWavelengthFile(member(directory, members, "wavelength_spectra_metadata.parquet",
+                EntityType.WAVELENGTH_SPECTRUM, DataKind.METADATA), plan);
+    }
+
     /**
      * Write spectra_metadata, one row per spectrum, with the plan's file metadata and {@code spectrum_count}, the
      * spectra in the archive, as footer key-values.
      */
-    static void writeSpectrumMetadata(Path file, WritePlan plan) throws IOException {
+    private static void writeSpectrumFile(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
         long scanIndexCounter = 0;
         Map<String, String> footer = new LinkedHashMap<>(plan.footer());
@@ -278,7 +312,7 @@ final class PackedMetadataWriter {
         writeParams(si, ion.parameters());
     }
 
-    static void writeChromatogramMetadata(Path file, WritePlan plan) throws IOException {
+    private static void writeChromatogramFile(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_META_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, CHROM_META_SCHEMA, plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
@@ -298,7 +332,7 @@ final class PackedMetadataWriter {
         }
     }
 
-    static void writeWavelengthMetadata(Path file, WritePlan plan) throws IOException {
+    private static void writeWavelengthFile(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_META_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_META_SCHEMA, plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {

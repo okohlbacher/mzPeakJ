@@ -41,17 +41,23 @@ final class ManifestWriter {
     private static final List<String> CURIE_KEYS = List.of("accession", "unit", "unit_accession");
 
     /**
-     * How the manifest spells the roles of its members. Only the spelling of {@code entity_type} and
-     * {@code data_kind} differs; both dialects write the same keys.
+     * How the manifest spells the roles of its members and the scan settings (design §11.4). Both dialects write the
+     * same member keys; the column mappings come with the members.
      */
     enum Dialect {
         /**
          * The spellings of the 29e59b2 pin, {@code data arrays} and {@code wavelength spectrum}: the pin-era
-         * reference deserialises only these, and mzPeakJ 0.10.3 and earlier match roles by exact string. Written with
-         * the packed metadata layout.
+         * reference deserialises only these, and mzPeakJ 0.10.3 and earlier match roles by exact string. A scan
+         * settings param names its unit {@code unit_accession}, and absent values are left out. Written with the
+         * packed metadata layout.
          */
         PIN_29E59B2,
-        /** The current spec's spellings, {@link EntityType#canonical()} and {@link DataKind#canonical()}. */
+        /**
+         * The current spec's spellings, {@link EntityType#canonical()} and {@link DataKind#canonical()}. Scan settings
+         * are written as the reference serialises them: every entry with its {@code id}, {@code source_file_refs},
+         * {@code targets} and {@code parameters}, and every param with {@code name}, {@code accession},
+         * {@code value} and {@code unit}, absent values as {@code null}. Written with the split metadata layout.
+         */
         CURRENT;
 
         /** The {@code entity_type} string of {@code entity} in this dialect. */
@@ -92,7 +98,7 @@ final class ManifestWriter {
         meta.put("version", "0.9.0");
         // Filled once the rest of the manifest is built, so that the manifest's own CURIEs count.
         ArrayNode cvList = meta.putArray("cv_list");
-        writeScanSettingsList(meta.putArray("scan_settings_list"), plan.scanSettings());
+        writeScanSettingsList(meta.putArray("scan_settings_list"), plan.scanSettings(), dialect);
         for (var kv : plan.footer().entrySet()) {
             meta.set(kv.getKey(), mapper.readTree(kv.getValue()));
         }
@@ -104,28 +110,47 @@ final class ManifestWriter {
         Files.write(directory.resolve(INDEX), mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
     }
 
-    /** Serialize imaging scan settings into the manifest, matching {@code MzPeakManifest.parseParamArray}. */
-    private static void writeScanSettingsList(ArrayNode arr, List<ScanSettings> scanSettings) {
+    /**
+     * Serialize imaging scan settings into the manifest in {@code dialect}'s form, matching
+     * {@code MzPeakManifest.parseParamArray}, which reads either.
+     */
+    private static void writeScanSettingsList(ArrayNode arr, List<ScanSettings> scanSettings, Dialect dialect) {
         if (scanSettings == null) {
             return;
         }
+        boolean current = dialect == Dialect.CURRENT;
         for (ScanSettings ss : scanSettings) {
             ObjectNode n = arr.addObject();
-            if (ss.id() != null) {
+            if (current) {
+                // The reference's ScanSettings has no serde defaults: it needs all four keys to read the entry.
+                n.put("id", ss.id());
+                n.putArray("source_file_refs");
+                n.putArray("targets");
+            } else if (ss.id() != null) {
                 n.put("id", ss.id());
             }
             ArrayNode params = n.putArray("parameters");
             for (Param p : ss.parameters()) {
                 ObjectNode pn = params.addObject();
-                if (p.name() != null) pn.put("name", p.name());
-                if (p.accession() != null) pn.put("accession", p.accession());
+                if (current) {
+                    pn.put("name", p.name());
+                    pn.put("accession", p.accession());
+                    pn.putNull("value");
+                } else {
+                    if (p.name() != null) pn.put("name", p.name());
+                    if (p.accession() != null) pn.put("accession", p.accession());
+                }
                 Object v = p.value();
                 if (v instanceof Long l) pn.put("value", l);
                 else if (v instanceof Integer i) pn.put("value", i.longValue());
                 else if (v instanceof Double dd) pn.put("value", dd);
                 else if (v instanceof Boolean b) pn.put("value", b);
                 else if (v != null) pn.put("value", v.toString());
-                if (p.unit() != null) pn.put("unit_accession", p.unit());
+                if (current) {
+                    pn.put("unit", p.unit());
+                } else if (p.unit() != null) {
+                    pn.put("unit_accession", p.unit());
+                }
             }
         }
     }
