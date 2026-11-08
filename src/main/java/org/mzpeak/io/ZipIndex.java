@@ -57,7 +57,7 @@ final class ZipIndex {
         int p = 0;
         int limit = cd.limit();
         for (long i = 0; i < directory.entries(); i++) {
-            if (p < 0 || p > limit - 46 || cd.getInt(p) != CDH_SIG) {
+            if (p > limit - 46 || cd.getInt(p) != CDH_SIG) {
                 throw new MzPeakException("corrupt zip central directory at offset " + p);
             }
             int method = cd.getShort(p + 10) & 0xFFFF;
