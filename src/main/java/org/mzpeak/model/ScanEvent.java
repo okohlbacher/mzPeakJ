@@ -1,5 +1,6 @@
 package org.mzpeak.model;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
 
@@ -24,9 +25,27 @@ public record ScanEvent(double startTime,
                         List<ScanWindow> scanWindows,
                         List<Param> parameters) {
 
+    /**
+     * The order in which {@link #ionMobilityValue()} and {@link #ionMobilityType()} look for an ion mobility type:
+     * mzdata's {@code ION_MOBILITY_SCAN_TERMS} (drift time MS:1002476, inverse reduced ion mobility MS:1002815, FAIMS
+     * compensation voltage MS:1001581, SelexION compensation voltage MS:1003371), then the other
+     * {@link CvTerms#ION_MOBILITY_TYPES} in that table's order.
+     */
+    private static final List<String> ION_MOBILITY_PRIORITY = ionMobilityPriority();
+
     public ScanEvent {
         scanWindows = scanWindows == null ? List.of() : List.copyOf(scanWindows);
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
+    }
+
+    private static List<String> ionMobilityPriority() {
+        List<String> order = new ArrayList<>(List.of("MS:1002476", "MS:1002815", "MS:1001581", "MS:1003371"));
+        for (String type : CvTerms.ION_MOBILITY_TYPES) {
+            if (!order.contains(type)) {
+                order.add(type);
+            }
+        }
+        return List.copyOf(order);
     }
 
     // ---- imaging position ------------------------------------------------------------------
@@ -56,36 +75,47 @@ public record ScanEvent(double startTime,
     // ---- ion mobility ----------------------------------------------------------------------
 
     /**
-     * Scalar ion mobility value from the scan parameters (first param whose accession is one of
-     * {@link CvTerms#ION_MOBILITY_TYPES}, taken in that table's order, and whose value is a finite
-     * number), or {@link OptionalDouble#empty()} if absent or NaN.
+     * Scalar ion mobility value from the scan parameters, or {@link OptionalDouble#empty()} if absent or NaN: the
+     * value of the first param whose value is a finite number and whose accession is one of
+     * {@link CvTerms#ION_MOBILITY_TYPES}, the types taken in mzdata's priority order: ion mobility drift time
+     * (MS:1002476), inverse reduced ion mobility (MS:1002815), FAIMS compensation voltage (MS:1001581), SelexION
+     * compensation voltage (MS:1003371), then the other types in the table's order. Among params of one type, the
+     * first in list order wins.
      *
      * <p>The ion mobility type (which physical quantity this is: drift time, 1/K0, FAIMS CV, …)
      * is given by {@link #ionMobilityType()}.
      */
     public OptionalDouble ionMobilityValue() {
-        for (String acc : CvTerms.ION_MOBILITY_TYPES) {
-            for (Param p : parameters) {
-                if (acc.equals(p.accession()) && p.value() instanceof Number n) {
-                    double v = n.doubleValue();
-                    if (Double.isFinite(v)) {
-                        return OptionalDouble.of(v);
-                    }
-                }
-            }
-        }
-        return OptionalDouble.empty();
+        Param p = ionMobilityParam();
+        return p == null ? OptionalDouble.empty() : OptionalDouble.of(((Number) p.value()).doubleValue());
     }
 
     /**
-     * CV accession of the ion mobility type (the first of {@link CvTerms#ION_MOBILITY_TYPES} that a
-     * param carries), or {@code null} if no ion mobility param is present.
+     * CV accession of the ion mobility type: the accession of the param whose value {@link #ionMobilityValue()}
+     * returns; when no ion mobility param has a finite value, the first type a param carries, in the same priority
+     * order. {@code null} if no ion mobility param is present.
      */
     public String ionMobilityType() {
-        for (String acc : CvTerms.ION_MOBILITY_TYPES) {
-            for (Param p : parameters) {
-                if (acc.equals(p.accession())) {
+        Param p = ionMobilityParam();
+        if (p != null) {
+            return p.accession();
+        }
+        for (String acc : ION_MOBILITY_PRIORITY) {
+            for (Param q : parameters) {
+                if (acc.equals(q.accession())) {
                     return acc;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The param {@link #ionMobilityValue()} reads, or null when no ion mobility param has a finite value. */
+    private Param ionMobilityParam() {
+        for (String acc : ION_MOBILITY_PRIORITY) {
+            for (Param p : parameters) {
+                if (acc.equals(p.accession()) && p.value() instanceof Number n && Double.isFinite(n.doubleValue())) {
+                    return p;
                 }
             }
         }

@@ -41,7 +41,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       descendants of MS:1000044 (among them MS:1002679, MS:1003246 and MS:1003294) now are;
  *   <li>the dissociation_method term-marker Param of the split layout is named from
  *       {@link CvTerms#DISSOCIATION_METHODS}, and a scan's typed ion mobility is no longer appended a second time
- *       when its parameters list already holds the same type.
+ *       when its parameters list already holds the same type;
+ *   <li>FN-7: a scan takes the ion mobility types in mzdata's priority order instead of accession order, and its
+ *       {@code ionMobilityType()} is the type of the value {@code ionMobilityValue()} returns.
  * </ul>
  *
  * Oracles: psi-ms 4.2.11 (mzdata v0.68.0 cv/psi-ms.obo.gz, regenerated when {@code -Dmzpeak.psims.obo} names it),
@@ -184,22 +186,46 @@ class IonMobilityAndActivationTermsTest {
     }
 
     /**
-     * With two recognised params a scan reports the one whose accession comes first in its table, a selected ion
-     * the first in list order. MS:1003006 is an array term (documented change: a selected ion used to report it).
+     * With two recognised params a scan reports the one whose type comes first in mzdata's priority order (FN-7:
+     * MS:1002476, MS:1002815, MS:1001581, MS:1003371, then the table order), a selected ion the first in list order.
+     * MS:1003006 is an array term (documented change: a selected ion used to report it).
      */
     @Test
-    void twoRecognisedParamsAScanPrefersTheTableOrderASelectedIonTheListOrder() {
+    void twoRecognisedParamsAScanPrefersMzdatasPriorityASelectedIonTheListOrder() {
         List<Param> params = List.of(new Param("mean inverse reduced ion mobility array", "MS:1003006", 2.0, null),
                 new Param("ion mobility drift time", "MS:1002476", 1.0, null));
         assertThat(scan(params).ionMobilityValue()).hasValue(1.0);
         assertThat(scan(params).ionMobilityType()).isEqualTo("MS:1002476");
         assertThat(new SelectedIon(500.0, null, null, params).ionMobilityValue()).hasValue(1.0);
 
-        List<Param> types = List.of(new Param("inverse reduced ion mobility", "MS:1002815", 1.25, null),
-                new Param("FAIMS compensation voltage", "MS:1001581", -40.0, null));
-        assertThat(scan(types).ionMobilityValue()).hasValue(-40.0);
-        assertThat(scan(types).ionMobilityType()).isEqualTo("MS:1001581");
-        assertThat(new SelectedIon(500.0, null, null, types).ionMobilityValue()).hasValue(1.25);
+        // inverse reduced ion mobility before the FAIMS compensation voltage, whatever the list order (the table's
+        // accession order gave -45 / MS:1001581 before FN-7)
+        List<Param> types = List.of(new Param("FAIMS compensation voltage", "MS:1001581", -45.0, null),
+                new Param("inverse reduced ion mobility", "MS:1002815", 0.95, null));
+        assertThat(scan(types).ionMobilityValue()).hasValue(0.95);
+        assertThat(scan(types).ionMobilityType()).isEqualTo("MS:1002815");
+        assertThat(new SelectedIon(500.0, null, null, types).ionMobilityValue()).hasValue(-45.0);
+
+        // SelexION separation voltage comes after the four prioritised types
+        List<Param> selexion = List.of(new Param("SelexION separation voltage", "MS:1003394", 3.0, null),
+                new Param("SELEXION compensation voltage", "MS:1003371", 4.0, null));
+        assertThat(scan(selexion).ionMobilityValue()).hasValue(4.0);
+        assertThat(scan(selexion).ionMobilityType()).isEqualTo("MS:1003371");
+    }
+
+    /** The type is that of the param whose value is returned: a NaN drift time does not name the type (FN-7). */
+    @Test
+    void theTypeIsThatOfTheReturnedValue() {
+        List<Param> params = List.of(new Param("ion mobility drift time", "MS:1002476", Double.NaN, null),
+                new Param("inverse reduced ion mobility", "MS:1002815", 1.0, null));
+        assertThat(scan(params).ionMobilityValue()).hasValue(1.0);
+        assertThat(scan(params).ionMobilityType()).isEqualTo("MS:1002815");
+
+        // without a finite value, the first type present in priority order
+        List<Param> noValue = List.of(new Param("FAIMS compensation voltage", "MS:1001581", Double.NaN, null),
+                new Param("inverse reduced ion mobility", "MS:1002815", "n/a", null));
+        assertThat(scan(noValue).ionMobilityValue()).isEmpty();
+        assertThat(scan(noValue).ionMobilityType()).isEqualTo("MS:1002815");
     }
 
     // ---- characterization: dissociation methods --------------------------------------------------------------
