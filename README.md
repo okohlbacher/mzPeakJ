@@ -16,11 +16,12 @@ mass-spectrometry data format built on Apache Parquet, under development by the
 > Expect rough edges and pin to a specific commit before depending on any behaviour.
 
 It reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` (STORED ZIP); the `point`,
-delta-`chunk`, and MS-Numpress `chunk` layouts; spectra (MS1 + MSn), chromatograms, and UV/DAD wavelength
-spectra. It also **writes** mzPeak back out — point and Numpress layouts, with precursor activation, scan
-windows, ion-mobility and imaging-position columns, derived spectrum columns, wavelength facets, and scan
-settings — and is verified against the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator)
-validator. See [Scope & limitations](#scope--limitations) for what's deferred.
+delta-`chunk`, MS-Numpress `chunk` and coordinate-grid `chunk` layouts; spectra (MS1 + MSn), chromatograms, and
+UV/DAD wavelength spectra, with range queries, signal modes, column statistics and pluggable storage. It also
+**writes** mzPeak back out — point and Numpress layouts, with precursor activation, scan windows, ion-mobility
+and imaging-position columns, derived spectrum columns, wavelength facets, and scan settings — and is verified
+against the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) validator. See
+[Scope & limitations](#scope--limitations) for what's deferred.
 
 ## About the mzPeak format
 
@@ -58,6 +59,7 @@ cluster setup (see [DESIGN.md](DESIGN.md) §6).
 
 ```java
 import org.mzpeak.io.MzPeakReader;
+import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.Chromatogram;
 
@@ -76,8 +78,8 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     s.peaks();                       // CentroidPeak list (centroided spectra only)
 
     // Activation method + collision energy (from the precursor's activation columns and params)
-    s.description().primaryPrecursor()
-        .ifPresent(p -> System.out.println(p.activation().summary()));
+    Precursor p = s.description().primaryPrecursor();   // null for MS1
+    if (p != null) System.out.println(p.activation().summary());
 
     // Chromatograms and UV/DAD wavelength spectra
     reader.getChromatogramById("TIC").ifPresent(tic -> System.out.println(tic.size() + " TIC points"));
@@ -94,6 +96,71 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     for (Spectrum spec : reader) { /* iterate all spectra in index order */ }
 }
 ```
+
+#### Options, range queries and the other reader features
+
+One short example per feature. [DESIGN.md §8.2](DESIGN.md#82-reader-api) gives the full contract and the places
+where mzPeakJ deliberately differs from the Rust and Python readers (exact interval bounds, empty arrays in the
+explicit signal modes, no implicit TIC/BPC by chromatogram index, …).
+
+```java
+// imports: org.mzpeak.io.*, org.mzpeak.model.*, java.util.*, java.nio.channels.FileChannel
+
+// Options: stored profile points only, and only one of the two signal members
+MzPeakReader.Options options = MzPeakReader.Options.defaults()
+        .withReconstructProfile(false)                      // default: true
+        .withSignalMode(MzPeakReader.SignalMode.PROFILE);   // BOTH (default), PROFILE or CENTROID
+try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"), options)) {
+    // PROFILE: mz()/intensity() hold the data arrays or are empty, peaks() is empty. A spectrum read in
+    // PROFILE or CENTROID mode is a partial view: do not pass it to MzPeakWriter.
+}
+
+try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
+    // Range queries: closed intervals, compared exactly; one SignalSlice per selected spectrum
+    SignalQuery query = SignalQuery.timeRange(0.3, 0.4)    // or indexRange(first, last), or all()
+            .withMz(800, 820)                              // also withIonMobility(low, high)
+            .withMsLevels(1, 1);
+    List<SpectrumDescription> selected = reader.select(query);    // metadata only, reads no signal
+    reader.extractSignal(query)                                   // queryPeaks(query) reads the centroids
+            .forEach(slice -> System.out.println(slice.index() + ": " + slice.size() + " points"));
+
+    // Column statistics and observed ranges
+    Optional<DoubleRange> mzRange = reader.observedMzRange();     // Parquet row-group statistics
+    Optional<DoubleRange> timeRange = reader.observedTimeRange(); // retention times held in memory
+    reader.columnStatistics(MzPeakManifest.EntityType.SPECTRUM, MzPeakManifest.DataKind.SCANS, "MS:1000016")
+            .ifPresent(st -> System.out.println(st.column() + ": " + st.min() + " .. " + st.max()));
+
+    // TIC and BPC: a stored chromatogram of that type, else the one derived from the spectrum metadata
+    Optional<Chromatogram> tic = reader.tic();             // stored MS:1000235 chromatogram, else encodedTic()
+    Optional<Chromatogram> bpc = reader.bpc();             // stored MS:1000628 chromatogram, else encodedBpc()
+    Optional<Chromatogram> encoded = reader.encodedTic();  // retention time + total ion current per spectrum
+
+    // Extra arrays of spectra and chromatograms, keyed by array type (by name for MS:1000786)
+    Spectrum s = reader.getSpectrum(0).orElseThrow();
+    Map<String, double[]> arrays = s.arrays();          // parallel to mz(), e.g. MS:1003006 ion mobility
+    Map<String, double[]> peakArrays = s.peakArrays();  // parallel to the stored peaks, by CentroidPeak.index()
+    Optional<double[]> ionMobility = s.ionMobility();   // the first ion mobility array, if any
+    tic.ifPresent(c -> System.out.println(
+            c.intensityUnit() + " " + c.arrays().keySet()));   // Chromatogram.arrays(): e.g. MS:1000131 [ms level]
+
+    // Isolation-window params, in both metadata layouts
+    Precursor precursor = reader.getSpectrum(5).orElseThrow().description().primaryPrecursor();
+    if (precursor != null && precursor.isolationWindow() != null) {
+        System.out.println(precursor.isolationWindow().parameters());   // List<Param>
+    }
+}
+
+// Other storage (object store, byte array, ...): implement RandomAccessBytes, a positional read
+RandomAccessBytes bytes = RandomAccessBytes.of(FileChannel.open(Path.of("data/run.mzpeak")));
+try (MzPeakReader reader = MzPeakReader.open(MzPeakSource.zip("data/run.mzpeak", bytes))) {
+    System.out.println(reader.size() + " spectra");
+}
+// An unpacked dataset whose members a MemberOpener opens one by one, e.g. objects under a URL prefix:
+// MzPeakReader.open(MzPeakSource.unpacked("https://host/run.mzpeak/", name -> openObject(name)))
+```
+
+Grid-encoded spectra (`MS:1003826`, such as `diaPASEF.grid`) need no option: they decode like the other chunk
+layouts. Manifest checksums are not verified yet.
 
 ### Writing
 
@@ -192,7 +259,7 @@ tables, array index, SHA-512 checksums):
 | `small.numpress.mzpeak` | single-file STORED ZIP | same data, MS-Numpress linear m/z + SLOF intensity chunks |
 | `has_uv.mzpeak` | single-file STORED ZIP | 212 MS spectra + 520 UV/DAD spectra + 2 chromatograms (TIC, DAD) |
 | `diaPASEF.ref.mzpeak` | single-file STORED ZIP | 9 spectra (1 MS1 + 8 MS2) of a Bruker diaPASEF run with per-peak ion mobility; TIC and BPC |
-| `diaPASEF.grid.mzpeak` | single-file STORED ZIP | the same run with grid-encoded peaks; spectrum arrays are not decoded yet (grid encoding) |
+| `diaPASEF.grid.mzpeak` | single-file STORED ZIP | the same run with grid-encoded peaks (provisional timsTOF grid models); decodes to the same arrays |
 | `Example_Processed.img.mzpeak` | single-file STORED ZIP | 9 profile spectra of an imzML imaging run with pixel positions |
 
 **Legacy set** — `src/test/resources/mzpeak-legacy/`, the 5 examples of upstream commit `29e59b2` in the
@@ -255,14 +322,15 @@ Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--to
 
 For format internals and decode decisions (manifest roles and zip64, the split metadata tables and their
 key join, column resolution by accession, array-index-driven signal resolution, chunk decoding and the
-chunk_start-as-a-point rule, extra arrays, null-marking reconstruction, the CV tables, the Hadoop-free Parquet
-path, the legacy packed layout, the fixture sets and golden oracles), see **[DESIGN.md](DESIGN.md)**.
+chunk_start-as-a-point rule, coordinate grids, extra arrays, null-marking reconstruction, the CV tables, the
+Hadoop-free Parquet path, the legacy packed layout, the reader API and its deviations from the reference
+readers, the fixture sets and golden oracles), see **[DESIGN.md](DESIGN.md)**.
 
 | Package | Responsibility |
 |---|---|
 | `org.mzpeak.model` | Pure data — no I/O deps: `CentroidPeak`, `Spectrum`, `SpectrumDescription`, `Precursor`, `Activation`, `SelectedIon`, `IsolationWindow`, `ScanEvent`, `Chromatogram`, `WavelengthSpectrum`, `Param`, `Tolerance`, `CvTerms`, … |
 | `org.mzpeak.model.meta` | File/run-level metadata records: `FileMetadata`, `InstrumentConfiguration`, `Software`, `MsRun`, `DataProcessing`, `Sample`, `FileDescription` |
-| `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, source abstraction (`DirectorySource` / `ZipSource`), metadata + array + chromatogram + wavelength stores |
+| `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, `SignalQuery`, `ColumnStatistics`, source abstraction (`MzPeakSource`, `RandomAccessBytes`; `DirectorySource` / `ZipSource` / `UnpackedSource`), metadata + array + chromatogram + wavelength stores |
 | `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O: `ParquetGroups` (type-variance-safe accessors), `ZstdCompressionCodecFactory`, `ByteArrayInputFile`, `FileSliceInputFile` |
 | `org.mzpeak.cli` / `org.mzpeak.examples` | Runnable demonstrator tools |
 
@@ -289,7 +357,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   `MS:1003089` ("truncation, delta prediction and zlib compression"). Delta decoding is **null-aware**: a
   value following a null breaks the prediction chain and is read as an absolute re-anchor, per the spec's
   `null_delta_decode`. Numpress uses `MS:1002312` (linear), `MS:1002313` (PIC), `MS:1002314` (SLOF).
-  Coordinate-grid chunks (`MS:1003826`, draft) are not decoded yet.
+  Coordinate-grid chunks (`MS:1003826`, draft) are decoded with the linear (`MS:1003824`) and square-root
+  (`MS:1003825`) models and the provisional timsTOF m/z (`MS:9999002`) and 1/K0 (`MS:9999001`) models
+  (DESIGN.md §3.3).
 - `spectra_peaks.parquet` is **optional** — it stores centroid peaks separate from profile arrays, allowing
   both to coexist for the same spectrum. The chunked fixture includes centroid peaks for its profile spectra
   (e.g. spectrum 0 has 1612 centroid peaks alongside its 13589-point profile array).
@@ -311,13 +381,15 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 - Containers: unpacked `*.mzpeak/` directory **and** single-file STORED `.mzpeak` ZIP (in-place seekable
   reads from the STORED members, no whole-member buffering; zip64 extra fields and zip64 end records).
-- Layouts: `point`, delta-encoded `chunk`, and MS-Numpress `chunk` (linear m/z + SLOF or PIC intensity).
+- Layouts: `point`, delta-encoded `chunk`, MS-Numpress `chunk` (linear m/z + SLOF or PIC intensity), and
+  coordinate-grid `chunk` (linear, square-root and the provisional timsTOF grid models).
   Numpress encoding is lossy; total ion current is preserved to <1%.
 - Spectra (MS1 + MSn): metadata in the split and the legacy packed layout + precursor/selected-ion/activation
   params (facet join by `source_index`), `double[]` m/z + intensity, centroid peaks, extra arrays such as
   per-peak ion mobility, and profile reconstruction of null-marked points using the stored m/z delta-model
   polynomial (linear interpolation fallback when no model is stored).
-- Chromatograms (TIC, DAD/absorption, …) — point and chunk time-axis layouts both decoded.
+- Chromatograms (TIC, DAD/absorption, …) — point and chunk time-axis layouts both decoded, with their intensity
+  unit and per-point extra arrays (`Chromatogram.arrays()`, such as the TIC's `ms level`).
 - Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type.
 - File/run metadata from the manifest, with the Parquet footer as fallback: instrument configuration,
   software, run, source files, sample, data processing (read + written).
@@ -329,6 +401,10 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - Scan settings list from the `mzpeak_index.json` manifest (`scanSettingsList`).
 - Random access by index, native id, vendor scan number (Thermo/Waters/Agilent/Bruker/SCIEX), or nearest RT.
 - Streaming reader — only the row groups covering a requested spectrum are decoded; bounded memory.
+- Reader API ([DESIGN.md](DESIGN.md) §8.2): reader options and signal modes (both members, profile only,
+  centroid only), range queries by time or index with m/z, ion-mobility and MS-level filters, metadata column
+  statistics and observed m/z and time ranges, a TIC and BPC derived from the spectrum metadata, and a storage SPI
+  (`RandomAccessBytes`, `MzPeakSource.zip` / `MzPeakSource.unpacked`) for remote or custom storage.
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
   STORED ZIP, format version `0.9.0`, in the split metadata layout that the HEAD Python reader reads (the
   pin-era packed layout on request). Round-trips the full metadata schema — derived spectrum columns,
@@ -351,8 +427,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
-- **Coordinate-grid chunks** (`MS:1003826`, draft; `diaPASEF.grid`) are not decoded: reading such a spectrum
-  throws a precise error.
+- **Integrity**: the manifest's SHA-512 checksums are not verified on read.
+- **Grid models**: the timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional; grids are
+  decoded in spectrum signal members only.
 - **Predicate/page-level pushdown** within a row group (whole row groups are skipped by min/max stats, but all pages within a selected group are decoded).
 - No **Maven Central** publication yet.
 
