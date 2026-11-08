@@ -1,7 +1,9 @@
 package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
+import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
 import org.mzpeak.io.WritePlan.SignalArrays;
@@ -32,6 +34,8 @@ import java.util.Set;
 import java.util.function.ToLongFunction;
 import java.util.regex.Pattern;
 
+import static org.mzpeak.io.NumpressSignalWriter.NUMPRESS_LINEAR_FIXED_POINT;
+
 /**
  * Plans a {@link MzPeakWriter} write without any I/O: enforces the reader's index contract, puts every entity in
  * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent, refuses in the split
@@ -43,7 +47,8 @@ import java.util.regex.Pattern;
  * is written yet (WR-11), and, in the packed layout, the scans after a spectrum's first, the precursors after its
  * primary one and the selected ions other than the primary precursor's first (one warning), and the Params of
  * wavelength spectra (another). Each re-sorted main axis gets a warning of its own, and so do, in the split layout,
- * the scan settings without an id, which get one.
+ * the scan settings without an id, which get one. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs
+ * cannot encode is refused as a contract violation.
  */
 final class WritePlanner {
 
@@ -73,6 +78,24 @@ final class WritePlanner {
             Map.entry("MS:1003153", "raw_drift_time"),
             Map.entry("MS:1002477", "mean_drift_time"),
             Map.entry("MS:1003156", "deconvoluted_ion_mobility_drift_time"));
+    /** The largest count Numpress PIC is written with: 2^31 - 1 (design Q26, see {@link #requireNumpressEncodable}). */
+    private static final long MAX_PIC_COUNT = Integer.MAX_VALUE;
+    /**
+     * The largest fixed-point m/z Numpress linear is written with: 2^32 - 1, the largest of the unsigned 32-bit
+     * integers the codec stores the first two m/z of a chunk as (see {@link #requireNumpressEncodable}).
+     */
+    private static final long MAX_LINEAR_VALUE = 0xFFFFFFFFL;
+    /** The codec and the values it takes, as the error for a value it cannot encode names them. */
+    private static final String LINEAR_RANGE = "Numpress linear, which takes only finite m/z >= 0 that round to at"
+            + " most " + MAX_LINEAR_VALUE + " at its fixed point " + (long) NUMPRESS_LINEAR_FIXED_POINT + " (m/z "
+            + MAX_LINEAR_VALUE / NUMPRESS_LINEAR_FIXED_POINT + ")";
+    /** The same for an m/z too far from its extrapolation; the error appends the two m/z it is extrapolated from. */
+    private static final String LINEAR_STEP = "Numpress linear, which takes an m/z after the first two of a chunk only"
+            + " within about 21474.84 of its extrapolation from the two before it, 2 * ";
+    private static final String SLOF_RANGE = "Numpress SLOF, which takes only finite intensities >= 0";
+    private static final String PIC_RANGE = "Numpress PIC, which takes only finite intensities >= 0 that round to at"
+            + " most " + MAX_PIC_COUNT;
+    private static final String POINT = "SignalEncoding.POINT";
 
     private WritePlanner() {
     }
@@ -113,6 +136,7 @@ final class WritePlanner {
             if (entry.peaks() && !entry.peaksFromArrays() && !s.peakArrays().isEmpty()) {
                 requirePeakPositions(s);
             }
+            requireNumpressEncodable(entry, options);
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
         }
@@ -438,6 +462,102 @@ final class WritePlanner {
             }
         }
         return true;
+    }
+
+    // Numpress values (design §5.7, MZ-23). The Numpress chunk layout holds one intensity transform column and no
+    // plain list, so a chunk cannot fall back to unencoded values, and the codecs write what they cannot encode as
+    // other values: Numpress linear stores m/z as fixed-point integers (NaN as 0, a first m/z of -0.038 reads back as
+    // 42949.63), SLOF the logarithm of intensity + 1 (-0.5 reads back as 1.45e28, NaN as 0) and PIC the low 32 bits of
+    // each rounded count. Numpress linear also stores the first two m/z of a chunk as unsigned 32-bit integers and
+    // every later one as the signed 32-bit difference from its extrapolation 2 * previous - the one before, so at the
+    // writer's fixed point 1e5 a first m/z of 50000 reads back as 7050.33 and [100, 200, 25000] as
+    // [100, 200, -17949.67]. The m/z are checked in the chunks NumpressSignalWriter.chunkEnd splits them into; the m/z
+    // of a sorted array that round to less than 2^31 always pass the difference check. ChunkCodecs reads PIC counts
+    // unsigned, as the C++ reference does, but readers built on the reference Java decoder read a count from 2^31 on
+    // as negative, so PIC is written only up to 2147483647 (design Q26). Such values are refused before anything is
+    // written; the point layout writes them.
+
+    /**
+     * Throws {@link MzPeakException} when {@code options} write Numpress chunks and a value that {@code entry} writes
+     * to one cannot be encoded: an m/z or intensity that is not finite or is below 0, an m/z whose fixed-point value
+     * {@code (long) (mz * 1e5 + 0.5)} exceeds 4294967295, an m/z after the first two of a chunk whose fixed-point
+     * difference from its extrapolation (2 * previous - the one before) is outside the signed 32-bit range, or with
+     * {@link NumpressIntensityEncoding#PIC} an intensity whose rounded count {@code (long) (v + 0.5)} exceeds
+     * 2147483647. The values checked are those the entry writes: its arrays, to spectra_data or as a peak copy to
+     * spectra_peaks, and its peak list to spectra_peaks, in the chunks {@link NumpressSignalWriter#chunkEnd} splits
+     * them into. The message names the spectrum's index, the array, the value, the member and the alternative.
+     */
+    static void requireNumpressEncodable(SpectrumEntry entry, Options options) {
+        if (options.signalEncoding() != SignalEncoding.NUMPRESS) {
+            return;
+        }
+        Spectrum s = entry.source();
+        boolean pic = options.numpressIntensity() == NumpressIntensityEncoding.PIC;
+        if (entry.data() || entry.peaksFromArrays()) {
+            requireNumpressEncodable(s.index(), entry.arrays().x(), entry.arrays().intensity(),
+                    entry.data() ? "spectra_data" : "spectra_peaks", pic);
+        }
+        if (entry.peaks() && !entry.peaksFromArrays()) {
+            List<CentroidPeak> peaks = s.peaks();
+            double[] mz = new double[peaks.size()];
+            double[] intensity = new double[mz.length];
+            for (int i = 0; i < mz.length; i++) {
+                mz[i] = peaks.get(i).mz();
+                intensity[i] = peaks.get(i).intensity();
+            }
+            requireNumpressEncodable(s.index(), mz, intensity, "spectra_peaks", pic);
+        }
+    }
+
+    /**
+     * Throws for the first point of spectrum {@code index} in {@code member} that cannot be encoded, as
+     * {@link #requireNumpressEncodable}, going through the points chunk by chunk.
+     */
+    private static void requireNumpressEncodable(long index, double[] mz, double[] intensity, String member,
+                                                 boolean pic) {
+        int pos = 0;
+        while (pos < mz.length) {
+            int end = NumpressSignalWriter.chunkEnd(pos, mz.length);
+            for (int i = pos; i < end; i++) {
+                long fixed = linearFixedPoint(mz[i]);
+                if (!Double.isFinite(mz[i]) || mz[i] < 0 || fixed > MAX_LINEAR_VALUE) {
+                    throw unencodable(index, "m/z", mz[i], member, LINEAR_RANGE, POINT);
+                }
+                // From the third m/z of a chunk on, the codec stores the difference as a signed 32-bit integer.
+                if (i - pos >= 2) {
+                    long step = fixed - 2 * linearFixedPoint(mz[i - 1]) + linearFixedPoint(mz[i - 2]);
+                    if ((int) step != step) {
+                        throw unencodable(index, "m/z", mz[i], member, LINEAR_STEP + mz[i - 1] + " - " + mz[i - 2],
+                                POINT);
+                    }
+                }
+                requireNumpressEncodable(index, intensity[i], member, pic);
+            }
+            pos = end;
+        }
+    }
+
+    /** The fixed-point value NumpressSignalWriter's Numpress linear stores {@code mz} as. */
+    private static long linearFixedPoint(double mz) {
+        return (long) (mz * NUMPRESS_LINEAR_FIXED_POINT + 0.5);
+    }
+
+    /** Throws for one intensity of spectrum {@code index} in {@code member}, as {@link #requireNumpressEncodable}. */
+    private static void requireNumpressEncodable(long index, double intensity, String member, boolean pic) {
+        if (!Double.isFinite(intensity) || intensity < 0) {
+            throw unencodable(index, "intensity", intensity, member, pic ? PIC_RANGE : SLOF_RANGE, POINT);
+        }
+        if (pic && (long) (intensity + 0.5) > MAX_PIC_COUNT) {
+            throw unencodable(index, "intensity", intensity, member, PIC_RANGE,
+                    "NumpressIntensityEncoding.SLOF or " + POINT);
+        }
+    }
+
+    /** The error for {@code value} of {@code array}, which {@code codec} cannot encode, and its alternative. */
+    private static MzPeakException unencodable(long index, String array, double value, String member, String codec,
+                                               String alternative) {
+        return new MzPeakException("spectrum " + index + ": " + array + " " + value + " in " + member
+                + " cannot be encoded with " + codec + "; use " + alternative);
     }
 
     // Renumbering (design §11.5, WR-8). Spec spectra.md:91-93 and chromatograms.md:40: the indices of each entity

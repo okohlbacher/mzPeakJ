@@ -43,8 +43,11 @@ final class NumpressSignalWriter {
 
     /** Maximum number of m/z points per numpress chunk. */
     private static final int NUMPRESS_CHUNK_SIZE = 500;
-    /** Numpress linear fixed-point scale (near-lossless for MS m/z up to ~6000 Da at 5 sig figs). */
-    private static final double NUMPRESS_LINEAR_FIXED_POINT = 100_000.0;
+    /**
+     * Numpress linear fixed-point scale (near-lossless for MS m/z up to ~6000 Da at 5 sig figs).
+     * {@link WritePlanner#requireNumpressEncodable} refuses the m/z the codec cannot store at this scale.
+     */
+    static final double NUMPRESS_LINEAR_FIXED_POINT = 100_000.0;
 
     /** Max value for a uint16 SLOF symbol — SLOF encodes {@code log(x+1)*fixedPoint} into 2 bytes.
      * The fixedPoint is chosen dynamically so the maximum log value maps to ≤65535.
@@ -117,6 +120,21 @@ final class NumpressSignalWriter {
     }
 
     /**
+     * The end (exclusive) of the chunk that starts at point {@code pos} of a spectrum of {@code n} points: chunks of up
+     * to 500 points, the last two 499 + 2 where a single point would be left over. {@link #writeNumpressChunks} writes
+     * these chunks, and {@link WritePlanner#requireNumpressEncodable} checks the m/z of each.
+     */
+    static int chunkEnd(int pos, int n) {
+        int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
+        if (n - end == 1) {
+            // No single-point last chunk: its 12-byte linear payload is one pynumpress cannot decode.
+            // This chunk is a full one here, so it keeps NUMPRESS_CHUNK_SIZE - 1 points.
+            end--;
+        }
+        return end;
+    }
+
+    /**
      * Write spectra as MS-Numpress chunk rows: the plan's spectra_data rows ({@code mz()}/{@code intensity()} of
      * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()}
      * or {@code peaks()} of every entry routed there, as the entry says). Each spectrum is split into chunks of up to
@@ -124,7 +142,10 @@ final class NumpressSignalWriter {
      * and intensity with the plan's Numpress intensity encoding. The rows are read by the Numpress path of
      * {@link ChunkRowDecoder}. {@code mz()}/{@code intensity()} are written in the order of the entry's
      * {@link WritePlan.SignalArrays}, and each extra column holds the chunk's slice of
-     * {@link SpectrumEntry#extraValues}.
+     * {@link SpectrumEntry#extraValues}. The codecs encode only the values {@link WritePlanner#requireNumpressEncodable}
+     * lets into the plan: finite m/z of at least 0 up to 4294967295 at {@link #NUMPRESS_LINEAR_FIXED_POINT}, each
+     * after the first two of a chunk within a signed 32-bit difference of its linear extrapolation, finite intensities
+     * of at least 0, and PIC counts up to 2147483647.
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
@@ -158,12 +179,7 @@ final class NumpressSignalWriter {
                 int n = mz.length;
                 int pos = 0;
                 while (pos < n) {
-                    int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
-                    if (n - end == 1) {
-                        // No single-point last chunk: its 12-byte linear payload is one pynumpress cannot decode.
-                        // This chunk is a full one here, so it keeps NUMPRESS_CHUNK_SIZE - 1 points.
-                        end--;
-                    }
+                    int end = chunkEnd(pos, n);
                     int chunkLen = end - pos;
                     double[] chunkMz = Arrays.copyOfRange(mz, pos, end);
                     double[] chunkIn = Arrays.copyOfRange(intensity, pos, end);
