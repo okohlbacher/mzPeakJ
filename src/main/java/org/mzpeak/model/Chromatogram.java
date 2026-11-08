@@ -8,6 +8,10 @@ import java.util.Map;
  * A chromatogram (e.g. total ion current, base peak, or selected ion) — parallel time + intensity arrays, plus any
  * further per-point arrays the file stores alongside them.
  *
+ * <p>Record semantics: {@code equals}, {@code hashCode} and {@code toString} treat the {@code double[]} components,
+ * and the arrays held in {@code arrays}, by reference, so two chromatograms with equal values in different arrays
+ * are not equal.
+ *
  * @param index         0-based chromatogram index
  * @param id            chromatogram id (e.g. {@code "TIC"})
  * @param typeCurie     PSI-MS chromatogram type CURIE (e.g. {@code MS:1000235} = total ion current)

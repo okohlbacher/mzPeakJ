@@ -6,9 +6,11 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * File/run-level metadata stored as JSON in the Parquet footer key-value metadata of
- * {@code spectra_metadata.parquet} (keys {@code file_description}, {@code instrument_configuration_list},
- * {@code software_list}, {@code data_processing_method_list}, {@code sample_list}, {@code run}).
+ * File/run-level metadata: the documents {@code file_description}, {@code instrument_configuration_list},
+ * {@code software_list}, {@code data_processing_method_list}, {@code sample_list} and {@code run}. A reader takes each
+ * document from the {@code metadata} object of the manifest ({@code mzpeak_index.json}) first, and from the JSON of
+ * the same key in the Parquet footer key-value metadata of {@code spectra_metadata.parquet} when the manifest lacks
+ * it; the {@code run} is merged field by field, the manifest's fields first.
  *
  * <p>The model mirrors the mzPeak schema / the Rust {@code mzpeak_prototyping} types: every object is a few
  * typed identity/reference fields plus a {@link Param} list carrying the controlled-vocabulary detail

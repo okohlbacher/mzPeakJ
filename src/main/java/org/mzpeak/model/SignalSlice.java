@@ -5,6 +5,9 @@ package org.mzpeak.model;
  * query's m/z and ion-mobility filters, in stored order, with the spectrum's identity. A spectrum without matching
  * points gives an empty slice.
  *
+ * <p>Record semantics: {@code equals}, {@code hashCode} and {@code toString} treat the {@code double[]} components by
+ * reference, so two slices with equal values in different arrays are not equal.
+ *
  * @param index       0-based spectrum index
  * @param time        retention time of the spectrum (scan start time), in the file's time unit
  * @param msLevel     MS level of the spectrum; 0 if absent

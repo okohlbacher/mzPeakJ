@@ -23,7 +23,8 @@ import java.util.Objects;
  *       dataset root (e.g. {@code spectra_data.parquet}).
  *   <li>{@link #inputFile(String)} may be called several times for the same member, and the streams of the
  *       returned files may be open at the same time; each stream keeps its own position. A reader keeps the streams
- *       of its signal members open until it is closed.
+ *       of its spectrum signal members open until it is closed; chromatogram and wavelength members are read when
+ *       first requested.
  *   <li>Failures are reported unchecked, preferably as {@link MzPeakException} naming the member and
  *       {@link #describe()}; {@link InputFile} methods may throw {@link java.io.IOException} as declared.
  *   <li>A reader opened on a source owns it and closes it exactly once: when opening fails, or on the reader's
