@@ -17,7 +17,9 @@ import org.mzpeak.model.Activation;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
@@ -168,8 +170,9 @@ class SplitWriterPrecursorsTest {
                 ionKeys.add(ParquetGroups.optLong(row, "precursor_index"));
             }
         }
+        // Each spectrum's ions in the order of their precursor's key, null first (the Rust reader needs it).
         assertThat(ionKeys).as("precursor_index of the selected ions of the two spectra")
-                .containsExactly(1L, 0L, 0L, null, 7L);
+                .containsExactly(0L, 0L, 1L, null, 7L);
 
         Source back = ForwardBackwardCorpusTest.readSource(out);
         DescriptionAssert.assertEqual("constructed two-precursor spectra", descriptions(spectra),
@@ -183,6 +186,76 @@ class SplitWriterPrecursorsTest {
         List<Precursor> secondBack = back.spectra.get(second).description().precursors();
         assertThat(secondBack).containsExactly(keyless, seventh);
         assertThat(secondBack.get(0).precursorIndex()).isNull();
+    }
+
+    /**
+     * The Rust reference reader sorts the precursors by key and walks the selected ions in file order with a cursor
+     * that only moves forward (metadata.rs:1156-1219), so the writer puts a spectrum's ions in the order of the
+     * precursor_index of their precursor, null first. Spectrum S, written with its parents, has the precursors
+     * [P_a (parent written as 1, ion A), P_b (parent written as 0, ion B)]: its ion rows are (S, 0, B) then (S, 1, A),
+     * numbered in that order, while its precursor rows keep its own order. When P_b's parent is not written, its key
+     * is null and (S, null, B) comes first. The reader reads A on P_a and B on P_b either way.
+     */
+    @Test
+    void aSpectrumsSelectedIonsAreWrittenInTheOrderOfTheirPrecursorKeys(@TempDir Path tmp) {
+        SelectedIon a = new SelectedIon(500.25, 2, 100.0, List.of());
+        SelectedIon b = new SelectedIon(600.5, 3, 200.0, List.of());
+        Spectrum first = constructed(10, 1, List.of());
+        Spectrum second = constructed(20, 1, List.of());
+        Precursor pa = new Precursor(20L, "scan=21", null, List.of(a), Activation.EMPTY);
+        Precursor pb = new Precursor(10L, "scan=11", null, List.of(b), Activation.EMPTY);
+
+        Path out = tmp.resolve("parents.mzpeak");
+        MzPeakWriter.writeDirectory(out, List.of(first, second, constructed(30, 2, List.of(pa, pb))));
+
+        assertThat(keyRows(out, PRECURSORS)).containsExactly("2|1", "2|0");
+        assertThat(keyRows(out, SELECTED_IONS)).containsExactly("2|0|0|600.5", "2|1|1|500.25");
+        assertIonsOnTheirOwnPrecursors(out, a, b, 1L, 0L);
+
+        Precursor orphan = new Precursor(15L, "scan=16", null, List.of(b), Activation.EMPTY);
+        Path variant = tmp.resolve("orphan.mzpeak");
+        MzPeakWriter.writeDirectory(variant, List.of(first, second, constructed(30, 2, List.of(pa, orphan))));
+
+        assertThat(keyRows(variant, PRECURSORS)).containsExactly("2|1", "2|null");
+        assertThat(keyRows(variant, SELECTED_IONS)).containsExactly("2|null|0|600.5", "2|1|1|500.25");
+        assertIonsOnTheirOwnPrecursors(variant, a, b, 1L, null);
+    }
+
+    /** Spectrum 2 of {@code out} has two precursors with the keys given, A on the first and B on the second. */
+    private static void assertIonsOnTheirOwnPrecursors(Path out, SelectedIon a, SelectedIon b, Long keyA, Long keyB) {
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            List<Precursor> back = reader.getSpectrumAt(2).description().precursors();
+            assertThat(back).extracting(Precursor::precursorIndex).containsExactly(keyA, keyB);
+            assertThat(back.get(0).selectedIons()).containsExactly(a);
+            assertThat(back.get(1).selectedIons()).containsExactly(b);
+        }
+    }
+
+    /**
+     * The rows of {@code member} as {@code source_index|precursor_index}, with
+     * {@code |selected_ion_index|selected_ion_mz} for the selected ions, in row order.
+     */
+    private static List<String> keyRows(Path out, String member) {
+        List<String> lines = new ArrayList<>();
+        for (Group row : rows(out.resolve(member))) {
+            String line = ParquetGroups.optLong(row, "source_index") + "|" + ParquetGroups.optLong(row,
+                    "precursor_index");
+            if (member.equals(SELECTED_IONS)) {
+                line += "|" + ParquetGroups.optLong(row, "selected_ion_index") + "|"
+                        + ParquetGroups.optDouble(row, "selected_ion_mz");
+            }
+            lines.add(line);
+        }
+        return lines;
+    }
+
+    /** A PROFILE spectrum of three points with one scan, {@code index}, {@code msLevel} and {@code precursors}. */
+    private static Spectrum constructed(long index, int msLevel, List<Precursor> precursors) {
+        double rt = index / 10.0;
+        SpectrumDescription d = new SpectrumDescription(index, "scan=" + (index + 1), msLevel, rt, null,
+                SignalContinuity.PROFILE, 3, 0, List.of(new ScanEvent(rt, null, null, null, null, null, List.of(),
+                List.of())), precursors, List.of());
+        return new Spectrum(d, new double[] {100.0, 100.5, 101.0}, new double[] {10.0, 20.0, 5.0}, List.of());
     }
 
     /**

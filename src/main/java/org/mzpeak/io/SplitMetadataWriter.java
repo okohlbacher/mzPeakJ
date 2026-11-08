@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -82,11 +83,13 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * (AP-7).
  *
  * <p>Every precursor is written as the plan gives it ({@link WritePlan.SpectrumEntry#precursors()}): as the caller
- * gave it, with the {@code precursor_index} the planner maps to the new index of its parent, or null (WR-8). Both
- * readers attach a selected ion to the first precursor of its spectrum whose key {@code (source_index,
- * precursor_index)} equals the ion's, so the ions of a precursor that shares its key with an earlier one of the same
- * spectrum would read back on that earlier one; the planner refuses such input before any I/O. The precursor and
- * selected-ion members are written even when no spectrum has a precursor, as the reference does.
+ * gave it, with the {@code precursor_index} the planner maps to the new index of its parent, or null (WR-8). The
+ * mzPeakJ reader attaches a selected ion to the first precursor of its spectrum whose key {@code (source_index,
+ * precursor_index)} equals the ion's, whatever the row order, so the ions of a precursor that shares its key with an
+ * earlier one of the same spectrum would read back on that earlier one; the planner refuses such input before any
+ * I/O. The Rust reader also needs a spectrum's selected ions sorted by that key, so they are written in the order of
+ * their precursor's {@code precursor_index}, null first, while the precursor rows keep the spectrum's order. The
+ * precursor and selected-ion members are written even when no spectrum has a precursor, as the reference does.
  *
  * <p>Chromatograms and wavelength spectra (WR-6) get the same treatment, each member written only when the plan
  * has entities of its kind:
@@ -287,6 +290,10 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             Set.of(WAVELENGTH_POINTS, LAMBDA_MAX));
     private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
             Set.of(WAVELENGTH_SCAN_START_TIME));
+
+    /** Precursors by their precursor_index, null first, as Rust orders an {@code Option}. */
+    private static final Comparator<Precursor> PRECURSOR_KEY_ORDER = Comparator.comparing(Precursor::precursorIndex,
+            Comparator.nullsFirst(Comparator.naturalOrder()));
 
     private SplitMetadataWriter() {
     }
@@ -545,12 +552,21 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     // ---- spectra_metadata_selected_ions -------------------------------------------------------------------------
 
+    /**
+     * Writes the selected ions of each spectrum in the order of the precursor_index of their precursor, null first,
+     * by a stable sort that keeps each precursor's ions, and precursors that share a key, in their order. The Rust
+     * reader needs that order (metadata.rs:1156-1219): it sorts the precursors by key and walks the ions in file order
+     * with a cursor that only moves forward, so an ion whose key is lower than the one before it would go to the last
+     * precursor of its spectrum. {@code selected_ion_index} counts the rows in the order written.
+     */
     private static void writeSelectedIons(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(SELECTED_ION_SCHEMA);
         long selectedIonIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, SELECTED_ION_SCHEMA, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
-                for (Precursor precursor : entry.precursors()) {
+                List<Precursor> byKey = new ArrayList<>(entry.precursors());
+                byKey.sort(PRECURSOR_KEY_ORDER); // List.sort is stable
+                for (Precursor precursor : byKey) {
                     for (SelectedIon ion : precursor.selectedIons()) {
                         Group row = factory.newGroup();
                         row.add(SOURCE_INDEX, entry.sourceIndex());

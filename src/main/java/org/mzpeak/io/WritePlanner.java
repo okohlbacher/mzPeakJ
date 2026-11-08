@@ -304,13 +304,14 @@ final class WritePlanner {
         return out == null ? precursors : Collections.unmodifiableList(out);
     }
 
-    // Attribution check (design §11.5, WR-8). Both readers attach a selected ion to the first precursor of its
-    // spectrum whose key (source_index, precursor_index) equals the ion's, null equal to null (PrecursorJoin; reference
-    // metadata.rs:1157-1185). When precursors of one spectrum share their written key, the selected ions of every
-    // one after the first would silently move to the first. The split layout writes every precursor and refuses
-    // exactly that input; a shared key whose later precursors carry no selected ion loses nothing and is written.
-    // The typical cause is a multi-precursor spectrum written without its parents: every precursor_index is null.
-    // The packed layout writes the primary precursor only and is not checked.
+    // Attribution check (design §11.5, WR-8). The mzPeakJ reader attaches a selected ion to the first precursor of its
+    // spectrum whose key (source_index, precursor_index) equals the ion's, null equal to null, whatever the row order
+    // (PrecursorJoin). The Rust reference (metadata.rs:1156-1219) also needs a spectrum's selected ions sorted by that
+    // key, which SplitMetadataWriter writes them in. When precursors of one spectrum share their written key, the
+    // selected ions of every one after the first would silently move to the first. The split layout writes every
+    // precursor and refuses exactly that input; a shared key whose later precursors carry no selected ion loses
+    // nothing and is written. The typical cause is a multi-precursor spectrum written without its parents: every
+    // precursor_index is null. The packed layout writes the primary precursor only and is not checked.
 
     /**
      * Throws {@link MzPeakException} when a precursor of {@code precursors}, those of {@code s} as written with

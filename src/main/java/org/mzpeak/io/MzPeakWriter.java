@@ -103,8 +103,10 @@ public final class MzPeakWriter {
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum
      * that would be written with the same precursor_index (null equal to null) are allowed only when none after the
-     * first of them carries selected ions, since readers attach those ions to the first. The typical violation is a
-     * spectrum with several precursors written without its parent spectra; writing the parents as well avoids it.
+     * first of them carries selected ions, since {@link MzPeakReader} attaches each ion to the first precursor with
+     * its key, whatever the row order. The typical violation is a spectrum with several precursors written without
+     * its parent spectra; writing the parents as well avoids it. The selected ions of a spectrum are written in the
+     * order of their precursor's precursor_index, null first, which the Rust reference reader also needs.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}
