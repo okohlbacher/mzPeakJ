@@ -38,14 +38,15 @@ Java demonstrator; an official Java implementation is planned by the HUPO-PSI.
   read in-place from the archive (seekable file slice, no whole-member buffering).
 - **Three signal layouts**: `point` (one row per data point), delta-`chunk` (delta-encoded fixed-width
   m/z chunks), and MS-Numpress `chunk` (lossless linear m/z + lossy SLOF/PIC intensity compression).
-- **Spectra** (MS1 + MSn): profile and centroid, with metadata, precursor, activation params (CID/HCD/ETD
-  + collision energy), isolation window, per-spectrum/scan CV param lists, secondary centroid peaks, and
-  polynomial profile reconstruction from the stored `mz_delta_model`.
+- **Spectra** (MS1 + MSn): profile and centroid, with metadata in the current split layout and the legacy
+  packed layout, precursor, activation params (CID/HCD/ETD + collision energy), isolation window,
+  per-spectrum/scan CV param lists, secondary centroid peaks, extra arrays such as per-peak ion mobility, and
+  polynomial profile reconstruction from the stored m/z delta model.
 - **Chromatograms** (TIC, DAD/absorption, …) and **UV/DAD wavelength spectra**.
-- **File/run-level metadata** from the Parquet footer: instrument configuration (analyzer types, resolution),
-  software list, run, source files, data processing, sample.
+- **File/run-level metadata** from the manifest, with the Parquet footer as fallback: instrument configuration
+  (analyzer types, resolution), software list, run, source files, data processing, sample.
 - **Writes** point and Numpress chunk layouts, with footer metadata and CV param lists.
-- **Ion mobility** (10 CV accessions: `MS:1002476`–`MS:1003156`) and **imaging position** (`IMS:1000050`/`IMS:1000051`)
+- **Ion mobility** (the 7 PSI-MS ion mobility types) and **imaging position** (`IMS:1000050`/`IMS:1000051`)
   decoded from dedicated typed scan columns and CV params; accessible via `ScanEvent` convenience methods.
 - **No Hadoop runtime** — custom `ZstdCompressionCodecFactory` means no Hadoop FileSystem, Configuration,
   or native libraries are ever touched.
@@ -111,8 +112,22 @@ All tools share `--ms-level`, `--rt-min`, `--rt-max` filter options.
 
 ## Bundled fixtures
 
-Two sets of HUPO-PSI example datasets are included. The legacy set, from upstream commit `29e59b2`, lies under
-`src/test/resources/mzpeak-legacy/` and uses the packed metadata layout that mzPeakJ reads and writes:
+Two sets of HUPO-PSI example datasets are included. The current set, from upstream commit `2ee2589`, lies under
+`src/test/resources/mzpeak/` and uses split metadata tables, an array index and SHA-512 checksums:
+
+| Fixture | Layout | Contents |
+|---|---|---|
+| `small.unpacked.mzpeak/` | point, directory | 48 spectra (14 MS1 + 34 MS2), TIC |
+| `small.mzpeak` | point, STORED ZIP | same |
+| `small.chunked.mzpeak` | delta-chunk, STORED ZIP | same data + centroid peaks for the 14 profile spectra |
+| `small.numpress.mzpeak` | Numpress chunk, STORED ZIP | same data, MS:1002312 linear m/z + MS:1002314 SLOF intensity |
+| `has_uv.mzpeak` | point, STORED ZIP | 212 MS spectra + 520 UV/DAD spectra + TIC & DAD chromatograms |
+| `diaPASEF.ref.mzpeak` | point, STORED ZIP | 9 spectra (1 MS1 + 8 MS2) of a Bruker diaPASEF run with per-peak ion mobility; TIC & BPC |
+| `diaPASEF.grid.mzpeak` | coordinate-grid chunk, STORED ZIP | same run; spectrum arrays not decoded yet (grid encoding) |
+| `Example_Processed.img.mzpeak` | point, STORED ZIP | 9 profile spectra of an imzML imaging run |
+
+The legacy set, from upstream commit `29e59b2`, lies under `src/test/resources/mzpeak-legacy/` and uses the
+packed metadata layout, which mzPeakJ also reads and still writes:
 
 | Fixture | Layout | Contents |
 |---|---|---|
@@ -122,11 +137,6 @@ Two sets of HUPO-PSI example datasets are included. The legacy set, from upstrea
 | `small.numpress.mzpeak` | Numpress chunk, STORED ZIP | same data, MS:1002312 linear m/z + MS:1002314 SLOF intensity |
 | `has_uv.mzpeak` | point, STORED ZIP | 212 MS spectra + 520 UV/DAD spectra + TIC & DAD chromatograms |
 
-The current set, from upstream commit `2ee2589`, lies under `src/test/resources/mzpeak/` (not yet supported):
-`small`, `small.chunked`, `small.numpress`, `small.unpacked`, `has_uv`, `diaPASEF.ref`, `diaPASEF.grid` and
-`Example_Processed.img`. It uses split metadata tables, an array index and SHA-512 checksums. mzPeakJ opens
-these files but does not list their spectra yet.
-
 ---
 
 ## Status
@@ -134,7 +144,7 @@ these files but does not list their spectra yet.
 Current version: **0.10.2** (see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
-read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact `mz_delta_model` reconstruction;
+read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact delta-model reconstruction;
 tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion mobility + imaging position
 from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
 

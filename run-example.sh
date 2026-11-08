@@ -5,10 +5,10 @@
 # Usage:
 #   ./run-example.sh <fully.qualified.MainClass> [args...]
 #
-# Examples (bundled fixtures: src/test/resources/mzpeak-legacy/ holds the packed-layout set mzPeakJ reads;
-# src/test/resources/mzpeak/ holds the current upstream set, which is not yet supported):
-#   ./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak-legacy/small.mzpeak -s
-#   ./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak-legacy/small.unpacked.mzpeak
+# Examples (bundled fixtures: src/test/resources/mzpeak/ holds the current upstream set;
+# src/test/resources/mzpeak-legacy/ holds the legacy packed-layout set, which mzPeakJ also reads):
+#   ./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak -s
+#   ./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/small.unpacked.mzpeak
 #
 set -euo pipefail
 
@@ -42,7 +42,7 @@ fi
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <fully.qualified.MainClass> [args...]" >&2
-  echo "  e.g. $0 org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak-legacy/small.mzpeak -s" >&2
+  echo "  e.g. $0 org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak -s" >&2
   exit 2
 fi
 
