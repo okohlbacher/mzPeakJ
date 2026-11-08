@@ -10,7 +10,6 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -19,6 +18,8 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,10 +32,10 @@ import java.util.regex.Pattern;
  * Checks the index wrapper of an indexedmzML file (mzML 1.1 specification, appendix A; mzML1.1.2_idx.xsd) against
  * the bytes of the file, which the schema cannot do:
  * <ul>
- *   <li>every {@code <offset>} lands on {@code <spectrum } or {@code <chromatogram } (as its {@code <index>} names),
- *       and that start tag carries the {@code id} the offset's {@code idRef} names;
+ *   <li>every {@code <offset>} lands on a {@code <spectrum>} or {@code <chromatogram>} start tag (as its
+ *       {@code <index>} names), and that start tag carries the {@code id} the offset's {@code idRef} names;
  *   <li>the offsets of each index are in document order (strictly increasing);
- *   <li>{@code <indexListOffset>} lands on {@code <indexList};
+ *   <li>{@code <indexListOffset>} lands on the {@code <indexList>} start tag;
  *   <li>{@code indexList@count} equals the number of {@code <index>} elements, and no {@code <index>} is empty
  *       unless it is the only one;
  *   <li>the {@code index} attributes of the spectra, and of the chromatograms, run 0..n-1 in document order;
@@ -44,16 +45,21 @@ import java.util.regex.Pattern;
  *       the {@code <fileChecksum>} start tag.
  * </ul>
  * Offsets are byte offsets; the document must be in an ASCII-compatible encoding (UTF-8, ISO-8859-1, US-ASCII),
- * which every mzML writer uses.
+ * which every mzML writer uses. The start tags are the real ones (MJ-4): a pass over the bytes skips comments,
+ * processing instructions, CDATA sections, declarations and quoted attribute values, so text that only looks like a
+ * start tag satisfies no offset and no checksum range, and any XML whitespace may follow the element name
+ * ({@code <spectrum\tindex=...>}, {@code <fileChecksum >}).
  */
 public final class IndexedMzMLVerifier {
 
     private static final String SPECTRUM = "spectrum";
     private static final String CHROMATOGRAM = "chromatogram";
+    private static final String INDEX_LIST = "indexList";
+    private static final String FILE_CHECKSUM = "fileChecksum";
     private static final Set<String> ASCII_COMPATIBLE = Set.of("UTF-8", "ISO-8859-1", "US-ASCII");
-    private static final String CHECKSUM_TAG = "<fileChecksum>";
-    private static final int MAX_START_TAG = 1 << 20;
     private static final Pattern ATTRIBUTE = Pattern.compile("([^\\s=/>]+)\\s*=\\s*(\"([^\"]*)\"|'([^']*)')");
+    private static final String NOT_A_START_TAG = " (not a start tag: it lies in a comment, CDATA section, processing"
+            + " instruction or declaration)";
 
     private IndexedMzMLVerifier() {
     }
@@ -81,6 +87,15 @@ public final class IndexedMzMLVerifier {
         String fileChecksum;
     }
 
+    /** What the pass over the bytes collects: the byte positions of the real start tags the index refers to. */
+    private static final class StartTags {
+        /** Per element name, the position of each {@code <spectrum>} or {@code <chromatogram>} tag and its id. */
+        final Map<String, Map<Long, String>> ids = Map.of(SPECTRUM, new HashMap<>(), CHROMATOGRAM, new HashMap<>());
+        final Set<Long> indexLists = new HashSet<>();
+        /** The position after the {@code >} of the last {@code <fileChecksum>} start tag; -1 when there is none. */
+        long fileChecksumEnd = -1;
+    }
+
     /**
      * The problems of {@code file}'s index wrapper, each naming the offset, count or checksum at fault; an empty list
      * when the index is consistent with the file.
@@ -99,14 +114,15 @@ public final class IndexedMzMLVerifier {
         if (!ASCII_COMPATIBLE.contains(charset.name())) {
             return List.of("encoding " + s.encoding + " is not ASCII-compatible; byte offsets are not checked");
         }
+        StartTags tags = startTags(file, charset);
         List<String> problems = new ArrayList<>();
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
             checkIndexList(s, problems);
             for (String kind : List.of(SPECTRUM, CHROMATOGRAM)) {
-                checkKind(kind, s, channel, charset, problems);
+                checkKind(kind, s, tags, channel, charset, problems);
             }
-            checkIndexListOffset(s, channel, problems);
-            checkChecksum(s, channel, problems);
+            checkIndexListOffset(s, tags, channel, charset, problems);
+            checkChecksum(s, tags, channel, problems);
         }
         return problems;
     }
@@ -133,7 +149,7 @@ public final class IndexedMzMLVerifier {
         }
     }
 
-    private static void checkKind(String kind, Structure s, FileChannel channel, Charset charset,
+    private static void checkKind(String kind, Structure s, StartTags tags, FileChannel channel, Charset charset,
                                   List<String> problems) throws IOException {
         List<Element> elements = s.elements.get(kind);
         String listCount = s.listCounts.get(kind + "List");
@@ -154,7 +170,7 @@ public final class IndexedMzMLVerifier {
             problems.add(kind + " index has " + offsets.size() + " offsets for " + elements.size() + " <" + kind
                     + "> elements");
         }
-        byte[] prefix = ("<" + kind + " ").getBytes(StandardCharsets.US_ASCII);
+        Map<Long, String> ids = tags.ids.get(kind);
         long previous = -1;
         for (Offset offset : offsets) {
             String what = kind + " offset " + offset.value() + " for idRef '" + offset.idRef() + "'";
@@ -174,21 +190,19 @@ public final class IndexedMzMLVerifier {
                         + "document order)");
             }
             previous = position;
-            byte[] tag = startTag(channel, position);
-            if (!startsWith(tag, prefix)) {
-                problems.add(what + " does not land on '<" + kind + " ' but on '" + excerpt(channel, position, charset)
-                        + "'");
+            if (!ids.containsKey(position)) {
+                problems.add(missed(what, kind, "<" + kind + " ", channel, position, charset));
                 continue;
             }
-            String id = attribute(new String(tag, charset), "id");
+            String id = ids.get(position);
             if (!offset.idRef().equals(id)) {
                 problems.add(what + " lands on the " + kind + " with id '" + id + "'");
             }
         }
     }
 
-    private static void checkIndexListOffset(Structure s, FileChannel channel, List<String> problems)
-            throws IOException {
+    private static void checkIndexListOffset(Structure s, StartTags tags, FileChannel channel, Charset charset,
+                                             List<String> problems) throws IOException {
         if (s.indexListOffset == null) {
             problems.add("no <indexListOffset>");
             return;
@@ -205,29 +219,40 @@ public final class IndexedMzMLVerifier {
             problems.add(what + " is outside the file (" + channel.size() + " bytes)");
             return;
         }
-        byte[] tag = startTag(channel, position);
-        String text = new String(tag, StandardCharsets.ISO_8859_1);
-        if (!text.matches("<indexList[\\s>][\\s\\S]*")) {
-            problems.add(what + " does not land on '<indexList' but on '"
-                    + excerpt(channel, position, StandardCharsets.ISO_8859_1) + "'");
+        if (!tags.indexLists.contains(position)) {
+            problems.add(missed(what, INDEX_LIST, "<" + INDEX_LIST, channel, position, charset));
         }
     }
 
-    private static void checkChecksum(Structure s, FileChannel channel, List<String> problems) throws IOException {
+    private static void checkChecksum(Structure s, StartTags tags, FileChannel channel, List<String> problems)
+            throws IOException {
         if (s.fileChecksum == null) {
             problems.add("no <fileChecksum>");
             return;
         }
-        long end = lastIndexOf(channel, CHECKSUM_TAG.getBytes(StandardCharsets.US_ASCII));
-        if (end < 0) {
-            problems.add("no '" + CHECKSUM_TAG + "' in the bytes of the file");
+        if (tags.fileChecksumEnd < 0) {
+            problems.add("no <fileChecksum> start tag in the bytes of the file");
             return;
         }
-        String computed = sha1(channel, end + CHECKSUM_TAG.length());
+        String computed = sha1(channel, tags.fileChecksumEnd);
         if (!computed.equals(s.fileChecksum)) {
             problems.add("fileChecksum: stored " + s.fileChecksum + ", computed " + computed
-                    + " (SHA-1 of the bytes up to the end of '" + CHECKSUM_TAG + "')");
+                    + " (SHA-1 of the bytes up to the end of the <fileChecksum> start tag)");
         }
+    }
+
+    /**
+     * The problem of an offset {@code what} that lands on no {@code name} start tag: the excerpt there and, when its
+     * text looks like that start tag, the note that it lies in a comment, CDATA section, processing instruction or
+     * declaration.
+     */
+    private static String missed(String what, String name, String expected, FileChannel channel, long position,
+                                 Charset charset) throws IOException {
+        String excerpt = excerpt(channel, position, charset);
+        boolean looksLikeTheTag = excerpt.length() > name.length() + 1 && excerpt.startsWith("<" + name)
+                && isTagNameEnd(excerpt.charAt(name.length() + 1));
+        return what + " does not land on '" + expected + "' but on '" + excerpt + "'"
+                + (looksLikeTheTag ? NOT_A_START_TAG : "");
     }
 
     // ---- StAX pass -----------------------------------------------------------------------------------------------
@@ -287,12 +312,12 @@ public final class IndexedMzMLVerifier {
                             r.getAttributeValue(null, "id")));
                 }
             }
-            case "indexList" -> {
+            case INDEX_LIST -> {
                 s.hasIndexList = true;
                 s.indexListCount = r.getAttributeValue(null, "count");
             }
             case "index" -> {
-                if ("indexList".equals(parent)) {
+                if (INDEX_LIST.equals(parent)) {
                     s.indexNames.add(r.getAttributeValue(null, "name"));
                     s.indexOffsets.add(new ArrayList<>());
                 }
@@ -308,7 +333,7 @@ public final class IndexedMzMLVerifier {
                 s.indexListOffset = r.getElementText();
                 return true;
             }
-            case "fileChecksum" -> {
+            case FILE_CHECKSUM -> {
                 s.fileChecksum = r.getElementText();
                 return true;
             }
@@ -318,47 +343,176 @@ public final class IndexedMzMLVerifier {
         return false;
     }
 
-    // ---- bytes ---------------------------------------------------------------------------------------------------
+    // ---- pass over the bytes -------------------------------------------------------------------------------------
 
-    /** The bytes from {@code position} to the first {@code >} outside quotes (inclusive), at most 1 MiB. */
-    private static byte[] startTag(FileChannel channel, long position) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ByteBuffer buffer = ByteBuffer.allocate(4096);
-        byte quote = 0;
-        long at = position;
-        while (out.size() < MAX_START_TAG) {
-            buffer.clear();
-            int n = channel.read(buffer, at);
-            if (n <= 0) {
-                break;
+    /** A file's bytes, read forward through a buffer, with the position of the next byte. */
+    private static final class Bytes {
+        private final InputStream in;
+        private final byte[] buffer = new byte[1 << 16];
+        private int length;
+        private int at;
+        /** The position of the byte the next {@link #next()} returns. */
+        long position;
+
+        Bytes(InputStream in) {
+            this.in = in;
+        }
+
+        /** The next byte (0..255), or -1 at the end of the file. */
+        int next() throws IOException {
+            if (at == length) {
+                length = Math.max(0, in.read(buffer));
+                at = 0;
+                if (length == 0) {
+                    return -1;
+                }
             }
-            at += n;
-            for (int i = 0; i < n; i++) {
-                byte b = buffer.get(i);
-                out.write(b);
-                if (quote != 0) {
-                    quote = b == quote ? 0 : quote;
-                } else if (b == '"' || b == '\'') {
-                    quote = b;
-                } else if (b == '>') {
-                    return out.toByteArray();
+            position++;
+            return buffer[at++] & 0xff;
+        }
+    }
+
+    /**
+     * The real start tags of {@code file} that the index refers to, found by a pass over its bytes (in an
+     * ASCII-compatible {@code charset}, every markup character is one byte and no byte of a multi-byte character
+     * is one): a {@code <} in character data opens markup; comments, processing instructions, CDATA sections,
+     * declarations and end tags are skipped to their end, and a start tag ends at the first {@code >} outside a
+     * quoted attribute value. An element name ends at XML whitespace, {@code /} or {@code >}; a prefix is ignored.
+     * The document is well-formed (the StAX pass read it).
+     */
+    private static StartTags startTags(Path file, Charset charset) throws IOException {
+        StartTags tags = new StartTags();
+        try (InputStream in = Files.newInputStream(file)) {
+            Bytes b = new Bytes(in);
+            int c = b.next();
+            while (c >= 0) {
+                if (c != '<') {
+                    c = b.next();
+                    continue;
+                }
+                long start = b.position - 1;
+                c = b.next();
+                if (c == '?') {
+                    c = skipPast(b, "?>");
+                } else if (c == '/') {
+                    c = skipPast(b, ">");
+                } else if (c == '!') {
+                    c = markupDeclaration(b);
+                } else {
+                    c = startTag(b, start, c, charset, tags);
                 }
             }
         }
-        return out.toByteArray();
+        return tags;
     }
 
-    private static boolean startsWith(byte[] bytes, byte[] prefix) {
-        if (bytes.length < prefix.length) {
-            return false;
+    /** Reads up to and including the first occurrence of {@code end}; returns the byte after it, or -1. */
+    private static int skipPast(Bytes b, String end) throws IOException {
+        int n = end.length();
+        int[] last = new int[n]; // the last n bytes read, as a ring
+        long count = 0;
+        for (int c = b.next(); c >= 0; c = b.next()) {
+            last[(int) (count++ % n)] = c;
+            if (count >= n && endsWith(last, count, end)) {
+                return b.next();
+            }
         }
-        for (int i = 0; i < prefix.length; i++) {
-            if (bytes[i] != prefix[i]) {
+        return -1;
+    }
+
+    /** Whether the ring {@code last}, after {@code count} bytes, ends with {@code end}. */
+    private static boolean endsWith(int[] last, long count, String end) {
+        int n = end.length();
+        for (int i = 0; i < n; i++) {
+            if (last[(int) ((count - n + i) % n)] != end.charAt(i)) {
                 return false;
             }
         }
         return true;
     }
+
+    /**
+     * After {@code <!}: a comment ({@code <!--} to {@code -->}), a CDATA section ({@code <![CDATA[} to {@code ]]>})
+     * or a declaration such as {@code <!DOCTYPE …>} (to the first {@code >} outside quotes and brackets); returns the
+     * byte after it, or -1.
+     */
+    private static int markupDeclaration(Bytes b) throws IOException {
+        int c = b.next();
+        if (c == '-') {
+            b.next(); // the second '-' of '<!--'
+            return skipPast(b, "-->");
+        }
+        if (c == '[') {
+            for (int i = 0; i < "CDATA[".length(); i++) {
+                b.next();
+            }
+            return skipPast(b, "]]>");
+        }
+        int quote = 0;
+        int depth = 0;
+        for (; c >= 0; c = b.next()) {
+            if (quote != 0) {
+                quote = c == quote ? 0 : quote;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '[') {
+                depth++;
+            } else if (c == ']') {
+                depth--;
+            } else if (c == '>' && depth == 0) {
+                return b.next();
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * A start tag whose name begins with {@code c}, its {@code <} at {@code start}: records it when it is one the
+     * index refers to, and returns the byte after its {@code >}, or -1.
+     */
+    private static int startTag(Bytes b, long start, int c, Charset charset, StartTags tags) throws IOException {
+        ByteArrayOutputStream tag = new ByteArrayOutputStream();
+        tag.write('<');
+        while (c >= 0 && !isTagNameEnd((char) c)) {
+            tag.write(c);
+            c = b.next();
+        }
+        String qualified = new String(tag.toByteArray(), 1, tag.size() - 1, charset);
+        String name = qualified.substring(qualified.indexOf(':') + 1);
+        boolean keep = name.equals(SPECTRUM) || name.equals(CHROMATOGRAM);
+        int quote = 0;
+        for (; c >= 0; c = b.next()) {
+            if (keep) {
+                tag.write(c);
+            }
+            if (quote != 0) {
+                quote = c == quote ? 0 : quote;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '>') {
+                break;
+            }
+        }
+        if (c < 0) {
+            return -1;
+        }
+        switch (name) {
+            case SPECTRUM, CHROMATOGRAM -> tags.ids.get(name).put(start,
+                    attribute(new String(tag.toByteArray(), charset), "id"));
+            case INDEX_LIST -> tags.indexLists.add(start);
+            case FILE_CHECKSUM -> tags.fileChecksumEnd = b.position;
+            default -> {
+            }
+        }
+        return b.next();
+    }
+
+    /** Whether {@code c} ends an element name: XML whitespace, {@code /} or {@code >}. */
+    private static boolean isTagNameEnd(char c) {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '/' || c == '>';
+    }
+
+    // ---- bytes ---------------------------------------------------------------------------------------------------
 
     /** Up to 40 bytes from {@code position}, for a problem message. */
     private static String excerpt(FileChannel channel, long position, Charset charset) throws IOException {
@@ -409,29 +563,6 @@ public final class IndexedMzMLVerifier {
             }
         }
         return out.toString();
-    }
-
-    /** The position of the last occurrence of {@code needle} in the file, or -1. */
-    private static long lastIndexOf(FileChannel channel, byte[] needle) throws IOException {
-        int block = 1 << 16;
-        long end = channel.size();
-        while (end > 0) {
-            long start = Math.max(0, end - block);
-            ByteBuffer buffer = ByteBuffer.allocate((int) (Math.min(end + needle.length - 1, channel.size()) - start));
-            channel.read(buffer, start);
-            byte[] bytes = buffer.array();
-            for (int i = bytes.length - needle.length; i >= 0; i--) {
-                int j = 0;
-                while (j < needle.length && bytes[i + j] == needle[j]) {
-                    j++;
-                }
-                if (j == needle.length) {
-                    return start + i;
-                }
-            }
-            end = start;
-        }
-        return -1;
     }
 
     /** The lowercase hex SHA-1 of the first {@code length} bytes of the file. */
