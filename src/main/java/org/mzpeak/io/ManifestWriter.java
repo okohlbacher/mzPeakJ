@@ -10,6 +10,7 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
@@ -209,11 +210,13 @@ final class ManifestWriter {
      * uses it: the accession and unit of every param of a spectrum, of each of its scans, and of each precursor's
      * isolation window, activation and selected ions; the array type and unit of every extra column of the spectrum
      * signal files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key
-     * that is not a CURIE is written as MS:1000786); the chromatogram types; and the accession and unit of every
-     * param of a wavelength spectrum. The packed layout writes only a spectrum's first scan and primary precursor and
-     * selected ion, and no wavelength-spectrum param, but the prefixes of the others count too. The other CURIEs
-     * the writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params
-     * give rise to.
+     * that is not a CURIE is written as MS:1000786); the chromatogram types; the unit of every intensity column of
+     * chromatograms_data, that is every intensity unit of a chromatogram; the array type and unit of every extra column
+     * of chromatograms_data, that is every CURIE key of the chromatograms' {@code arrays()}; and the accession and unit
+     * of every param of a wavelength spectrum. The packed layout writes only a spectrum's first scan and primary
+     * precursor and selected ion, and no wavelength-spectrum param, but the prefixes of the others count too. The other
+     * CURIEs the writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS
+     * params give rise to.
      */
     private static Map<String, String> prefixesOf(WritePlan plan) {
         Map<String, String> used = new LinkedHashMap<>();
@@ -239,6 +242,13 @@ final class ManifestWriter {
         }
         for (Entry<Chromatogram> entry : plan.chromatograms()) {
             addPrefix(entry.source().typeCurie(), used);
+        }
+        for (IntensityColumn intensity : plan.chromatogramIntensities()) {
+            addPrefix(intensity.unit(), used);
+        }
+        for (ExtraColumn extra : plan.chromatogramExtras()) {
+            addPrefix(extra.arrayType(), used);
+            addPrefix(extra.unit(), used);
         }
         for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
             addParamPrefixes(entry.source().parameters(), used);

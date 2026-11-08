@@ -1,6 +1,6 @@
 # WriterSnapshotTest (WR-0a): legacy small.unpacked.mzpeak written by MzPeakWriter.writeDirectoryNumpress PIC PACKED
 member	kind	detail	sha256
-chromatograms_data.parquet	parquet	row_groups=1 rows=48 schema=4f41898c1e42c0db key_values=4:55b53e3a935d3c6c records=ebf51081d10d0dad	9ca4d40c20e8938b7c26268876b743804859996339b04c0d313f7d0c5e8a8271
+chromatograms_data.parquet	parquet	row_groups=1 rows=48 schema=5a38fdca66d32035 key_values=4:25ccfa74c22215af records=a0222fc71ee8f378	3d66e25dc3d01f59ac0cde113cab2870de02b0c273a0ff077a70ee25e45391ee
 chromatograms_metadata.parquet	parquet	row_groups=1 rows=1 schema=762480d3e0b95e92 key_values=1:7f730f59b7859bc8 records=442e3653dd3f7717	f591cd34af5111d5d4ab96e7dd8863d5ca5eae81d03da166a8ead9d28fb6986b
 mzpeak_index.json	bytes	size=6972 masked_checksums=5	6e59e29ee48987529e1c6af11dbc0fee2c0756368c41b78e582d235e2664e45a
 spectra_data.parquet	parquet	row_groups=1 rows=442 schema=ea2b76b4a493b5df key_values=4:99cdc45dadb0a1b5 records=710f0000baae842e	eba165e054faf858ffd14004180f2308158d1b872101deeeb379382c1156e9a8

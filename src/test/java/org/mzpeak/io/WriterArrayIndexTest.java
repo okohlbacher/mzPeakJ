@@ -50,7 +50,8 @@ import static org.assertj.core.api.Assertions.within;
  * <ul>
  *   <li>{@code <entity>_array_index}, one entry per column: the entity index at sorting rank 0 (MS:1003870, 64-bit
  *       integer), every column of the main axis at rank 1 with its unit, the intensity (MS:1000515, unit MS:1000131
- *       for spectra and null otherwise until WR-11) and, in the Numpress chunk layout, the linear m/z transform
+ *       for spectra, one column per intensity unit for chromatograms (MZ-2) and null for wavelength spectra), the
+ *       extra arrays of chromatograms (MZ-2) and, in the Numpress chunk layout, the linear m/z transform
  *       MS:1002312 and the SLOF (MS:1002314) or PIC (MS:1002313) intensity transform; every other entry is a 64-bit
  *       float;
  *   <li>{@code <entity>_count}, the entities of that type in the archive, and {@code <entity>_data_point_count},
@@ -74,6 +75,7 @@ class WriterArrayIndexTest {
     private static final String WAVELENGTH = "MS:1000617";
     private static final String INTENSITY = "MS:1000515";
     private static final String COUNTS = "MS:1000131";
+    private static final String ABSORBANCE = "UO:0000269";
     private static final String MZ_UNIT = "MS:1000040";
     private static final String MINUTE = "UO:0000031";
     private static final String NANOMETER = "UO:0000018";
@@ -127,7 +129,8 @@ class WriterArrayIndexTest {
                 boolean chunked = role.signal() == SignalEntity.SPECTRUM && !encoding.equals("point");
                 assertThat(index.prefix()).as(name).isEqualTo(chunked ? "chunk" : "point");
                 assertThat(index.entries()).as("%s entries", name)
-                        .containsExactlyElementsOf(expectedEntries(role.signal(), encoding));
+                        .containsExactlyElementsOf(role.signal() == SignalEntity.CHROMATOGRAM
+                                ? chromatogramEntries(fixture) : expectedEntries(role.signal(), encoding));
                 // rank 0 is the index, rank 1 the entity's main axis, and the intensity is listed
                 assertThat(index.entries().get(0).format()).isEqualTo(BufferFormat.INDEX);
                 assertThat(index.entries().get(0).sortingRank()).isZero();
@@ -145,20 +148,24 @@ class WriterArrayIndexTest {
         assertThat(checked).as("signal members of %s", out).isNotEmpty();
     }
 
-    /** Spectrum intensity is in detector counts; chromatogram and wavelength intensity have no unit until WR-11. */
+    /**
+     * Spectrum intensity is in detector counts; chromatogram intensity is in one column per intensity unit of the
+     * chromatograms (MZ-2), has_uv's TIC in MS:1000131 and its DAD chromatogram in UO:0000269; wavelength intensity has
+     * no unit.
+     */
     @Test
-    void spectrumIntensityIsInCountsAndChromatogramIntensityHasNoUnit(@TempDir Path tmp) {
+    void spectrumIntensityIsInCountsAndChromatogramIntensityInTheUnitOfEachChromatogram(@TempDir Path tmp) {
         Path out = write("has_uv.mzpeak", "point", tmp);
 
         assertThat(intensityUnits(out, EntityType.SPECTRUM, DataKind.PEAKS, SignalEntity.SPECTRUM))
                 .containsExactly(COUNTS);
         assertThat(intensityUnits(out, EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS, SignalEntity.CHROMATOGRAM))
-                .containsExactly((String) null);
+                .containsExactly(COUNTS, ABSORBANCE);
         assertThat(intensityUnits(out, EntityType.WAVELENGTH_SPECTRUM, DataKind.DATA_ARRAYS,
                 SignalEntity.WAVELENGTH_SPECTRUM)).containsExactly((String) null);
         try (MzPeakReader reader = MzPeakReader.open(out)) {
-            assertThat(reader.chromatograms()).isNotEmpty()
-                    .allSatisfy(c -> assertThat(c.intensityUnit()).as(c.id()).isNull());
+            assertThat(reader.chromatograms()).extracting(Chromatogram::intensityUnit)
+                    .containsExactly(COUNTS, ABSORBANCE);
         }
     }
 
@@ -346,16 +353,18 @@ class WriterArrayIndexTest {
                 .get("chromatogram_array_index");
         JsonNode root = new ObjectMapper().readTree(json);
         assertThat(root.get("prefix").asText()).isEqualTo("point");
-        assertThat(root.get("entries")).hasSize(3);
+        // index, time, the intensity columns of MS:1000131 and UO:0000269, and the TIC's ms level (MZ-2)
+        assertThat(root.get("entries")).hasSize(5);
         for (JsonNode entry : root.get("entries")) {
             List<String> keys = new ArrayList<>();
             entry.fieldNames().forEachRemaining(keys::add);
             assertThat(keys).containsExactly("context", "path", "data_type", "array_type", "array_name", "unit",
                     "buffer_format", "transform", "data_processing_id", "buffer_priority", "sorting_rank");
         }
-        JsonNode intensity = root.get("entries").get(2);
-        assertThat(intensity.get("unit").isNull()).isTrue();
-        assertThat(intensity.get("sorting_rank").isNull()).isTrue();
+        assertThat(root.get("entries").get(0).get("unit").isNull()).isTrue();
+        JsonNode absorbance = root.get("entries").get(3);
+        assertThat(absorbance.get("sorting_rank").isNull()).isTrue();
+        assertThat(absorbance.get("buffer_priority").isNull()).isTrue();
         assertThat(root.get("entries").get(0).get("buffer_format").asText()).isEqualTo("index");
         assertThat(root.get("entries").get(1).get("sorting_rank").asInt()).isEqualTo(1);
     }
@@ -385,6 +394,26 @@ class WriterArrayIndexTest {
         };
         return List.of(index("point", entity), axis("point", axisField, entity, BufferFormat.POINT, null),
                 intensity("point", "intensity", entity, BufferFormat.POINT, null));
+    }
+
+    /**
+     * The entries the writer lists for the chromatograms_data of the legacy {@code fixture}: the index, the time, the
+     * intensity in MS:1000131 and, for has_uv, its absorbance column without buffer priority, then the TIC's
+     * {@code ms level} array in UO:0000186.
+     */
+    private static List<Entry> chromatogramEntries(String fixture) {
+        SignalEntity entity = SignalEntity.CHROMATOGRAM;
+        List<Entry> entries = new ArrayList<>(List.of(index("point", entity),
+                axis("point", "time", entity, BufferFormat.POINT, null),
+                new Entry("point.intensity", "intensity", INTENSITY, FLOAT64, COUNTS, BufferFormat.POINT, null, null,
+                        "primary", "intensity array", entity.key(), null)));
+        if (fixture.startsWith("has_uv")) {
+            entries.add(new Entry("point.intensity_UO_0000269", "intensity_UO_0000269", INTENSITY, FLOAT64,
+                    ABSORBANCE, BufferFormat.POINT, null, null, null, "intensity array", entity.key(), null));
+        }
+        entries.add(new Entry("point.ms_level", "ms_level", "MS:1000786", FLOAT64, "UO:0000186", BufferFormat.POINT,
+                null, null, "primary", "ms level", entity.key(), null));
+        return entries;
     }
 
     private static Entry index(String prefix, SignalEntity entity) {

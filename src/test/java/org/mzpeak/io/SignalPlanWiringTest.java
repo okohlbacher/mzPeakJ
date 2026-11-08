@@ -221,7 +221,9 @@ class SignalPlanWiringTest {
             assertThat(chromatograms.plan().source()).isEqualTo(Source.FOOTER);
             assertThat(chromatograms.plan().layout()).isEqualTo(Layout.POINT);
             assertThat(chromatograms.plan().axis().values().path()).isEqualTo("point.time");
-            assertThat(chromatograms.plan().intensities()).extracting(Column::path).containsExactly("point.intensity");
+            // MZ-2: one intensity column per unit, the TIC's MS:1000131 and the DAD chromatogram's UO:0000269
+            assertThat(chromatograms.plan().intensities()).extracting(Column::path)
+                    .containsExactly("point.intensity", "point.intensity_UO_0000269");
             assertThat(wavelength.plan().source()).isEqualTo(Source.FOOTER);
             assertThat(wavelength.plan().axis().values().path()).isEqualTo("point.wavelength");
             assertThat(wavelength.plan().intensities()).extracting(Column::path).containsExactly("point.intensity");

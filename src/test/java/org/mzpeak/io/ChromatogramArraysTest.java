@@ -276,11 +276,11 @@ class ChromatogramArraysTest {
     // ---- (c): mzPeakJ output ----------------------------------------------------------------------------------
 
     /**
-     * An archive mzPeakJ writes declares no chromatogram intensity unit in its array index (WR-2) and stores no
-     * extras, so its FOOTER plan gives no unit and no extras; the writer does not store them yet (WR-11).
+     * An archive mzPeakJ writes declares the intensity unit of each intensity column in its array index and stores the
+     * extras (MZ-2), so its FOOTER plan gives each chromatogram its unit and its extras.
      */
     @Test
-    void mzPeakJArchiveGivesNoUnitAndNoArrays() {
+    void mzPeakJArchiveGivesTheUnitsAndArraysItWasWrittenWith() {
         List<Spectrum> spectra = new ArrayList<>();
         List<Chromatogram> chromatograms;
         List<WavelengthSpectrum> wavelength;
@@ -303,9 +303,12 @@ class ChromatogramArraysTest {
             Chromatogram c = readBack.get(i);
             assertThat(c.time()).isEqualTo(chromatograms.get(i).time());
             assertThat(c.intensity()).isEqualTo(chromatograms.get(i).intensity());
-            assertThat(c.intensityUnit()).as("%s unit", c.id()).isNull();
-            assertThat(c.arrays()).as("%s arrays", c.id()).isEmpty();
+            assertThat(c.intensityUnit()).as("%s unit", c.id()).isEqualTo(chromatograms.get(i).intensityUnit());
+            assertThat(c.arrays().keySet()).as("%s arrays", c.id())
+                    .containsExactlyElementsOf(chromatograms.get(i).arrays().keySet());
         }
+        assertThat(readBack).extracting(Chromatogram::intensityUnit).containsExactly("MS:1000131", "UO:0000269");
+        assertThat(readBack.get(0).arrays().get("ms level")).isEqualTo(chromatograms.get(0).arrays().get("ms level"));
     }
 
     // ---- (e): the record ---------------------------------------------------------------------------------------

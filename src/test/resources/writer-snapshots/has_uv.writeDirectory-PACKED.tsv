@@ -1,6 +1,6 @@
 # WriterSnapshotTest (WR-0a): legacy has_uv.mzpeak written by MzPeakWriter.writeDirectory PACKED
 member	kind	detail	sha256
-chromatograms_data.parquet	parquet	row_groups=1 rows=738 schema=4f41898c1e42c0db key_values=4:b87cfbe5ef4a49e9 records=d009194bb3a370a0	5be8b33e3efee7e9014d68262f0f7af8dd6bbdc9ec695581d1595f3747227188
+chromatograms_data.parquet	parquet	row_groups=1 rows=738 schema=b33e48179a0ba8ed key_values=4:48ac2f97f8805d0d records=769eae794100fad2	2cc4a0819abdbffd483038eb8023c7914e03826d3b7d9b5912a0d20d83d44b53
 chromatograms_metadata.parquet	parquet	row_groups=1 rows=2 schema=762480d3e0b95e92 key_values=1:7f730f59b7859bc8 records=0634e1c3f4199090	2130348f3cfe91486093fca9d7144611161871cc9a715d09c9fb129f4795f89c
 mzpeak_index.json	bytes	size=18631 masked_checksums=7	cc62180ef1ea6f4cac1f5bcd11bba3c23cacb4adf205bbdecf6ec6085d059da4
 spectra_data.parquet	parquet	row_groups=0 rows=0 schema=62bea4c686e38644 key_values=4:e1fe13e593d5205f records=e3b0c44298fc1c14	1bce2cf450c67b4badd9648347738300d363b17ed6e2955a3340f58e159ff997

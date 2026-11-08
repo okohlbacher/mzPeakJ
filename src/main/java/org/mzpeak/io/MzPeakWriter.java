@@ -33,10 +33,12 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
  * imaging-position columns, scan settings, and wavelength facets. The extra signal arrays of spectra,
  * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} (such as the ion mobility of a diaPASEF spectrum), are
- * written as extra columns of spectra_data and spectra_peaks, in both signal encodings. A read &rarr; write cycle keeps
- * everything {@link MzPeakReader} exposes except {@link Chromatogram#arrays()} and
- * {@link Chromatogram#intensityUnit()}, which are not written yet (WR-11); each kind of drop logs one WARNING.
- * Chromatogram time is written as given and declared in minutes (UO:0000031).
+ * written as extra columns of spectra_data and spectra_peaks, in both signal encodings, and those of chromatograms,
+ * {@link Chromatogram#arrays()} (such as the {@code ms level} array of a TIC), as extra columns of chromatograms_data,
+ * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
+ * own. A read &rarr; write cycle keeps everything {@link MzPeakReader} exposes, except the intensity unit of a
+ * chromatogram without points: the reader takes a chromatogram's unit from the column that holds its values, so such
+ * a chromatogram reads back without one. Chromatogram time is written as given and declared in minutes (UO:0000031).
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -127,6 +129,14 @@ public final class MzPeakWriter {
      * (MS:1000786) with the key as its name. A key MS:1000514 or MS:1000515 is rejected, since a spectrum holds those
      * arrays in {@code mz()} and {@code intensity()}, and so is a peak whose {@code index()} is not a position of its
      * spectrum's peak arrays when those are written.
+     * Every key of the chromatograms' {@link Chromatogram#arrays()} becomes one extra column of chromatograms_data in
+     * the same way, a chromatogram without the key writing null cells; a key MS:1000595 or MS:1000515 is rejected,
+     * since a chromatogram holds those arrays in {@code time()} and {@code intensity()}. chromatograms_data has one
+     * intensity column for each distinct {@link Chromatogram#intensityUnit()}, null included, declared in that unit:
+     * that of MS:1000131, else of the unit of the first chromatogram in index order, is named {@code intensity}, every
+     * other one {@code intensity_} followed by the unit with each character other than an ASCII letter or digit as
+     * {@code _} ({@code intensity_UO_0000269}), or {@code intensity_unitless} for chromatograms without a unit, made
+     * unique. A chromatogram's row holds its intensity in the column of its unit and null in the others.
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum

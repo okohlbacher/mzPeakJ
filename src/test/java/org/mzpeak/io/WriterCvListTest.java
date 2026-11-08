@@ -571,18 +571,12 @@ class WriterCvListTest {
     }
 
     /**
-     * The warnings every write of legacy small.unpacked's chromatograms logs, which are not about CVs: its TIC's
-     * {@code ms level} array and intensity unit are not written yet (WR-11).
+     * The WARNING records {@link MzPeakWriter} logs while {@code write} runs; since MZ-2, legacy small.unpacked's
+     * chromatograms add none.
      */
-    private static final List<String> CHROMATOGRAM_DROPS = List.of(
-            "1 chromatogram carries extra arrays (ms level), which are not written; their time and intensity are"
-                    + " written",
-            "1 chromatogram declares an intensity unit (MS:1000131), which is not written");
-
-    /** The WARNING records {@link MzPeakWriter} logs while {@code write} runs, except {@link #CHROMATOGRAM_DROPS}. */
     private static List<LogRecord> writerWarnings(Runnable write) {
         return ArrayIndexTest.captureLog(MzPeakWriter.class, write).stream()
-                .filter(r -> r.getLevel() == Level.WARNING && !CHROMATOGRAM_DROPS.contains(r.getMessage())).toList();
+                .filter(r -> r.getLevel() == Level.WARNING).toList();
     }
 
     private static Spectrum withParam(Spectrum s, Param param) {

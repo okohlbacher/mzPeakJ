@@ -247,8 +247,7 @@ class WriterAxisOrderTest {
     }
 
     /**
-     * The fixtures' main axes are already ascending: planning their write re-sorts nothing. (Other warnings, about the
-     * extra arrays and chromatogram intensity units the writer drops until WR-11, are not about the axes.)
+     * The fixtures' main axes are already ascending: planning their write re-sorts nothing.
      */
     @ParameterizedTest
     @MethodSource("fixtures")

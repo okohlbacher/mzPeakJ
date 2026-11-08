@@ -47,6 +47,8 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     static final String FLOAT64_DATA = "MS:1000523";
     /** MS:1000131, number of detector counts: the unit of spectrum intensities. */
     static final String COUNTS_UNIT = "MS:1000131";
+    /** The {@code buffer_priority} of every entry the writer records but a secondary intensity's. */
+    private static final String PRIMARY = "primary";
 
     ArrayIndex {
         entries = List.copyOf(entries);
@@ -207,9 +209,10 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
 
     /**
      * A builder of the index a writer records for one signal file whose columns live in the {@code prefix} struct
-     * (design §11.7, WR-2). Entries are listed in the order they are added, which is the column order; each has
-     * buffer priority primary, the {@code context} entity's key as context and no data processing. The built index
-     * has source {@link Source#FOOTER FOOTER}, as it reads back.
+     * (design §11.7, WR-2). Entries are listed in the order they are added, which is the column order; each has the
+     * {@code context} entity's key as context, no data processing and, unless it is a
+     * {@link Builder#secondaryIntensity secondary intensity}, buffer priority primary. The built index has source
+     * {@link Source#FOOTER FOOTER}, as it reads back.
      */
     static Builder builder(String prefix, SignalEntity context) {
         return new Builder(prefix, context);
@@ -229,7 +232,7 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
 
         /** The entity index column, at sorting rank 0: MS:1003870, a 64-bit integer without unit. */
         Builder index(String field) {
-            return add(field, INDEX_ARRAY, "index array", INT64_DATA, null, BufferFormat.INDEX, null, 0);
+            return add(field, INDEX_ARRAY, "index array", INT64_DATA, null, BufferFormat.INDEX, null, 0, PRIMARY);
         }
 
         /**
@@ -248,12 +251,21 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
                 case CHROMATOGRAM -> "UO:0000031";
                 case WAVELENGTH_SPECTRUM -> "UO:0000018";
             };
-            return add(field, context.defaultAxis(), name, FLOAT64_DATA, unit, format, transform, 1);
+            return add(field, context.defaultAxis(), name, FLOAT64_DATA, unit, format, transform, 1, PRIMARY);
         }
 
         /** An intensity column, not sorted: MS:1000515 as 64-bit floats in {@code unit}, null when not known. */
         Builder intensity(String field, BufferFormat format, String transform, String unit) {
-            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, transform, null);
+            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, transform, null, PRIMARY);
+        }
+
+        /**
+         * A further intensity column beside the {@link #intensity primary} one, not sorted, without a transform and
+         * without buffer priority (design §11.7, WR-11), as the reference writes has_uv's absorbance column:
+         * MS:1000515 as 64-bit floats in {@code unit}, null when not known.
+         */
+        Builder secondaryIntensity(String field, BufferFormat format, String unit) {
+            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, null, null, null);
         }
 
         /**
@@ -261,13 +273,13 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
          * {@code arrayName} as 64-bit floats in {@code unit}, null when it has none.
          */
         Builder extra(String field, String arrayType, String arrayName, String unit, BufferFormat format) {
-            return add(field, arrayType, arrayName, FLOAT64_DATA, unit, format, null, null);
+            return add(field, arrayType, arrayName, FLOAT64_DATA, unit, format, null, null, PRIMARY);
         }
 
         private Builder add(String field, String arrayType, String arrayName, String dataType, String unit,
-                            BufferFormat format, String transform, Integer sortingRank) {
+                            BufferFormat format, String transform, Integer sortingRank, String bufferPriority) {
             entries.add(new Entry(prefix + "." + field, field, arrayType, dataType, unit, format, transform,
-                    sortingRank, "primary", arrayName, context.key(), null));
+                    sortingRank, bufferPriority, arrayName, context.key(), null));
             return this;
         }
 
