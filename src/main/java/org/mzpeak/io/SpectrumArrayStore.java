@@ -35,9 +35,10 @@ import java.util.function.Consumer;
  * Supports the {@code point} layout, delta-encoded {@code chunk} layout, MS-Numpress chunks (linear m/z +
  * SLOF intensity) and coordinate grid chunks; chunk rows are decoded by {@link ChunkRowDecoder}. A chunk it cannot
  * decode (a coordinate grid of an unknown grid_type, an unknown {@code chunk_encoding}, Numpress intensity without
- * Numpress m/z, or an unknown Numpress column with a value) throws an {@link MzPeakException} instead of being dropped
- * or misdecoded. A point row's intensity is the first non-null value among the plan's value-bearing intensity columns,
- * in index order; a point member whose plan names no m/z values or no such intensity column throws on its first row.
+ * Numpress m/z, an unknown Numpress column with a value, or intensities only in an intensity chunk transform other
+ * than SLOF and PIC) throws an {@link MzPeakException} instead of being dropped or misdecoded. A point row's intensity
+ * is the first non-null value among the plan's value-bearing intensity columns, in index order; a point member whose
+ * plan names no m/z values or no such intensity column throws on its first row.
  * Null-marked m/z is resolved by {@link NullFill}.
  *
  * <p><b>Extra arrays:</b> every other array the plan lists ({@link SignalPlan#extras()}), such as diaPASEF's ion

@@ -332,7 +332,9 @@ transforms the other way round. Rule 1 and the lowest-rank rule cover them uncha
 | any other CURIE | throws `unsupported chunk encoding <curie> for spectrum_index <n>` | |
 
 Column presence picks the Numpress decoder, but an unknown `chunk_encoding` throws on every row. A row that
-names `MS:1002312` without carrying a Numpress column decodes as delta.
+names `MS:1002312` without carrying a Numpress column decodes as delta. A plan may list several plain lists,
+SLOF or PIC columns: of each kind the first one that carries a value (non-null and not empty) is read, else the
+first non-null one.
 
 **Delta encoding** (`MS:1003089`, "truncation, delta prediction and zlib compression"): differences from a
 predictor seeded at `mz_chunk_start`. **Null-aware**, per the spec's `null_delta_decode`: a null (NaN) breaks
@@ -358,8 +360,9 @@ encoded values fit in uint16; this is transparent to the reader.
 
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
 misdecoded: a grid chunk, an unknown `chunk_encoding`, Numpress intensity that decodes to values without a
-Numpress m/z source, Numpress m/z that decodes to values without an intensity column, and a value in a
-`*numpress*` column the plan does not decode.
+Numpress m/z source, Numpress m/z that decodes to values without an intensity column, a value in a
+`*numpress*` column the plan does not decode, and a value in an intensity chunk transform other than SLOF and
+PIC when no plain, SLOF or PIC intensity column of the row carries one.
 
 **Coordinate grids are rejected.** A chunk with `chunk_encoding` `MS:1003826` (the draft coordinate-grid
 encoding) throws `unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type <type> for
@@ -382,16 +385,19 @@ throws.
   order. has_uv's 'DAD1 A' absorbance comes from `intensity_f32_au` (unit UO:0000269) where `intensity` is
   null. A null time reads as NaN, an intensity without any value as 0.
 - **chunk:** the chunk start followed by the running sum of the chunk values as deltas (`chunk_encoding` null
-  or `MS:1003089`); the intensities are the first non-null intensity list, else the Numpress SLOF bytes.
-  Missing intensities are padded with 0 and surplus ones dropped.
+  or `MS:1003089`); the intensities are the first intensity list that carries a value (non-null and not
+  empty), else the bytes of the first Numpress SLOF column that does, considering every list and SLOF column of
+  the plan. Missing intensities are padded with 0 and surplus ones dropped.
 
 What the decoder cannot decode throws instead of reading as wrong or empty arrays: another `chunk_encoding`, a
-value in a chunk transform column of the time axis (such as Numpress linear time), a chunk whose only intensity
-source is a non-empty PIC list, a negative index, and, on the first row, a plan without a time values column
-(point layout) or without any intensity source.
+value in a chunk transform column of the time axis (such as Numpress linear time), a chunk in which no list or
+SLOF column carries a value but another intensity chunk transform does (any PIC column, another transform, or
+one that names none), a negative index, and, on the first row, a plan without a time values column (point
+layout) or without any intensity source.
 
 `Chromatogram.intensityUnit()` is the unit of the plan entry that supplied the values (null for an INFERRED
-plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`); a
+plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`), read
+like chromatogram point rows: the first non-null value among the intensity columns in index order; a
 data member in chunk layout, or one without the plan's prefix struct, wavelength column or intensity column,
 throws when the wavelength spectra are first requested.
 
