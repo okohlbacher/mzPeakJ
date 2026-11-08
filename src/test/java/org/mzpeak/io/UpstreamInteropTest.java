@@ -1,0 +1,376 @@
+package org.mzpeak.io;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.mzpeak.io.Golden.Kind;
+import org.mzpeak.io.Golden.Line;
+import org.mzpeak.io.InteropOutputs.Output;
+import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.WavelengthSpectrum;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+/**
+ * Gated interop test (WR-7, design §11.9): the HEAD Python reader reads what mzPeakJ writes by default.
+ *
+ * <p><strong>Disabled by default.</strong> Enable it with {@code -Dmzpeak.upstream.python=<dir>}, the {@code python/}
+ * directory of a HUPO-PSI/mzPeak checkout at 2ee2589, the reader of the golden files (FX-1b). It needs {@code uv} on the
+ * PATH, or {@code -Dmzpeak.upstream.uv=<path>}; without it the test is skipped. The directory is copied to a temp
+ * directory, from which uv installs it, so the checkout is never written to. Every Python process runs in the pinned
+ * environment of {@code src/test/resources/mzpeak/golden} (see its README.md),
+ * {@code uv run --no-project --python 3.13.12 --with <copy> --with-requirements uv-requirements.txt python -I ...},
+ * and is limited to 300 s.
+ *
+ * <pre>
+ *   mvn test -Dtest=UpstreamInteropTest -Dmzpeak.upstream.python=../mzPeak-reference/python
+ * </pre>
+ *
+ * <p>For each output of {@link InteropOutputs}:
+ * <ul>
+ *   <li>{@code generate_golden.py <output>} prints the summary lines of the Python reader's read, and they pass the
+ *       golden rules ({@link Golden.Comparator}, {@link Golden.Tolerance#DEFAULT}) against mzPeakJ's read of the
+ *       source: one S line per spectrum written, keyed 0..n-1; a P line for each spectrum with peaks; a C line per
+ *       chromatogram and a W line per wavelength spectrum; R lines without a null cell; and no X line, because the
+ *       writer drops extra arrays until WR-11. Numpress is lossy, so for its spectra only the number of points is
+ *       compared;
+ *   <li>a probe script reports what the Python reader counts (spectra and their indices, precursors, selected ions,
+ *       chromatograms, wavelength spectra) and {@code check_archive_integrity()}, which must be {@code (True, [])};
+ *   <li>the counts of the unit's acceptance are pinned: 48 spectra, 34 precursors, 34 selected ions and one
+ *       chromatogram of 48 points for small, 212 spectra, 2 chromatograms and the wavelength facet for has_uv, 9
+ *       spectra each for Example_Processed.img and diaPASEF.ref, 48 spectra for the Numpress archives and 34 spectra
+ *       indexed 0..33 for the MS2 subset.
+ * </ul>
+ * An archive in the packed metadata layout is rejected by the Python reader.
+ */
+@EnabledIfSystemProperty(named = UpstreamInteropTest.PYTHON_PROPERTY, matches = ".+")
+class UpstreamInteropTest {
+
+    static final String PYTHON_PROPERTY = "mzpeak.upstream.python";
+    static final String UV_PROPERTY = "mzpeak.upstream.uv";
+    /** The CPython version the golden environment pins (golden/README.md). */
+    private static final String PYTHON_VERSION = "3.13.12";
+    private static final long TIMEOUT_SECONDS = 300;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** Directory names never copied from the reader's directory. */
+    private static final Set<String> NOT_COPIED = Set.of("__pycache__", ".venv", "build", "dist", ".git",
+            ".pytest_cache");
+
+    /** Counts and the integrity check of one dataset as the Python reader reports them. */
+    private static final String PROBE = String.join("\n",
+            "\"\"\"The HEAD Python reader's view of one dataset (mzPeakJ UpstreamInteropTest).\"\"\"",
+            "import json",
+            "import sys",
+            "",
+            "from mzpeak import MzPeakFile",
+            "",
+            "reader = MzPeakFile(sys.argv[1])",
+            "integrity = reader.check_archive_integrity()",
+            "chromatograms = reader.chromatograms",
+            "wavelength = reader.wavelength_data",
+            "print(json.dumps({",
+            "    \"spectra\": len(reader),",
+            "    \"spectrum_indices\": [int(i) for i in reader.spectra.index],",
+            "    \"precursors\": len(reader.precursors),",
+            "    \"selected_ions\": len(reader.selected_ions),",
+            "    \"chromatograms\": 0 if chromatograms is None else len(chromatograms),",
+            "    \"wavelength_spectra\": None if wavelength is None else len(wavelength),",
+            "    \"integrity\": None if integrity is None",
+            "    else [integrity[0], [entry.name for entry, _ in integrity[1]]],",
+            "}))",
+            "");
+
+    @TempDir
+    static Path tmp;
+    private static String uv;
+    private static Path reader;
+    private static Path probe;
+    private static Path generator;
+    private static Path requirements;
+    private static Path outputDir;
+    private static List<Output> outputs;
+
+    @BeforeAll
+    static void writeTheOutputsAndCopyTheReader() throws IOException {
+        uv = System.getProperty(UV_PROPERTY, "uv");
+        assumeTrue(uvRuns(uv), "uv not found; install it or set -D" + UV_PROPERTY + "=<path>");
+        Path python = Path.of(System.getProperty(PYTHON_PROPERTY)).toAbsolutePath();
+        assertThat(python.resolve("pyproject.toml")).as("-D%s must name the reader's python/ directory",
+                PYTHON_PROPERTY).isRegularFile();
+        assertThat(python.resolve("mzpeak").resolve("reader.py")).isRegularFile();
+        reader = copyTree(python, tmp.resolve("reader").resolve("python"));
+        probe = Files.writeString(tmp.resolve("probe.py"), PROBE, StandardCharsets.UTF_8);
+        generator = Golden.DIR.resolve("generate_golden.py").toAbsolutePath();
+        requirements = Golden.DIR.resolve("uv-requirements.txt").toAbsolutePath();
+        outputDir = Files.createDirectories(tmp.resolve("outputs"));
+        outputs = InteropOutputs.write(outputDir);
+    }
+
+    static Stream<Output> outputs() {
+        return outputs.stream();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("outputs")
+    void thePythonReaderReadsTheOutputAsMzPeakJReadsItsSource(Output output) throws IOException {
+        Result generated = python(generator, output.path(), output.name() + ".tsv");
+        assertThat(generated.exit()).as("generate_golden.py on %s: %s", output, generated).isZero();
+        Golden golden = Golden.loadSummary(generated.stdout());
+        assertThat(goldenRules(output, golden)).as("%s against mzPeakJ's read of %s", output, output.source())
+                .isEmpty();
+
+        Result probed = python(probe, output.path(), output.name() + ".json");
+        assertThat(probed.exit()).as("probe on %s: %s", output, probed).isZero();
+        JsonNode counts = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        List<Spectrum> spectra = output.spectra();
+        assertThat(counts.path("integrity").toString()).as("check_archive_integrity() of %s", output)
+                .isEqualTo("[true,[]]");
+        assertThat(counts.path("spectra").asInt()).as("spectra of %s", output).isEqualTo(spectra.size());
+        assertThat(longs(counts.path("spectrum_indices"))).as("spectrum indices of %s", output)
+                .isEqualTo(IntStream.range(0, spectra.size()).mapToObj(Long::valueOf).toList());
+        assertThat(counts.path("precursors").asInt()).as("precursors of %s", output)
+                .isEqualTo(spectra.stream().mapToInt(s -> s.description().precursors().size()).sum());
+        assertThat(counts.path("selected_ions").asInt()).as("selected ions of %s", output)
+                .isEqualTo(spectra.stream().flatMap(s -> s.description().precursors().stream())
+                        .mapToInt(p -> p.selectedIons().size()).sum());
+        assertThat(counts.path("chromatograms").asInt()).as("chromatograms of %s", output)
+                .isEqualTo(output.chromatograms().size());
+        JsonNode wavelength = counts.path("wavelength_spectra");
+        if (output.wavelengthSpectra().isEmpty()) {
+            assertThat(wavelength.isNull()).as("wavelength facet of %s", output).isTrue();
+        } else {
+            assertThat(wavelength.asInt()).as("wavelength spectra of %s", output)
+                    .isEqualTo(output.wavelengthSpectra().size());
+        }
+        assertAcceptanceCounts(output, golden, counts);
+    }
+
+    @Test
+    void thePythonReaderRejectsThePackedLayout() throws IOException {
+        Output packed = InteropOutputs.writePacked(Files.createDirectories(tmp.resolve("packed")));
+
+        Result probed = python(probe, packed.path(), packed.name() + ".json");
+
+        assertThat(probed.exit()).as("probe on %s", packed).isNotZero();
+        assertThat(Files.readString(probed.stderr(), StandardCharsets.UTF_8))
+                .contains("Old concatenated storage layout not supported");
+    }
+
+    // ---- the golden rules -----------------------------------------------------------------------------------------
+
+    /**
+     * The mismatches between the Python reader's summary lines of {@code output} and the arrays mzPeakJ read from its
+     * source, and every missing, unexpected or misnumbered line.
+     */
+    private static List<String> goldenRules(Output output, Golden golden) {
+        List<String> out = new ArrayList<>();
+        Golden.Tolerance tolerance = Golden.Tolerance.DEFAULT;
+        List<Spectrum> spectra = output.spectra();
+        expectKeys(out, golden, Kind.S, IntStream.range(0, spectra.size()).mapToObj(Integer::toString).toList());
+        List<String> withPeaks = new ArrayList<>();
+        for (int i = 0; i < spectra.size(); i++) {
+            Spectrum s = spectra.get(i);
+            String key = Integer.toString(i);
+            golden.line(Kind.S, key).ifPresent(line -> spectrum(out, output, line, s.mz(), s.intensity()));
+            if (!s.peaks().isEmpty()) {
+                withPeaks.add(key);
+                golden.line(Kind.P, key).ifPresent(line -> spectrum(out, output, line, peakMz(s), peakIntensity(s)));
+            }
+            golden.line(Kind.R, key).ifPresent(line ->
+                    out.addAll(Golden.Comparator.compare(line, s.mz(), s.intensity(), tolerance)));
+        }
+        expectKeys(out, golden, Kind.P, withPeaks);
+        for (Line line : golden.lines(Kind.R)) {
+            if (line.nFilled() != 0) {
+                out.add("R " + line.key() + ": " + line.nFilled() + " null m/z cells written");
+            }
+        }
+        expectKeys(out, golden, Kind.C, output.chromatograms().stream().map(Chromatogram::id).toList());
+        for (Chromatogram c : output.chromatograms()) {
+            golden.line(Kind.C, c.id()).ifPresent(line ->
+                    out.addAll(Golden.Comparator.compare(line, c.time(), c.intensity(), tolerance)));
+        }
+        List<WavelengthSpectrum> wavelength = output.wavelengthSpectra();
+        expectKeys(out, golden, Kind.W, IntStream.range(0, wavelength.size()).mapToObj(Integer::toString).toList());
+        for (int i = 0; i < wavelength.size(); i++) {
+            WavelengthSpectrum w = wavelength.get(i);
+            golden.line(Kind.W, Integer.toString(i)).ifPresent(line ->
+                    out.addAll(Golden.Comparator.compare(line, w.wavelength(), w.intensity(), tolerance)));
+        }
+        for (Line line : golden.lines(Kind.X)) {
+            out.add("X " + line.key() + " [" + line.arrayType() + "]: an extra array was written");
+        }
+        return out;
+    }
+
+    /** A spectrum's or peak list's line: every rule for the point layout, the number of points for Numpress. */
+    private static void spectrum(List<String> out, Output output, Line line, double[] mz, double[] intensity) {
+        if (!output.numpress()) {
+            out.addAll(Golden.Comparator.compare(line, mz, intensity, Golden.Tolerance.DEFAULT));
+        } else if (line.n() != mz.length) {
+            out.add(line.kind() + " " + line.key() + ": n expected " + mz.length + " but was " + line.n());
+        }
+    }
+
+    private static void expectKeys(List<String> out, Golden golden, Kind kind, List<String> expected) {
+        List<String> keys = golden.lines(kind).stream().map(Line::key).toList();
+        if (!keys.equals(expected)) {
+            out.add(kind + " lines: expected keys " + expected + " but were " + keys);
+        }
+    }
+
+    /** The numbers WR-7's acceptance names for each output. */
+    private static void assertAcceptanceCounts(Output output, Golden golden, JsonNode counts) {
+        String fixture = output.source().getFileName().toString();
+        int spectra = counts.path("spectra").asInt();
+        switch (output.kind()) {
+            case NUMPRESS_SLOF, NUMPRESS_PIC -> assertThat(spectra).as("spectra of %s", output).isEqualTo(48);
+            case MS2_SUBSET -> {
+                assertThat(spectra).as("spectra of %s", output).isEqualTo(34);
+                assertThat(longs(counts.path("spectrum_indices"))).as("indices of %s", output)
+                        .isEqualTo(IntStream.range(0, 34).mapToObj(Long::valueOf).toList());
+            }
+            default -> {
+                switch (fixture) {
+                    case "small.unpacked.mzpeak" -> {
+                        assertThat(spectra).as("spectra of %s", output).isEqualTo(48);
+                        assertThat(counts.path("precursors").asInt()).as("precursors of %s", output).isEqualTo(34);
+                        assertThat(counts.path("selected_ions").asInt()).as("ions of %s", output).isEqualTo(34);
+                        assertThat(golden.lines(Kind.C)).as("chromatograms of %s", output).singleElement()
+                                .extracting(Line::n).isEqualTo(48L);
+                    }
+                    case "has_uv.mzpeak" -> {
+                        assertThat(spectra).as("spectra of %s", output).isEqualTo(212);
+                        assertThat(counts.path("chromatograms").asInt()).as("chromatograms of %s", output)
+                                .isEqualTo(2);
+                        assertThat(counts.path("wavelength_spectra").isInt()).as("wavelength facet of %s", output)
+                                .isTrue();
+                        assertThat(golden.lines(Kind.W)).as("wavelength spectra of %s", output).isNotEmpty();
+                    }
+                    case "Example_Processed.img.mzpeak", "diaPASEF.ref.mzpeak" ->
+                            assertThat(spectra).as("spectra of %s", output).isEqualTo(9);
+                    default -> fail("no acceptance counts for " + output);
+                }
+            }
+        }
+    }
+
+    // ---- processes ------------------------------------------------------------------------------------------------
+
+    /** Exit code of a Python process and the files holding its standard output and standard error. */
+    private record Result(int exit, Path stdout, Path stderr) {
+
+        String stderr(int maxChars) {
+            try {
+                String text = Files.readString(stderr, StandardCharsets.UTF_8);
+                return text.length() <= maxChars ? text : "..." + text.substring(text.length() - maxChars);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "exit " + exit + ", stderr " + stderr(4000);
+        }
+    }
+
+    /** Runs {@code script} on {@code dataset} in the pinned environment; output goes to {@code <outputName>} files. */
+    private static Result python(Path script, Path dataset, String outputName) throws IOException {
+        Path logs = Files.createDirectories(tmp.resolve("logs"));
+        Path stdout = logs.resolve(outputName);
+        Path stderr = logs.resolve(outputName + ".stderr");
+        List<String> command = List.of(uv, "run", "--no-project", "--python", PYTHON_VERSION, "--with",
+                reader.toString(), "--with-requirements", requirements.toString(), "python", "-I",
+                script.toString(), dataset.toAbsolutePath().toString());
+        Process process = new ProcessBuilder(command).directory(tmp.toFile())
+                .redirectOutput(stdout.toFile()).redirectError(stderr.toFile()).start();
+        try {
+            if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                fail("timed out after " + TIMEOUT_SECONDS + " s: " + String.join(" ", command));
+            }
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted: " + String.join(" ", command), e);
+        }
+        return new Result(process.exitValue(), stdout, stderr);
+    }
+
+    private static boolean uvRuns(String uv) {
+        try {
+            Process process = new ProcessBuilder(uv, "--version").redirectErrorStream(true).start();
+            process.getInputStream().readAllBytes();
+            return process.waitFor(30, TimeUnit.SECONDS) && process.exitValue() == 0;
+        } catch (IOException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /** Copies the directory tree {@code from} to {@code to}, without caches and build output. */
+    private static Path copyTree(Path from, Path to) throws IOException {
+        try (Stream<Path> walk = Files.walk(from)) {
+            for (Path p : (Iterable<Path>) walk::iterator) {
+                Path relative = from.relativize(p);
+                boolean skipped = false;
+                for (Path part : relative) {
+                    String name = part.toString();
+                    skipped |= NOT_COPIED.contains(name) || name.endsWith(".egg-info");
+                }
+                if (skipped) {
+                    continue;
+                }
+                Path target = to.resolve(relative.toString());
+                if (Files.isDirectory(p)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(p, target);
+                }
+            }
+        }
+        return to;
+    }
+
+    // ---- helpers --------------------------------------------------------------------------------------------------
+
+    private static List<Long> longs(JsonNode array) {
+        List<Long> values = new ArrayList<>();
+        for (JsonNode n : array) {
+            values.add(n.asLong());
+        }
+        return values;
+    }
+
+    private static double[] peakMz(Spectrum s) {
+        return s.peaks().stream().mapToDouble(CentroidPeak::mz).toArray();
+    }
+
+    private static double[] peakIntensity(Spectrum s) {
+        return s.peaks().stream().mapToDouble(CentroidPeak::intensity).toArray();
+    }
+}
