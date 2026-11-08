@@ -24,14 +24,17 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * <p>The metadata members are written in the split layout of the current mzPeak format unless the {@link Options}
  * say otherwise ({@link MetadataLayout#SPLIT}): one table per facet, every scan, precursor and selected ion of a
  * spectrum, and a manifest in the current dialect, which the HEAD reference Python reader reads.
- * {@link MetadataLayout#PACKED} writes the pin-era packed layout that mzPeakJ 0.10.3 and earlier wrote.
+ * {@link MetadataLayout#PACKED} writes the pin-era packed layout that mzPeakJ 0.10.3 and earlier wrote, with only the
+ * first scan, the primary precursor and its first selected ion of a spectrum; a write that drops more logs one
+ * WARNING.
  *
  * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
  * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
  * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
- * imaging-position columns, scan settings, and wavelength facets — so a read &rarr; write cycle preserves
- * everything {@link MzPeakReader} surfaces except the extra signal arrays of {@link Spectrum#arrays()} and
- * {@link Spectrum#peakArrays()}, which are not written yet; a write that drops them logs one WARNING.
+ * imaging-position columns, scan settings, and wavelength facets. A read &rarr; write cycle keeps everything
+ * {@link MzPeakReader} exposes except {@link Spectrum#arrays()}, {@link Spectrum#peakArrays()},
+ * {@link Chromatogram#arrays()} and {@link Chromatogram#intensityUnit()}, which are not written yet (WR-11); each
+ * kind of drop logs one WARNING. Chromatogram time is written as given and declared in minutes (UO:0000031).
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.

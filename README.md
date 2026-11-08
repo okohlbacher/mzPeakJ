@@ -236,8 +236,10 @@ Writer notes:
   only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
 - Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The point layout
   requires finite m/z, so transition data with no product-ion m/z (SRM/MRM) must use the Numpress layout.
-- Not yet written: extra signal arrays such as per-peak ion mobility (a write that drops a spectrum's extra
-  arrays logs one warning) and the delta-`chunk` layout; the m/z + intensity payload is preserved in full.
+- Not yet written: extra signal arrays of spectra (such as per-peak ion mobility) and of chromatograms (such as
+  the TIC's `ms level`), the chromatogram intensity unit, and the delta-`chunk` layout; the m/z + intensity
+  payload is preserved in full. Each kind of drop logs one WARNING, and so does a `PACKED` write that drops
+  scans, precursors or selected ions.
 
 ## Running the CLI & examples
 
@@ -407,9 +409,11 @@ classes statically reference Hadoop types — but it is never actually invoked.
   (`RandomAccessBytes`, `MzPeakSource.zip` / `MzPeakSource.unpacked`) for remote or custom storage.
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
   STORED ZIP, format version `0.9.0`, in the split metadata layout that the HEAD Python reader reads (the
-  pin-era packed layout on request). Round-trips the full metadata schema — derived spectrum columns,
-  precursor activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD)
-  facets, and the imaging `scan_settings_list` — and is gated by the independent `mzpeak-validate` validator.
+  pin-era packed layout on request). Round-trips the metadata schema — derived spectrum columns, precursor
+  activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD) facets, and the
+  imaging `scan_settings_list` — except the extra signal arrays of spectra and chromatograms and the
+  chromatogram intensity unit, which are not written yet (each drop logs a WARNING), and is gated by the
+  independent `mzpeak-validate` validator.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
 - Tests on both vendored fixture sets, checked against golden outputs of the upstream Python reader
   (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
@@ -421,9 +425,10 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 **Deferred / known limitations:**
 
-- **Writing**: the delta-`chunk` layout and extra signal arrays such as per-peak ion mobility (dropped with
-  a warning; the m/z + intensity payload is preserved in full). The `PACKED` compatibility layout writes only
-  the primary scan / precursor / selected ion of a spectrum, so combineIMS frames lose their secondary
+- **Writing**: the delta-`chunk` layout, extra signal arrays of spectra (such as per-peak ion mobility) and
+  of chromatograms, and the chromatogram intensity unit (each kind dropped with a warning; the m/z +
+  intensity payload is preserved in full). The `PACKED` compatibility layout writes only the primary scan /
+  precursor / selected ion of a spectrum (with a warning), so combineIMS frames lose their secondary
   mobility-scan metadata there.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits

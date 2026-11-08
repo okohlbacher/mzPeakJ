@@ -727,9 +727,10 @@ subset. The
 Python reader's arrays pass the golden rules against mzPeakJ's read of each source, its counts match, and
 `check_archive_integrity()` returns `(True, [])`. Readability by the Rust reference is untested.
 
-**Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`); a write that drops
-spectrum extras logs one WARNING. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles
-(the reconstructed arrays are written).
+**Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`) and the chromatogram
+intensity unit; each kind of drop logs one WARNING, and so does a `PACKED` write that drops scans, precursors or
+selected ions. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles (the reconstructed
+arrays are written).
 
 ### 8.2 Reader API
 
@@ -957,9 +958,10 @@ expected values and says why.
 
 - **Grids.** The timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional (§3.3). Grids are decoded
   in spectrum signal members only; a chromatogram chunk is read as deltas whatever its encoding (§3.5).
-- **Writer** (§8.1). Extra signal arrays are not written; spectrum extras are dropped with a WARNING. Not
-  written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles (the reconstructed
-  arrays are written). The `PACKED` layout writes only the first scan and the primary precursor of a spectrum.
+- **Writer** (§8.1). Extra signal arrays and the chromatogram intensity unit are not written; each kind of drop
+  logs a WARNING. Not written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles
+  (the reconstructed arrays are written). The `PACKED` layout writes only the first scan and the primary
+  precursor of a spectrum, with a WARNING when it drops more.
   Whether the Rust reference reads mzPeakJ's output is untested.
 - **Integrity.** Manifest checksums are not verified on read, unlike in the Rust and Python readers (§8.2).
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.

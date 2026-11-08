@@ -33,7 +33,10 @@ import java.util.function.ToLongFunction;
  * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
  * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, decides which members are written and
  * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
- * directory exists. Extra signal arrays of spectra are not written; the report gets one warning when there are any.
+ * directory exists. What the write loses gets one warning in the report for each kind: the extra signal arrays of
+ * spectra, the extra arrays of chromatograms and their intensity units, none of which are written yet (WR-11), and, in
+ * the packed layout, the scans after a spectrum's first, the precursors after its primary one and the selected ions
+ * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own.
  */
 final class WritePlanner {
 
@@ -58,11 +61,16 @@ final class WritePlanner {
         boolean writesSpectraPeaks = false;
         Set<String> droppedExtras = new LinkedHashSet<>();
         int withDroppedExtras = 0;
+        // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
+        // other than the primary precursor's first.
+        int[] packedDrops = new int[3];
         for (int i = 0; i < ordered.size(); i++) {
             Spectrum s = ordered.get(i);
             List<Precursor> precursors = writtenPrecursors(s.description().precursors(), writtenIndex);
             if (options.metadataLayout() == MetadataLayout.SPLIT) {
                 requireOwnKeys(s, i, precursors);
+            } else {
+                countPackedDrops(s, precursors, packedDrops);
             }
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumEntry entry = disposition(s).renumbered(i, precursors)
@@ -79,14 +87,42 @@ final class WritePlanner {
         if (withDroppedExtras > 0) {
             report.warn(withDroppedExtras + (withDroppedExtras == 1 ? " spectrum carries" : " spectra carry")
                     + " extra signal arrays (" + String.join(", ", droppedExtras) + "), which are not written; "
-                    + "their m/z and intensity are");
+                    + "their m/z and intensity are written");
+        }
+        if (packedDrops[0] + packedDrops[1] + packedDrops[2] > 0) {
+            report.warn("the packed metadata layout writes only the first scan, the primary precursor and its first"
+                    + " selected ion of a spectrum: " + counted(packedDrops[0], "later scan", "later scans") + ", "
+                    + counted(packedDrops[1], "later precursor", "later precursors") + " and "
+                    + counted(packedDrops[2], "other selected ion", "other selected ions") + " are not written");
         }
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
         List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());
+        // Extra chromatogram arrays and the intensity unit are not written yet (WR-11): one warning for each.
+        Set<String> droppedArrays = new LinkedHashSet<>();
+        Set<String> droppedUnits = new LinkedHashSet<>();
+        int withDroppedArrays = 0;
+        int withDroppedUnit = 0;
         for (int i = 0; i < chromatogramOrder.size(); i++) {
             Chromatogram c = chromatogramOrder.get(i);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
+            if (!c.arrays().isEmpty()) {
+                withDroppedArrays++;
+                droppedArrays.addAll(c.arrays().keySet());
+            }
+            if (c.intensityUnit() != null) {
+                withDroppedUnit++;
+                droppedUnits.add(c.intensityUnit());
+            }
+        }
+        if (withDroppedArrays > 0) {
+            report.warn(withDroppedArrays + (withDroppedArrays == 1 ? " chromatogram carries" : " chromatograms carry")
+                    + " extra arrays (" + String.join(", ", droppedArrays) + "), which are not written; "
+                    + "their time and intensity are written");
+        }
+        if (withDroppedUnit > 0) {
+            report.warn(withDroppedUnit + (withDroppedUnit == 1 ? " chromatogram declares" : " chromatograms declare")
+                    + " an intensity unit (" + String.join(", ", droppedUnits) + "), which is not written");
         }
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
@@ -99,6 +135,26 @@ final class WritePlanner {
                 Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
                 writesSpectraData, writesSpectraPeaks, scanSettings,
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
+    }
+
+    /**
+     * Adds to {@code drops} what the packed layout does not write of {@code s}, whose precursors as written are
+     * {@code precursors}: its scans after the first ({@code drops[0]}), its precursors after the primary one
+     * ({@code drops[1]}) and its selected ions other than the primary precursor's first ({@code drops[2]}).
+     */
+    private static void countPackedDrops(Spectrum s, List<Precursor> precursors, int[] drops) {
+        drops[0] += Math.max(0, s.description().scans().size() - 1);
+        drops[1] += Math.max(0, precursors.size() - 1);
+        int ions = 0;
+        for (Precursor p : precursors) {
+            ions += p.selectedIons().size();
+        }
+        drops[2] += precursors.isEmpty() || precursors.get(0).selectedIons().isEmpty() ? ions : ions - 1;
+    }
+
+    /** {@code n} followed by {@code singular} or {@code plural}. */
+    private static String counted(int n, String singular, String plural) {
+        return n + " " + (n == 1 ? singular : plural);
     }
 
     // Disposition (design §11.5). Spec spectra.md:7-9 and 40-46 (d7bb25b): profile data goes to spectra_data and
