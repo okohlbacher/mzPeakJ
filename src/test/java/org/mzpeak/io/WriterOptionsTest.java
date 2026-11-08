@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
@@ -12,6 +13,7 @@ import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WriterSnapshotTest.Snapshot;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.meta.FileMetadata;
+import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -34,14 +36,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * property, then the parquet-java default. The value semantics of {@link Options} are pinned as well.
  *
  * <p>Outputs are compared with {@link WriterSnapshotTest#snapshot}, member digests plus the ZIP entry order of an
- * archive, on the legacy {@code has_uv} fixture (spectra, chromatograms, wavelength spectra, scan settings and file
- * metadata) read with {@link ForwardBackwardCorpusTest#readSource}; the Numpress archive and the Numpress row-group
- * cases use the legacy {@code small.unpacked} fixture.
+ * archive, on the legacy {@code has_uv} fixture (spectra, chromatograms, wavelength spectra and file metadata) read
+ * with {@link ForwardBackwardCorpusTest#readSource}. {@code has_uv} has no scan settings, so the overload comparison
+ * and the scan-settings round trip add the imaging scan settings of the current {@code Example_Processed.img}
+ * fixture. The Numpress archive and the Numpress row-group cases use the legacy {@code small.unpacked} fixture.
  */
 class WriterOptionsTest {
 
     private static final Path HAS_UV = Fixtures.legacy("has_uv.mzpeak");
     private static final Path SMALL = Fixtures.legacy("small.unpacked.mzpeak");
+    private static final Path IMAGING = Fixtures.current("Example_Processed.img.mzpeak");
     private static final String ROW_GROUP_SIZE = "mzpeak.writer.rowGroupSize";
     private static final String DATA = "spectra_data.parquet";
     private static final String INDEX = "mzpeak_index.json";
@@ -128,7 +132,7 @@ class WriterOptionsTest {
     @MethodSource("legacyOverloads")
     void aLegacyOverloadWritesWhatItsOptionsFormWrites(String label, boolean archive, BiConsumer<Path, Source> legacy,
                                                        BiConsumer<Path, Source> withOptions, @TempDir Path tmp) {
-        Source s = source(HAS_UV);
+        Source s = hasUvWithScanSettings();
 
         Snapshot expected = snapshot(tmp.resolve("options"), archive, withOptions, s);
         Snapshot actual = snapshot(tmp.resolve("legacy"), archive, legacy, s);
@@ -188,6 +192,30 @@ class WriterOptionsTest {
             assertThat(fromArchive.chromatograms()).hasSameSizeAs(fromDirectory.chromatograms());
         }
         assertThat(integral).as("intensities checked").isPositive();
+    }
+
+    /** Both full forms write the caller's scan settings to the manifest, in either signal encoding. */
+    @ParameterizedTest
+    @EnumSource(SignalEncoding.class)
+    void theFullFormsWriteTheScanSettings(SignalEncoding encoding, @TempDir Path tmp) {
+        Source s = hasUvWithScanSettings();
+        Options options = DEFAULTS.withSignalEncoding(encoding);
+        Path directory = tmp.resolve("dir.mzpeak");
+        Path archive = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectory(directory, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, options);
+        MzPeakWriter.writeArchive(archive, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata, options);
+
+        assertThat(Files.isRegularFile(archive)).as("%s is a single file", archive).isTrue();
+        for (Path out : List.of(directory, archive)) {
+            try (MzPeakReader reader = MzPeakReader.open(out)) {
+                assertThat(reader.manifest().scanSettingsList()).as("manifest scan settings of %s", out)
+                        .isEqualTo(s.scanSettings);
+                assertThat(reader.scanSettings()).as("scan settings of %s", out).isEqualTo(s.scanSettings);
+                assertThat(reader.size()).as("spectra of %s", out).isEqualTo(s.spectra.size());
+            }
+        }
     }
 
     @Test
@@ -384,6 +412,24 @@ class WriterOptionsTest {
 
     private static Source source(Path fixture) {
         return SOURCES.computeIfAbsent(fixture, ForwardBackwardCorpusTest::readSource);
+    }
+
+    /** {@code has_uv}, which has no scan settings, with those of {@code Example_Processed.img}. */
+    private static Source hasUvWithScanSettings() {
+        Source hasUv = source(HAS_UV);
+        assertThat(hasUv.scanSettings).as("scan settings of %s", HAS_UV).isEmpty();
+        List<ScanSettings> settings;
+        try (MzPeakReader reader = MzPeakReader.open(IMAGING)) {
+            settings = reader.scanSettings();
+        }
+        assertThat(settings).as("scan settings of %s", IMAGING).isNotEmpty();
+        Source s = new Source();
+        s.spectra.addAll(hasUv.spectra);
+        s.chromatograms = hasUv.chromatograms;
+        s.wavelengthSpectra = hasUv.wavelengthSpectra;
+        s.scanSettings = settings;
+        s.fileMetadata = hasUv.fileMetadata;
+        return s;
     }
 
     private static Snapshot snapshot(Path dir, boolean archive, BiConsumer<Path, Source> write, Source s) {
