@@ -117,7 +117,9 @@ have their own table plus scans. `Facet` names all nine; each has a role and key
 | `WAVELENGTH_SCAN` | wavelength_spectrum / scans | `source_index`, `scan_index` |
 
 The layout of a metadata member comes from **its own schema** (`MetadataShape`), never from
-`metadata.version` (0.9.0 on both sides of the layout change) nor from which facet members the manifest lists:
+`metadata.version` nor from which facet members the manifest lists (no legacy example manifest has a
+`metadata.version`, nor has Example_Processed.img; the other current examples carry 0.9.0, the upstream
+`MZPEAK_VERSION` constant that mzPeakJ's writer also writes in both layouts):
 
 | Shape | Recognised by |
 |---|---|
@@ -312,8 +314,9 @@ conformance rules require readers to resolve signal columns through it rather th
 
 A member without the footer key gets an **INFERRED** plan built from fixed column names (`point.mz`,
 `chunk.mz_chunk_values`, `intensity_numpress_slof_bytes`, …), the names mzPeakJ read before it used the array
-index; files mzPeakJ writes carry no array index and decode through it. A malformed index also gives the
-INFERRED plan, with a WARNING.
+index; files written by mzPeakJ 0.10.3 and earlier decode through it. Since WR-2, the files mzPeakJ writes carry
+a footer `<entity>_array_index` and decode through a FOOTER plan. A malformed index also gives the INFERRED
+plan, with a WARNING.
 
 The null-marking transforms `MS:1003901` and `MS:1003902` are treated alike: the spec swapped their labels
 (current files put `MS:1003902` on m/z), and filling is keyed on NaN positions anyway.
@@ -373,8 +376,10 @@ PIC payload decodes to values.
 **Coordinate grids** (`MS:1003826`, draft). A grid chunk stores its axis as a struct `{grid_type, parameters,
 indices}` in the column that the array index lists as the axis's `MS:1003826` chunk transform (`mz_grid` in
 diaPASEF.grid): a model CURIE, the model's parameters, and grid indices read as unsigned 32-bit integers
-(`GridChunk`). Each index maps to one coordinate through the model. The grid path is chosen per row by the
-`chunk_encoding`, before the Numpress columns are looked at, so a member may mix grid rows with delta rows.
+(`GridChunk`). Each index maps to one coordinate through the model. Per row, `rejectUnknownNumpressColumns`
+runs first, then the grid dispatch: a row whose `chunk_encoding` is the grid encoding takes the grid path;
+otherwise a non-null Numpress linear column selects the Numpress path, by its presence, not by its payload, and
+the delta path takes the rest. So a member may mix grid rows with delta rows.
 
 - **Main axis.** The indices are delta-encoded: their running sum, kept in a `long`, gives each point's grid
   index, and the first index is absolute. The m/z values pair 1:1 with the plain intensity list; no chunk start
@@ -497,9 +502,13 @@ delta(mz) = β₀ + β₁·mz + β₂·mz²  (least-squares polynomial on the no
 The column is picked by its presence in the schema, so a null cell in the chosen column gives no model even
 when `median_delta` is set (`PackedResolverTest`).
 
-**Legacy.** Pin-era files store the model as `spectrum.mz_delta_model`, which step 2 also accepts. The HEAD
-Python reader checks `median_delta` first, then `mz_delta_model`, then the mapping; the two orders differ only
-for a file that has both a list column and `median_delta`.
+**Legacy.** Pin-era files store the model as `spectrum.mz_delta_model`, which step 2 accepts as a third name of
+the `MS:1003820` column, after `coordinate_spacing_model`. The HEAD Python reader (`reader.py:807-820`) never
+reads a pin-era file, since it rejects the packed layout, and orders the lookup differently: `median_delta`
+first, then a column named `mz_delta_model`, then the column the mapping gives `MS:1003821`, else `MS:1003820`.
+The orders give different models for a file that has `median_delta` and a list column, for one that has
+`mz_delta_model` and another column mapped to `MS:1003821` or `MS:1003820`, and for one whose only model is an
+unmapped `coordinate_spacing_model` column, which the Python reader never reads.
 
 ### 4.2 Fill
 
@@ -695,12 +704,16 @@ encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` v
 I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
 precursor), numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
 (CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
-re-sorts a main axis that is not ascending and decides which members are written. `spectra_data` is always
+re-sorts a main axis that is not ascending (by `Double.compare`, so rows with a NaN move to the end) and decides
+which members are written. A CENTROID spectrum with a non-finite m/z keeps both files, a deviation from §11.5:
+the reader builds a peak from every `spectra_peaks` row, and such a row would read back as an invented peak (the
+null fill interpolates a NaN m/z, and Numpress linear cannot encode NaN or an infinity). `spectra_data` is always
 written, in both layouts and both signal encodings, without a row when every spectrum is centroid, because both
 Rust reference readers open it unconditionally. `DatasetWriter` then writes the metadata members, the signal
-members (point layout, or MS-Numpress chunks of up to 500 points with linear m/z and SLOF or PIC intensity),
-chromatograms and wavelength spectra in point layout, and the manifest last; `ArchivePacker` packs a directory
-into a STORED ZIP whose last entry is the manifest.
+members (point layout, or MS-Numpress chunks of up to 500 points, never one of a single point unless the
+spectrum has one, with linear m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point
+layout, and the manifest last; `ArchivePacker` packs a directory into a STORED ZIP whose last entry is the
+manifest.
 
 **Metadata layouts** (`Options.withMetadataLayout`):
 
@@ -708,8 +721,9 @@ into a STORED ZIP whose last entry is the manifest.
   `spectra_metadata` comes with its `_scans`, `_precursors` and `_selected_ions` tables,
   `chromatograms_metadata` with empty precursor and selected-ion tables, and `wavelength_spectra_metadata` with
   its `_scans` table. The manifest is in the current dialect: underscore roles, a `column_mapping` for every
-  CV-mapped column, scan settings with `unit`. Every scan, precursor and selected ion is written, and a Param
-  moves to its standardized column only where the reader rebuilds it unchanged.
+  CV-mapped column, scan settings with `unit` and an `id` (one without gets `scan_settings_<position>`, made
+  unique, with a WARNING, since the Rust reader needs it). Every scan, precursor and selected ion is written, and
+  a Param moves to its standardized column only where the reader rebuilds it unchanged.
 - `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
   `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
   `wavelength spectrum`, empty column mappings, and only the first scan and the primary precursor of a spectrum.
@@ -722,14 +736,21 @@ documents in both the manifest and the `spectra_metadata.parquet` footer.
 
 **Readers.** The default output is readable by the HEAD Python reader. The opt-in `UpstreamInteropTest` checks
 this on legacy small.unpacked and current small.unpacked, has_uv, Example_Processed.img and diaPASEF.ref
-(archive and directory), the Numpress SLOF and PIC archives of current small, and the `ExtractSpectra` MS2
-subset. The
-Python reader's arrays pass the golden rules against mzPeakJ's read of each source, its counts match, and
-`check_archive_integrity()` returns `(True, [])`. Readability by the Rust reference is untested.
+(archive and directory), the Numpress SLOF and PIC archives of current small, the `ExtractSpectra` MS2
+subset and current small without scans. The Python reader's arrays pass the golden rules against mzPeakJ's
+read of each source, its counts match, and `check_archive_integrity()` returns `(True, [])`. Readability by the
+Rust reference is untested.
 
-**Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`); a write that drops
-spectrum extras logs one WARNING. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles
-(the reconstructed arrays are written).
+Known limits of the HEAD Python reader (2ee2589) on that output, left to the maintainer's upstream reports and
+pinned by no test, since a test would pin an upstream bug: it loses the selected ions of precursors whose
+`precursor_index` is null when other precursors in the file keep theirs (`reader.py:421`: a pandas groupby
+drops NaN keys), where mzPeakJ and the Rust reference attach them; and pynumpress cannot decode the 12-byte
+Numpress linear payload of a single value, which the writer still produces for a spectrum of one point.
+
+**Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`) and the chromatogram
+intensity unit; each kind of drop logs one WARNING, and so does a `PACKED` write that drops scans, precursors or
+selected ions. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles (the reconstructed
+arrays are written).
 
 ### 8.2 Reader API
 
@@ -766,19 +787,20 @@ passed to `MzPeakWriter`, which would write only that part; read with `BOTH` bef
 | `extractSignal(query)` | a `Stream<SignalSlice>` with one slice per selected spectrum from the data arrays member, keeping the points that pass the m/z and ion-mobility filters; `reconstructProfile` applies |
 | `queryPeaks(query)` | the same from the peaks member: the peaks in stored order, non-finite m/z dropped |
 
-`SignalSlice(index, time, msLevel, mz, intensity, ionMobility)`: a spectrum without points in the member gives
-an empty slice, and `ionMobility` is `null` when the spectrum has no ion mobility array. The ion-mobility filter
-applies only to the spectra that have one. The streams are lazy and sequential, decode only the row groups of
-the selected spectra, ignore the reader's `SignalMode`, and throw `IllegalStateException` for a slice requested
-after `close()`. A slice that the filters leave whole shares its arrays with the reader's cache, like
-`Spectrum.mz()`.
+`DoubleRange.contains(double)` tests a value against the closed interval.
+`SignalSlice(index, time, msLevel, mz, intensity, ionMobility)`, with `size()` its number of points: a spectrum
+without points in the member gives an empty slice, and `ionMobility` is `null` when the spectrum has no ion
+mobility array. The ion-mobility filter applies only to the spectra that have one. The streams are lazy and
+sequential, decode only the row groups of the selected spectra, ignore the reader's `SignalMode`, and throw
+`IllegalStateException` for a slice requested after `close()`. A slice that the filters leave whole shares its
+arrays with the reader's cache, like `Spectrum.mz()`.
 
 **Column statistics and observed ranges.**
 
 | API | Source |
 |---|---|
 | `columnStatistics(entity, kind, accession)` | an `Optional<ColumnStatistics>`: `ColumnStatistics(member, column, accession, rowGroups)` with `complete()`, `min()` and `max()`, from the Parquet row-group statistics in the footer of the member that holds the column, without reading a row. The column is resolved by accession through `MetadataShape` and `ColumnResolver` (§2), in the packed layout also by a unique field with the CURIE prefix (`MS_1000016_…`). Empty for the data arrays and peaks roles, a role without a metadata member, a term that no column holds, and a column that is not INT32, INT64, FLOAT or DOUBLE |
-| `observedMzRange()` | the smallest row-group minimum of MS:1000528 (lowest observed m/z) and the largest maximum of MS:1000527 (highest observed m/z) in the spectrum metadata; empty unless both statistics are complete |
+| `observedMzRange()` | the smallest row-group minimum of MS:1000528 (lowest observed m/z) and the largest maximum of MS:1000527 (highest observed m/z) in the spectrum metadata; empty unless both statistics are complete; throws `MzPeakException` when that lowest m/z exceeds that highest m/z |
 | `observedTimeRange()` | the smallest and largest finite retention time of the spectrum metadata held in memory; reads nothing |
 
 **TIC and BPC.**
@@ -792,8 +814,8 @@ after `close()`. A slice that the filters leave whole shares its arrays with the
 
 **Extra arrays.** `Spectrum.arrays()`, `peakArrays()`, `array(String)`, `ionMobility()` and
 `ionMobilityArrayType()` (§3.6). `Chromatogram.arrays()` holds a chromatogram's other per-point arrays, parallel
-to `time()`, such as the `ms level` array of every example TIC, and `Chromatogram.intensityUnit()` the unit CURIE
-of its intensities (§3.5). The 5-argument `Chromatogram` constructor sets no unit and no arrays.
+to `time()`, such as the `ms level` array of the small* and has_uv TICs, and `Chromatogram.intensityUnit()` the
+unit CURIE of its intensities (§3.5). The 5-argument `Chromatogram` constructor sets no unit and no arrays.
 
 **Isolation windows.** `IsolationWindow.parameters()` holds the window's other CV and user params, read and
 written in both metadata layouts (§2.2, §8.1); the 3-argument constructor sets an empty list.
@@ -811,7 +833,11 @@ store, the caller supplies the bytes:
   `..` segment is rejected before the opener is called. The source closes every member it opened.
 
 What a reader expects of any `MzPeakSource` (member names, concurrent streams, ownership) is stated in its
-Javadoc.
+Javadoc. `FileSliceInputFile(RandomAccessBytes, long, long)` gives parquet-java a member as a slice of such bytes.
+
+**Manifest.** `MzPeakManifest.ColumnMapping` has a sixth component, `unitPath`: the path of a column that holds a
+unit CURIE per row, for a `unit` given as a JSON array of segments. The 6-argument canonical constructor sets it,
+and the 5-argument one leaves it null. `equals` and `hashCode` include it.
 
 **Grids** need no API: grid chunks decode like the other chunk encodings (§3.3).
 
@@ -843,8 +869,8 @@ read (§10).
 - **No integrity check yet.** The Rust and Python readers verify the manifest checksums
   (`check_archive_integrity`); mzPeakJ does not (above).
 - **Grid m/z and the Python reader.** The timsTOF m/z model keeps the fused multiply-add of `convert_f64`; the
-  HEAD Python reader computes without it, so its diaPASEF.grid m/z differ from mzPeakJ's by up to 6.8e-13
-  (`GridDecodeTest`).
+  HEAD Python reader computes without it, so its diaPASEF.grid m/z differ from mzPeakJ's, within relative
+  1e-12 (`GridDecodeTest`, `GridModelsTest`).
 
 ---
 
@@ -930,7 +956,7 @@ expected values and says why.
 | Test | Pins |
 |---|---|
 | `LegacyMetadataSnapshotTest` (CH-1) | SHA-256 of the canonical lines of every spectrum description, chromatogram and wavelength header of the legacy set |
-| `SignalSnapshotTest` (CH-2) | SHA-256 over the raw bits of every decoded array: the legacy set through the public API, the current set except diaPASEF.grid through `SpectrumArrayStore` |
+| `SignalSnapshotTest` (CH-2) | SHA-256 over the raw bits of decoded arrays: for the legacy set, through the public API, every spectrum's m/z, intensity and centroids, every chromatogram and every wavelength spectrum; for the current set except diaPASEF.grid, only the m/z and intensity of each spectrum in the data arrays and peaks members, read through `SpectrumArrayStore.load` with an empty delta-model map. No extra array is pinned |
 | `ContainerNegativePathTest` (CH-3) | stable message fragments of the ZIP and directory error paths, on corrupted copies of legacy fixtures |
 | `WriterSnapshotTest` | content digests of every member the writer produces from legacy fixtures (`src/test/resources/writer-snapshots/`); on a mismatch the actual TSV is written to `target/writer-snapshots/` |
 
@@ -957,9 +983,10 @@ expected values and says why.
 
 - **Grids.** The timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional (§3.3). Grids are decoded
   in spectrum signal members only; a chromatogram chunk is read as deltas whatever its encoding (§3.5).
-- **Writer** (§8.1). Extra signal arrays are not written; spectrum extras are dropped with a WARNING. Not
-  written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles (the reconstructed
-  arrays are written). The `PACKED` layout writes only the first scan and the primary precursor of a spectrum.
+- **Writer** (§8.1). Extra signal arrays and the chromatogram intensity unit are not written; each kind of drop
+  logs a WARNING. Not written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles
+  (the reconstructed arrays are written). The `PACKED` layout writes only the first scan and the primary
+  precursor of a spectrum, with a WARNING when it drops more.
   Whether the Rust reference reads mzPeakJ's output is untested.
 - **Integrity.** Manifest checksums are not verified on read, unlike in the Rust and Python readers (§8.2).
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.
@@ -985,4 +1012,5 @@ expected values and says why.
 - Run an example: `./run-example.sh org.mzpeak.examples.MzPeakFileInfo src/test/resources/mzpeak/small.mzpeak`
 - Inspect a fixture: `./run-example.sh org.mzpeak.cli.MzPeakInfo src/test/resources/mzpeak/has_uv.mzpeak`
 - Re-deriving golden values: see `src/test/resources/mzpeak/golden/README.md` (§9.2)
-- Javadoc: `mvn javadoc:javadoc` → `target/reports/apidocs`
+- Javadoc: `mvn javadoc:javadoc -Ddoclint=none` → `target/reports/apidocs`. Without `-Ddoclint=none` the goal
+  writes the pages but fails on doclint errors in the vendored `ms.numpress` sources and in `ScanSettings`.

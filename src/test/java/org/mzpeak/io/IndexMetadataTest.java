@@ -49,7 +49,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>The characterization pinned what the reader returned before RD-10 made the index the first source: per fixture
  * the run as one canonical line, the list sizes, the SHA-256 of the canonical lines of the other five documents,
  * the canonical scan settings and the imaging flag. A unit that changes these on purpose updates the values and
- * says why.
+ * says why. Final review: a param's absent name, accession or unit reads U+2400 instead of "null"
+ * ({@link Canonical#ABSENT}), which changed every documents digest and the scan settings of Example_Processed.img.
  *
  * <p>RD-10: the index's {@code metadata} is read first, the {@code spectra_metadata.parquet} footer only for the
  * documents the index lacks ({@link FooterMetadataReader#resolve}, {@link FooterMetadataReader#scanSettings}).
@@ -77,14 +78,14 @@ class IndexMetadataTest {
             "(TOFsulfasMS4GHzDualMode_x002b_DADSpectra_x002b_UVSignal272-NoProfile"
                     + "|0|pwiz_Reader_conversion|MSScan.bin|2007-10-20T20:12:18Z|[])";
 
-    private static final String SMALL_DOCUMENTS = "ecdc41da453ebe9fd2e871c8cbe0d9d498d056c7a3388c93944e8c3a9513d148";
-    private static final String HAS_UV_DOCUMENTS = "1daa1c8b086b6fa13abb1bc4908d97e246f781a72cd4ed34cf009e6f6b9c9216";
+    private static final String SMALL_DOCUMENTS = "21127984c26090a9ac748f12a9ec76e5de0e2531003744653c5be4b43f8f530e";
+    private static final String HAS_UV_DOCUMENTS = "978fe8d70a9b0ba9fb4dc903fdc14ab861419be977efc26db6899d0d01b11695";
 
     /** Example_Processed.img's footer scan settings, in file order. */
     private static final String IMG_SCAN_SETTINGS = "[(scansettings1|["
-            + "(top down|IMS:1000401|null|null);(flyback|IMS:1000413|null|null);"
-            + "(horizontal line scan|IMS:1000480|null|null);(linescan left right|IMS:1000491|null|null);"
-            + "(max count of pixels x|IMS:1000042|Long:3|null);(max count of pixels y|IMS:1000043|Long:3|null);"
+            + "(top down|IMS:1000401|null|␀);(flyback|IMS:1000413|null|␀);"
+            + "(horizontal line scan|IMS:1000480|null|␀);(linescan left right|IMS:1000491|null|␀);"
+            + "(max count of pixels x|IMS:1000042|Long:3|␀);(max count of pixels y|IMS:1000043|Long:3|␀);"
             + "(max dimension x|IMS:1000044|Long:300|UO:0000017);(max dimension y|IMS:1000045|Long:300|UO:0000017);"
             + "(pixel size (x)|IMS:1000046|Double:100.0|UO:0000017);"
             + "(pixel size y|IMS:1000047|Double:100.0|UO:0000017)])]";
@@ -99,27 +100,27 @@ class IndexMetadataTest {
             "small.mzpeak", new Snapshot(SMALL_RUN, 2, 3, 2, 1, 1, SMALL_DOCUMENTS, "[]", false),
             // small.chunked and small.numpress record their own conversion options
             "small.chunked.mzpeak", new Snapshot(SMALL_RUN, 2, 3, 2, 1, 1,
-                    "f99c36d02951633d2bc73b0ebddbce5e3aae6d49b711f75f389a0281e70f0395", "[]", false),
+                    "df75d5b44da7d65fffb8dac3ade21e9040e4e3f2bdd361d87d1b297fbbbd6b9b", "[]", false),
             "small.numpress.mzpeak", new Snapshot(SMALL_RUN, 2, 3, 2, 1, 1,
-                    "e93490bc836303e99d77d90aa3479de01d651143af470f6bb7dab47c6b7f2efa", "[]", false),
+                    "205827cd87cab05ef36164d3237148fc65d10a3ae8ff6e9bd203b720732f46f5", "[]", false),
             "small.unpacked.mzpeak", new Snapshot(SMALL_RUN, 2, 3, 2, 1, 1, SMALL_DOCUMENTS, "[]", false),
             "has_uv.mzpeak", new Snapshot(HAS_UV_RUN, 1, 4, 3, 0, 18, HAS_UV_DOCUMENTS, "[]", false),
             "diaPASEF.ref.mzpeak", new Snapshot(DIA_PASEF_RUN, 1, 3, 1, 1, 2,
-                    "fd75bb7073bd5fc6130ccc79251bd9a1bcb458cf22d4eb69370ab802e768e584", "[]", false),
+                    "83e3b61484da5e4da49a56a3c689b20b8f209d2f0a46298bd46edd0c84a704fe", "[]", false),
             "diaPASEF.grid.mzpeak", new Snapshot(DIA_PASEF_RUN, 1, 3, 1, 1, 2,
-                    "aa491a8539970776c89ad9b12258dc32b596ac344209dbb2621848c097be3b0a", "[]", false),
+                    "19590180ad7a413fae6ef6b406f123366c4b65e1ae88c120c751a991f4888787", "[]", false),
             // its index metadata is {}; its scan settings exist only in the footer
             "Example_Processed.img.mzpeak", new Snapshot("(Experiment01|0|XcaliburProcessing|sf1|null|[])",
-                    1, 3, 3, 1, 1, "93152bd50d139e4b142f559424a361d9e44dfeb006b508cddce07485b88e3ce9",
+                    1, 3, 3, 1, 1, "d592789f5540114567a94c8178751fd7bbf7b258d5a6cd6fc041a0a9a9bc8911",
                     IMG_SCAN_SETTINGS, true));
 
     /** The legacy set (29e59b2): footer and index hold the same documents; the run spells default_instrument_id. */
     private static final Map<String, Snapshot> LEGACY = Map.of(
             "small.mzpeak", new Snapshot(LEGACY_SMALL_RUN, 2, 3, 2, 1, 1, SMALL_DOCUMENTS, "[]", false),
             "small.chunked.mzpeak", new Snapshot(LEGACY_SMALL_RUN, 2, 3, 2, 1, 1,
-                    "856171ba4615e5c54b56640659f81db1743820303696388a929b7f98bcb47f0f", "[]", false),
+                    "60462294af6d969819d27189e8a212383b3834f700c556341dfa2027fec9ae29", "[]", false),
             "small.numpress.mzpeak", new Snapshot(LEGACY_SMALL_RUN, 2, 3, 2, 1, 1,
-                    "380fe37163ae811e44f32a99e3e2a38175e4aa799b9d38134bbac4a434c2aaf7", "[]", false),
+                    "200ae1438fa3b2ec4826f8fda7d6d8bd5ad4913d582f53936553a42c36c7b2ce", "[]", false),
             "small.unpacked.mzpeak", new Snapshot(LEGACY_SMALL_RUN, 2, 3, 2, 1, 1, SMALL_DOCUMENTS, "[]", false),
             "has_uv.mzpeak", new Snapshot(LEGACY_HAS_UV_RUN, 1, 4, 3, 0, 18, HAS_UV_DOCUMENTS, "[]", false));
 
@@ -143,12 +144,12 @@ class IndexMetadataTest {
     void currentSmallUnpackedAnchorLines() {
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.unpacked.mzpeak"))) {
             List<String> documents = documents(reader.fileMetadata());
-            assertThat(documents.get(3)).isEqualTo("sample_list=[(_x0031_||[(sample name|MS:1000002|Long:1|null)])]");
+            assertThat(documents.get(3)).isEqualTo("sample_list=[(_x0031_||[(sample name|MS:1000002|Long:1|␀)])]");
             assertThat(documents.get(4)).isEqualTo("software_list=["
-                    + "(Xcalibur|1.1 Beta 7|[(Xcalibur|MS:1000532|null|null)]);"
-                    + "(pwiz|3.0.23307|[(ProteoWizard software|MS:1000615|null|null)]);"
+                    + "(Xcalibur|1.1 Beta 7|[(Xcalibur|MS:1000532|null|␀)]);"
+                    + "(pwiz|3.0.23307|[(ProteoWizard software|MS:1000615|null|␀)]);"
                     + "(mzpeak_prototyping_convert1|0.1.0|[(custom unreleased software tool|MS:1000799"
-                    + "|String:mzpeak_prototyping_convert|null)])]");
+                    + "|String:mzpeak_prototyping_convert|␀)])]");
         }
     }
 

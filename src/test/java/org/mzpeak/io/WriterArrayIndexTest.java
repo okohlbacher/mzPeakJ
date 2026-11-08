@@ -8,6 +8,7 @@ import org.apache.parquet.example.data.Group;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -229,9 +230,9 @@ class WriterArrayIndexTest {
     // ---- (e): statistics and offset index -----------------------------------------------------------------------
 
     /**
-     * Every column chunk of every member has statistics, with min/max whenever it holds a value, and a page index
-     * (offset and column index; spec conformance.md requires one for the index and coordinate columns). A column
-     * that holds no value (the empty {@code mz_chunk_values} lists) has only a null count.
+     * Every column chunk of every member is ZSTD-compressed and has statistics, with min/max whenever it holds a
+     * value, and a page index (offset and column index; spec conformance.md requires one for the index and coordinate
+     * columns). A column that holds no value (the empty {@code mz_chunk_values} lists) has only a null count.
      */
     @ParameterizedTest(name = "{0} as {1}")
     @MethodSource("writes")
@@ -246,6 +247,7 @@ class WriterArrayIndexTest {
                     for (BlockMetaData block : reader.getFooter().getBlocks()) {
                         for (ColumnChunkMetaData column : block.getColumns()) {
                             String what = member.getFileName() + " " + column.getPath();
+                            assertThat(column.getCodec()).as("%s codec", what).isEqualTo(CompressionCodecName.ZSTD);
                             Statistics<?> stats = column.getStatistics();
                             assertThat(stats).as("%s statistics", what).isNotNull();
                             assertThat(stats.isEmpty()).as("%s statistics empty", what).isFalse();

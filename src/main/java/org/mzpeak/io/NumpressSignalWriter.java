@@ -25,9 +25,11 @@ import static org.mzpeak.io.ParquetOutput.signalFooter;
 
 /**
  * Writes the MS-Numpress chunk layout of {@link MzPeakWriter} for spectra_data and spectra_peaks: chunks of up to
- * 500 points, m/z encoded with Numpress linear and intensity with Numpress SLOF or PIC, each as a {@code list<uint8>}
- * byte list. A file has the column of its own intensity encoding only, and every row an empty {@code mz_chunk_values}
- * list. {@code mz_chunk_start} and {@code mz_chunk_end} are the chunk's first and last m/z, both inclusive, as the
+ * 500 points, never a single-point chunk unless the spectrum has one point (501 points are written as 499 + 2, since
+ * the HEAD Python reader's pynumpress cannot decode the 12-byte linear payload of a single value), m/z encoded with
+ * Numpress linear and intensity with Numpress SLOF or PIC, each as a {@code list<uint8>} byte list. A file has the
+ * column of its own intensity encoding only, and every row an empty {@code mz_chunk_values} list.
+ * {@code mz_chunk_start} and {@code mz_chunk_end} are the chunk's first and last m/z, both inclusive, as the
  * reference writes them. Each file's footer holds the array index of its columns and the counts
  * ({@link ParquetOutput#signalFooter}).
  */
@@ -43,7 +45,7 @@ final class NumpressSignalWriter {
     private static final ArrayIndex SLOF_CHUNK_INDEX = chunkIndex(SLOF_COLUMN, MSNumpress.ACC_NUMPRESS_SLOF);
     private static final ArrayIndex PIC_CHUNK_INDEX = chunkIndex(PIC_COLUMN, MSNumpress.ACC_NUMPRESS_PIC);
 
-    /** Default number of m/z points per numpress chunk. */
+    /** Maximum number of m/z points per numpress chunk. */
     private static final int NUMPRESS_CHUNK_SIZE = 500;
     /** Numpress linear fixed-point scale (near-lossless for MS m/z up to ~6000 Da at 5 sig figs). */
     private static final double NUMPRESS_LINEAR_FIXED_POINT = 100_000.0;
@@ -57,7 +59,7 @@ final class NumpressSignalWriter {
     }
 
     /**
-     * The chunk schema (compatible with SpectrumArrayStore.acceptNumpressChunk) with {@code intensityColumn} as the
+     * The chunk schema (read by the Numpress path of {@link ChunkRowDecoder}) with {@code intensityColumn} as the
      * only intensity transform. {@code mz_chunk_values} is the spec's chunk values column, present once in every
      * chunk layout; the m/z of a Numpress row are in {@code mz_numpress_linear_bytes}, so it is written empty.
      */
@@ -109,10 +111,11 @@ final class NumpressSignalWriter {
     /**
      * Write spectra as MS-Numpress chunk rows: the plan's spectra_data rows ({@code mz()}/{@code intensity()} of
      * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()}
-     * or {@code peaks()} of every entry routed there, as the entry says). Each spectrum is split into fixed-size
-     * chunks; m/z is encoded with Numpress linear and intensity with the plan's Numpress intensity encoding. Output
-     * is compatible with {@code SpectrumArrayStore.acceptNumpressChunk}. {@code mz()}/{@code intensity()} are
-     * written in the order of the entry's {@link WritePlan.SignalArrays}.
+     * or {@code peaks()} of every entry routed there, as the entry says). Each spectrum is split into chunks of up to
+     * 500 points, the last two 499 + 2 where a single point would be left over; m/z is encoded with Numpress linear
+     * and intensity with the plan's Numpress intensity encoding. The rows are read by the Numpress path of
+     * {@link ChunkRowDecoder}. {@code mz()}/{@code intensity()} are written in the order of the entry's
+     * {@link WritePlan.SignalArrays}.
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
@@ -143,6 +146,10 @@ final class NumpressSignalWriter {
                 int pos = 0;
                 while (pos < n) {
                     int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
+                    if (n - end == 1 && end - pos > 1) {
+                        // No single-point last chunk: its 12-byte linear payload is one pynumpress cannot decode.
+                        end--;
+                    }
                     int chunkLen = end - pos;
                     double[] chunkMz = Arrays.copyOfRange(mz, pos, end);
                     double[] chunkIn = Arrays.copyOfRange(intensity, pos, end);

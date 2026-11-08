@@ -24,14 +24,17 @@ import static org.mzpeak.io.ArchivePacker.packArchive;
  * <p>The metadata members are written in the split layout of the current mzPeak format unless the {@link Options}
  * say otherwise ({@link MetadataLayout#SPLIT}): one table per facet, every scan, precursor and selected ion of a
  * spectrum, and a manifest in the current dialect, which the HEAD reference Python reader reads.
- * {@link MetadataLayout#PACKED} writes the pin-era packed layout that mzPeakJ 0.10.3 and earlier wrote.
+ * {@link MetadataLayout#PACKED} writes the pin-era packed layout that mzPeakJ 0.10.3 and earlier wrote, with only the
+ * first scan, the primary precursor and its first selected ion of a spectrum; a write that drops more logs one
+ * WARNING.
  *
  * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
  * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
  * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
- * imaging-position columns, scan settings, and wavelength facets — so a read &rarr; write cycle preserves
- * everything {@link MzPeakReader} surfaces except the extra signal arrays of {@link Spectrum#arrays()} and
- * {@link Spectrum#peakArrays()}, which are not written yet; a write that drops them logs one WARNING.
+ * imaging-position columns, scan settings, and wavelength facets. A read &rarr; write cycle keeps everything
+ * {@link MzPeakReader} exposes except {@link Spectrum#arrays()}, {@link Spectrum#peakArrays()},
+ * {@link Chromatogram#arrays()} and {@link Chromatogram#intensityUnit()}, which are not written yet (WR-11); each
+ * kind of drop logs one WARNING. Chromatogram time is written as given and declared in minutes (UO:0000031).
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -92,14 +95,24 @@ public final class MzPeakWriter {
      * of a run, is written as 0..n-1, and input already numbered 0..n-1 keeps its indices. Each precursor_index is
      * written as the new index of the spectrum it names, or as null when that spectrum is not written; the
      * precursor_id is kept. The caller's lists and objects are not modified.
+     * A spectrum without scans is written, in both metadata layouts, with one scan that holds only its retention
+     * time, and reads back with that scan. In the split metadata layout, a scan setting without an id is written with
+     * the id {@code scan_settings_<position>}, made unique, and a WARNING is logged, since the current manifest needs
+     * one; the packed layout leaves the id out.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
-     * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified).
+     * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified). The sort
+     * orders the rows by {@link Double#compare}, so rows with a NaN move to the end.
+     * A CENTROID spectrum whose arrays are its peak list is written to spectra_peaks only, unless one of its m/z is
+     * not finite: then its arrays go to spectra_data and its peak list to spectra_peaks, since spectra_peaks would
+     * read such a row back as an invented peak.
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum
      * that would be written with the same precursor_index (null equal to null) are allowed only when none after the
-     * first of them carries selected ions, since readers attach those ions to the first. The typical violation is a
-     * spectrum with several precursors written without its parent spectra; writing the parents as well avoids it.
+     * first of them carries selected ions, since {@link MzPeakReader} attaches each ion to the first precursor with
+     * its key, whatever the row order. The typical violation is a spectrum with several precursors written without
+     * its parent spectra; writing the parents as well avoids it. The selected ions of a spectrum are written in the
+     * order of their precursor's precursor_index, null first, which the Rust reference reader also needs.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}

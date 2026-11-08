@@ -191,8 +191,8 @@ class PackedSpectrumMetadataCharacterizationTest {
         SpectrumMetadataDecoder.Decoded decoded = decode(List.of(emptyModel, bare));
 
         assertThat(Canonical.lines(decoded.descriptions(), Canonical::describe)).containsExactly(
-                "3|null|0|NaN|UNKNOWN|UNKNOWN|0|0|[]|[]|[]",
-                "4|null|0|NaN|UNKNOWN|UNKNOWN|0|0|[]|[]|[]");
+                "3|␀|0|NaN|UNKNOWN|UNKNOWN|0|0|[]|[]|[]",
+                "4|␀|0|NaN|UNKNOWN|UNKNOWN|0|0|[]|[]|[]");
         assertThat(decoded.deltaModels()).isEmpty();
     }
 
@@ -224,7 +224,7 @@ class PackedSpectrumMetadataCharacterizationTest {
 
     @Test
     void anIonMobilityColumnIsAppendedToTheScanParams() {
-        String resolvingPower = "(mass resolving power|MS:1000800|Long:100000|null)";
+        String resolvingPower = "(mass resolving power|MS:1000800|Long:100000|␀)";
         assertThat(scanParams(scan -> { })).containsExactly(resolvingPower);
         assertThat(scanParams(scan -> {
             scan.add("ion_mobility_value", 1.25);
@@ -246,34 +246,34 @@ class PackedSpectrumMetadataCharacterizationTest {
         assertThat(scanParams(scan -> {
             addParam(scan, "MS:1002476", "ion mobility drift time", 2.5);
             scan.add("ion_mobility_value", 1.25);
-        })).containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:2.5|null)");
+        })).containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:2.5|␀)");
         // RD-11: MS:1002477 is an ion mobility array term, not an ion mobility type, so the column is appended
         assertThat(scanParams(scan -> {
             addParam(scan, "MS:1002477", "mean ion mobility drift time", 2.5);
             scan.add("ion_mobility_value", 1.25);
-        })).containsExactly(resolvingPower, "(mean ion mobility drift time|MS:1002477|Double:2.5|null)",
+        })).containsExactly(resolvingPower, "(mean ion mobility drift time|MS:1002477|Double:2.5|␀)",
                 "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
     }
 
     @Test
     void imagingPositionColumnsAreAppendedToTheScanParams() {
-        String resolvingPower = "(mass resolving power|MS:1000800|Long:100000|null)";
+        String resolvingPower = "(mass resolving power|MS:1000800|Long:100000|␀)";
         assertThat(scanParams(scan -> {
             scan.add(POSITION_Y, 4);
             scan.add(POSITION_X, 3);
             scan.add("ion_mobility_value", 1.25);
         })).containsExactly(resolvingPower,
                 "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)",
-                "(position x|IMS:1000050|Long:3|null)",
-                "(position y|IMS:1000051|Long:4|null)");
+                "(position x|IMS:1000050|Long:3|␀)",
+                "(position y|IMS:1000051|Long:4|␀)");
         // a position param already present wins over its column
         assertThat(scanParams(scan -> {
             addParam(scan, "IMS:1000050", "position x", 7.0);
             scan.add(POSITION_X, 3);
             scan.add(POSITION_Y, 4);
         })).containsExactly(resolvingPower,
-                "(position x|IMS:1000050|Double:7.0|null)",
-                "(position y|IMS:1000051|Long:4|null)");
+                "(position x|IMS:1000050|Double:7.0|␀)",
+                "(position y|IMS:1000051|Long:4|␀)");
     }
 
     // ---- precursor and selected_ion structs ------------------------------------------------------------------
@@ -284,7 +284,7 @@ class PackedSpectrumMetadataCharacterizationTest {
                 "(1|controllerType=0 controllerNumber=1 scan=2"
                         + "|(558.8689575195312|1.0|1.0|[])"
                         + "|[(558.868957519531|null|202177.84375|[])]"
-                        + "|([(collision-induced dissociation|MS:1000133|null|null)"
+                        + "|([(collision-induced dissociation|MS:1000133|null|␀)"
                         + ";(collision energy|MS:1000045|Double:35.0|UO:0000266)]))");
     }
 
@@ -316,7 +316,7 @@ class PackedSpectrumMetadataCharacterizationTest {
         put(row, SELECTED_ION, fixtureStruct(SELECTED_ION, 5));
 
         assertThat(precursorLines(List.of(row))).containsExactly(
-                "(null|null|null|[(558.868957519531|null|202177.84375|[])]|([]))");
+                "(null|␀|null|[(558.868957519531|null|202177.84375|[])]|([]))");
     }
 
     @Test
@@ -328,13 +328,13 @@ class PackedSpectrumMetadataCharacterizationTest {
         put(withPrecursor, SELECTED_ION, fixtureStruct(SELECTED_ION, 5), mz);
         assertThat(precursorLines(List.of(withPrecursor))).containsExactly(
                 "(1|controllerType=0 controllerNumber=1 scan=2|(558.8689575195312|1.0|1.0|[])|[]"
-                        + "|([(collision-induced dissociation|MS:1000133|null|null)"
+                        + "|([(collision-induced dissociation|MS:1000133|null|␀)"
                         + ";(collision energy|MS:1000045|Double:35.0|UO:0000266)]))");
 
         Group withoutPrecursor = newRow();
         put(withoutPrecursor, SPECTRUM, fixtureStruct(SPECTRUM, 5));
         put(withoutPrecursor, SELECTED_ION, fixtureStruct(SELECTED_ION, 5), mz);
-        assertThat(precursorLines(List.of(withoutPrecursor))).containsExactly("(null|null|null|[]|([]))");
+        assertThat(precursorLines(List.of(withoutPrecursor))).containsExactly("(null|␀|null|[]|([]))");
     }
 
     /**
@@ -372,7 +372,7 @@ class PackedSpectrumMetadataCharacterizationTest {
                 "precursor_index", "precursor_id", "isolation_window", "activation");
         put(bare, SELECTED_ION, fixtureStruct(SELECTED_ION, 5));
         assertThat(precursorLines(List.of(bare))).containsExactly(
-                "(null|null|null|[(558.868957519531|null|202177.84375|[])]|([]))");
+                "(null|␀|null|[(558.868957519531|null|202177.84375|[])]|([]))");
 
         Group emptyStructs = newRow();
         put(emptyStructs, SPECTRUM, fixtureStruct(SPECTRUM, 5));

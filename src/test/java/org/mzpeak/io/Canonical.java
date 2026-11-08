@@ -29,7 +29,9 @@ import java.util.function.Function;
  * <ul>
  *   <li>A {@link SpectrumDescription} line holds every record component in declaration order, recursively:
  *       components are separated by {@code |}, a nested record is wrapped in {@code ( )}, a list in
- *       {@code [ ]} with its elements in list order, separated by {@code ;}. An absent value reads {@code null}.
+ *       {@code [ ]} with its elements in list order, separated by {@code ;}. An absent string component (an id, a
+ *       filter string, a spectrum reference, a CURIE or a name) reads {@link #ABSENT} (U+2400), so that it differs
+ *       from the string {@code "null"}; any other absent value reads {@code null}.
  *   <li>A {@link Param} reads {@code (name|accession|Class:value|unit)}, where {@code Class} is the simple name
  *       of the value's runtime class, so a value that changes type (Long to Integer, say) changes the line.
  *   <li>A {@link Chromatogram} header reads {@code index|id|typeCurie|time.length}, a {@link WavelengthSpectrum}
@@ -40,11 +42,14 @@ import java.util.function.Function;
  */
 final class Canonical {
 
+    /** How an absent string component reads: U+2400 SYMBOL FOR NULL, which no id, CURIE or name contains. */
+    static final String ABSENT = "\u2400";
+
     private Canonical() {
     }
 
     static String describe(SpectrumDescription d) {
-        return d.index() + "|" + d.id() + "|" + d.msLevel() + "|" + num(d.retentionTime())
+        return d.index() + "|" + str(d.id()) + "|" + d.msLevel() + "|" + num(d.retentionTime())
                 + "|" + d.polarity() + "|" + d.signalContinuity()
                 + "|" + d.numberOfDataPoints() + "|" + d.numberOfPeaks()
                 + "|" + list(d.scans(), Canonical::scan)
@@ -53,18 +58,18 @@ final class Canonical {
     }
 
     static String describe(Chromatogram c) {
-        return c.index() + "|" + c.id() + "|" + c.typeCurie() + "|" + c.time().length;
+        return c.index() + "|" + str(c.id()) + "|" + str(c.typeCurie()) + "|" + c.time().length;
     }
 
     static String describe(WavelengthSpectrum w) {
-        return w.index() + "|" + w.id() + "|" + num(w.time()) + "|" + num(w.lambdaMax())
+        return w.index() + "|" + str(w.id()) + "|" + num(w.time()) + "|" + num(w.lambdaMax())
                 + "|" + w.wavelength().length;
     }
 
     static String scan(ScanEvent s) {
-        return "(" + num(s.startTime()) + "|" + num(s.injectionTime()) + "|" + s.filterString()
+        return "(" + num(s.startTime()) + "|" + num(s.injectionTime()) + "|" + str(s.filterString())
                 + "|" + s.presetScanConfiguration() + "|" + s.instrumentConfigurationRef()
-                + "|" + s.spectrumReference()
+                + "|" + str(s.spectrumReference())
                 + "|" + list(s.scanWindows(), Canonical::scanWindow)
                 + "|" + list(s.parameters(), Canonical::param) + ")";
     }
@@ -74,7 +79,7 @@ final class Canonical {
     }
 
     static String precursor(Precursor p) {
-        return "(" + p.precursorIndex() + "|" + p.precursorId()
+        return "(" + p.precursorIndex() + "|" + str(p.precursorId())
                 + "|" + isolationWindow(p.isolationWindow())
                 + "|" + list(p.selectedIons(), Canonical::selectedIon)
                 + "|" + activation(p.activation()) + ")";
@@ -101,7 +106,12 @@ final class Canonical {
     }
 
     static String param(Param p) {
-        return "(" + p.name() + "|" + p.accession() + "|" + value(p.value()) + "|" + p.unit() + ")";
+        return "(" + str(p.name()) + "|" + str(p.accession()) + "|" + value(p.value()) + "|" + str(p.unit()) + ")";
+    }
+
+    /** {@code s}, or {@link #ABSENT} when it is {@code null}. */
+    static String str(String s) {
+        return s == null ? ABSENT : s;
     }
 
     /** {@code Class:value} with the simple name of the runtime class, or {@code null}. */

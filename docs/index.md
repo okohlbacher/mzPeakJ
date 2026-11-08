@@ -98,7 +98,7 @@ CLI (no classpath assembly needed with the shaded jar):
 
 ```bash
 java --enable-native-access=ALL-UNNAMED \
-  -cp mzpeakj-0.10.2-all.jar org.mzpeak.cli.MzPeakInfo run.mzpeak
+  -cp mzpeakj-0.10.3-all.jar org.mzpeak.cli.MzPeakInfo run.mzpeak
 # or with the helper script:
 ./run-example.sh org.mzpeak.examples.MzPeakFileInfo run.mzpeak -s
 ```
@@ -135,7 +135,8 @@ Two sets of HUPO-PSI example datasets are included. The current set, from upstre
 | `Example_Processed.img.mzpeak` | point, STORED ZIP | 9 profile spectra of an imzML imaging run |
 
 The legacy set, from upstream commit `29e59b2`, lies under `src/test/resources/mzpeak-legacy/` and uses the
-packed metadata layout, which mzPeakJ also reads and still writes:
+packed metadata layout, which mzPeakJ also reads. It writes that layout only on request, as an opt-in
+compatibility layout (`MetadataLayout.PACKED`); by default it writes the split layout:
 
 | Fixture | Layout | Contents |
 |---|---|---|
@@ -149,15 +150,15 @@ packed metadata layout, which mzPeakJ also reads and still writes:
 
 ## Status
 
-Current version: **0.10.2** (see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
+Current version: **0.10.3** (see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
 read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact delta-model reconstruction;
 tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion mobility + imaging position
 from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
 
-**Known deferred** — chunk/delta write, wavelength spectra write, page-level pushdown,
-detail-level loading, Maven Central publication.
+**Known deferred** — chunk/delta write, page-level pushdown, Maven Central publication. Metadata-only access,
+which the Rust reader offers as a detail level, is covered by `select()` with a `SignalQuery`.
 
 MIT-licensed. Bundles the Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders
 and HUPO-PSI example fixtures. See [NOTICE](https://github.com/okohlbacher/mzPeakJ/blob/main/NOTICE).

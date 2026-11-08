@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakManifest.DataKind;
@@ -27,13 +28,16 @@ import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
@@ -165,6 +169,126 @@ class SplitWriterSpectraTest {
         assertThat(scanRows).extracting(r -> r.getLong("scan_index", 0)).containsExactlyElementsOf(scanIndices);
     }
 
+    // ---- spectra without scans ----------------------------------------------------------------------------------
+
+    /**
+     * A spectrum without scans gets one scan row holding its retention time, as in the packed layout, since the HEAD
+     * Python reader cannot open a spectrum without one: three scanless PROFILE spectra, and a mixed set whose spectra
+     * 0 and 2 have scans and 1 and 3 none, the last with a NaN retention time, all written with the default options.
+     * Each scanless spectrum has exactly one row, with its source_index and its retention time (null unless finite),
+     * empty lists and no other cell; scan_index counts on contiguously; and the reader gives each scanless spectrum
+     * one scan whose start time is its retention time.
+     */
+    @Test
+    void aSpectrumWithoutScansGetsOneScanRowHoldingItsRetentionTime(@TempDir Path tmp) {
+        List<Spectrum> scanless = List.of(profile(0, 0.5, List.of()), profile(1, 1.25, List.of()),
+                profile(2, 2.0, List.of()));
+        Path out = tmp.resolve("scanless.mzpeak");
+        MzPeakWriter.writeDirectory(out, scanless);
+
+        assertThat(scanRows(out)).containsExactly("0|0|0.5", "1|1|1.25", "2|2|2.0");
+        List<Group> rows = rows(out.resolve("spectra_metadata_scans.parquet"));
+        assertThat(rows).allSatisfy(r -> {
+            assertThat(ParquetGroups.groupList(r, "parameters")).isEmpty();
+            assertThat(ParquetGroups.groupList(r, "scan_windows")).isEmpty();
+            for (String cell : List.of("preset_scan_configuration", "filter_string", "ion_injection_time",
+                    "instrument_configuration_id", "spectrum_reference")) {
+                assertThat(ParquetGroups.has(r, cell)).as("%s of a fallback scan row", cell).isFalse();
+            }
+        });
+        assertOneScanAtTheRetentionTime(out, scanless, Set.of(0L, 1L, 2L));
+
+        ScanEvent first = new ScanEvent(3.0, 12.5, "f0", null, null, null, List.of(new ScanWindow(100, 200)),
+                List.of());
+        ScanEvent second = new ScanEvent(4.0, null, null, null, null, null, List.of(), List.of());
+        ScanEvent third = new ScanEvent(4.01, null, null, null, null, null, List.of(), List.of());
+        List<Spectrum> mixed = List.of(profile(0, 3.0, List.of(first)), profile(1, 3.5, List.of()),
+                profile(2, 4.0, List.of(second, third)), profile(3, Double.NaN, List.of()));
+        Path mixedOut = tmp.resolve("mixed.mzpeak");
+        MzPeakWriter.writeDirectory(mixedOut, mixed);
+
+        assertThat(scanRows(mixedOut)).containsExactly("0|0|3.0", "1|1|3.5", "2|2|4.0", "2|3|4.01", "3|4|null");
+        assertOneScanAtTheRetentionTime(mixedOut, mixed, Set.of(1L, 3L));
+        try (MzPeakReader reader = MzPeakReader.open(mixedOut)) {
+            assertThat(reader.getSpectrumAt(0).description().scans()).containsExactly(first);
+            assertThat(reader.getSpectrumAt(2).description().scans()).containsExactly(second, third);
+        }
+    }
+
+    /**
+     * A scan's spectrum_reference and instrument configuration survive a round trip in both metadata layouts: of two
+     * constructed spectra, the scan of spectrum 1 has both, and the raw cells of the scan row with its source_index
+     * hold them (spectra_metadata_scans in the split layout, the scan struct of spectra_metadata in the packed one),
+     * while the scan of spectrum 0 has neither.
+     */
+    @ParameterizedTest
+    @EnumSource(MetadataLayout.class)
+    void aScansSpectrumReferenceAndInstrumentConfigurationRoundTrip(MetadataLayout layout, @TempDir Path tmp) {
+        ScanEvent plain = new ScanEvent(0.5, null, null, null, null, null, List.of(), List.of());
+        ScanEvent referenced = new ScanEvent(1.0, 20.0, null, null, 3, "index=0", List.of(), List.of());
+        List<Spectrum> spectra = List.of(profile(0, 0.5, List.of(plain)), profile(1, 1.0, List.of(referenced)));
+        Path out = tmp.resolve(layout + ".mzpeak");
+        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                Options.defaults().withMetadataLayout(layout));
+
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        DescriptionAssert.assertEqual("scan references via " + layout,
+                spectra.stream().map(Spectrum::description).toList(), descriptions(back));
+        assertThat(back.spectra.get(1).description().scans()).containsExactly(referenced);
+
+        Map<Long, Group> scans = new HashMap<>();
+        if (layout == MetadataLayout.SPLIT) {
+            for (Group row : rows(out.resolve("spectra_metadata_scans.parquet"))) {
+                scans.put(ParquetGroups.optLong(row, "source_index"), row);
+            }
+        } else {
+            for (Group row : rows(out.resolve("spectra_metadata.parquet"))) {
+                Group scan = ParquetGroups.optGroup(row, "scan");
+                scans.put(ParquetGroups.optLong(scan, "source_index"), scan);
+            }
+        }
+        String configuration = layout == MetadataLayout.SPLIT ? "instrument_configuration_id"
+                : "instrument_configuration_ref";
+        assertThat(ParquetGroups.optString(scans.get(1L), "spectrum_reference")).isEqualTo("index=0");
+        assertThat(ParquetGroups.optInt(scans.get(1L), configuration)).isEqualTo(3);
+        assertThat(ParquetGroups.has(scans.get(0L), "spectrum_reference")).isFalse();
+        assertThat(ParquetGroups.has(scans.get(0L), configuration)).isFalse();
+    }
+
+    /** Each scan row of {@code out} as {@code source_index|scan_index|scan_start_time}, in row order. */
+    private static List<String> scanRows(Path out) {
+        List<String> lines = new ArrayList<>();
+        for (Group r : rows(out.resolve("spectra_metadata_scans.parquet"))) {
+            lines.add(ParquetGroups.optLong(r, "source_index") + "|" + ParquetGroups.optLong(r, "scan_index") + "|"
+                    + ParquetGroups.optDouble(r, "scan_start_time"));
+        }
+        return lines;
+    }
+
+    /** The {@code scanless} spectra of {@code written} read back with one scan whose start time is their RT. */
+    private static void assertOneScanAtTheRetentionTime(Path out, List<Spectrum> written, Set<Long> scanless) {
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            for (Spectrum s : written) {
+                if (!scanless.contains(s.index())) {
+                    continue;
+                }
+                SpectrumDescription back = reader.getSpectrumAt((int) s.index()).description();
+                double rt = s.description().retentionTime();
+                assertThat(Double.compare(back.retentionTime(), rt)).as("retention time %s of spectrum %d, expected %s",
+                        back.retentionTime(), s.index(), rt).isZero();
+                assertThat(back.scans()).as("scans of spectrum %d", s.index()).containsExactly(
+                        new ScanEvent(rt, null, null, null, null, null, List.of(), List.of()));
+            }
+        }
+    }
+
+    /** A PROFILE MS1 spectrum of three points with {@code index}, retention time {@code rt} and {@code scans}. */
+    private static Spectrum profile(long index, double rt, List<ScanEvent> scans) {
+        SpectrumDescription d = new SpectrumDescription(index, "scan=" + (index + 1), 1, rt, Polarity.POSITIVE,
+                SignalContinuity.PROFILE, 3, 0, scans, List.of(), List.of());
+        return new Spectrum(d, new double[] {100.0, 100.5, 101.0}, new double[] {10.0, 20.0, 5.0}, List.of());
+    }
+
     @Test
     void emptyParameterAndScanWindowListsAreWrittenAsEmptyListsNotNull(@TempDir Path tmp) {
         // Every Example_Processed.img scan has no scan window; some legacy small.unpacked spectra have no params.
@@ -227,24 +351,77 @@ class SplitWriterSpectraTest {
         }
     }
 
+    /**
+     * A scan setting without an id or values keeps every key, and gets the id {@code scan_settings_<position>} with
+     * one warning: the reference's ScanSettings.id is a String (param.rs:458-460), so the Rust reader rejects a
+     * manifest whose id is null. A nameless param's name stays null, as the reference writes its Option. The packed
+     * layout leaves the key out and warns about nothing.
+     */
     @Test
     void scanSettingsWithoutIdOrValuesKeepEveryKey(@TempDir Path tmp) throws IOException {
         Source source = source(Fixtures.legacy("small.unpacked.mzpeak"));
-        List<ScanSettings> settings = List.of(new ScanSettings(null, List.of(
-                new Param(null, "IMS:1000401", null, null))));
+        List<Param> params = List.of(new Param(null, "IMS:1000401", null, null));
+        List<ScanSettings> settings = List.of(new ScanSettings(null, params));
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, List.of(), settings,
                 source.fileMetadata, SPLIT);
 
-        JsonNode list;
-        try (MzPeakSource dataset = MzPeakSource.open(out)) {
-            list = MAPPER.readTree(dataset.readManifestBytes()).path("metadata").path("scan_settings_list");
-        }
-        assertThat(list.toString()).isEqualTo("[{\"id\":null,\"source_file_refs\":[],\"targets\":[],"
-                + "\"parameters\":[{\"name\":null,\"accession\":\"IMS:1000401\",\"value\":null,\"unit\":null}]}]");
+        assertThat(scanSettingsList(out).toString()).isEqualTo("[{\"id\":\"scan_settings_0\",\"source_file_refs\":[],"
+                + "\"targets\":[],\"parameters\":[{\"name\":null,\"accession\":\"IMS:1000401\",\"value\":null,"
+                + "\"unit\":null}]}]");
+        assertThat(scanSettingsWarnings(source, settings, SPLIT)).containsExactly(
+                "scan settings 0 has no id, which the current manifest requires; written as scan_settings_0");
         try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.scanSettings()).containsExactly(new ScanSettings("scan_settings_0", params));
+        }
+        assertThat(scanSettingsWarnings(source, settings, SPLIT.withMetadataLayout(MetadataLayout.PACKED))).isEmpty();
+    }
+
+    /**
+     * Two scan settings without an id next to one whose id is {@code scan_settings_0}: the first gets
+     * {@code scan_settings_0_1}, since {@code scan_settings_0} is taken, the third {@code scan_settings_2}, with one
+     * warning naming both, and each keeps its params. The packed layout writes them as given.
+     */
+    @Test
+    void scanSettingsIdsGivenToEntriesWithoutOneAreUnique(@TempDir Path tmp) throws IOException {
+        Source source = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        Param topDown = new Param("top down", "IMS:1000401", null, null);
+        Param pixelSize = new Param("pixel size (x)", "IMS:1000046", 100.0, "UO:0000017");
+        List<ScanSettings> settings = List.of(new ScanSettings(null, List.of(topDown)),
+                new ScanSettings("scan_settings_0", List.of(pixelSize)), new ScanSettings(null, List.of()));
+        Path out = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, List.of(), List.of(), settings, source.fileMetadata, SPLIT);
+
+        assertThat(scanSettingsList(out).findValuesAsText("id")).containsExactly("scan_settings_0_1",
+                "scan_settings_0", "scan_settings_2");
+        assertThat(scanSettingsWarnings(source, settings, SPLIT)).containsExactly("scan settings 0 and 2 have no id,"
+                + " which the current manifest requires; written as scan_settings_0_1 and scan_settings_2");
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.scanSettings()).containsExactly(new ScanSettings("scan_settings_0_1", List.of(topDown)),
+                    settings.get(1), new ScanSettings("scan_settings_2", List.of()));
+        }
+
+        Options packed = SPLIT.withMetadataLayout(MetadataLayout.PACKED);
+        Path packedOut = tmp.resolve("packed.mzpeak");
+        MzPeakWriter.writeDirectory(packedOut, source.spectra, List.of(), List.of(), settings, source.fileMetadata,
+                packed);
+        assertThat(scanSettingsWarnings(source, settings, packed)).isEmpty();
+        try (MzPeakReader reader = MzPeakReader.open(packedOut)) {
             assertThat(reader.scanSettings()).isEqualTo(settings);
         }
+    }
+
+    /** The manifest's {@code metadata.scan_settings_list}. */
+    private static JsonNode scanSettingsList(Path out) throws IOException {
+        try (MzPeakSource dataset = MzPeakSource.open(out)) {
+            return MAPPER.readTree(dataset.readManifestBytes()).path("metadata").path("scan_settings_list");
+        }
+    }
+
+    /** The warnings about scan settings of a write of {@code source}'s spectra with {@code settings}. */
+    private static List<String> scanSettingsWarnings(Source source, List<ScanSettings> settings, Options options) {
+        return WritePlanner.plan(source.spectra, List.of(), List.of(), settings, source.fileMetadata, options)
+                .report().warnings().stream().filter(w -> w.startsWith("scan settings")).toList();
     }
 
     /** WR-7 made the split layout the default; naming it explicitly changes nothing. */

@@ -41,19 +41,21 @@ class LegacyMetadataSnapshotTest {
     private static final String NONE = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     // AP-7: the line of each of the 34 MS2 spectra of small gained "|[]", the empty parameters of its isolation
-    // window; nothing else changed (has_uv has no precursors).
-    private static final String SMALL_METADATA = "9e5afcf531df50c5eecf462f12be7f534dc01c64e557fa18bd29d8648150425e";
+    // window; nothing else changed (has_uv has no precursors). Final review: an absent string component reads U+2400
+    // instead of "null" (Canonical.ABSENT), which changes every metadata digest (each scan has no spectrum reference,
+    // and params without a unit or accession), and no chromatogram or wavelength digest (their ids and types are set).
+    private static final String SMALL_METADATA = "80c4bbaaf57645d0ee821694153b3200df03d22516683e3d2a81322ce4d52865";
     private static final String SMALL_TIC = "8a8fa9c38b9eb11c3b0bb2465b884a21250efa89e2f08853e1a64be80e6b2111";
 
     private static final Map<String, Snapshot> EXPECTED = Map.of(
             "small.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             // small.chunked also declares MS:1003059 number of peaks on its profile spectra
             "small.chunked.mzpeak", new Snapshot(48, 1, 0,
-                    "81e9a3c4b1f715b18c0dbe8f67b222eaa967ac85d00613ff71e86e2555ea067c", SMALL_TIC, NONE),
+                    "5793db6f251216667ed165d10223bf2c7afc68a4d252107fdfcb36d54c4f2a6b", SMALL_TIC, NONE),
             "small.numpress.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             "small.unpacked.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             "has_uv.mzpeak", new Snapshot(212, 2, 520,
-                    "c93b7129d2d801bf91046c5a9459e5b081318c79481fdfe91a4899880df0ac57",
+                    "35518229d5314fb17f486361d16934af5dd9234c51183d363a7036aecc80c8a8",
                     "907aeb63c7f4823af2bd626503cc185c55f8a9df07ba2aa8442fcdb56c44d099",
                     "e8f510ac303a494f08d39a68917aa79fecd7d3b9d9df371f1af913f74f08aefb"));
 
@@ -85,21 +87,21 @@ class LegacyMetadataSnapshotTest {
             assertThat(metadata).hasSize(48);
             assertThat(Canonical.describe(metadata.get(0))).isEqualTo(
                     "0|controllerType=0 controllerNumber=1 scan=1|1|0.004935|POSITIVE|PROFILE|13589|0"
-                            + "|[(0.004935000091791153|68.22748565673828|FTMS + p ESI Full ms [200.00-2000.00]|1|0|null"
+                            + "|[(0.004935000091791153|68.22748565673828|FTMS + p ESI Full ms [200.00-2000.00]|1|0|␀"
                             + "|[(200.0|2000.0)]"
-                            + "|[(mass resolving power|MS:1000800|Long:100000|null)])]"
+                            + "|[(mass resolving power|MS:1000800|Long:100000|␀)])]"
                             + "|[]"
                             + "|[]");
             assertThat(Canonical.describe(metadata.get(5))).isEqualTo(
                     "5|controllerType=0 controllerNumber=1 scan=6|2|0.04862|POSITIVE|CENTROID|0|650"
                             + "|[(0.04862000048160553|66.4786376953125"
-                            + "|ITMS + c ESI d Full ms2 558.87@cid35.00 [140.00-1130.00]|6|1|null"
+                            + "|ITMS + c ESI d Full ms2 558.87@cid35.00 [140.00-1130.00]|6|1|␀"
                             + "|[(140.0|1130.0)]"
-                            + "|[([Thermo Trailer Extra]Monoisotopic M/Z:|null|Long:0|null)])]"
+                            + "|[([Thermo Trailer Extra]Monoisotopic M/Z:|␀|Long:0|␀)])]"
                             + "|[(1|controllerType=0 controllerNumber=1 scan=2"
                             + "|(558.8689575195312|1.0|1.0|[])"
                             + "|[(558.868957519531|null|202177.84375|[])]"
-                            + "|([(collision-induced dissociation|MS:1000133|null|null)"
+                            + "|([(collision-induced dissociation|MS:1000133|null|␀)"
                             + ";(collision energy|MS:1000045|Double:35.0|UO:0000266)]))]"
                             + "|[]");
         }
@@ -107,11 +109,15 @@ class LegacyMetadataSnapshotTest {
 
     @Test
     void paramLineCarriesTheValueClass() {
-        assertThat(Canonical.param(new Param("n", "MS:1", 5L, null))).isEqualTo("(n|MS:1|Long:5|null)");
-        assertThat(Canonical.param(new Param("n", "MS:1", 5, null))).isEqualTo("(n|MS:1|Integer:5|null)");
+        assertThat(Canonical.param(new Param("n", "MS:1", 5L, null))).isEqualTo("(n|MS:1|Long:5|␀)");
+        assertThat(Canonical.param(new Param("n", "MS:1", 5, null))).isEqualTo("(n|MS:1|Integer:5|␀)");
         assertThat(Canonical.param(new Param("n", "MS:1", 5.0, "UO:1"))).isEqualTo("(n|MS:1|Double:5.0|UO:1)");
-        assertThat(Canonical.param(new Param("n", null, "5", null))).isEqualTo("(n|null|String:5|null)");
-        assertThat(Canonical.param(new Param("n", null, null, null))).isEqualTo("(n|null|null|null)");
+        assertThat(Canonical.param(new Param("n", null, "5", null))).isEqualTo("(n|␀|String:5|␀)");
+        assertThat(Canonical.param(new Param("n", null, null, null))).isEqualTo("(n|␀|null|␀)");
+        // An absent string and the string "null" read differently; an absent value still reads null.
+        assertThat(Canonical.param(new Param("null", "null", "null", "null")))
+                .isEqualTo("(null|null|String:null|null)");
+        assertThat(Canonical.param(new Param(null, null, null, null))).isEqualTo("(␀|␀|null|␀)");
     }
 
     @Test

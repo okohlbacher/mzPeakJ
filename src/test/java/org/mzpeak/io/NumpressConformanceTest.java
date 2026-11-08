@@ -15,21 +15,29 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.SignalSnapshotTest.SignalDigest;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.Polarity;
+import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * The Numpress chunk layout {@link NumpressSignalWriter} writes for spectra_data and spectra_peaks (WR-10, design
@@ -40,10 +48,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ul>
  *   <li>the decoded read-back through the public API, every spectrum's m/z, intensity, centroid m/z and centroid
  *       intensity digested like {@link SignalSnapshotTest} (raw IEEE-754 bits), in both reconstructProfile modes;
- *   <li>the chunking: each spectrum's points in stored order, 500 per chunk with a shorter last one, every row's
- *       chunk_encoding MS:1002312, and the inclusive chunk bounds the reference writes (chunk_series.rs:281-289):
- *       {@code mz_chunk_start} is the chunk's first input m/z and {@code mz_chunk_end} its last, not the next
- *       chunk's first.
+ *   <li>the chunking: each spectrum's points in stored order, 500 per chunk with a shorter last one (499 + 2 for the
+ *       last two where a single point would be left over, which no spectrum of small.unpacked has; constructed
+ *       spectra cover it), every row's chunk_encoding MS:1002312, and the inclusive chunk bounds the reference
+ *       writes (chunk_series.rs:281-289): {@code mz_chunk_start} is the chunk's first input m/z and
+ *       {@code mz_chunk_end} its last, not the next chunk's first.
  * </ul>
  *
  * <p>Schema conformance (WR-10): the byte lists are {@code list<uint8>} (INT32 annotated {@code intType(8, false)}),
@@ -117,10 +126,8 @@ class NumpressConformanceTest {
                     decoded.add(mz);
                     n += mz.length;
                 }
-                for (int c = 0; c < decoded.size(); c++) {
-                    assertThat(decoded.get(c).length).as("points in chunk %d of spectrum %d in %s", c, index, member)
-                            .isEqualTo(c < decoded.size() - 1 ? CHUNK_SIZE : n - CHUNK_SIZE * c);
-                }
+                assertThat(decoded).extracting(mz -> mz.length).as("points per chunk of spectrum %d in %s", index,
+                        member).isEqualTo(chunkSizes(n));
                 List<double[]> candidates = matchingInputs(input.get(index), decoded, n);
                 assertThat(candidates).as("input m/z of spectrum %d stored in %s", index, member).isNotEmpty();
                 assertThat(candidates).as("chunk bounds of spectrum %d in %s", index, member)
@@ -137,6 +144,74 @@ class NumpressConformanceTest {
                         });
             });
         }
+    }
+
+    /**
+     * The chunk sizes for constructed spectra of each length, in both intensity encodings: chunks of up to 500 points,
+     * but never a chunk of one point unless the spectrum has one point, since the HEAD Python reader (pynumpress)
+     * cannot decode the 12-byte linear payload of a single value. 501 points are written as 499 + 2 and 1001 as
+     * 500 + 499 + 2. Every chunk is bounded by its first and last input m/z, and every spectrum reads back within the
+     * Numpress tolerances. The PIC read-back is of a second write without the one-point spectrum: the vendored
+     * {@code MSNumpress.decode} refuses a PIC payload under 8 bytes, one PIC value takes at most 5, and the reader
+     * decodes a row group at once, so that spectrum would fail the read of every other.
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void noChunkHoldsASinglePointUnlessTheSpectrumHasOne(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        Map<Integer, List<Integer>> chunking = new LinkedHashMap<>();
+        chunking.put(1, List.of(1));
+        chunking.put(2, List.of(2));
+        chunking.put(500, List.of(500));
+        chunking.put(501, List.of(499, 2));
+        chunking.put(502, List.of(500, 2));
+        chunking.put(1000, List.of(500, 500));
+        chunking.put(1001, List.of(500, 499, 2));
+        List<Integer> sizes = new ArrayList<>(chunking.keySet());
+        List<Spectrum> spectra = profiles(sizes);
+        Path out = writeConstructed(spectra, encoding, tmp.resolve("constructed-" + encoding + ".mzpeak"));
+
+        Map<Long, List<Group>> bySpectrum = chunksBySpectrum(out.resolve("spectra_data.parquet"));
+        for (Spectrum s : spectra) {
+            List<Integer> lengths = assertChunkBounds(s, bySpectrum.get(s.index()), encoding);
+            assertThat(lengths).as("%s chunk sizes of a spectrum of %d points", encoding, s.mz().length)
+                    .isEqualTo(chunking.get(s.mz().length));
+        }
+        if (encoding == NumpressIntensityEncoding.PIC) {
+            List<Spectrum> readable = profiles(sizes.subList(1, sizes.size()));
+            assertReadBackWithinTolerance(writeConstructed(readable, encoding, tmp.resolve("readable.mzpeak")),
+                    readable, encoding);
+        } else {
+            assertReadBackWithinTolerance(out, spectra, encoding);
+        }
+    }
+
+    /**
+     * A spectrum whose 1200 points come in descending m/z order is re-sorted as a whole before it is cut into chunks:
+     * the decoded m/z ascend across all three chunks, each chunk is bounded by its first and last m/z of the sorted
+     * input, and the read-back is the sorted input within the Numpress tolerances, in both intensity encodings.
+     * Sorting each chunk on its own would leave the chunks in descending order.
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void aReversedSpectrumIsReSortedAcrossItsChunks(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        Spectrum sorted = profile(0, 1200);
+        Spectrum reversed = new Spectrum(sorted.description(), reversed(sorted.mz()), reversed(sorted.intensity()),
+                List.of());
+        Path out = writeConstructed(List.of(reversed), encoding, tmp.resolve("reversed-" + encoding + ".mzpeak"));
+
+        List<Group> chunks = chunksBySpectrum(out.resolve("spectra_data.parquet")).get(0L);
+        assertThat(assertChunkBounds(sorted, chunks, encoding)).as("%s chunk sizes", encoding)
+                .containsExactly(500, 500, 200);
+        double previous = Double.NEGATIVE_INFINITY;
+        int point = 0;
+        for (Group chunk : chunks) {
+            byte[] bytes = ParquetGroups.byteList(chunk, LINEAR_COLUMN);
+            for (double mz : MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, bytes, bytes.length)) {
+                assertThat(mz).as("%s m/z of point %d", encoding, point++).isGreaterThan(previous);
+                previous = mz;
+            }
+        }
+        assertReadBackWithinTolerance(out, List.of(sorted), encoding);
     }
 
     // ---- schema conformance (WR-10) -------------------------------------------------------------------------------
@@ -205,6 +280,110 @@ class NumpressConformanceTest {
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------
+
+    /**
+     * A PROFILE MS1 spectrum with {@code index} and {@code n} points: ascending m/z from 100 in steps of about 0.01,
+     * and integer intensities between 2^24 and 2^28, which PIC stores exactly in 4 bytes each, so that every PIC chunk
+     * of two points or more has the 8 bytes the vendored decoder asks for.
+     */
+    private static Spectrum profile(long index, int n) {
+        double[] mz = new double[n];
+        double[] intensity = new double[n];
+        for (int i = 0; i < n; i++) {
+            mz[i] = 100.0 + i * 0.01 + (i % 3) * 1e-3;
+            intensity[i] = 20_000_000 + (i * 7919L) % 10_000;
+        }
+        SpectrumDescription d = new SpectrumDescription(index, "scan=" + (index + 1), 1, index / 10.0,
+                Polarity.POSITIVE, SignalContinuity.PROFILE, n, 0, List.of(), List.of(), List.of());
+        return new Spectrum(d, mz, intensity, List.of());
+    }
+
+    /**
+     * The chunk sizes of a spectrum of {@code n} points: 500 each and the rest, except that a rest of one point after
+     * a full chunk is written as 499 + 2.
+     */
+    private static List<Integer> chunkSizes(int n) {
+        List<Integer> sizes = new ArrayList<>(Collections.nCopies(n / CHUNK_SIZE, CHUNK_SIZE));
+        if (n % CHUNK_SIZE == 1 && n > 1) {
+            sizes.set(sizes.size() - 1, CHUNK_SIZE - 1);
+            sizes.add(2);
+        } else if (n % CHUNK_SIZE != 0) {
+            sizes.add(n % CHUNK_SIZE);
+        }
+        return sizes;
+    }
+
+    /** A copy of {@code values} in reverse order. */
+    private static double[] reversed(double[] values) {
+        double[] out = new double[values.length];
+        for (int i = 0; i < values.length; i++) {
+            out[i] = values[values.length - 1 - i];
+        }
+        return out;
+    }
+
+    /** One {@link #profile} spectrum of each of {@code sizes} points, indexed 0..n-1 in that order. */
+    private static List<Spectrum> profiles(List<Integer> sizes) {
+        List<Spectrum> spectra = new ArrayList<>();
+        for (int n : sizes) {
+            spectra.add(profile(spectra.size(), n));
+        }
+        return spectra;
+    }
+
+    /** Writes {@code spectra} into {@code out} as a Numpress directory with {@code encoding} intensities. */
+    private static Path writeConstructed(List<Spectrum> spectra, NumpressIntensityEncoding encoding, Path out) {
+        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+                Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS).withNumpressIntensity(encoding));
+        return out;
+    }
+
+    /**
+     * Asserts that each of {@code chunks}, the spectra_data rows of {@code s} in file order, has the first and last
+     * m/z of {@code s} it holds as {@code mz_chunk_start} and {@code mz_chunk_end}, and that together they hold every
+     * point of {@code s}; returns the number of points of each chunk.
+     */
+    private static List<Integer> assertChunkBounds(Spectrum s, List<Group> chunks, NumpressIntensityEncoding encoding) {
+        double[] mz = s.mz();
+        List<Integer> lengths = new ArrayList<>();
+        int pos = 0;
+        for (Group chunk : chunks) {
+            byte[] bytes = ParquetGroups.byteList(chunk, LINEAR_COLUMN);
+            int length = MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, bytes, bytes.length).length;
+            String what = encoding + " chunk " + lengths.size() + " of spectrum " + s.index();
+            assertThat(length).as("points in %s", what).isPositive();
+            assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_start")).as("start of %s", what).isEqualTo(mz[pos]);
+            assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_end")).as("end of %s", what)
+                    .isEqualTo(mz[pos + length - 1]);
+            lengths.add(length);
+            pos += length;
+        }
+        assertThat(pos).as("%s points stored of spectrum %d", encoding, s.index()).isEqualTo(mz.length);
+        return lengths;
+    }
+
+    /**
+     * Asserts that every spectrum of {@code expected} reads back from {@code out} with its m/z within Numpress linear
+     * precision and its intensities within 1e-3 of {@code max(|x|, 1)}.
+     */
+    private static void assertReadBackWithinTolerance(Path out, List<Spectrum> expected,
+                                                      NumpressIntensityEncoding encoding) {
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            for (Spectrum s : expected) {
+                Spectrum back = reader.getSpectrumAt((int) s.index());
+                String what = encoding + " spectrum " + s.index();
+                assertThat(back.mz()).as("m/z of %s", what).hasSameSizeAs(s.mz());
+                assertThat(back.intensity()).as("intensity of %s", what).hasSameSizeAs(s.intensity());
+                for (int i = 0; i < s.mz().length; i++) {
+                    assertThat(back.mz()[i]).as("m/z %d of %s", i, what).isCloseTo(s.mz()[i],
+                            within(LINEAR_TOLERANCE));
+                    double x = s.intensity()[i];
+                    assertThat(back.intensity()[i]).as("intensity %d of %s", i, what).isCloseTo(x,
+                            within(1e-3 * Math.max(Math.abs(x), 1.0)));
+                }
+            }
+        }
+    }
 
     private static String intensityColumn(NumpressIntensityEncoding encoding) {
         return encoding == NumpressIntensityEncoding.PIC ? "intensity_numpress_pic_bytes"

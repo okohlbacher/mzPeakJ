@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.WriterSnapshotTest.Snapshot;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SignalContinuity;
@@ -143,6 +144,58 @@ class WriterComponentsCharacterizationTest {
                 "chromatograms_data.parquet|chromatogram|data arrays");
         assertThat(rows(chromatogramsOnly.resolve("spectra_metadata.parquet"))).isEmpty();
         assertThat(rows(chromatogramsOnly.resolve("spectra_data.parquet"))).isEmpty();
+    }
+
+    /**
+     * The default (split) layout writes a dataset of no spectra and one chromatogram, and an empty dataset, and both
+     * read back: the first with no spectrum and the chromatogram's time and intensity, the second with nothing. The
+     * spectrum members are written without rows, spectra_data included, as both Rust readers open it.
+     */
+    @Test
+    void theSplitLayoutWritesAChromatogramOnlyAndAnEmptyDataset(@TempDir Path tmp) throws IOException {
+        Source s = ForwardBackwardCorpusTest.readSource(SMALL);
+        Chromatogram tic = s.chromatograms.get(0);
+        List<String> spectrumMembers = List.of(
+                "spectra_metadata.parquet|spectrum|metadata",
+                "spectra_metadata_scans.parquet|spectrum|scans",
+                "spectra_metadata_precursors.parquet|spectrum|precursors",
+                "spectra_metadata_selected_ions.parquet|spectrum|selected_ions",
+                "spectra_data.parquet|spectrum|data_arrays");
+
+        Path chromatogramOnly = tmp.resolve("chromatogram-only.mzpeak");
+        MzPeakWriter.writeDirectory(chromatogramOnly, List.of(), List.of(tic));
+        List<String> withChromatograms = new ArrayList<>(spectrumMembers);
+        withChromatograms.addAll(List.of(
+                "chromatograms_metadata.parquet|chromatogram|metadata",
+                "chromatograms_metadata_precursors.parquet|chromatogram|precursors",
+                "chromatograms_metadata_selected_ions.parquet|chromatogram|selected_ions",
+                "chromatograms_data.parquet|chromatogram|data_arrays"));
+        assertThat(manifestFiles(chromatogramOnly)).containsExactlyElementsOf(withChromatograms);
+        for (String member : List.of("spectra_metadata.parquet", "spectra_metadata_scans.parquet",
+                "spectra_data.parquet")) {
+            assertThat(rows(chromatogramOnly.resolve(member))).as(member).isEmpty();
+        }
+        try (MzPeakReader reader = MzPeakReader.open(chromatogramOnly)) {
+            assertThat(reader.size()).isZero();
+            assertThat(reader.wavelengthSpectra()).isEmpty();
+            assertThat(reader.chromatograms()).singleElement().satisfies(c -> {
+                assertThat(c.index()).isZero();
+                assertThat(c.id()).isEqualTo(tic.id());
+                assertThat(c.typeCurie()).isEqualTo(tic.typeCurie());
+                LayoutEquivalenceTest.assertIdentical("TIC time", tic.time(), c.time());
+                LayoutEquivalenceTest.assertIdentical("TIC intensity", tic.intensity(), c.intensity());
+            });
+        }
+
+        Path empty = tmp.resolve("empty.mzpeak");
+        MzPeakWriter.writeDirectory(empty, List.of());
+        assertThat(manifestFiles(empty)).containsExactlyElementsOf(spectrumMembers);
+        try (MzPeakReader reader = MzPeakReader.open(empty)) {
+            assertThat(reader.size()).isZero();
+            assertThat(reader.chromatograms()).isEmpty();
+            assertThat(reader.wavelengthSpectra()).isEmpty();
+            assertThat(reader.scanSettings()).isEmpty();
+        }
     }
 
     // ---- packed spectrum metadata and point/chunk rows ----------------------------------------------------------

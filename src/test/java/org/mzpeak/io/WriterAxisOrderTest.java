@@ -247,8 +247,8 @@ class WriterAxisOrderTest {
     }
 
     /**
-     * The fixtures' main axes are already ascending: planning their write re-sorts nothing. (The diaPASEF fixtures
-     * get the warning about their extra signal arrays, which the writer drops until WR-11.)
+     * The fixtures' main axes are already ascending: planning their write re-sorts nothing. (Other warnings, about the
+     * extra arrays and chromatogram intensity units the writer drops until WR-11, are not about the axes.)
      */
     @ParameterizedTest
     @MethodSource("fixtures")
@@ -257,7 +257,7 @@ class WriterAxisOrderTest {
 
         assertThat(WritePlanner.plan(s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, Options.defaults()).report().warnings())
-                .filteredOn(w -> !w.contains("extra signal arrays")).isEmpty();
+                .filteredOn(w -> w.contains("main axis")).isEmpty();
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

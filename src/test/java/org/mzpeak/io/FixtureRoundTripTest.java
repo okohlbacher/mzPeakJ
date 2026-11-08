@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -12,7 +13,12 @@ import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WriterSnapshotTest.FixtureSet;
+import org.mzpeak.model.Activation;
 import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
@@ -55,7 +61,10 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  *
  * <p>Extra signal arrays ({@link Spectrum#arrays()}, {@link Spectrum#peakArrays()}, such as diaPASEF's ion mobility)
  * are not written yet (WR-11 writes them): every re-read spectrum has none, and the write's report carries exactly one
- * warning about them when the source has any, and none otherwise.
+ * warning about them when the source has any, and none otherwise. The same holds for the extra arrays of
+ * chromatograms ({@link Chromatogram#arrays()}, the TIC's {@code ms level}) and for their intensity unit
+ * ({@link Chromatogram#intensityUnit()}), with one warning each, in both metadata layouts. The packed layout warns
+ * once about the scans, precursors and selected ions it drops.
  */
 class FixtureRoundTripTest {
 
@@ -65,6 +74,12 @@ class FixtureRoundTripTest {
     private static final double NUMPRESS_INTENSITY_REL_TOL = 1e-3;
     /** The fragment that identifies the report's warning about extra signal arrays. */
     private static final String EXTRAS_WARNING = "extra signal arrays";
+    /** The fragment that identifies the report's warning about the extra arrays of chromatograms. */
+    private static final String CHROMATOGRAM_ARRAYS_WARNING = "; their time and intensity are written";
+    /** The fragment that identifies the report's warning about the intensity unit of chromatograms. */
+    private static final String CHROMATOGRAM_UNIT_WARNING = " an intensity unit (";
+    /** The fragment that identifies the report's warning about the facets the packed layout drops. */
+    private static final String PACKED_WARNING = "the packed metadata layout";
 
     /** Fixtures read once per class, keyed by set and name; the tests never modify a source in place. */
     private static final Map<String, Source> SOURCES = new ConcurrentHashMap<>();
@@ -125,8 +140,101 @@ class FixtureRoundTripTest {
         }
 
         assertExtrasDroppedWithOneWarning(what, source, back, options(layout, metadata));
+        assertChromatogramExtrasDroppedWithOneWarningEach(what, fixture, source, back, options(layout, metadata));
         assertThat(spectrumMetadataShape(out)).as("spectrum metadata layout of %s", what)
                 .isEqualTo(metadata == MetadataLayout.SPLIT ? MetadataShape.SPLIT : MetadataShape.PACKED);
+    }
+
+    static Stream<Arguments> chromatogramCases() {
+        List<Arguments> cases = new ArrayList<>();
+        for (MetadataLayout metadata : MetadataLayout.values()) {
+            for (String fixture : Fixtures.LEGACY_NAMES) {
+                cases.add(Arguments.of(FixtureSet.LEGACY, fixture, metadata));
+            }
+            for (String fixture : Fixtures.CURRENT_NAMES) {
+                cases.add(Arguments.of(FixtureSet.CURRENT, fixture, metadata));
+            }
+        }
+        return cases.stream();
+    }
+
+    /**
+     * Every fixture in both metadata layouts, the current set in the packed layout too: the chromatograms read back
+     * with their time and intensity, without extra arrays and without an intensity unit, and the report carries one
+     * warning for the extra arrays and one for the intensity units when the source has any.
+     */
+    @ParameterizedTest(name = "{0} {1} as {2}")
+    @MethodSource("chromatogramCases")
+    void chromatogramArraysAndIntensityUnitAreDroppedWithOneWarningEach(FixtureSet set, String fixture,
+                                                                       MetadataLayout metadata, @TempDir Path tmp) {
+        Source source = source(set, fixture);
+        String what = set.label + " " + fixture + " as " + metadata;
+        Options options = options(Layout.POINT, metadata);
+        Path out = tmp.resolve("output.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, options);
+
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        assertThat(back.chromatograms).as("%s chromatograms", what).hasSameSizeAs(source.chromatograms);
+        for (int i = 0; i < source.chromatograms.size(); i++) {
+            Chromatogram a = source.chromatograms.get(i);
+            Chromatogram b = back.chromatograms.get(i);
+            LayoutEquivalenceTest.assertIdentical(what + " chromatogram " + i + " time", a.time(), b.time());
+            LayoutEquivalenceTest.assertIdentical(what + " chromatogram " + i + " intensity", a.intensity(),
+                    b.intensity());
+        }
+        assertChromatogramExtrasDroppedWithOneWarningEach(what, fixture, source, back, options);
+    }
+
+    /**
+     * A spectrum with three scans and two precursors, the primary one with two selected ions and the other with one:
+     * the packed layout writes its first scan and the primary precursor with its first selected ion, and the report
+     * says once what it drops. The split layout writes all of it and warns about none; the unchanged fixture warns in
+     * neither layout.
+     */
+    @Test
+    void thePackedLayoutWarnsOnceAboutTheScansPrecursorsAndSelectedIonsItDrops(@TempDir Path tmp) {
+        Source small = source(FixtureSet.CURRENT, "small.mzpeak");
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        Spectrum msn = spectra.get(9);
+        SpectrumDescription d = msn.description();
+        Precursor primary = d.primaryPrecursor();
+        assertThat(d.scans()).as("scans of spectrum 9").hasSize(1);
+        assertThat(primary.precursorIndex()).as("parent of spectrum 9").isEqualTo(8L);
+        assertThat(primary.selectedIons()).as("selected ions of spectrum 9").hasSize(1);
+        SelectedIon extra = new SelectedIon(401.5, 2, 1500.0, List.of());
+        ScanEvent first = d.scans().get(0);
+        ScanEvent later = new ScanEvent(first.startTime() + 0.001, null, null, null, null, null, List.of(),
+                List.of());
+        List<Precursor> precursors = List.of(
+                new Precursor(primary.precursorIndex(), primary.precursorId(), primary.isolationWindow(),
+                        List.of(primary.selectedIons().get(0), extra), primary.activation()),
+                new Precursor(1L, spectra.get(1).description().id(), null, List.of(extra), Activation.EMPTY));
+        spectra.set(9, new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
+                List.of(first, later, later), precursors, d.parameters()), msn.mz(), msn.intensity(), msn.peaks(),
+                msn.arrays(), msn.peakArrays()));
+
+        Options packed = Options.defaults().withMetadataLayout(MetadataLayout.PACKED);
+        assertThat(packedWarnings(spectra, small, packed)).containsExactly("the packed metadata layout writes only"
+                + " the first scan, the primary precursor and its first selected ion of a spectrum: 2 later scans,"
+                + " 1 later precursor and 2 other selected ions are not written");
+        assertThat(packedWarnings(spectra, small, Options.defaults())).isEmpty();
+        assertThat(packedWarnings(small.spectra, small, packed)).isEmpty();
+        assertThat(packedWarnings(small.spectra, small, Options.defaults())).isEmpty();
+
+        Path out = tmp.resolve("packed.mzpeak");
+        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), small.fileMetadata, packed);
+        SpectrumDescription back = ForwardBackwardCorpusTest.readSource(out).spectra.get(9).description();
+        assertThat(back.scans()).as("scans written in the packed layout").hasSize(1);
+        assertThat(back.precursors()).as("precursors written in the packed layout").singleElement()
+                .satisfies(p -> assertThat(p.selectedIons()).containsExactly(primary.selectedIons().get(0)));
+    }
+
+    /** The report's warnings about the packed layout for a write of {@code spectra} with {@code options}. */
+    private static List<String> packedWarnings(List<Spectrum> spectra, Source s, Options options) {
+        return WritePlanner.plan(spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                options).report().warnings().stream().filter(w -> w.contains(PACKED_WARNING)).toList();
     }
 
     /**
@@ -181,7 +289,70 @@ class FixtureRoundTripTest {
         }
         String count = withExtras + (withExtras == 1 ? " spectrum " : " spectra ");
         assertThat(warnings).as("%s: warnings about extra signal arrays", what).singleElement().asString()
-                .startsWith(count).contains(String.join(", ", keys));
+                .startsWith(count).contains(String.join(", ", keys))
+                .endsWith("which are not written; their m/z and intensity are written");
+    }
+
+    /**
+     * No re-read chromatogram has an extra array or an intensity unit, and the report of the write carries one
+     * warning about the extra arrays, naming every key and the number of chromatograms that had one, and one about
+     * the intensity units, naming every unit and the number of chromatograms that declared one, each only when the
+     * source has any. The small* and has_uv fixtures get the exact warnings, diaPASEF none about chromatograms.
+     */
+    private static void assertChromatogramExtrasDroppedWithOneWarningEach(String what, String fixture, Source source,
+                                                                          Source back, Options options) {
+        for (Chromatogram b : back.chromatograms) {
+            assertThat(b.arrays()).as("%s chromatogram %d extra arrays after the round trip", what, b.index())
+                    .isEmpty();
+            assertThat(b.intensityUnit()).as("%s chromatogram %d intensity unit after the round trip", what,
+                    b.index()).isNull();
+        }
+        Set<String> keys = new LinkedHashSet<>();
+        Set<String> units = new LinkedHashSet<>();
+        int withArrays = 0;
+        int withUnit = 0;
+        for (Chromatogram c : source.chromatograms) {
+            if (!c.arrays().isEmpty()) {
+                withArrays++;
+                keys.addAll(c.arrays().keySet());
+            }
+            if (c.intensityUnit() != null) {
+                withUnit++;
+                units.add(c.intensityUnit());
+            }
+        }
+        List<String> warnings = WritePlanner.plan(source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, options).report().warnings();
+        List<String> arrays = warnings.stream().filter(w -> w.contains(CHROMATOGRAM_ARRAYS_WARNING)).toList();
+        List<String> unit = warnings.stream().filter(w -> w.contains(CHROMATOGRAM_UNIT_WARNING)).toList();
+        if (withArrays == 0) {
+            assertThat(arrays).as("%s: warnings about extra chromatogram arrays", what).isEmpty();
+        } else {
+            assertThat(arrays).as("%s: warnings about extra chromatogram arrays", what).singleElement().asString()
+                    .startsWith(withArrays + (withArrays == 1 ? " chromatogram " : " chromatograms "))
+                    .contains("(" + String.join(", ", keys) + ")");
+        }
+        if (withUnit == 0) {
+            assertThat(unit).as("%s: warnings about chromatogram intensity units", what).isEmpty();
+        } else {
+            assertThat(unit).as("%s: warnings about chromatogram intensity units", what).singleElement().asString()
+                    .startsWith(withUnit + (withUnit == 1 ? " chromatogram " : " chromatograms "))
+                    .contains("(" + String.join(", ", units) + ")");
+        }
+        String arraysWarning = "1 chromatogram carries extra arrays (ms level), which are not written; their time"
+                + " and intensity are written";
+        if (fixture.startsWith("small")) {
+            assertThat(arrays).as("%s", what).containsExactly(arraysWarning);
+            assertThat(unit).as("%s", what).containsExactly(
+                    "1 chromatogram declares an intensity unit (MS:1000131), which is not written");
+        } else if (fixture.startsWith("has_uv")) {
+            assertThat(arrays).as("%s", what).containsExactly(arraysWarning);
+            assertThat(unit).as("%s", what).containsExactly(
+                    "2 chromatograms declare an intensity unit (MS:1000131, UO:0000269), which is not written");
+        } else if (fixture.startsWith("diaPASEF")) {
+            assertThat(warnings).as("%s: warnings about chromatograms", what)
+                    .noneMatch(w -> w.contains("chromatogram"));
+        }
     }
 
     /**

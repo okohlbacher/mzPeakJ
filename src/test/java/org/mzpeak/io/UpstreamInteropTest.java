@@ -59,8 +59,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       chromatograms, wavelength spectra) and {@code check_archive_integrity()}, which must be {@code (True, [])};
  *   <li>the counts of the unit's acceptance are pinned: 48 spectra, 34 precursors, 34 selected ions and one
  *       chromatogram of 48 points for small, 212 spectra, 2 chromatograms and the wavelength facet for has_uv, 9
- *       spectra each for Example_Processed.img and diaPASEF.ref, 48 spectra for the Numpress archives and 34 spectra
- *       indexed 0..33 for the MS2 subset.
+ *       spectra each for Example_Processed.img and diaPASEF.ref, 48 spectra for the Numpress archives and the archive
+ *       without scans, and 34 spectra indexed 0..33 for the MS2 subset.
  * </ul>
  * An archive in the packed metadata layout is rejected by the Python reader.
  */
@@ -245,7 +245,7 @@ class UpstreamInteropTest {
         String fixture = output.source().getFileName().toString();
         int spectra = counts.path("spectra").asInt();
         switch (output.kind()) {
-            case NUMPRESS_SLOF, NUMPRESS_PIC -> assertThat(spectra).as("spectra of %s", output).isEqualTo(48);
+            case NUMPRESS_SLOF, NUMPRESS_PIC, SCANLESS -> assertThat(spectra).as("spectra of %s", output).isEqualTo(48);
             case MS2_SUBSET -> {
                 assertThat(spectra).as("spectra of %s", output).isEqualTo(34);
                 assertThat(longs(counts.path("spectrum_indices"))).as("indices of %s", output)

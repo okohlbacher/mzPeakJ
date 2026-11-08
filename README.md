@@ -19,9 +19,11 @@ It reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` (S
 delta-`chunk`, MS-Numpress `chunk` and coordinate-grid `chunk` layouts; spectra (MS1 + MSn), chromatograms, and
 UV/DAD wavelength spectra, with range queries, signal modes, column statistics and pluggable storage. It also
 **writes** mzPeak back out — point and Numpress layouts, with precursor activation, scan windows, ion-mobility
-and imaging-position columns, derived spectrum columns, wavelength facets, and scan settings — and is verified
-against the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) validator. See
-[Scope & limitations](#scope--limitations) for what's deferred.
+and imaging-position columns, derived spectrum columns, wavelength facets, and scan settings. An opt-in gate
+runs the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) validator on its
+output; it currently fails, because mzpeak-validate 0.9.25 predates the array-index schema mzPeakJ writes
+(HUPO-PSI/mzPeak `0220201`), and whether the CV list of `PACKED` output must declare IMS is undecided, so the
+output is not claimed to validate. See [Scope & limitations](#scope--limitations) for what's deferred.
 
 ## About the mzPeak format
 
@@ -62,6 +64,7 @@ import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.Chromatogram;
+import java.nio.file.Path;
 
 // Works for both an unpacked directory and a single-file .mzpeak ZIP:
 try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
@@ -104,7 +107,7 @@ where mzPeakJ deliberately differs from the Rust and Python readers (exact inter
 explicit signal modes, no implicit TIC/BPC by chromatogram index, …).
 
 ```java
-// imports: org.mzpeak.io.*, org.mzpeak.model.*, java.util.*, java.nio.channels.FileChannel
+// imports: org.mzpeak.io.*, org.mzpeak.model.*, java.util.*, java.nio.file.Path, java.nio.channels.FileChannel
 
 // Options: stored profile points only, and only one of the two signal members
 MzPeakReader.Options options = MzPeakReader.Options.defaults()
@@ -128,7 +131,8 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     Optional<DoubleRange> mzRange = reader.observedMzRange();     // Parquet row-group statistics
     Optional<DoubleRange> timeRange = reader.observedTimeRange(); // retention times held in memory
     reader.columnStatistics(MzPeakManifest.EntityType.SPECTRUM, MzPeakManifest.DataKind.SCANS, "MS:1000016")
-            .ifPresent(st -> System.out.println(st.column() + ": " + st.min() + " .. " + st.max()));
+            .ifPresent(st -> System.out.println(st.column() + ": " + st.min().orElse(Double.NaN) + " .. "
+                    + st.max().orElse(Double.NaN)));
 
     // TIC and BPC: a stored chromatogram of that type, else the one derived from the spectrum metadata
     Optional<Chromatogram> tic = reader.tic();             // stored MS:1000235 chromatogram, else encodedTic()
@@ -234,10 +238,21 @@ Writer notes:
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
   only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
+  A CENTROID spectrum with a non-finite m/z keeps both files, since `spectra_peaks` would read such a row back
+  as an invented peak (a deviation from the spec's routing).
+- An m/z, chromatogram time or wavelength axis that is not ascending is written re-sorted, with one WARNING per
+  entity. The sort orders rows by `Double.compare`, so rows with a NaN move to the end.
 - Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The point layout
   requires finite m/z, so transition data with no product-ion m/z (SRM/MRM) must use the Numpress layout.
-- Not yet written: extra signal arrays such as per-peak ion mobility (a write that drops a spectrum's extra
-  arrays logs one warning) and the delta-`chunk` layout; the m/z + intensity payload is preserved in full.
+- Not yet written: extra signal arrays of spectra (such as per-peak ion mobility) and of chromatograms (such as
+  the TIC's `ms level`), the chromatogram intensity unit, and the delta-`chunk` layout; the m/z + intensity
+  payload is preserved in full. Each kind of drop logs one WARNING, and so does a `PACKED` write that drops
+  scans, precursors or selected ions.
+- Known limits of the HEAD Python reader (HUPO-PSI/mzPeak `2ee2589`) on mzPeakJ's output: it loses the
+  selected ions of precursors whose `precursor_index` is null when other precursors in the file keep theirs
+  (`reader.py:421`, a pandas groupby drops NaN keys; mzPeakJ and the Rust reference attach them), and its
+  pynumpress cannot decode a spectrum of one point in the Numpress layout (a 12-byte linear payload; the writer
+  never leaves a one-point chunk otherwise).
 
 ## Running the CLI & examples
 
@@ -407,9 +422,12 @@ classes statically reference Hadoop types — but it is never actually invoked.
   (`RandomAccessBytes`, `MzPeakSource.zip` / `MzPeakSource.unpacked`) for remote or custom storage.
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
   STORED ZIP, format version `0.9.0`, in the split metadata layout that the HEAD Python reader reads (the
-  pin-era packed layout on request). Round-trips the full metadata schema — derived spectrum columns,
-  precursor activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD)
-  facets, and the imaging `scan_settings_list` — and is gated by the independent `mzpeak-validate` validator.
+  pin-era packed layout on request). Round-trips the metadata schema — derived spectrum columns, precursor
+  activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD) facets, and the
+  imaging `scan_settings_list` — except the extra signal arrays of spectra and chromatograms and the
+  chromatogram intensity unit, which are not written yet (each drop logs a WARNING). The opt-in
+  `mzpeak-validate` gate currently fails (validator 0.9.25 predates the array-index schema; whether the CV
+  list of `PACKED` output must declare IMS is undecided), so validation is not claimed.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
 - Tests on both vendored fixture sets, checked against golden outputs of the upstream Python reader
   (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
@@ -421,9 +439,10 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 **Deferred / known limitations:**
 
-- **Writing**: the delta-`chunk` layout and extra signal arrays such as per-peak ion mobility (dropped with
-  a warning; the m/z + intensity payload is preserved in full). The `PACKED` compatibility layout writes only
-  the primary scan / precursor / selected ion of a spectrum, so combineIMS frames lose their secondary
+- **Writing**: the delta-`chunk` layout, extra signal arrays of spectra (such as per-peak ion mobility) and
+  of chromatograms, and the chromatogram intensity unit (each kind dropped with a warning; the m/z +
+  intensity payload is preserved in full). The `PACKED` compatibility layout writes only the primary scan /
+  precursor / selected ion of a spectrum (with a warning), so combineIMS frames lose their secondary
   mobility-scan metadata there.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits

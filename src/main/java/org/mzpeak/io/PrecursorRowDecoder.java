@@ -16,7 +16,7 @@ import java.util.Set;
 /**
  * Decodes one precursor row of the spectrum metadata into a {@link PrecursorPart}; columns are resolved by
  * accession. The selected ions are attached by {@link PrecursorJoin}. Unconsumed scalar columns of the activation
- * scope become activation Params, and those of the isolation-window scope isolation-window Params; those of the
+ * scope become activation Params, and those of the isolation-window scope become isolation-window Params; those of the
  * precursor scope have no place in the model and are logged at DEBUG and dropped (split layout only; packed scopes
  * have no leftovers).
  */

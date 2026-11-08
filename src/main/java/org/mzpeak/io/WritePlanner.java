@@ -33,7 +33,11 @@ import java.util.function.ToLongFunction;
  * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
  * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, decides which members are written and
  * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
- * directory exists. Extra signal arrays of spectra are not written; the report gets one warning when there are any.
+ * directory exists. What the write loses gets one warning in the report for each kind: the extra signal arrays of
+ * spectra, the extra arrays of chromatograms and their intensity units, none of which are written yet (WR-11), and, in
+ * the packed layout, the scans after a spectrum's first, the precursors after its primary one and the selected ions
+ * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own, and so do, in the
+ * split layout, the scan settings without an id, which get one.
  */
 final class WritePlanner {
 
@@ -58,11 +62,16 @@ final class WritePlanner {
         boolean writesSpectraPeaks = false;
         Set<String> droppedExtras = new LinkedHashSet<>();
         int withDroppedExtras = 0;
+        // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
+        // other than the primary precursor's first.
+        int[] packedDrops = new int[3];
         for (int i = 0; i < ordered.size(); i++) {
             Spectrum s = ordered.get(i);
             List<Precursor> precursors = writtenPrecursors(s.description().precursors(), writtenIndex);
             if (options.metadataLayout() == MetadataLayout.SPLIT) {
                 requireOwnKeys(s, i, precursors);
+            } else {
+                countPackedDrops(s, precursors, packedDrops);
             }
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumEntry entry = disposition(s).renumbered(i, precursors)
@@ -79,14 +88,42 @@ final class WritePlanner {
         if (withDroppedExtras > 0) {
             report.warn(withDroppedExtras + (withDroppedExtras == 1 ? " spectrum carries" : " spectra carry")
                     + " extra signal arrays (" + String.join(", ", droppedExtras) + "), which are not written; "
-                    + "their m/z and intensity are");
+                    + "their m/z and intensity are written");
+        }
+        if (packedDrops[0] + packedDrops[1] + packedDrops[2] > 0) {
+            report.warn("the packed metadata layout writes only the first scan, the primary precursor and its first"
+                    + " selected ion of a spectrum: " + counted(packedDrops[0], "later scan", "later scans") + ", "
+                    + counted(packedDrops[1], "later precursor", "later precursors") + " and "
+                    + counted(packedDrops[2], "other selected ion", "other selected ions") + " are not written");
         }
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
         List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());
+        // Extra chromatogram arrays and the intensity unit are not written yet (WR-11): one warning for each.
+        Set<String> droppedArrays = new LinkedHashSet<>();
+        Set<String> droppedUnits = new LinkedHashSet<>();
+        int withDroppedArrays = 0;
+        int withDroppedUnit = 0;
         for (int i = 0; i < chromatogramOrder.size(); i++) {
             Chromatogram c = chromatogramOrder.get(i);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
+            if (!c.arrays().isEmpty()) {
+                withDroppedArrays++;
+                droppedArrays.addAll(c.arrays().keySet());
+            }
+            if (c.intensityUnit() != null) {
+                withDroppedUnit++;
+                droppedUnits.add(c.intensityUnit());
+            }
+        }
+        if (withDroppedArrays > 0) {
+            report.warn(withDroppedArrays + (withDroppedArrays == 1 ? " chromatogram carries" : " chromatograms carry")
+                    + " extra arrays (" + String.join(", ", droppedArrays) + "), which are not written; "
+                    + "their time and intensity are written");
+        }
+        if (withDroppedUnit > 0) {
+            report.warn(withDroppedUnit + (withDroppedUnit == 1 ? " chromatogram declares" : " chromatograms declare")
+                    + " an intensity unit (" + String.join(", ", droppedUnits) + "), which is not written");
         }
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
@@ -97,8 +134,68 @@ final class WritePlanner {
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
-                writesSpectraData, writesSpectraPeaks, scanSettings,
+                writesSpectraData, writesSpectraPeaks,
+                options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(FooterMetadataWriter.serialize(fileMetadata)), report);
+    }
+
+    /**
+     * {@code scanSettings} as the split layout writes them, {@code null} when they are: each one without an id gets
+     * {@code scan_settings_<position>}, with {@code _1}, {@code _2}, ... appended while another entry has that id,
+     * and its params, and one warning in {@code report} names the positions and the ids given. The current manifest
+     * needs an id: the reference's ScanSettings.id is a String (param.rs:458-460), so the Rust reader rejects a null
+     * one. The caller's list is returned when every entry has an id. The packed layout leaves the key out instead.
+     */
+    private static List<ScanSettings> withIds(List<ScanSettings> scanSettings, WriteReport report) {
+        if (scanSettings == null || scanSettings.stream().allMatch(s -> s.id() != null)) {
+            return scanSettings;
+        }
+        Set<String> taken = new HashSet<>();
+        for (ScanSettings s : scanSettings) {
+            if (s.id() != null) {
+                taken.add(s.id());
+            }
+        }
+        List<ScanSettings> out = new ArrayList<>(scanSettings.size());
+        List<String> positions = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < scanSettings.size(); i++) {
+            ScanSettings s = scanSettings.get(i);
+            if (s.id() != null) {
+                out.add(s);
+                continue;
+            }
+            String id = "scan_settings_" + i;
+            for (int suffix = 1; !taken.add(id); suffix++) {
+                id = "scan_settings_" + i + "_" + suffix;
+            }
+            out.add(new ScanSettings(id, s.parameters()));
+            positions.add(Integer.toString(i));
+            ids.add(id);
+        }
+        report.warn("scan settings " + joined(positions) + (positions.size() == 1 ? " has" : " have")
+                + " no id, which the current manifest requires; written as " + joined(ids));
+        return Collections.unmodifiableList(out);
+    }
+
+    /**
+     * Adds to {@code drops} what the packed layout does not write of {@code s}, whose precursors as written are
+     * {@code precursors}: its scans after the first ({@code drops[0]}), its precursors after the primary one
+     * ({@code drops[1]}) and its selected ions other than the primary precursor's first ({@code drops[2]}).
+     */
+    private static void countPackedDrops(Spectrum s, List<Precursor> precursors, int[] drops) {
+        drops[0] += Math.max(0, s.description().scans().size() - 1);
+        drops[1] += Math.max(0, precursors.size() - 1);
+        int ions = 0;
+        for (Precursor p : precursors) {
+            ions += p.selectedIons().size();
+        }
+        drops[2] += precursors.isEmpty() || precursors.get(0).selectedIons().isEmpty() ? ions : ions - 1;
+    }
+
+    /** {@code n} followed by {@code singular} or {@code plural}. */
+    private static String counted(int n, String singular, String plural) {
+        return n + " " + (n == 1 ? singular : plural);
     }
 
     // Disposition (design §11.5). Spec spectra.md:7-9 and 40-46 (d7bb25b): profile data goes to spectra_data and
@@ -248,13 +345,14 @@ final class WritePlanner {
         return out == null ? precursors : Collections.unmodifiableList(out);
     }
 
-    // Attribution check (design §11.5, WR-8). Both readers attach a selected ion to the first precursor of its
-    // spectrum whose key (source_index, precursor_index) equals the ion's, null equal to null (PrecursorJoin; reference
-    // metadata.rs:1157-1185). When precursors of one spectrum share their written key, the selected ions of every
-    // one after the first would silently move to the first. The split layout writes every precursor and refuses
-    // exactly that input; a shared key whose later precursors carry no selected ion loses nothing and is written.
-    // The typical cause is a multi-precursor spectrum written without its parents: every precursor_index is null.
-    // The packed layout writes the primary precursor only and is not checked.
+    // Attribution check (design §11.5, WR-8). The mzPeakJ reader attaches a selected ion to the first precursor of its
+    // spectrum whose key (source_index, precursor_index) equals the ion's, null equal to null, whatever the row order
+    // (PrecursorJoin). The Rust reference (metadata.rs:1156-1219) also needs a spectrum's selected ions sorted by that
+    // key, which SplitMetadataWriter writes them in. When precursors of one spectrum share their written key, the
+    // selected ions of every one after the first would silently move to the first. The split layout writes every
+    // precursor and refuses exactly that input; a shared key whose later precursors carry no selected ion loses
+    // nothing and is written. The typical cause is a multi-precursor spectrum written without its parents: every
+    // precursor_index is null. The packed layout writes the primary precursor only and is not checked.
 
     /**
      * Throws {@link MzPeakException} when a precursor of {@code precursors}, those of {@code s} as written with
