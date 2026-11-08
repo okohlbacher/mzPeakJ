@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntConsumer;
 
 /**
  * Minimal command-line parser shared by the example tools: positional arguments plus {@code --key value} /
@@ -48,5 +49,12 @@ final class ExampleArgs {
     int optInt(String key, int def) {
         String v = options.get(key);
         return v == null ? def : Integer.parseInt(v);
+    }
+
+    /** Hands a non-zero {@code status} to {@code exiter} (in an example's {@code main}, {@link System#exit}). */
+    static void exit(int status, IntConsumer exiter) {
+        if (status != 0) {
+            exiter.accept(status);
+        }
     }
 }

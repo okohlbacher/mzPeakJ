@@ -303,13 +303,19 @@ public final class MzPeakFileInfo {
     }
 
     public static void main(String[] args) {
+        ExampleArgs.exit(run(args, System.out, System.err), System::exit);
+    }
+
+    /** Prints the summary of the first input to {@code out} and returns 0, or the usage to {@code err} and 2. */
+    static int run(String[] args, PrintStream out, PrintStream err) {
         ExampleArgs a = new ExampleArgs(args);
         boolean statistics = a.positional.contains("-s") || a.options.containsKey("statistics");
         List<String> inputs = a.positional.stream().filter(p -> !p.equals("-s")).toList();
         if (inputs.isEmpty()) {
-            System.err.println("Usage: MzPeakFileInfo <in.mzpeak> [-s]   (-s adds intensity statistics)");
-            System.exit(2);
+            err.println("Usage: MzPeakFileInfo <in.mzpeak> [-s]   (-s adds intensity statistics)");
+            return 2;
         }
-        run(Path.of(inputs.get(0)), statistics, System.out);
+        run(Path.of(inputs.get(0)), statistics, out);
+        return 0;
     }
 }
