@@ -19,9 +19,11 @@ It reads the unpacked `*.mzpeak/` directory **and** the single-file `.mzpeak` (S
 delta-`chunk`, MS-Numpress `chunk` and coordinate-grid `chunk` layouts; spectra (MS1 + MSn), chromatograms, and
 UV/DAD wavelength spectra, with range queries, signal modes, column statistics and pluggable storage. It also
 **writes** mzPeak back out — point and Numpress layouts, with precursor activation, scan windows, ion-mobility
-and imaging-position columns, derived spectrum columns, wavelength facets, and scan settings — and is verified
-against the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) validator. See
-[Scope & limitations](#scope--limitations) for what's deferred.
+and imaging-position columns, derived spectrum columns, wavelength facets, and scan settings. An opt-in gate
+runs the independent [`mzpeak-validate`](https://github.com/okohlbacher/mzPeakValidator) validator on its
+output; it currently fails, because mzpeak-validate 0.9.25 predates the array-index schema mzPeakJ writes
+(HUPO-PSI/mzPeak `0220201`), and whether the CV list of `PACKED` output must declare IMS is undecided, so the
+output is not claimed to validate. See [Scope & limitations](#scope--limitations) for what's deferred.
 
 ## About the mzPeak format
 
@@ -234,12 +236,21 @@ Writer notes:
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
   only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
+  A CENTROID spectrum with a non-finite m/z keeps both files, since `spectra_peaks` would read such a row back
+  as an invented peak (a deviation from the spec's routing).
+- An m/z, chromatogram time or wavelength axis that is not ascending is written re-sorted, with one WARNING per
+  entity. The sort orders rows by `Double.compare`, so rows with a NaN move to the end.
 - Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The point layout
   requires finite m/z, so transition data with no product-ion m/z (SRM/MRM) must use the Numpress layout.
 - Not yet written: extra signal arrays of spectra (such as per-peak ion mobility) and of chromatograms (such as
   the TIC's `ms level`), the chromatogram intensity unit, and the delta-`chunk` layout; the m/z + intensity
   payload is preserved in full. Each kind of drop logs one WARNING, and so does a `PACKED` write that drops
   scans, precursors or selected ions.
+- Known limits of the HEAD Python reader (HUPO-PSI/mzPeak `2ee2589`) on mzPeakJ's output: it loses the
+  selected ions of precursors whose `precursor_index` is null when other precursors in the file keep theirs
+  (`reader.py:421`, a pandas groupby drops NaN keys; mzPeakJ and the Rust reference attach them), and its
+  pynumpress cannot decode a spectrum of one point in the Numpress layout (a 12-byte linear payload; the writer
+  never leaves a one-point chunk otherwise).
 
 ## Running the CLI & examples
 
@@ -412,8 +423,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   pin-era packed layout on request). Round-trips the metadata schema — derived spectrum columns, precursor
   activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD) facets, and the
   imaging `scan_settings_list` — except the extra signal arrays of spectra and chromatograms and the
-  chromatogram intensity unit, which are not written yet (each drop logs a WARNING), and is gated by the
-  independent `mzpeak-validate` validator.
+  chromatogram intensity unit, which are not written yet (each drop logs a WARNING). The opt-in
+  `mzpeak-validate` gate currently fails (validator 0.9.25 predates the array-index schema; whether the CV
+  list of `PACKED` output must declare IMS is undecided), so validation is not claimed.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
 - Tests on both vendored fixture sets, checked against golden outputs of the upstream Python reader
   (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates

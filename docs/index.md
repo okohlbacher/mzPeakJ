@@ -135,7 +135,8 @@ Two sets of HUPO-PSI example datasets are included. The current set, from upstre
 | `Example_Processed.img.mzpeak` | point, STORED ZIP | 9 profile spectra of an imzML imaging run |
 
 The legacy set, from upstream commit `29e59b2`, lies under `src/test/resources/mzpeak-legacy/` and uses the
-packed metadata layout, which mzPeakJ also reads and still writes:
+packed metadata layout, which mzPeakJ also reads. It writes that layout only on request, as an opt-in
+compatibility layout (`MetadataLayout.PACKED`); by default it writes the split layout:
 
 | Fixture | Layout | Contents |
 |---|---|---|

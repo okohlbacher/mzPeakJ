@@ -312,8 +312,9 @@ conformance rules require readers to resolve signal columns through it rather th
 
 A member without the footer key gets an **INFERRED** plan built from fixed column names (`point.mz`,
 `chunk.mz_chunk_values`, `intensity_numpress_slof_bytes`, …), the names mzPeakJ read before it used the array
-index; files mzPeakJ writes carry no array index and decode through it. A malformed index also gives the
-INFERRED plan, with a WARNING.
+index; files written by mzPeakJ 0.10.3 and earlier decode through it. Since WR-2, the files mzPeakJ writes carry
+a footer `<entity>_array_index` and decode through a FOOTER plan. A malformed index also gives the INFERRED
+plan, with a WARNING.
 
 The null-marking transforms `MS:1003901` and `MS:1003902` are treated alike: the spec swapped their labels
 (current files put `MS:1003902` on m/z), and filling is keyed on NaN positions anyway.
@@ -695,12 +696,16 @@ encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` v
 I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
 precursor), numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
 (CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
-re-sorts a main axis that is not ascending and decides which members are written. `spectra_data` is always
+re-sorts a main axis that is not ascending (by `Double.compare`, so rows with a NaN move to the end) and decides
+which members are written. A CENTROID spectrum with a non-finite m/z keeps both files, a deviation from §11.5:
+the reader builds a peak from every `spectra_peaks` row, and such a row would read back as an invented peak (the
+null fill interpolates a NaN m/z, and Numpress linear cannot encode NaN or an infinity). `spectra_data` is always
 written, in both layouts and both signal encodings, without a row when every spectrum is centroid, because both
 Rust reference readers open it unconditionally. `DatasetWriter` then writes the metadata members, the signal
-members (point layout, or MS-Numpress chunks of up to 500 points with linear m/z and SLOF or PIC intensity),
-chromatograms and wavelength spectra in point layout, and the manifest last; `ArchivePacker` packs a directory
-into a STORED ZIP whose last entry is the manifest.
+members (point layout, or MS-Numpress chunks of up to 500 points, never one of a single point unless the
+spectrum has one, with linear m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point
+layout, and the manifest last; `ArchivePacker` packs a directory into a STORED ZIP whose last entry is the
+manifest.
 
 **Metadata layouts** (`Options.withMetadataLayout`):
 
@@ -723,10 +728,16 @@ documents in both the manifest and the `spectra_metadata.parquet` footer.
 
 **Readers.** The default output is readable by the HEAD Python reader. The opt-in `UpstreamInteropTest` checks
 this on legacy small.unpacked and current small.unpacked, has_uv, Example_Processed.img and diaPASEF.ref
-(archive and directory), the Numpress SLOF and PIC archives of current small, and the `ExtractSpectra` MS2
-subset. The
-Python reader's arrays pass the golden rules against mzPeakJ's read of each source, its counts match, and
-`check_archive_integrity()` returns `(True, [])`. Readability by the Rust reference is untested.
+(archive and directory), the Numpress SLOF and PIC archives of current small, the `ExtractSpectra` MS2
+subset and current small without scans. The Python reader's arrays pass the golden rules against mzPeakJ's
+read of each source, its counts match, and `check_archive_integrity()` returns `(True, [])`. Readability by the
+Rust reference is untested.
+
+Known limits of the HEAD Python reader (2ee2589) on that output, left to the maintainer's upstream reports and
+pinned by no test, since a test would pin an upstream bug: it loses the selected ions of precursors whose
+`precursor_index` is null when other precursors in the file keep theirs (`reader.py:421`: a pandas groupby
+drops NaN keys), where mzPeakJ and the Rust reference attach them; and pynumpress cannot decode the 12-byte
+Numpress linear payload of a single value, which the writer still produces for a spectrum of one point.
 
 **Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`) and the chromatogram
 intensity unit; each kind of drop logs one WARNING, and so does a `PACKED` write that drops scans, precursors or

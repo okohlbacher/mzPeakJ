@@ -100,7 +100,11 @@ public final class MzPeakWriter {
      * the id {@code scan_settings_<position>}, made unique, and a WARNING is logged, since the current manifest needs
      * one; the packed layout leaves the id out.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
-     * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified).
+     * intensities with it, and a WARNING is logged for that entity (the caller's arrays are not modified). The sort
+     * orders the rows by {@link Double#compare}, so rows with a NaN move to the end.
+     * A CENTROID spectrum whose arrays are its peak list is written to spectra_peaks only, unless one of its m/z is
+     * not finite: then its arrays go to spectra_data and its peak list to spectra_peaks, since spectra_peaks would
+     * read such a row back as an invented peak.
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum
