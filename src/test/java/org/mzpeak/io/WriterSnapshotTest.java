@@ -107,6 +107,10 @@ class WriterSnapshotTest {
                         s.fileMetadata, split().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS))),
         WRITE_ARCHIVE_SPLIT("writeArchive-SPLIT", true, (out, s) -> MzPeakWriter.writeArchive(out, s.spectra,
                 s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, split())),
+        WRITE_ARCHIVE_NUMPRESS_SLOF_SPLIT("writeArchiveNumpress-SLOF-SPLIT", true, (out, s) ->
+                MzPeakWriter.writeArchive(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                        s.fileMetadata, split().withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS)
+                                .withNumpressIntensity(MzPeakWriter.NumpressIntensityEncoding.SLOF))),
         WRITE_DIRECTORY_PACKED("writeDirectory-PACKED", false, (out, s) -> MzPeakWriter.writeDirectory(out,
                 s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, packed())),
         WRITE_DIRECTORY_NUMPRESS_SLOF_PACKED("writeDirectoryNumpress-SLOF-PACKED", false, (out, s) ->
@@ -160,7 +164,11 @@ class WriterSnapshotTest {
                 Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_DIRECTORY_PACKED),
                 Arguments.of(FixtureSet.LEGACY, "has_uv.mzpeak", Overload.WRITE_ARCHIVE_PACKED),
                 Arguments.of(FixtureSet.CURRENT, "small.unpacked.mzpeak", Overload.WRITE_DIRECTORY_PACKED),
-                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY_PACKED));
+                Arguments.of(FixtureSet.CURRENT, "Example_Processed.img.mzpeak", Overload.WRITE_DIRECTORY_PACKED),
+                // diaPASEF (MZ-10): the ion mobility extra arrays (MZ-1) in both signal encodings and both layouts.
+                Arguments.of(FixtureSet.CURRENT, "diaPASEF.ref.mzpeak", Overload.WRITE_ARCHIVE_SPLIT),
+                Arguments.of(FixtureSet.CURRENT, "diaPASEF.ref.mzpeak", Overload.WRITE_ARCHIVE_NUMPRESS_SLOF_SPLIT),
+                Arguments.of(FixtureSet.CURRENT, "diaPASEF.ref.mzpeak", Overload.WRITE_DIRECTORY_PACKED));
     }
 
     @ParameterizedTest(name = "{0} {1} via {2}")
