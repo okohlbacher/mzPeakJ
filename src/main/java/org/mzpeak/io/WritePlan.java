@@ -159,7 +159,8 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
 
     /**
      * A chromatogram or wavelength spectrum to write: the caller's object, the index it is written with, and its time
-     * or wavelength axis with the intensity in the order they are written.
+     * or wavelength axis with the intensity in the order they are written. A chromatogram some of whose precursors
+     * are written with another precursor_index (WR-8) is a copy of the caller's with its precursors as written.
      */
     record Entry<T>(T source, long sourceIndex, SignalArrays arrays) {
     }

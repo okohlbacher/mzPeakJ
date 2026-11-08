@@ -40,18 +40,18 @@ import static org.mzpeak.io.NumpressSignalWriter.NUMPRESS_LINEAR_FIXED_POINT;
 
 /**
  * Plans a {@link MzPeakWriter} write without any I/O: enforces the reader's index contract, puts every entity in
- * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent, refuses in the split
- * layout precursors whose selected ions readers would attach to another precursor, routes each spectrum's payload to
- * spectra_data and spectra_peaks, puts each entity's rows in main-axis order, names the extra columns of the spectrum
- * signal files and the intensity and extra columns of chromatograms_data, decides which members are written and
- * serializes the footer key-values once. A contract violation throws {@link MzPeakException} before any file or temp
- * directory exists. What the packed layout loses gets one warning in the report for each kind: the scans after a
- * spectrum's first, the precursors after its primary one and the selected ions other than the primary precursor's
- * first (one warning), the Params of wavelength spectra (another), and the polarities, data processing references,
- * Params and precursors of chromatograms (a third). Each re-sorted main axis gets a warning of its own, and so do, in
- * the split layout, the scan settings without an id, which get one, and the chromatogram precursors, which are not
- * written yet. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs cannot encode is refused as a
- * contract violation.
+ * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent (a spectrum for a
+ * spectrum's precursor, a chromatogram for a chromatogram's), refuses in the split layout precursors whose selected
+ * ions readers would attach to another precursor, routes each spectrum's payload to spectra_data and spectra_peaks,
+ * puts each entity's rows in main-axis order, names the extra columns of the spectrum signal files and the intensity
+ * and extra columns of chromatograms_data, decides which members are written and serializes the footer key-values
+ * once. A contract violation throws {@link MzPeakException} before any file or temp directory exists. What the packed
+ * layout loses gets one warning in the report for each kind: the scans after a spectrum's first, the precursors after
+ * its primary one and the selected ions other than the primary precursor's first (one warning), the Params of
+ * wavelength spectra (another), and the polarities, data processing references, Params and precursors of
+ * chromatograms (a third). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
+ * scan settings without an id, which get one. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs
+ * cannot encode is refused as a contract violation.
  */
 final class WritePlanner {
 
@@ -135,7 +135,7 @@ final class WritePlanner {
             Spectrum s = ordered.get(i);
             List<Precursor> precursors = writtenPrecursors(s.description().precursors(), writtenIndex);
             if (options.metadataLayout() == MetadataLayout.SPLIT) {
-                requireOwnKeys(s, i, precursors);
+                requireOwnKeys(Owner.SPECTRUM, s.index(), i, s.description().precursors(), precursors);
             } else {
                 countPackedDrops(s, precursors, packedDrops);
             }
@@ -161,17 +161,23 @@ final class WritePlanner {
         Set<String> chromatogramColumns = new HashSet<>(CHROMATOGRAM_SIGNAL_COLUMNS);
         List<IntensityColumn> chromatogramIntensities = intensityColumns(chromatogramOrder, chromatogramColumns);
         Map<String, ExtraColumn> chromatogramExtras = new LinkedHashMap<>();
-        // What is not written of chromatograms: their precursors, and in the packed layout, whose schema is frozen,
-        // their polarities, data processing references and Params as well.
-        int[] chromatogramDrops = new int[5];
+        Map<Long, Long> writtenChromatogramIndex = new HashMap<>();
         for (int i = 0; i < chromatogramOrder.size(); i++) {
-            Chromatogram c = chromatogramOrder.get(i);
+            writtenChromatogramIndex.put(chromatogramOrder.get(i).index(), (long) i);
+        }
+        // What the packed layout, whose chromatogram schema is frozen, does not write of chromatograms.
+        int[] chromatogramDrops = new int[4];
+        for (int i = 0; i < chromatogramOrder.size(); i++) {
+            Chromatogram c = withWrittenPrecursors(chromatogramOrder.get(i), i, writtenChromatogramIndex,
+                    options.metadataLayout());
             addExtraColumns(c, chromatogramExtras, chromatogramColumns);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
             countChromatogramDrops(c, chromatogramDrops);
         }
-        warnChromatogramDrops(chromatogramDrops, options.metadataLayout(), report);
+        if (options.metadataLayout() == MetadataLayout.PACKED) {
+            warnPackedChromatogramDrops(chromatogramDrops, report);
+        }
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
         // The packed wavelength schema is frozen without a parameters list: one warning for the Params it drops.
@@ -254,42 +260,33 @@ final class WritePlanner {
     }
 
     /**
-     * Adds to {@code drops} what may not be written of {@code c}: whether it has precursors ({@code drops[0]}), its
-     * precursors ({@code drops[1]}), whether its polarity is known ({@code drops[2]}), whether it has a data
-     * processing reference ({@code drops[3]}) and its Params ({@code drops[4]}).
+     * Adds to {@code drops} what the packed layout does not write of {@code c}: its precursors ({@code drops[0]}),
+     * whether its polarity is known ({@code drops[1]}), whether it has a data processing reference ({@code drops[2]})
+     * and its Params ({@code drops[3]}).
      */
     private static void countChromatogramDrops(Chromatogram c, int[] drops) {
-        if (!c.precursors().isEmpty()) {
-            drops[0]++;
-        }
-        drops[1] += c.precursors().size();
+        drops[0] += c.precursors().size();
         if (c.polarity() != Polarity.UNKNOWN) {
-            drops[2]++;
+            drops[1]++;
         }
         if (c.dataProcessingRef() != null) {
-            drops[3]++;
+            drops[2]++;
         }
-        drops[4] += c.parameters().size();
+        drops[3] += c.parameters().size();
     }
 
     /**
-     * Records in {@code report} the one warning about what of the chromatograms counted in {@code drops}
-     * ({@link #countChromatogramDrops}) a write in {@code layout} does not write, if anything: the precursors, which
-     * no layout writes yet, and in the packed layout, whose schema is frozen, the polarities, data processing
-     * references and Params as well.
+     * Records in {@code report} the one warning about what the packed layout, whose chromatogram schema is frozen,
+     * does not write of the chromatograms counted in {@code drops} ({@link #countChromatogramDrops}), if anything:
+     * their polarities, data processing references, Params and precursors.
      */
-    private static void warnChromatogramDrops(int[] drops, MetadataLayout layout, WriteReport report) {
-        if (layout == MetadataLayout.PACKED) {
-            if (drops[1] + drops[2] + drops[3] + drops[4] > 0) {
-                report.warn("the packed metadata layout writes no polarity, data processing reference, parameters"
-                        + " or precursors of a chromatogram: " + counted(drops[2], "polarity", "polarities") + ", "
-                        + counted(drops[3], "data processing reference", "data processing references") + ", "
-                        + counted(drops[4], "parameter", "parameters") + " and "
-                        + counted(drops[1], "precursor", "precursors") + " are not written");
-            }
-        } else if (drops[0] > 0) {
-            report.warn(counted(drops[0], "chromatogram carries", "chromatograms carry") + " precursors ("
-                    + drops[1] + " in all), which are not written yet");
+    private static void warnPackedChromatogramDrops(int[] drops, WriteReport report) {
+        if (drops[0] + drops[1] + drops[2] + drops[3] > 0) {
+            report.warn("the packed metadata layout writes no polarity, data processing reference, parameters or"
+                    + " precursors of a chromatogram: " + counted(drops[1], "polarity", "polarities") + ", "
+                    + counted(drops[2], "data processing reference", "data processing references") + ", "
+                    + counted(drops[3], "parameter", "parameters") + " and "
+                    + counted(drops[0], "precursor", "precursors") + " are not written");
         }
     }
 
@@ -662,10 +659,12 @@ final class WritePlanner {
     }
 
     // Renumbering (design §11.5, WR-8). Spec spectra.md:91-93 and chromatograms.md:40: the indices of each entity
-    // run 0..n-1, and a precursor_index names a spectrum of the file. The Rust reader indexes its count vectors by
-    // spectrum index, and a filtered subset (ExtractSpectra) is sparse, so every entity is written as 0..n-1 in the
-    // order of the caller's indices, and each precursor_index as the new index of its parent, null when the parent
-    // is not written. Input numbered 0..n-1 in index order is written as given.
+    // run 0..n-1, and a spectrum's precursor_index names a spectrum of the file. The Rust reader indexes its count
+    // vectors by spectrum index, and a filtered subset (ExtractSpectra) is sparse, so every entity is written as
+    // 0..n-1 in the order of the caller's indices, and each precursor_index as the new index of its parent, null when
+    // the parent is not written. Input numbered 0..n-1 in index order is written as given. A chromatogram's
+    // precursor_index names a chromatogram (spec HEAD chromatograms.md:75-80; the Rust reader resolves a chromatogram
+    // precursor against the chromatograms, visitor.rs:3108-3122), so it goes through the chromatogram numbering.
 
     /**
      * {@code entities} in the order of their {@code index}: the caller's list when it is already in that order,
@@ -704,6 +703,26 @@ final class WritePlanner {
         return out == null ? precursors : Collections.unmodifiableList(out);
     }
 
+    /**
+     * {@code c}, written with {@code index}, with its precursors as written: each precursor_index replaced by the
+     * index {@code writtenIndex}, the chromatogram numbering, gives the chromatogram it names, or by null when that
+     * chromatogram is not written ({@link #writtenPrecursors}). In the {@link MetadataLayout#SPLIT} layout they are
+     * checked by {@link #requireOwnKeys}. A copy of {@code c} with those precursors is returned when one changes,
+     * else {@code c} itself; the caller's chromatogram is never modified.
+     */
+    private static Chromatogram withWrittenPrecursors(Chromatogram c, long index, Map<Long, Long> writtenIndex,
+                                                      MetadataLayout layout) {
+        List<Precursor> precursors = writtenPrecursors(c.precursors(), writtenIndex);
+        if (layout == MetadataLayout.SPLIT) {
+            requireOwnKeys(Owner.CHROMATOGRAM, c.index(), index, c.precursors(), precursors);
+        }
+        if (precursors == c.precursors()) {
+            return c;
+        }
+        return new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(), c.intensityUnit(),
+                c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), precursors);
+    }
+
     // Attribution check (design §11.5, WR-8). The mzPeakJ reader attaches a selected ion to the first precursor of its
     // spectrum whose key (source_index, precursor_index) equals the ion's, null equal to null, whatever the row order
     // (PrecursorJoin). The Rust reference (metadata.rs:1156-1219) also needs a spectrum's selected ions sorted by that
@@ -711,17 +730,35 @@ final class WritePlanner {
     // selected ions of every one after the first would silently move to the first. The split layout writes every
     // precursor and refuses exactly that input; a shared key whose later precursors carry no selected ion loses
     // nothing and is written. The typical cause is a multi-precursor spectrum written without its parents: every
-    // precursor_index is null. The packed layout writes the primary precursor only and is not checked.
+    // precursor_index is null. The packed layout writes the primary precursor only and is not checked. The precursors
+    // of a chromatogram are written and read the same way, keyed by the chromatogram's index, and are checked the same
+    // way in the split layout; the packed layout writes none.
+
+    /** The entity whose precursors {@link #requireOwnKeys} checks, as its messages name it. */
+    private enum Owner {
+        SPECTRUM("spectrum", "spectra"),
+        CHROMATOGRAM("chromatogram", "chromatograms");
+
+        private final String singular;
+        private final String plural;
+
+        Owner(String singular, String plural) {
+            this.singular = singular;
+            this.plural = plural;
+        }
+    }
 
     /**
-     * Throws {@link MzPeakException} when a precursor of {@code precursors}, those of {@code s} as written with
-     * {@code index}, carries selected ions and an earlier one has its precursor_index (null equal to null).
+     * Throws {@link MzPeakException} when a precursor of {@code precursors}, those {@code given} of the {@code owner}
+     * with the caller's index {@code callerIndex} as written with {@code index}, carries selected ions and an earlier
+     * one has its precursor_index (null equal to null).
      */
-    private static void requireOwnKeys(Spectrum s, long index, List<Precursor> precursors) {
+    private static void requireOwnKeys(Owner owner, long callerIndex, long index, List<Precursor> given,
+                                       List<Precursor> precursors) {
         for (int i = 1; i < precursors.size(); i++) {
             Long key = precursors.get(i).precursorIndex();
             if (!precursors.get(i).selectedIons().isEmpty() && firstWithKey(precursors, key) < i) {
-                throw new MzPeakException(sharedKeyMessage(s, index, precursors, key));
+                throw new MzPeakException(sharedKeyMessage(owner, callerIndex, index, given, precursors, key));
             }
         }
     }
@@ -739,13 +776,14 @@ final class WritePlanner {
     }
 
     /**
-     * The message for the precursors of {@code s} that share the written precursor_index {@code key}: the spectrum
-     * index, the positions and precursor ids of those precursors, the precursors whose selected ions would move to
-     * the first of them, and a remedy. When each of them names a different parent that is not written, the remedy is
-     * to write the parent spectra as well; otherwise it is to give each precursor a precursor_index of its own.
+     * The message for the precursors of the {@code owner} with the caller's index {@code callerIndex} that share the
+     * written precursor_index {@code key}: the owner's index, the positions and precursor ids of those precursors,
+     * the precursors whose selected ions would move to the first of them, and a remedy. When each of them names a
+     * different parent that is not written ({@code given} holds the caller's precursors), the remedy is to write the
+     * parent spectra or chromatograms as well; otherwise it is to give each precursor a precursor_index of its own.
      */
-    private static String sharedKeyMessage(Spectrum s, long index, List<Precursor> precursors, Long key) {
-        List<Precursor> given = s.description().precursors();
+    private static String sharedKeyMessage(Owner owner, long callerIndex, long index, List<Precursor> given,
+                                           List<Precursor> precursors, Long key) {
         List<String> sharing = new ArrayList<>();
         List<String> moved = new ArrayList<>();
         Set<Long> parents = new LinkedHashSet<>();
@@ -765,12 +803,13 @@ final class WritePlanner {
             everyOneNamesAParent &= parent != null && parents.add(parent);
         }
         String remedy = key == null && everyOneNamesAParent
-                ? "write their parent spectra (index " + joined(parents.stream().map(String::valueOf).toList())
+                ? "write their parent " + owner.plural + " (index "
+                + joined(parents.stream().map(String::valueOf).toList())
                 + ") as well, so that each precursor keeps a precursor_index of its own"
-                : "give each precursor of the spectrum a precursor_index of its own";
-        return "spectrum " + s.index() + ": precursors " + joined(sharing) + " share the written key (source_index "
-                + index + ", precursor_index " + key + "), so readers would attach the selected ions of precursor "
-                + joined(moved) + " to precursor " + first + "; " + remedy;
+                : "give each precursor of the " + owner.singular + " a precursor_index of its own";
+        return owner.singular + " " + callerIndex + ": precursors " + joined(sharing) + " share the written key"
+                + " (source_index " + index + ", precursor_index " + key + "), so readers would attach the selected"
+                + " ions of precursor " + joined(moved) + " to precursor " + first + "; " + remedy;
     }
 
     /** {@code parts} as {@code a}, {@code a and b} or {@code a, b and c}. */
@@ -783,10 +822,10 @@ final class WritePlanner {
      * Enforce the reader's index contract before anything is written. Spectrum, precursor_index, chromatogram
      * and wavelength-spectrum indices must be non-negative (they are stored as uint64), and spectrum, chromatogram
      * and wavelength-spectrum indices must be unique. The precursor_index checked is that of every precursor
-     * {@code layout} writes: the primary precursor's for {@link MetadataLayout#PACKED}, every precursor's for
-     * {@link MetadataLayout#SPLIT}. The reader finds a spectrum's data rows through the index range of each row
-     * group, so spectra are written in index order: this returns the caller's list when it is already in index
-     * order, and otherwise a stable-sorted copy. The caller's list is never modified.
+     * {@code layout} writes: a spectrum's primary precursor's for {@link MetadataLayout#PACKED}, every precursor's of
+     * a spectrum or chromatogram for {@link MetadataLayout#SPLIT}. The reader finds a spectrum's data rows through
+     * the index range of each row group, so spectra are written in index order: this returns the caller's list when
+     * it is already in index order, and otherwise a stable-sorted copy. The caller's list is never modified.
      */
     private static List<Spectrum> validateAndOrder(List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                                    List<WavelengthSpectrum> wavelengthSpectra,
@@ -809,6 +848,11 @@ final class WritePlanner {
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
             requireUnique(seen, c.index(), "chromatogram index");
+            if (layout == MetadataLayout.SPLIT) {
+                for (Precursor p : c.precursors()) {
+                    requireNonNegativePrecursorIndex(p);
+                }
+            }
         }
         seen.clear();
         for (WavelengthSpectrum w : wavelengthSpectra) {

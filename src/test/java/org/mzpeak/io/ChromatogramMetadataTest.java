@@ -55,9 +55,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * a null {@code scan_polarity} and an empty {@code parameters} list. The reader now takes {@code scan_polarity}
  * through {@link Polarity#fromCode} (0 is unknown), {@code data_processing_ref}, else Rust's
  * {@code data_processing_id}, and the {@code parameters} list followed, in the split layout, by the leftover columns
- * whose accession is new; precursors stay empty (MZ-6). The split writer writes the polarity, the reference (spec
- * spelling, design Q18) and the Params, and warns once about precursors; the packed writer, whose schema is frozen,
- * writes none of them and warns once. The cv-list prefix scan covers the Params (design §7).
+ * whose accession is new; the precursors are read and written since MZ-6 ({@link ChromatogramPrecursorTest}). The
+ * split writer writes the polarity, the reference (spec spelling, design Q18) and the Params; the packed writer,
+ * whose schema is frozen, writes none of them and warns once. The cv-list prefix scan covers the Params (design §7).
  *
  * <p>Oracle: the vendored HUPO-PSI fixtures; the raw cells of the current ones through {@link GoldenMeta}.
  */
@@ -72,8 +72,11 @@ class ChromatogramMetadataTest {
     private static final Param MS_LEVEL = new Param("ms level", "MS:1000511", 1L, null);
     /** Part of the warning about what the packed layout does not write of chromatograms. */
     private static final String PACKED_WARNING = "or precursors of a chromatogram";
-    /** Part of the warning about the chromatogram precursors, which no layout writes yet. */
-    private static final String PRECURSOR_WARNING = "which are not written yet";
+    /**
+     * Part of every warning about chromatograms; the split layout used to warn about their precursors, which it
+     * writes since MZ-6.
+     */
+    private static final String PRECURSOR_WARNING = "chromatogram";
     private static final Options SPLIT = Options.defaults().withMetadataLayout(MetadataLayout.SPLIT);
     private static final Options PACKED = Options.defaults().withMetadataLayout(MetadataLayout.PACKED);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -318,12 +321,12 @@ class ChromatogramMetadataTest {
     }
 
     /**
-     * A chromatogram precursor (SRM: Q1 isolation window, selected ion, activation) is not written yet: a split
-     * write warns once, with the count, writes no precursor row and reads the chromatogram back without it, its
-     * other new components kept.
+     * A chromatogram precursor (SRM: Q1 isolation window, selected ion, activation) is written in the split layout
+     * since MZ-6, without a warning: one precursor row, and the chromatogram reads back with it and its other new
+     * components ({@link ChromatogramPrecursorTest} covers the precursors).
      */
     @Test
-    void aChromatogramWithAPrecursorWarnsOnceInSplitAndReadsBackWithoutIt() {
+    void aChromatogramWithAPrecursorIsWrittenInSplitWithoutAWarning() {
         Precursor precursor = new Precursor(null, "controllerType=0 controllerNumber=1 scan=1",
                 new IsolationWindow(445.3, 0.5, 0.5),
                 List.of(new SelectedIon(445.3, 1, null, List.of())),
@@ -333,24 +336,22 @@ class ChromatogramMetadataTest {
                 List.of(precursor));
         Path out = tmp.resolve("srm.mzpeak");
         List<String> warnings = chromatogramWarnings(() -> writeChromatograms(out, List.of(srm), SPLIT));
-        assertThat(warnings).containsExactly("1 chromatogram carries precursors (1 in all), which are not written"
-                + " yet");
+        assertThat(warnings).isEmpty();
 
-        assertThat(rows(out.resolve(PRECURSORS))).isEmpty();
+        assertThat(rows(out.resolve(PRECURSORS))).hasSize(1);
         Chromatogram back = chromatograms(out).get(0);
-        assertThat(back.precursors()).isEmpty();
-        assertChromatogramEqual(withMetadata(srm, srm.polarity(), null, srm.parameters(), List.of()), back);
+        assertThat(back.precursors()).containsExactly(precursor);
+        assertChromatogramEqual(srm, back);
     }
 
-    /** The split warning is in the plural for several chromatograms and is not given without precursors. */
+    /** The split layout gives no warning about chromatogram precursors, however many chromatograms carry them. */
     @Test
-    void theSplitPrecursorWarningCountsInThePlural() {
+    void theSplitLayoutGivesNoPrecursorWarning() {
         Precursor precursor = new Precursor(null, null, null, List.of(), null);
         Chromatogram one = chromatogram(0, null, null, List.of(), List.of(precursor));
         Chromatogram two = chromatogram(1, null, null, List.of(), List.of(precursor, precursor));
         Chromatogram full = chromatogram(2, Polarity.POSITIVE, "dp", List.of(SOURCE_PARAM), List.of());
-        assertThat(planWarnings(List.of(one, two, full), SPLIT))
-                .containsExactly("2 chromatograms carry precursors (3 in all), which are not written yet");
+        assertThat(planWarnings(List.of(one, two, full), SPLIT)).isEmpty();
         assertThat(planWarnings(List.of(full), SPLIT)).isEmpty();
     }
 
@@ -459,7 +460,7 @@ class ChromatogramMetadataTest {
         assertThat(decode(entry)).containsExactly(new ChromatogramMetadataDecoder.Header(0, "TIC", "MS:1000235",
                 Polarity.NEGATIVE, null, List.of(SOURCE_PARAM, listedLevel,
                         new Param("total ion current", "MS:1000285", 1.5, "MS:1000131"),
-                        new Param("comment", null, "note", null))));
+                        new Param("comment", null, "note", null)), List.of()));
     }
 
     /**
@@ -490,7 +491,7 @@ class ChromatogramMetadataTest {
         write(schema, row);
         assertThat(decode(new Entry(METADATA, "chromatogram", "metadata"))).containsExactly(
                 new ChromatogramMetadataDecoder.Header(0, "TIC", "MS:1000235", Polarity.POSITIVE, "dp1",
-                        List.of(SOURCE_PARAM)));
+                        List.of(SOURCE_PARAM), List.of()));
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------

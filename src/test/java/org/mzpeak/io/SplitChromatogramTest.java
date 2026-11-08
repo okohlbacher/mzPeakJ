@@ -40,7 +40,8 @@ import static org.assertj.core.api.Assertions.within;
  * RD-8: chromatogram metadata in the split layout of the current fixtures (HUPO-PSI/mzPeak 2ee2589), read through
  * {@link ChromatogramMetadataDecoder} and {@link MzPeakReader}. Headers are checked against the raw pyarrow cells
  * ({@link GoldenMeta}, FX-2), time and intensity against the HEAD Python golden ({@link Golden}); the chromatogram
- * data member is decoded as before. The chromatogram precursors and selected-ions facets are not decoded.
+ * data member is decoded as before. The chromatogram precursors and selected-ions facets of these fixtures have no
+ * rows.
  */
 class SplitChromatogramTest {
 
@@ -273,9 +274,13 @@ class SplitChromatogramTest {
 
     // ---- helpers --------------------------------------------------------------------------------------------
 
-    /** The header of a chromatogram of unknown polarity, without data processing reference and without Params. */
+    /**
+     * The header of a chromatogram of unknown polarity, without data processing reference, without Params and
+     * without precursors.
+     */
     private static ChromatogramMetadataDecoder.Header header(long index, String id, String typeCurie) {
-        return new ChromatogramMetadataDecoder.Header(index, id, typeCurie, Polarity.UNKNOWN, null, List.of());
+        return new ChromatogramMetadataDecoder.Header(index, id, typeCurie, Polarity.UNKNOWN, null, List.of(),
+                List.of());
     }
 
     /** A split chromatogram table with {@code index}, {@code id} and the type column {@code typeColumn}. */
