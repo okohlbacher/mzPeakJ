@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
@@ -29,7 +30,8 @@ import java.util.stream.Stream;
  * {@code .mzpeak} ZIP. Surface: open, count, metadata access, spectrum (m/z + intensity + peaks + extra arrays
  * such as ion mobility) materialization, lookup by index / scan number / native id / retention time, iteration, range
  * queries ({@link #extractSignal(SignalQuery)}, {@link #queryPeaks(SignalQuery)}), metadata column statistics
- * ({@link #columnStatistics}, {@link #observedMzRange()}), and chromatograms.
+ * ({@link #columnStatistics}, {@link #observedMzRange()}), and chromatograms, including a TIC and a BPC derived from
+ * the spectrum metadata ({@link #encodedTic()}, {@link #encodedBpc()}).
  *
  * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
  * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); open with
@@ -143,6 +145,12 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     /** The lowest and highest observed m/z terms of the spectrum metadata. */
     private static final String LOWEST_OBSERVED_MZ = "MS:1000528";
     private static final String HIGHEST_OBSERVED_MZ = "MS:1000527";
+    /** The total ion current and base peak intensity terms of the spectrum metadata. */
+    private static final String TOTAL_ION_CURRENT = "MS:1000285";
+    private static final String BASE_PEAK_INTENSITY = "MS:1000505";
+    /** The chromatogram types total ion current chromatogram and basepeak chromatogram. */
+    private static final String TIC_CHROMATOGRAM = "MS:1000235";
+    private static final String BPC_CHROMATOGRAM = "MS:1000628";
 
     private final MzPeakSource source;
     private final MzPeakManifest manifest;
@@ -607,6 +615,94 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     public Optional<org.mzpeak.model.Chromatogram> getChromatogramById(String id) {
         return chromatograms0() == null ? Optional.empty() : chromatograms0().byId(id);
+    }
+
+    /**
+     * The total ion current chromatogram: the first of {@link #chromatograms()} of the type MS:1000235 (total ion
+     * current chromatogram), else the one derived from the spectrum metadata, {@link #encodedTic()}.
+     *
+     * @return empty when the dataset stores no such chromatogram and its spectrum metadata has no total ion current
+     *         column
+     * @throws IllegalStateException if this reader is closed
+     */
+    public Optional<org.mzpeak.model.Chromatogram> tic() {
+        return storedOrEncoded(TIC_CHROMATOGRAM, this::encodedTic);
+    }
+
+    /**
+     * The base peak chromatogram: the first of {@link #chromatograms()} of the type MS:1000628 (basepeak
+     * chromatogram), else the one derived from the spectrum metadata, {@link #encodedBpc()}.
+     *
+     * @return empty when the dataset stores no such chromatogram and its spectrum metadata has no base peak
+     *         intensity column
+     * @throws IllegalStateException if this reader is closed
+     */
+    public Optional<org.mzpeak.model.Chromatogram> bpc() {
+        return storedOrEncoded(BPC_CHROMATOGRAM, this::encodedBpc);
+    }
+
+    /**
+     * The total ion current chromatogram derived from the spectrum metadata: one point per spectrum, in index order,
+     * that has a total ion current (MS:1000285) and a finite retention time, which give the point's intensity and
+     * time. It has the index 0, the id {@code "TIC"} and the type MS:1000235 (total ion current chromatogram), no
+     * intensity unit and no further arrays. It is not one of {@link #chromatograms()}, and it may differ from a TIC
+     * the dataset stores, which {@link #tic()} prefers. Reads the index and total ion current columns of the
+     * spectrum metadata member.
+     *
+     * @return empty when the spectrum metadata has no numeric total ion current column
+     * @throws IllegalStateException if this reader is closed
+     */
+    public Optional<org.mzpeak.model.Chromatogram> encodedTic() {
+        return encoded(TOTAL_ION_CURRENT, 0, "TIC", TIC_CHROMATOGRAM);
+    }
+
+    /**
+     * The base peak chromatogram derived from the spectrum metadata: one point per spectrum, in index order, that
+     * has a base peak intensity (MS:1000505) and a finite retention time, which give the point's intensity and time.
+     * It has the index 1, the id {@code "BPC"} and the type MS:1000628 (basepeak chromatogram), no intensity unit
+     * and no further arrays. It is not one of {@link #chromatograms()}, and it may differ from a BPC the dataset
+     * stores, which {@link #bpc()} prefers. Reads the index and base peak intensity columns of the spectrum metadata
+     * member.
+     *
+     * @return empty when the spectrum metadata has no numeric base peak intensity column
+     * @throws IllegalStateException if this reader is closed
+     */
+    public Optional<org.mzpeak.model.Chromatogram> encodedBpc() {
+        return encoded(BASE_PEAK_INTENSITY, 1, "BPC", BPC_CHROMATOGRAM);
+    }
+
+    private Optional<org.mzpeak.model.Chromatogram> storedOrEncoded(
+            String type, Supplier<Optional<org.mzpeak.model.Chromatogram>> encoded) {
+        requireOpen();
+        for (org.mzpeak.model.Chromatogram c : chromatograms()) {
+            if (type.equals(c.typeCurie())) {
+                return Optional.of(c);
+            }
+        }
+        return encoded.get();
+    }
+
+    /**
+     * The chromatogram {@code (index, id, type)} that pairs the retention time of each spectrum with the value of
+     * the term {@code accession} in its metadata row.
+     */
+    private Optional<org.mzpeak.model.Chromatogram> encoded(String accession, long index, String id, String type) {
+        requireOpen();
+        Optional<Map<Long, Double>> values =
+                MetadataColumns.valuesByIndex(manifest, source, EntityType.SPECTRUM, accession);
+        if (values.isEmpty()) {
+            return Optional.empty();
+        }
+        DoubleArrayBuilder time = new DoubleArrayBuilder();
+        DoubleArrayBuilder intensity = new DoubleArrayBuilder();
+        for (SpectrumDescription d : descriptions) {  // sorted by index
+            Double value = values.get().get(d.index());
+            if (value != null && Double.isFinite(d.retentionTime())) {
+                time.add(d.retentionTime());
+                intensity.add(value);
+            }
+        }
+        return Optional.of(new org.mzpeak.model.Chromatogram(index, id, type, time.toArray(), intensity.toArray()));
     }
 
     // ---- wavelength (UV/DAD) spectra --------------------------------------------------------------
