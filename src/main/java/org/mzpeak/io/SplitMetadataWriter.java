@@ -13,7 +13,9 @@ import org.mzpeak.io.ManifestWriter.Dialect;
 import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
@@ -23,6 +25,7 @@ import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -80,8 +83,21 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * (WR-8 adds a planner check that refuses such input). The precursor and selected-ion members are written even
  * when no spectrum has a precursor, as the reference does.
  *
- * <p>Not written yet: the split chromatogram and wavelength-spectrum metadata (WR-6), which are written in the packed
- * layout until then. The reader finds every member by role and detects its layout from its own schema.
+ * <p>Chromatograms and wavelength spectra (WR-6) get the same treatment, each member written only when the plan
+ * has entities of its kind:
+ * <ul>
+ *   <li>chromatograms_metadata: one row per chromatogram with its index, id, {@code scan_polarity} (always null: the
+ *       model has no chromatogram polarity), its type as a term marker, its point count and an empty
+ *       {@code parameters} list; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have
+ *       the schemas of the spectrum facets and no rows, since the model has no chromatogram precursors;
+ *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, point count, lambda
+ *       max and an empty {@code parameters} list; wavelength_spectra_metadata_scans: one row per wavelength spectrum,
+ *       keyed by {@code source_index} with a global {@code scan_index}, whose {@code scan_start_time} is the
+ *       spectrum's time, with an empty {@code parameters} list.
+ * </ul>
+ * As in the reference's output, the chromatogram members carry {@code chromatogram_count} as their only footer
+ * key-value, and the wavelength members the plan's file metadata and {@code wavelength_spectrum_count}. The reader
+ * finds every member by role and detects its layout from its own schema.
  */
 final class SplitMetadataWriter implements MetadataTablesWriter {
 
@@ -92,6 +108,11 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final String SPECTRA_SCANS = "spectra_metadata_scans.parquet";
     private static final String SPECTRA_PRECURSORS = "spectra_metadata_precursors.parquet";
     private static final String SPECTRA_SELECTED_IONS = "spectra_metadata_selected_ions.parquet";
+    private static final String CHROMATOGRAMS_METADATA = "chromatograms_metadata.parquet";
+    private static final String CHROMATOGRAMS_PRECURSORS = "chromatograms_metadata_precursors.parquet";
+    private static final String CHROMATOGRAMS_SELECTED_IONS = "chromatograms_metadata_selected_ions.parquet";
+    private static final String WAVELENGTH_METADATA = "wavelength_spectra_metadata.parquet";
+    private static final String WAVELENGTH_SCANS = "wavelength_spectra_metadata_scans.parquet";
 
     // structural columns, which no column mapping names
     private static final String INDEX = "index";
@@ -152,6 +173,16 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column CHARGE_STATE = column(Facet.SPECTRUM_SELECTED_ION, "MS:1000041");
     private static final Column PEAK_INTENSITY = column(Facet.SPECTRUM_SELECTED_ION, "MS:1000042");
 
+    // CV-mapped chromatogram columns
+    private static final Column CHROMATOGRAM_POLARITY = column(Facet.CHROMATOGRAM, "MS:1000465");
+    private static final Column CHROMATOGRAM_TYPE = column(Facet.CHROMATOGRAM, "MS:1000626");
+    private static final Column CHROMATOGRAM_POINTS = column(Facet.CHROMATOGRAM, "MS:1003060");
+
+    // CV-mapped wavelength-spectrum columns
+    private static final Column WAVELENGTH_POINTS = column(Facet.WAVELENGTH_SPECTRUM, "MS:1003060");
+    private static final Column LAMBDA_MAX = column(Facet.WAVELENGTH_SPECTRUM, "MS:1003812");
+    private static final Column WAVELENGTH_SCAN_START_TIME = column(Facet.WAVELENGTH_SCAN, "MS:1000016");
+
     private static final MessageType SPECTRUM_SCHEMA = Types.buildMessage()
             .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
@@ -198,16 +229,59 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .addField(paramListField())
             .named("spectra_metadata_selected_ions");
 
+    private static final MessageType CHROMATOGRAM_SCHEMA = Types.buildMessage()
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
+            .optional(PrimitiveTypeName.INT32).named(field(CHROMATOGRAM_POLARITY))
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(CHROMATOGRAM_TYPE))
+            .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(CHROMATOGRAM_POINTS))
+            .addField(paramListField())
+            .named("chromatograms_metadata");
+
+    /** The chromatogram precursor and selected-ion facets have the fields of the spectrum facets (design §11.8). */
+    private static final MessageType CHROMATOGRAM_PRECURSOR_SCHEMA =
+            new MessageType("chromatograms_metadata_precursors", PRECURSOR_SCHEMA.getFields());
+    private static final MessageType CHROMATOGRAM_SELECTED_ION_SCHEMA =
+            new MessageType("chromatograms_metadata_selected_ions", SELECTED_ION_SCHEMA.getFields());
+
+    private static final MessageType WAVELENGTH_SCHEMA = Types.buildMessage()
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
+            .optional(PrimitiveTypeName.DOUBLE).named(TIME)
+            .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(WAVELENGTH_POINTS))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(LAMBDA_MAX))
+            .addField(paramListField())
+            .named("wavelength_spectra_metadata");
+
+    private static final MessageType WAVELENGTH_SCAN_SCHEMA = Types.buildMessage()
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
+            .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_SCAN_START_TIME))
+            .addField(paramListField())
+            .named("wavelength_spectra_metadata_scans");
+
     private static final List<ColumnMapping> SPECTRUM_MAPPING = mapping(Facet.SPECTRUM,
             Set.of(MS_LEVEL, SCAN_POLARITY, REPRESENTATION, SPECTRUM_TYPE, LOWEST_MZ, HIGHEST_MZ, N_POINTS, N_PEAKS,
                     BASE_PEAK_MZ, BASE_PEAK_INTENSITY, TIC));
     /** The scan columns always written; the position columns are added when some scan has a position. */
     private static final Set<Column> SCAN_COLUMNS = Set.of(SCAN_START_TIME, PRESET_SCAN_CONFIGURATION, FILTER_STRING,
             ION_INJECTION_TIME, WINDOW_LOWER, WINDOW_UPPER);
-    private static final List<ColumnMapping> PRECURSOR_MAPPING = mapping(Facet.SPECTRUM_PRECURSOR,
-            Set.of(ISOLATION_TARGET, ISOLATION_LOWER, ISOLATION_UPPER, DISSOCIATION_METHOD, COLLISION_ENERGY));
-    private static final List<ColumnMapping> SELECTED_ION_MAPPING = mapping(Facet.SPECTRUM_SELECTED_ION,
-            Set.of(SELECTED_ION_MZ, CHARGE_STATE, PEAK_INTENSITY));
+    private static final Set<Column> PRECURSOR_COLUMNS = Set.of(ISOLATION_TARGET, ISOLATION_LOWER, ISOLATION_UPPER,
+            DISSOCIATION_METHOD, COLLISION_ENERGY);
+    private static final Set<Column> SELECTED_ION_COLUMNS = Set.of(SELECTED_ION_MZ, CHARGE_STATE, PEAK_INTENSITY);
+    private static final List<ColumnMapping> PRECURSOR_MAPPING = mapping(Facet.SPECTRUM_PRECURSOR, PRECURSOR_COLUMNS);
+    private static final List<ColumnMapping> SELECTED_ION_MAPPING =
+            mapping(Facet.SPECTRUM_SELECTED_ION, SELECTED_ION_COLUMNS);
+    private static final List<ColumnMapping> CHROMATOGRAM_MAPPING = mapping(Facet.CHROMATOGRAM,
+            Set.of(CHROMATOGRAM_POLARITY, CHROMATOGRAM_TYPE, CHROMATOGRAM_POINTS));
+    private static final List<ColumnMapping> CHROMATOGRAM_PRECURSOR_MAPPING = mapping(Facet.CHROMATOGRAM_PRECURSOR,
+            sameColumns(Facet.CHROMATOGRAM_PRECURSOR, PRECURSOR_COLUMNS));
+    private static final List<ColumnMapping> CHROMATOGRAM_SELECTED_ION_MAPPING = mapping(
+            Facet.CHROMATOGRAM_SELECTED_ION, sameColumns(Facet.CHROMATOGRAM_SELECTED_ION, SELECTED_ION_COLUMNS));
+    private static final List<ColumnMapping> WAVELENGTH_MAPPING = mapping(Facet.WAVELENGTH_SPECTRUM,
+            Set.of(WAVELENGTH_POINTS, LAMBDA_MAX));
+    private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
+            Set.of(WAVELENGTH_SCAN_START_TIME));
 
     private SplitMetadataWriter() {
     }
@@ -240,18 +314,38 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 DataKind.SELECTED_IONS, SELECTED_ION_MAPPING), plan, footer);
     }
 
-    /** Writes the packed chromatogram metadata, until WR-6 splits it. */
+    /**
+     * Writes chromatograms_metadata and the empty chromatograms_metadata_precursors and
+     * chromatograms_metadata_selected_ions. Each carries {@code chromatogram_count}, the chromatograms in the archive,
+     * as its only footer key-value.
+     */
     @Override
     public void writeChromatogramMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
             throws IOException {
-        PackedMetadataWriter.INSTANCE.writeChromatogramMetadata(directory, members, plan);
+        Map<String, String> footer = Map.of(countKey(SignalEntity.CHROMATOGRAM),
+                Long.toString(plan.chromatograms().size()));
+        writeChromatograms(member(directory, members, CHROMATOGRAMS_METADATA, EntityType.CHROMATOGRAM,
+                DataKind.METADATA, CHROMATOGRAM_MAPPING), plan, footer);
+        writeEmpty(member(directory, members, CHROMATOGRAMS_PRECURSORS, EntityType.CHROMATOGRAM,
+                DataKind.PRECURSORS, CHROMATOGRAM_PRECURSOR_MAPPING), CHROMATOGRAM_PRECURSOR_SCHEMA, plan, footer);
+        writeEmpty(member(directory, members, CHROMATOGRAMS_SELECTED_IONS, EntityType.CHROMATOGRAM,
+                DataKind.SELECTED_IONS, CHROMATOGRAM_SELECTED_ION_MAPPING), CHROMATOGRAM_SELECTED_ION_SCHEMA, plan,
+                footer);
     }
 
-    /** Writes the packed wavelength-spectrum metadata, until WR-6 splits it. */
+    /**
+     * Writes wavelength_spectra_metadata and wavelength_spectra_metadata_scans. Each carries the plan's file metadata
+     * and {@code wavelength_spectrum_count}, the wavelength spectra in the archive, as footer key-values.
+     */
     @Override
     public void writeWavelengthMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
             throws IOException {
-        PackedMetadataWriter.INSTANCE.writeWavelengthMetadata(directory, members, plan);
+        Map<String, String> footer = new LinkedHashMap<>(plan.footer());
+        footer.put(countKey(SignalEntity.WAVELENGTH_SPECTRUM), Long.toString(plan.wavelengthSpectra().size()));
+        writeWavelengthSpectra(member(directory, members, WAVELENGTH_METADATA, EntityType.WAVELENGTH_SPECTRUM,
+                DataKind.METADATA, WAVELENGTH_MAPPING), plan, footer);
+        writeWavelengthScans(member(directory, members, WAVELENGTH_SCANS, EntityType.WAVELENGTH_SPECTRUM,
+                DataKind.SCANS, WAVELENGTH_SCAN_MAPPING), plan, footer);
     }
 
     // ---- spectra_metadata ---------------------------------------------------------------------------------------
@@ -457,6 +551,86 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
     }
 
+    // ---- chromatograms_metadata and its facets ------------------------------------------------------------------
+
+    /** Writes one row per chromatogram; {@code scan_polarity} stays null, as the model has no polarity. */
+    private static void writeChromatograms(Path file, WritePlan plan, Map<String, String> footer)
+            throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(CHROMATOGRAM_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, CHROMATOGRAM_SCHEMA, footer, plan.options())) {
+            for (Entry<Chromatogram> entry : plan.chromatograms()) {
+                Chromatogram c = entry.source();
+                Group row = factory.newGroup();
+                row.add(INDEX, entry.sourceIndex());
+                if (c.id() != null) {
+                    row.add(ID, c.id());
+                }
+                if (c.typeCurie() != null) {
+                    row.add(field(CHROMATOGRAM_TYPE), c.typeCurie());
+                }
+                row.add(field(CHROMATOGRAM_POINTS), (long) c.size());
+                // The model has no chromatogram Params.
+                params(row, List.of());
+                writer.write(row);
+            }
+        }
+    }
+
+    /** Writes a member of {@code schema} without rows: the model has no chromatogram precursors or selected ions. */
+    private static void writeEmpty(Path file, MessageType schema, WritePlan plan, Map<String, String> footer)
+            throws IOException {
+        openWriter(file, schema, footer, plan.options()).close();
+    }
+
+    // ---- wavelength_spectra_metadata and its scans --------------------------------------------------------------
+
+    private static void writeWavelengthSpectra(Path file, WritePlan plan, Map<String, String> footer)
+            throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_SCHEMA, footer, plan.options())) {
+            for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
+                WavelengthSpectrum w = entry.source();
+                Group row = factory.newGroup();
+                row.add(INDEX, entry.sourceIndex());
+                if (w.id() != null) {
+                    row.add(ID, w.id());
+                }
+                if (Double.isFinite(w.time())) {
+                    row.add(TIME, w.time());
+                }
+                row.add(field(WAVELENGTH_POINTS), (long) w.size());
+                addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
+                // The model has no wavelength-spectrum Params.
+                params(row, List.of());
+                writer.write(row);
+            }
+        }
+    }
+
+    /**
+     * Writes one scan per wavelength spectrum, its time as the {@code scan_start_time}, with a global
+     * {@code scan_index}. The empty {@code parameters} list is there for the HEAD Python reader, which reads it from
+     * every scan of a spectrum it returns.
+     */
+    private static void writeWavelengthScans(Path file, WritePlan plan, Map<String, String> footer)
+            throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_SCAN_SCHEMA);
+        long scanIndex = 0;
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_SCAN_SCHEMA, footer, plan.options())) {
+            for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
+                double time = entry.source().time();
+                Group row = factory.newGroup();
+                row.add(SOURCE_INDEX, entry.sourceIndex());
+                row.add(SCAN_INDEX, scanIndex++);
+                if (Double.isFinite(time)) {
+                    row.add(field(WAVELENGTH_SCAN_START_TIME), time);
+                }
+                params(row, List.of());
+                writer.write(row);
+            }
+        }
+    }
+
     /** {@code scan_windows: list<item: struct<scan_window_lower_limit, scan_window_upper_limit>>}. */
     private static Type scanWindowListField() {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
@@ -618,6 +792,23 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static Column column(Facet facet, String accession) {
         return ColumnTable.byAccession(facet, accession).orElseThrow(
                 () -> new IllegalStateException("no " + accession + " column in " + facet));
+    }
+
+    /**
+     * The columns of {@code facet} with the terms of {@code columns}, which belong to another facet, for a member
+     * written with that facet's fields; each must have the same path.
+     */
+    private static Set<Column> sameColumns(Facet facet, Set<Column> columns) {
+        Set<Column> out = new HashSet<>();
+        for (Column c : columns) {
+            Column same = column(facet, c.accession());
+            if (!same.path().equals(c.path())) {
+                throw new IllegalStateException(c.accession() + " is at " + same.path() + " in " + facet + " but at "
+                        + c.path() + " in " + c.facet());
+            }
+            out.add(same);
+        }
+        return out;
     }
 
     /** The field name of {@code column} in its scope: the last segment of its path. */

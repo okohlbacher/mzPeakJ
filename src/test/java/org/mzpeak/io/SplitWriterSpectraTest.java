@@ -113,7 +113,7 @@ class SplitWriterSpectraTest {
         for (MzPeakManifest.Entry e : manifest.files()) {
             roles.add(e.name() + "|" + e.entityType() + "|" + e.dataKind());
         }
-        // Chromatogram metadata stays packed until WR-6.
+        // WR-6 splits the chromatogram metadata too (SplitWriterChromWlTest).
         assertThat(roles).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
                 "spectra_metadata_scans.parquet|spectrum|scans",
@@ -122,6 +122,8 @@ class SplitWriterSpectraTest {
                 "spectra_data.parquet|spectrum|data_arrays",
                 "spectra_peaks.parquet|spectrum|peaks",
                 "chromatograms_metadata.parquet|chromatogram|metadata",
+                "chromatograms_metadata_precursors.parquet|chromatogram|precursors",
+                "chromatograms_metadata_selected_ions.parquet|chromatogram|selected_ions",
                 "chromatograms_data.parquet|chromatogram|data_arrays");
 
         // WR-5c added spectrum_type and the five summary columns, in the reference's order.
