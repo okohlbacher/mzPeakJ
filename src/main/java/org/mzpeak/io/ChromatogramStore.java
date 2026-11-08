@@ -14,8 +14,9 @@ import java.util.Optional;
 
 /**
  * Reads {@code chromatograms_metadata.parquet} + {@code chromatograms_data.parquet} into {@link Chromatogram}s.
- * The metadata member, packed or split, is decoded by {@link ChromatogramMetadataDecoder}; chromatograms keep its
- * order, and an index without data rows reads as empty arrays, without intensity unit or extra arrays.
+ * The metadata member, packed or split, is decoded by {@link ChromatogramMetadataDecoder}, which gives each
+ * chromatogram its polarity, data processing reference and Params (its precursors are not read); chromatograms keep
+ * its order, and an index without data rows reads as empty arrays, without intensity unit or extra arrays.
  * The data member, in {@code point} or {@code chunk} layout, is decoded by {@link ChromatogramDataDecoder} through
  * its {@link SignalPlan}: from the member's {@code chromatogram_array_index} footer, else inferred from its column
  * names. The decoder also gives each chromatogram's intensity unit and extra arrays.
@@ -95,11 +96,14 @@ final class ChromatogramStore {
         List<Chromatogram> all = new ArrayList<>(headers.size());
         for (ChromatogramMetadataDecoder.Header h : headers) {
             ChromatogramDataDecoder.Decoded d = data.get(h.index());
+            // Chromatogram precursors are not decoded.
             if (d == null) {
-                all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), new double[0], new double[0]));
+                all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), new double[0], new double[0], null,
+                        Map.of(), h.polarity(), h.dataProcessingRef(), h.parameters(), List.of()));
             } else {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), d.time(), d.intensity(),
-                        d.intensityUnit(), d.arrays()));
+                        d.intensityUnit(), d.arrays(), h.polarity(), h.dataProcessingRef(), h.parameters(),
+                        List.of()));
             }
         }
         return new ChromatogramStore(all, plan);
