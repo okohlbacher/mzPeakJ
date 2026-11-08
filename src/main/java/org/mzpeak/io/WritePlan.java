@@ -11,8 +11,8 @@ import java.util.Map;
 
 /**
  * Everything {@link DatasetWriter} writes, decided by {@link WritePlanner} before any I/O: the entities in the order
- * they are written, the signal files each spectrum goes to, which members exist, the footer key-values of
- * spectra_metadata and the manifest, and the report that collects the write's warnings.
+ * they are written, the signal files each spectrum goes to, the order of each entity's rows, which members exist, the
+ * footer key-values of spectra_metadata and the manifest, and the report that collects the write's warnings.
  *
  * @param options            the settings of the write
  * @param spectra            the spectra in index order
@@ -32,9 +32,22 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
     /**
      * A spectrum to write: the caller's spectrum, its index, and where its rows go (design §11.5): {@code data} sends
      * {@code mz()}/{@code intensity()} to spectra_data; {@code peaks} sends to spectra_peaks either
-     * {@code mz()}/{@code intensity()} in stored order ({@code peaksFromArrays}) or {@code peaks()}.
+     * {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}. {@code arrays} holds
+     * {@code mz()}/{@code intensity()} in the order they are written.
      */
-    record SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
+    record SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays,
+                         SignalArrays arrays) {
+
+        /** An entry that writes {@code mz()}/{@code intensity()} in the caller's order. */
+        SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
+            this(source, sourceIndex, data, peaks, peaksFromArrays,
+                    SignalArrays.asGiven(source.mz(), source.intensity()));
+        }
+
+        /** This entry with {@code arrays} written in place of its own. */
+        SpectrumEntry withArrays(SignalArrays arrays) {
+            return new SpectrumEntry(source, sourceIndex, data, peaks, peaksFromArrays, arrays);
+        }
 
         /** The rows this spectrum writes to spectra_data, its number_of_data_points. */
         int dataRows() {
@@ -50,8 +63,39 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<Entry<Chroma
         }
     }
 
-    /** A chromatogram or wavelength spectrum to write: the caller's object and its index. */
-    record Entry<T>(T source, long sourceIndex) {
+    /**
+     * A chromatogram or wavelength spectrum to write: the caller's object, its index, and its time or wavelength axis
+     * with the intensity in the order they are written.
+     */
+    record Entry<T>(T source, long sourceIndex, SignalArrays arrays) {
+    }
+
+    /**
+     * The main axis ({@code x}: m/z, chromatogram time or wavelength) and the intensity of one entity in the order
+     * they are written (design §11.5, WR-14). They are the caller's arrays themselves, {@code permutation} null, when
+     * the finite axis values do not decrease; otherwise new arrays, re-sorted by the axis, and {@code permutation[i]}
+     * is the caller's row written at position {@code i}, for every other array parallel to the axis. The caller's
+     * arrays are never modified.
+     */
+    record SignalArrays(double[] x, double[] intensity, int[] permutation) {
+
+        /** The caller's arrays, written in the caller's order. */
+        static SignalArrays asGiven(double[] x, double[] intensity) {
+            return new SignalArrays(x, intensity, null);
+        }
+
+        /** Copies of the caller's arrays in the order of {@code permutation}. */
+        static SignalArrays permuted(double[] x, double[] intensity, int[] permutation) {
+            return new SignalArrays(permute(x, permutation), permute(intensity, permutation), permutation);
+        }
+
+        private static double[] permute(double[] values, int[] permutation) {
+            double[] out = new double[permutation.length];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = values[permutation[i]];
+            }
+            return out;
+        }
     }
 
     /** Whether chromatograms_metadata and chromatograms_data are written. */

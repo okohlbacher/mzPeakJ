@@ -45,7 +45,8 @@ final class PointSignalWriter {
     /**
      * Write the plan's spectra_data rows ({@code mz()}/{@code intensity()} of every entry routed there) or, for
      * {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()} or {@code peaks()} of every
-     * entry routed there, as the entry says).
+     * entry routed there, as the entry says). {@code mz()}/{@code intensity()} are written in the order of the entry's
+     * {@link WritePlan.SignalArrays}.
      */
     static void writeSpectrumPoints(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_DATA_SCHEMA);
@@ -61,8 +62,8 @@ final class PointSignalWriter {
                                 peak.intensity());
                     }
                 } else {
-                    double[] mz = s.mz();
-                    double[] intensity = s.intensity();
+                    double[] mz = entry.arrays().x();
+                    double[] intensity = entry.arrays().intensity();
                     for (int i = 0; i < mz.length; i++) {
                         writePoint(writer, factory, "spectrum_index", entry.sourceIndex(), "mz", mz[i], intensity[i]);
                     }
@@ -75,9 +76,8 @@ final class PointSignalWriter {
         SimpleGroupFactory factory = new SimpleGroupFactory(CHROM_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, CHROM_DATA_SCHEMA, plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
-                Chromatogram c = entry.source();
-                double[] time = c.time();
-                double[] intensity = c.intensity();
+                double[] time = entry.arrays().x();
+                double[] intensity = entry.arrays().intensity();
                 for (int i = 0; i < time.length; i++) {
                     writePoint(writer, factory, "chromatogram_index", entry.sourceIndex(), "time", time[i],
                             intensity[i]);
@@ -90,9 +90,8 @@ final class PointSignalWriter {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_DATA_SCHEMA, plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
-                WavelengthSpectrum w = entry.source();
-                double[] wl = w.wavelength();
-                double[] intensity = w.intensity();
+                double[] wl = entry.arrays().x();
+                double[] intensity = entry.arrays().intensity();
                 for (int i = 0; i < wl.length; i++) {
                     writePoint(writer, factory, "wavelength_spectrum_index", entry.sourceIndex(), "wavelength",
                             wl[i], intensity[i]);

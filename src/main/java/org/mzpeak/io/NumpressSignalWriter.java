@@ -66,7 +66,8 @@ final class NumpressSignalWriter {
      * every entry routed there) or, for {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()}
      * or {@code peaks()} of every entry routed there, as the entry says). Each spectrum is split into fixed-size
      * chunks; m/z is encoded with Numpress linear and intensity with the plan's Numpress intensity encoding. Output
-     * is compatible with {@code SpectrumArrayStore.acceptNumpressChunk}.
+     * is compatible with {@code SpectrumArrayStore.acceptNumpressChunk}. {@code mz()}/{@code intensity()} are
+     * written in the order of the entry's {@link WritePlan.SignalArrays}.
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
@@ -87,8 +88,8 @@ final class NumpressSignalWriter {
                         intensity[i] = s.peaks().get(i).intensity();
                     }
                 } else {
-                    mz = s.mz();
-                    intensity = s.intensity();
+                    mz = entry.arrays().x();
+                    intensity = entry.arrays().intensity();
                 }
                 int n = mz.length;
                 int pos = 0;
