@@ -547,7 +547,8 @@ final class MzMLTerms {
             String host = uri.getHost();
             return host == null || !host.startsWith("[") || host.indexOf('%') < 0
                     && !LONG_IPV4_BYTE.matcher(host).find() && uri.getPort() <= 65535;
-        } catch (URISyntaxException e) {
+        } catch (URISyntaxException | NumberFormatException e) {
+            // Java 17's URI throws NumberFormatException for an IPv4 byte over Integer.MAX_VALUE in a bracketed host
             return false;
         }
     }

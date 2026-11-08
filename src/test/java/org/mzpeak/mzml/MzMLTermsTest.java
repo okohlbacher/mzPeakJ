@@ -657,6 +657,11 @@ class MzMLTermsTest {
         cases.put("http://[::~]", "http://%5B::~%5D");
         cases.put("http://[::0001.2.3.4]/", "http://%5B::0001.2.3.4%5D/");
         cases.put("http://[::ffff:1.2.3.0001]/", "http://%5B::ffff:1.2.3.0001%5D/");
+        // an IPv4 byte over Integer.MAX_VALUE: java.net.URI of Java 17 throws NumberFormatException for these, later
+        // releases a URISyntaxException, so they only test the catch on a Java 17 runtime
+        // (mvn -Djvm=<java17>/bin/java -Dtest=MzMLTermsTest test)
+        cases.put("http://[::1.2.3.2147483648]/", "http://%5B::1.2.3.2147483648%5D/");
+        cases.put("file://[::99999999999.0.0.1]/data/run.raw", "file://%5B::99999999999.0.0.1%5D/data/run.raw");
         cases.put("http://[::1]:65536/", "http://%5B::1%5D:65536/");
         cases.put("http://u@[::1]:65536/", "http://u@%5B::1%5D:65536/");
         // stage 2
