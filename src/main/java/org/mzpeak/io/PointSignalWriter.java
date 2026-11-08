@@ -44,25 +44,23 @@ final class PointSignalWriter {
 
     /**
      * Write the plan's spectra_data rows ({@code mz()}/{@code intensity()} of every entry routed there) or, for
-     * {@code centroidFile}, its spectra_peaks rows ({@code peaks()} of every entry routed there).
+     * {@code centroidFile}, its spectra_peaks rows ({@code mz()}/{@code intensity()} or {@code peaks()} of every
+     * entry routed there, as the entry says).
      */
     static void writeSpectrumPoints(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_DATA_SCHEMA);
         try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_DATA_SCHEMA, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
-                if (centroidFile) {
-                    if (!entry.peaks()) {
-                        continue;
-                    }
+                if (centroidFile ? !entry.peaks() : !entry.data()) {
+                    continue;
+                }
+                if (centroidFile && !entry.peaksFromArrays()) {
                     for (CentroidPeak peak : s.peaks()) {
                         writePoint(writer, factory, "spectrum_index", entry.sourceIndex(), "mz", peak.mz(),
                                 peak.intensity());
                     }
                 } else {
-                    if (!entry.data()) {
-                        continue;
-                    }
                     double[] mz = s.mz();
                     double[] intensity = s.intensity();
                     for (int i = 0; i < mz.length; i++) {
