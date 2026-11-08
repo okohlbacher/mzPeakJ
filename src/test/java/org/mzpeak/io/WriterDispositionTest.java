@@ -366,7 +366,8 @@ class WriterDispositionTest {
         assertThatThrownBy(() -> writeNumpress(tmp, s, encoding))
                 .isExactlyInstanceOf(MzPeakException.class)
                 .hasMessage("spectrum 0: m/z " + nonFinite + " in spectra_data cannot be encoded with Numpress linear,"
-                        + " which takes only finite m/z >= 0; use SignalEncoding.POINT");
+                        + " which takes only finite m/z >= 0 that round to at most 4294967295 at its fixed point 100000"
+                        + " (m/z 42949.67295); use SignalEncoding.POINT");
         assertThat(tmp.resolve("out.mzpeak")).doesNotExist();
     }
 

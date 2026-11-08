@@ -314,12 +314,16 @@ public final class MzPeakWriter {
         POINT,
         /**
          * MS-Numpress chunks: Numpress linear m/z and Numpress SLOF or PIC intensity, as chosen by
-         * {@link Options#numpressIntensity()}. The chunks have no unencoded fallback, so every m/z and intensity
-         * written to spectra_data and spectra_peaks must be one the codecs encode: finite m/z of at least 0, and
-         * intensities in the range of the {@link NumpressIntensityEncoding} (finite and at least 0; with PIC, rounding
-         * to at most 2147483647). A write with another value throws {@link MzPeakException} naming the spectrum
-         * index, the array and the value before anything is written; {@link #POINT} writes such values (a NaN m/z
-         * reads back interpolated, as a null in the point layout does).
+         * {@link Options#numpressIntensity()}, in chunks of up to 500 points per spectrum. The chunks have no
+         * unencoded fallback, so every m/z and intensity written to spectra_data and spectra_peaks must be one the
+         * codecs encode. Numpress linear, at the fixed point 100000, takes finite m/z of at least 0 whose fixed-point
+         * value {@code (long) (mz * 100000 + 0.5)} is at most 4294967295 (m/z 42949.67295), and stores every m/z
+         * after the first two of a chunk as the difference of its fixed-point value from the extrapolation
+         * 2 * previous - the one before, which must fit a signed 32-bit integer (within about 21474.84 m/z); sorted
+         * m/z up to 21474.83 always do. Intensities must be in the range of the {@link NumpressIntensityEncoding}
+         * (finite and at least 0; with PIC, rounding to at most 2147483647). A write with another value throws
+         * {@link MzPeakException} naming the spectrum index, the array and the value before anything is written;
+         * {@link #POINT} writes such values (a NaN m/z reads back interpolated, as a null in the point layout does).
          */
         NUMPRESS
     }

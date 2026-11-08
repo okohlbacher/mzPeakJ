@@ -44,10 +44,12 @@ import static org.assertj.core.api.Assertions.within;
  *
  * <p>The Numpress chunk layout has one intensity transform column and no plain list, so a chunk cannot fall back to
  * unencoded values, and on the base code the codecs wrote what they cannot encode as other values (linear: NaN as 0.0,
- * a first m/z of -0.038 as 42949.63; SLOF: -0.5 as 1.45e28, NaN as 0). The writer now refuses, before any I/O, an m/z
- * or intensity that is not finite or below 0, and with PIC an intensity whose rounded count {@code (long) (v + 0.5)}
- * exceeds 2147483647 (design Q26). The point layout writes the same spectra. A PIC payload under 8 bytes, which the
- * base code could not read back, now reads back.
+ * a first m/z of -0.038 as 42949.63, a first m/z of 50000 as 7050.33, [100, 200, 25000] as [100, 200, -17949.67];
+ * SLOF: -0.5 as 1.45e28, NaN as 0). The writer now refuses, before any I/O, an m/z or intensity that is not finite or
+ * below 0, an m/z above the linear range (fixed-point value above 4294967295) or too far from its extrapolation in its
+ * chunk (a fixed-point difference outside the signed 32-bit range), and with PIC an intensity whose rounded count
+ * {@code (long) (v + 0.5)} exceeds 2147483647 (design Q26). The point layout writes the same spectra. A PIC payload
+ * under 8 bytes, which the base code could not read back, now reads back.
  */
 class NumpressRangeTest {
 
@@ -61,6 +63,9 @@ class NumpressRangeTest {
     private static final double[] MZ = {100.0, 100.5};
     /** 2147483647.5 rounds to the count 2^31, one above the largest one PIC is written with. */
     private static final double ABOVE_PIC = 2147483647.5;
+    /** The codec and the m/z it takes, as the error for an m/z out of range names them. */
+    private static final String LINEAR_RANGE = "Numpress linear, which takes only finite m/z >= 0 that round to at most"
+            + " 4294967295 at its fixed point 100000 (m/z 42949.67295)";
 
     /**
      * The read-back digest recorded on the base code (da74f60), the same for both outputs and both modes: the metadata
@@ -137,7 +142,26 @@ class NumpressRangeTest {
                 new Unencodable("m/z +Infinity", new double[] {100.0, 100.5, Double.POSITIVE_INFINITY},
                         new double[] {3.0, 4.0, 5.0}, "m/z", Double.POSITIVE_INFINITY),
                 new Unencodable("first m/z -0.038", new double[] {-0.038, 100.0}, new double[] {3.0, 23.0}, "m/z",
-                        -0.038));
+                        -0.038),
+                new Unencodable("first m/z 50000", new double[] {50000.0, 50001.0}, new double[] {3.0, 23.0}, "m/z",
+                        50000.0));
+    }
+
+    /**
+     * Arrays whose last m/z differs from its extrapolation from the two before it by more than a signed 32-bit integer
+     * holds at the fixed point 1e5. On the base code they read back as [100, 200, -17949.67], [100, 100.001, -12949.67],
+     * [100, 200, -21174.84] (2^31 above) and [0, 21474.83649, 64424.51] (2^31 + 1 below).
+     */
+    static List<Unencodable> tooFarFromTheExtrapolation() {
+        double[] intensity = {3.0, 4.0, 5.0};
+        return List.of(
+                new Unencodable("m/z [100, 200, 25000]", new double[] {100.0, 200.0, 25000.0}, intensity, "m/z",
+                        25000.0),
+                new Unencodable("m/z [100, 100.001, 30000]", new double[] {100.0, 100.001, 30000.0}, intensity, "m/z",
+                        30000.0),
+                new Unencodable("step 2^31", new double[] {100.0, 200.0, 21774.83648}, intensity, "m/z", 21774.83648),
+                new Unencodable("step -2^31 - 1", new double[] {0.0, 21474.83649, 21474.83649}, intensity, "m/z",
+                        21474.83649));
     }
 
     static Stream<Arguments> unencodableByEncoding() {
@@ -236,6 +260,115 @@ class NumpressRangeTest {
         }
     }
 
+    // ---- Numpress linear m/z range ------------------------------------------------------------------------------
+
+    /**
+     * Numpress linear stores the first two m/z of a chunk as unsigned 32-bit integers: at the fixed point 1e5,
+     * 42949.67295 rounds to 4294967295, the largest, and reads back; 42949.67296 rounds to 2^32 and is refused (on the
+     * base code it read back as 0.0).
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void theLinearRangeEndsAt4294967295(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        double[] largest = {42949.67, 42949.67295};
+        Spectrum back = readBack(write(tmp.resolve("out.mzpeak"), profile(largest, new double[] {3.0, 23.0}),
+                numpress(encoding)));
+        assertThat(back.mz()).containsExactly(largest, within(LINEAR_TOLERANCE));
+
+        assertRefused(profile(new double[] {42949.67, 42949.67296}, new double[] {3.0, 23.0}), numpress(encoding),
+                refusal("m/z", 42949.67296, "spectra_data", encoding), tmp.resolve("above"));
+    }
+
+    static Stream<Arguments> tooFarFromTheExtrapolationByEncoding() {
+        List<Arguments> cases = new ArrayList<>();
+        for (NumpressIntensityEncoding encoding : NumpressIntensityEncoding.values()) {
+            for (Unencodable u : tooFarFromTheExtrapolation()) {
+                cases.add(Arguments.of(encoding, u));
+            }
+        }
+        return cases.stream();
+    }
+
+    /**
+     * Numpress linear stores every m/z after the first two of a chunk as the signed 32-bit difference of its fixed-point
+     * value from the extrapolation 2 * previous - the one before: a sorted array of m/z below 42949.67 whose
+     * difference overflows is refused before any I/O, naming the m/z and the two it is extrapolated from.
+     */
+    @ParameterizedTest(name = "{0} {1}")
+    @MethodSource("tooFarFromTheExtrapolationByEncoding")
+    void anMzTooFarFromItsExtrapolationIsRefused(NumpressIntensityEncoding encoding, Unencodable u,
+                                                  @TempDir Path tmp) {
+        assertRefused(profile(u.mz(), u.intensity()), numpress(encoding), stepRefusal(u.mz(), 2, "spectra_data"),
+                tmp);
+    }
+
+    /**
+     * The differences 2147483647 and -2147483648, the bounds of a signed 32-bit integer, are written and read back
+     * (in a sorted array, m/z that round to less than 2^31 never come closer to them).
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void theDifferenceBoundsAreAccepted(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        for (double[] mz : List.of(new double[] {100.0, 200.0, 21774.83647},
+                new double[] {0.0, 21474.83648, 21474.83648})) {
+            Path out = tmp.resolve(mz[0] + ".mzpeak");
+            Spectrum back = readBack(write(out, profile(mz, new double[] {3.0, 4.0, 5.0}), numpress(encoding)));
+            assertThat(back.mz()).containsExactly(mz, within(LINEAR_TOLERANCE));
+        }
+    }
+
+    /**
+     * The difference is checked in the chunks the writer cuts: 499 m/z from 100 in steps of 0.01 followed by 30000 and
+     * 30000.01 are written as 499 + 2, so 30000 starts a chunk and reads back; with 30000.02 as well they are written
+     * as 500 + 2, so 30000 is the last m/z of the first chunk and is refused.
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void theDifferenceIsCheckedInTheWritersChunks(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        double[] mz = jumpAfter499(501);
+        Path out = write(tmp.resolve("out.mzpeak"), profile(mz, new double[mz.length]), numpress(encoding));
+        List<Group> chunks = NumpressConformanceTest.chunksBySpectrum(out.resolve(DATA)).get(0L);
+        assertThat(chunks).extracting(c -> ParquetGroups.optDouble(c, "mz_chunk_start"))
+                .containsExactly(mz[0], 30000.0);
+        assertThat(readBack(out).mz()).containsExactly(mz, within(LINEAR_TOLERANCE));
+
+        double[] longer = jumpAfter499(502);
+        assertRefused(profile(longer, new double[longer.length]), numpress(encoding),
+                stepRefusal(longer, 499, "spectra_data"), tmp.resolve("longer"));
+    }
+
+    /**
+     * An m/z out of range and one too far from its extrapolation are refused in spectra_peaks as well: in a CENTROID
+     * peak copy (from its arrays) and in the peak list of a PROFILE spectrum (from {@code peaks()}).
+     */
+    @ParameterizedTest
+    @EnumSource(NumpressIntensityEncoding.class)
+    void theLinearRangeIsCheckedInSpectraPeaks(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
+        double[] above = {100.0, 50000.0};
+        double[] intensity = {3.0, 23.0};
+        Spectrum copy = new Spectrum(description(SignalContinuity.CENTROID), above, intensity, peaks(above, intensity));
+        assertThat(WritePlanner.disposition(copy).peaksFromArrays()).isTrue();
+        assertRefused(copy, numpress(encoding), refusal("m/z", 50000.0, "spectra_peaks", encoding),
+                tmp.resolve("copy"));
+
+        double[] far = {100.0, 200.0, 25000.0};
+        Spectrum peakList = new Spectrum(description(SignalContinuity.PROFILE), MZ, intensity,
+                peaks(far, new double[] {3.0, 4.0, 5.0}));
+        assertThat(WritePlanner.disposition(peakList).peaksFromArrays()).isFalse();
+        assertRefused(peakList, numpress(encoding), stepRefusal(far, 2, "spectra_peaks"), tmp.resolve("list"));
+    }
+
+    /** 499 m/z from 100 in steps of 0.01, then {@code n - 499} m/z from 30000 in steps of 0.01. */
+    private static double[] jumpAfter499(int n) {
+        double[] mz = new double[n];
+        for (int i = 0; i < n; i++) {
+            mz[i] = i < 499 ? 100.0 + 0.01 * i : 30000.0 + 0.01 * (i - 499);
+        }
+        return mz;
+    }
+
+    // ---- point layout -------------------------------------------------------------------------------------------
+
     /**
      * The point layout writes every refused spectrum, and each reads back as written, apart from the NaN m/z: the
      * reader takes a stored NaN m/z for its null placeholder and interpolates it (design §6.1 B-34).
@@ -243,6 +376,7 @@ class NumpressRangeTest {
     @Test
     void thePointLayoutWritesTheRefusedSpectra(@TempDir Path tmp) {
         List<Unencodable> cases = new ArrayList<>(unencodable());
+        cases.addAll(tooFarFromTheExtrapolation());
         cases.add(new Unencodable("PIC count 2^31", MZ, new double[] {3.0, ABOVE_PIC}, "intensity", ABOVE_PIC));
         for (int i = 0; i < cases.size(); i++) {
             Unencodable u = cases.get(i);
@@ -284,12 +418,19 @@ class NumpressRangeTest {
 
     /** The error for a refused non-finite or negative {@code value} of {@code array} in {@code member}. */
     private static String refusal(String array, double value, String member, NumpressIntensityEncoding encoding) {
-        String codec = array.equals("m/z") ? "Numpress linear, which takes only finite m/z >= 0"
+        String codec = array.equals("m/z") ? LINEAR_RANGE
                 : encoding == NumpressIntensityEncoding.PIC
                 ? "Numpress PIC, which takes only finite intensities >= 0 that round to at most 2147483647"
                 : "Numpress SLOF, which takes only finite intensities >= 0";
         return "spectrum 3: " + array + " " + value + " in " + member + " cannot be encoded with " + codec
                 + "; use SignalEncoding.POINT";
+    }
+
+    /** The error for the m/z at {@code at} of {@code mz}, too far from its extrapolation, in {@code member}. */
+    private static String stepRefusal(double[] mz, int at, String member) {
+        return "spectrum 3: m/z " + mz[at] + " in " + member + " cannot be encoded with Numpress linear, which takes an"
+                + " m/z after the first two of a chunk only within about 21474.84 of its extrapolation from the two"
+                + " before it, 2 * " + mz[at - 1] + " - " + mz[at - 2] + "; use SignalEncoding.POINT";
     }
 
     private static Options numpress(NumpressIntensityEncoding encoding) {
