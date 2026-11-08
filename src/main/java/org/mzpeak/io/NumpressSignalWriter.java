@@ -22,23 +22,19 @@ import static org.mzpeak.io.ParquetOutput.openWriter;
 
 /**
  * Writes the MS-Numpress chunk layout of {@link MzPeakWriter} for spectra_data and spectra_peaks: chunks of up to
- * 500 points, m/z encoded with Numpress linear and intensity with Numpress SLOF or PIC.
+ * 500 points, m/z encoded with Numpress linear and intensity with Numpress SLOF or PIC, each as a {@code list<uint8>}
+ * byte list. A file has the column of its own intensity encoding only, and every row an empty {@code mz_chunk_values}
+ * list. {@code mz_chunk_start} and {@code mz_chunk_end} are the chunk's first and last m/z, both inclusive, as the
+ * reference writes them.
  */
 final class NumpressSignalWriter {
 
-    /** Schema for Numpress-encoded chunk layout (compatible with SpectrumArrayStore.acceptNumpressChunk). */
-    private static final MessageType NUMPRESS_CHUNK_SCHEMA = Types.buildMessage()
-            .addField(Types.requiredGroup()
-                    .required(PrimitiveTypeName.INT64).as(UINT64).named("spectrum_index")
-                    .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_start")
-                    .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_end")
-                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("chunk_encoding")
-                    // large_list<uint8> columns — stored as repeated INT32 inside a LIST group
-                    .addField(numpressByteListField("mz_numpress_linear_bytes"))
-                    .addField(numpressByteListField("intensity_numpress_slof_bytes"))
-                    .addField(numpressByteListField("intensity_numpress_pic_bytes"))
-                    .named("chunk"))
-            .named("chunk_data");
+    private static final String SLOF_COLUMN = "intensity_numpress_slof_bytes";
+    private static final String PIC_COLUMN = "intensity_numpress_pic_bytes";
+
+    /** Schemas of the Numpress chunk layout, one per intensity encoding: a file holds only its own transform column. */
+    private static final MessageType SLOF_CHUNK_SCHEMA = chunkSchema(SLOF_COLUMN);
+    private static final MessageType PIC_CHUNK_SCHEMA = chunkSchema(PIC_COLUMN);
 
     /** Default number of m/z points per numpress chunk. */
     private static final int NUMPRESS_CHUNK_SIZE = 500;
@@ -53,10 +49,35 @@ final class NumpressSignalWriter {
     private NumpressSignalWriter() {
     }
 
+    /**
+     * The chunk schema (compatible with SpectrumArrayStore.acceptNumpressChunk) with {@code intensityColumn} as the
+     * only intensity transform. {@code mz_chunk_values} is the spec's chunk values column, present once in every
+     * chunk layout; the m/z of a Numpress row are in {@code mz_numpress_linear_bytes}, so it is written empty.
+     */
+    private static MessageType chunkSchema(String intensityColumn) {
+        return Types.buildMessage()
+                .addField(Types.requiredGroup()
+                        .required(PrimitiveTypeName.INT64).as(UINT64).named("spectrum_index")
+                        .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_start")
+                        .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_end")
+                        .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                                .repeatedGroup()
+                                .optional(PrimitiveTypeName.DOUBLE).named("item")
+                                .named("list")
+                                .named("mz_chunk_values"))
+                        .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                        .named("chunk_encoding")
+                        .addField(numpressByteListField("mz_numpress_linear_bytes"))
+                        .addField(numpressByteListField(intensityColumn))
+                        .named("chunk"))
+                .named("chunk_data");
+    }
+
+    /** A {@code list<uint8>} column: repeated INT32 annotated as unsigned 8-bit inside a LIST group. */
     private static Type numpressByteListField(String name) {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
                 .repeatedGroup()
-                .required(PrimitiveTypeName.INT32).named("item")
+                .required(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(8, false)).named("item")
                 .named("list")
                 .named(name);
     }
@@ -71,8 +92,9 @@ final class NumpressSignalWriter {
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();
-        SimpleGroupFactory factory = new SimpleGroupFactory(NUMPRESS_CHUNK_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, NUMPRESS_CHUNK_SCHEMA, plan.options())) {
+        MessageType schema = intensityEncoding == NumpressIntensityEncoding.PIC ? PIC_CHUNK_SCHEMA : SLOF_CHUNK_SCHEMA;
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        try (ParquetWriter<Group> writer = openWriter(file, schema, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
                 if (centroidFile ? !entry.peaks() : !entry.data()) {
@@ -111,7 +133,7 @@ final class NumpressSignalWriter {
                         // PIC: 8-byte header + variable bytes; max = 8 + 5*n (worst case)
                         inBuf = new byte[8 + chunkLen * 5];
                         inLen = MSNumpress.encodePic(chunkIn, chunkLen, inBuf);
-                        inColumn = "intensity_numpress_pic_bytes";
+                        inColumn = PIC_COLUMN;
                     } else {
                         // SLOF: dynamic fixedPoint so log(max_in+1)*fp fits in uint16 (max 65535).
                         double maxIn = 0;
@@ -119,7 +141,7 @@ final class NumpressSignalWriter {
                         double slofFixed = maxIn <= 0 ? 1.0 : Math.floor(SLOF_MAX_SYMBOL / Math.log(maxIn + 1));
                         inBuf = new byte[8 + chunkLen * 2];
                         inLen = MSNumpress.encodeSlof(chunkIn, chunkLen, inBuf, slofFixed);
-                        inColumn = "intensity_numpress_slof_bytes";
+                        inColumn = SLOF_COLUMN;
                     }
 
                     Group row = factory.newGroup();
@@ -127,6 +149,7 @@ final class NumpressSignalWriter {
                     chunk.add("spectrum_index", entry.sourceIndex());
                     chunk.add("mz_chunk_start", chunkMz[0]);
                     chunk.add("mz_chunk_end", chunkMz[chunkLen - 1]);
+                    chunk.addGroup("mz_chunk_values"); // an empty list, not null
                     chunk.add("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR);
 
                     // Write mz_numpress_linear_bytes as repeated-group list (one "list" Group per byte)

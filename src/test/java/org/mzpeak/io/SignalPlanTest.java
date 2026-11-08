@@ -280,15 +280,15 @@ class SignalPlanTest {
         for (String role : List.of("SPECTRUM/DATA_ARRAYS", "SPECTRUM/PEAKS")) {
             SignalPlan chunk = numpressPlans.get(role);
             assertThat(chunk.layout()).as(role).isEqualTo(Layout.CHUNK);
-            assertThat(chunk.axis().values()).as(role).isNull();
+            // WR-10: the writer adds mz_chunk_values (written empty) and only the chosen intensity transform.
+            assertThat(chunk.axis().values().field()).as(role).isEqualTo("mz_chunk_values");
             assertThat(chunk.axis().start().field()).isEqualTo("mz_chunk_start");
             assertThat(chunk.axis().end().field()).isEqualTo("mz_chunk_end");
             assertThat(chunk.axis().encoding().field()).isEqualTo("chunk_encoding");
             assertThat(chunk.axis().transformFields())
                     .containsExactly(entry("MS:1002312", "mz_numpress_linear_bytes"));
             assertThat(chunk.intensities()).extracting(Column::field, Column::transform).containsExactly(
-                    tuple("intensity_numpress_slof_bytes", "MS:1002314"),
-                    tuple("intensity_numpress_pic_bytes", "MS:1002313"));
+                    tuple("intensity_numpress_slof_bytes", "MS:1002314"));
             assertThat(chunk.numpressIntensity()).map(Column::field).contains("intensity_numpress_slof_bytes");
             assertThat(chunk.plainIntensity()).isEmpty();
         }
