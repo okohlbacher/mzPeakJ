@@ -603,9 +603,10 @@ org.mzpeak.io                reading + writing
   signal       SignalEntity · ArrayIndex · SignalPlan
                SpectrumArrayStore · ChunkRowDecoder · ChunkCodecs · NullFill · DoubleArrayBuilder
                ChromatogramStore · ChromatogramDataDecoder · WavelengthSpectrumStore · PointArrays
-  writer       (legacy output, §8.1)
+  writer       (§8.1)
                MzPeakWriter → WritePlanner → WritePlan → DatasetWriter
-               PackedMetadataWriter · PointSignalWriter · NumpressSignalWriter · SpectrumSummary
+               SplitMetadataWriter · PackedMetadataWriter (MetadataTablesWriter)
+               PointSignalWriter · NumpressSignalWriter · SpectrumSummary
                ParquetOutput · FooterMetadataWriter · ManifestWriter · ArchivePacker · WriteReport
 
 org.mzpeak.io.parquet         Hadoop-free Parquet I/O
@@ -624,19 +625,45 @@ Only the classes marked public are API; everything else in `org.mzpeak.io` is pa
 members lazily on first use. The decoders take `(MzPeakSource, MzPeakManifest)` and find their own members by
 role.
 
-### 8.1 Writer (legacy output)
+### 8.1 Writer
 
-`MzPeakWriter`'s public overloads delegate to one pipeline. `WritePlanner` validates the input before any
-I/O (non-negative, unique indices), puts the spectra in index order and decides which members are written;
-spectrum arrays are routed by container: `mz()`/`intensity()` to `spectra_data`, `peaks()` to
-`spectra_peaks`. `DatasetWriter` then writes the metadata, the signal members (point layout, or MS-Numpress
-chunks of up to 500 points with linear m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in
-point layout, and the manifest last; `ArchivePacker` packs a directory into a STORED ZIP.
+`MzPeakWriter`'s public overloads delegate to one pipeline, whose settings are `MzPeakWriter.Options` (signal
+encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` validates the input before any
+I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
+precursor), numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
+(CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
+re-sorts a main axis that is not ascending and decides which members are written. `DatasetWriter` then writes
+the metadata members, the signal members (point layout, or MS-Numpress chunks of up to 500 points with linear
+m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point layout, and the manifest last;
+`ArchivePacker` packs a directory into a STORED ZIP whose last entry is the manifest.
 
-The output is the **legacy** pin-era dialect: packed metadata structs (§2.4), the role spellings
-`data arrays` and `wavelength spectrum`, no `column_mapping`, no array index, no checksums, format version
-0.9.0, and the file-level documents in both the manifest and the `spectra_metadata.parquet` footer. Extra
-arrays are not written. The HEAD Python reader rejects this layout; the split writer is planned (§10).
+**Metadata layouts** (`Options.withMetadataLayout`):
+
+- `SPLIT`, the default since WR-7: the current layout (§2.2), written by `SplitMetadataWriter`.
+  `spectra_metadata` comes with its `_scans`, `_precursors` and `_selected_ions` tables,
+  `chromatograms_metadata` with empty precursor and selected-ion tables, and `wavelength_spectra_metadata` with
+  its `_scans` table. The manifest is in the current dialect: underscore roles, a `column_mapping` for every
+  CV-mapped column, scan settings with `unit`. Every scan, precursor and selected ion is written, and a Param
+  moves to its standardized column only where the reader rebuilds it unchanged.
+- `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
+  `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
+  `wavelength spectrum`, empty column mappings, and only the first scan and the primary precursor of a spectrum.
+  The HEAD Python reader rejects it ("Old concatenated storage layout not supported").
+
+Both layouts get format version 0.9.0, the `cv_list`, a SHA-512 checksum and an empty `parameters` list per
+manifest entry, the array index and the entity and data-point counts in every signal footer, and the file-level
+documents in both the manifest and the `spectra_metadata.parquet` footer.
+
+**Readers.** The default output is readable by the HEAD Python reader. The opt-in `UpstreamInteropTest` checks
+this on legacy small.unpacked and current small.unpacked, has_uv, Example_Processed.img and diaPASEF.ref
+(archive and directory), the Numpress SLOF and PIC archives of current small, and the `ExtractSpectra` MS2
+subset. The
+Python reader's arrays pass the golden rules against mzPeakJ's read of each source, its counts match, and
+`check_archive_integrity()` returns `(True, [])`. Readability by the Rust reference is untested.
+
+**Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`); a write that drops
+spectrum extras logs one WARNING. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles
+(the reconstructed arrays are written).
 
 ---
 
@@ -671,8 +698,8 @@ checksums):
 
 **Legacy set** — `src/test/resources/mzpeak-legacy/`, upstream `29e59b2` (packed metadata): `small`,
 `small.chunked`, `small.numpress`, `small.unpacked` (the same 48-spectrum run) and `has_uv` (212 MS spectra,
-520 UV/DAD spectra, 2 chromatograms). It guards the packed layout that mzPeakJ writes (§8.1) and the corpus
-uses. `small.mzML` is not vendored.
+520 UV/DAD spectra, 2 chromatograms). It guards the packed layout that mzPeakJ reads, writes on request
+(`PACKED`, §8.1) and the corpus uses. `small.mzML` is not vendored.
 
 ### 9.2 Oracles and tolerances
 
@@ -735,7 +762,11 @@ expected values and says why.
 - **Opt-in**, never part of the default build:
   - `CorpusTest`: `-Dmzpeak.corpus.dir=<dir>` opens every `.mzpeak` under the directory;
   - `ValidatedRoundTripTest`, `ForwardBackwardCorpusTest`: `-Dmzpeak.roundtrip=true` reads, re-writes,
-    validates with the external `mzpeak-validate` and re-reads every corpus file;
+    validates with the external `mzpeak-validate` and re-reads every corpus file (`ValidatedRoundTripTest`
+    as a directory and as an archive);
+  - `UpstreamInteropTest`: `-Dmzpeak.upstream.python=<python/ of a HUPO-PSI/mzPeak checkout at 2ee2589>`,
+    with `uv` installed, reads mzPeakJ's output with the HEAD Python reader (§8.1) in the pinned environment
+    of the golden generator (§9.2);
   - `Zip64Test`: `-Dmzpeak.zip64.file=<archive>` also opens a real zip64 archive;
   - `IonMobilityAndActivationTermsTest`: `-Dmzpeak.psims.obo=<path>` regenerates the CV tables (§5).
 
@@ -744,10 +775,10 @@ expected values and says why.
 ## 10. Known limitations / deferred
 
 - **Grid decoding.** Coordinate-grid chunks (`MS:1003826`) throw (§3.3); diaPASEF.grid's spectra cannot be read.
-- **Writer.** Output is the legacy packed dialect (§8.1): no split tables, array index, checksums or extra
-  arrays, so the HEAD Python reader rejects it. Not written either: the delta-`chunk` layout, chunked
-  chromatograms, multiple scans/precursors per spectrum (only the primary is written) and null-marked profiles
-  (the reconstructed arrays are written).
+- **Writer** (§8.1). Extra signal arrays are not written; spectrum extras are dropped with a WARNING. Not
+  written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles (the reconstructed
+  arrays are written). The `PACKED` layout writes only the first scan and the primary precursor of a spectrum.
+  Whether the Rust reference reads mzPeakJ's output is untested.
 - **Integrity.** Manifest checksums are not verified on read.
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.
 - **Dataset checks.** A dataset without a spectrum metadata member throws; the format version is not checked.

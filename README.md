@@ -122,6 +122,31 @@ MzPeakWriter.writeArchiveNumpress(out, spectra, chromatograms,
         wavelengthSpectra, scanSettings, fileMetadata);          // Numpress layout
 ```
 
+#### Options and the metadata layout
+
+Every overload above is a shorthand for one of the two full forms, which take all settings as an immutable
+`MzPeakWriter.Options`: start from `Options.defaults()` and change a setting with its `with` method.
+
+```java
+MzPeakWriter.Options options = MzPeakWriter.Options.defaults()
+        .withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS)          // POINT (default) or NUMPRESS
+        .withNumpressIntensity(MzPeakWriter.NumpressIntensityEncoding.PIC) // SLOF (default) or PIC
+        .withRowGroupSize(64L << 20)                                       // bytes; default: parquet-java's
+        .withMetadataLayout(MzPeakWriter.MetadataLayout.SPLIT);            // SPLIT (default) or PACKED
+MzPeakWriter.writeArchive(out, spectra, chromatograms,
+        wavelengthSpectra, scanSettings, fileMetadata, options);       // or writeDirectory(...)
+```
+
+Without a row-group size, the `mzpeak.writer.rowGroupSize` system property applies if it is set.
+
+- **`SPLIT`**, the default, writes the current mzPeak layout. Each metadata facet gets its own table:
+  `spectra_metadata` with its `_scans`, `_precursors` and `_selected_ions` tables, and likewise for
+  chromatograms and wavelength spectra. Every scan, precursor and selected ion of a spectrum is written. The
+  manifest uses the current dialect, with column mappings. The HEAD reference Python reader reads this output.
+- **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
+  and only the first scan and the primary precursor of a spectrum. Use it only for readers of that era; the
+  current Python reader rejects it.
+
 #### Round-trip example (read → write)
 
 ```java
@@ -135,16 +160,17 @@ try (MzPeakReader r = MzPeakReader.open(Path.of("in.mzpeak"))) {
 ```
 
 Writer notes:
-- ZSTD-compressed Parquet, fully Hadoop-free; writes format version `0.9.0` and the standard CV list.
+- ZSTD-compressed Parquet, fully Hadoop-free; writes format version `0.9.0`, the CV list, an array index in
+  every signal file and a SHA-512 checksum for every member.
 - Emits the reference metadata schema: derived spectrum columns (observed m/z range, base peak, TIC,
   spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
-- Facet routing is by container, not signal continuity: m/z point arrays go to `spectra_data`, explicit
-  centroid peak lists to `spectra_peaks` (a spectrum may carry both).
+- Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
+  only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
 - Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The point layout
   requires finite m/z, so transition data with no product-ion m/z (SRM/MRM) must use the Numpress layout.
-- Not yet written: the delta-`chunk` layout, `auxiliary_arrays`, and multiple scans/precursors per spectrum
-  (only the primary is emitted; the m/z + intensity payload is preserved in full).
+- Not yet written: extra signal arrays such as per-peak ion mobility (a write that drops a spectrum's extra
+  arrays logs one warning) and the delta-`chunk` layout; the m/z + intensity payload is preserved in full.
 
 ## Running the CLI & examples
 
@@ -170,7 +196,7 @@ tables, array index, SHA-512 checksums):
 | `Example_Processed.img.mzpeak` | single-file STORED ZIP | 9 profile spectra of an imzML imaging run with pixel positions |
 
 **Legacy set** — `src/test/resources/mzpeak-legacy/`, the 5 examples of upstream commit `29e59b2` in the
-packed metadata layout, which mzPeakJ also reads and still writes:
+packed metadata layout, which mzPeakJ also reads and writes on request (`MetadataLayout.PACKED`):
 
 | Fixture | Form | Contents |
 |---|---|---|
@@ -304,7 +330,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - Random access by index, native id, vendor scan number (Thermo/Waters/Agilent/Bruker/SCIEX), or nearest RT.
 - Streaming reader — only the row groups covering a requested spectrum are decoded; bounded memory.
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
-  STORED ZIP, format version `0.9.0`. Round-trips the full metadata schema — derived spectrum columns,
+  STORED ZIP, format version `0.9.0`, in the split metadata layout that the HEAD Python reader reads (the
+  pin-era packed layout on request). Round-trips the full metadata schema — derived spectrum columns,
   precursor activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD)
   facets, and the imaging `scan_settings_list` — and is gated by the independent `mzpeak-validate` validator.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
@@ -317,9 +344,10 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 **Deferred / known limitations:**
 
-- **Writing**: the delta-`chunk` layout, `auxiliary_arrays` (overflow non-primary arrays), and multiple
-  scans / precursors / selected ions per spectrum (only the primary is written — the m/z + intensity payload
-  is preserved in full; combineIMS frames lose their secondary mobility-scan metadata).
+- **Writing**: the delta-`chunk` layout and extra signal arrays such as per-peak ion mobility (dropped with
+  a warning; the m/z + intensity payload is preserved in full). The `PACKED` compatibility layout writes only
+  the primary scan / precursor / selected ion of a spectrum, so combineIMS frames lose their secondary
+  mobility-scan metadata there.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
