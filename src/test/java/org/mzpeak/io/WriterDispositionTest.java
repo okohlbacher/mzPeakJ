@@ -144,6 +144,43 @@ class WriterDispositionTest {
         }
     }
 
+    /**
+     * FN-16: the opt-in forward-backward harness compares the peaks of an array-only CENTROID spectrum with the
+     * source's arrays, since WR-3 builds its re-read peak list from them; this runs that comparison in the default
+     * build, on both layouts, and checks that it still catches a wrong peak.
+     */
+    @ParameterizedTest
+    @EnumSource(ForwardBackwardCorpusTest.Layout.class)
+    void theForwardBackwardPeakComparisonOfAnArrayOnlyCentroidSpectrum(ForwardBackwardCorpusTest.Layout layout,
+                                                                       @TempDir Path tmp) {
+        Spectrum four = spectrum(ForwardBackwardCorpusTest.readSource(SMALL), 4);
+        Spectrum srm = new Spectrum(four.description(), four.mz(), four.intensity(), List.of());
+        Path out = tmp.resolve("out.mzpeak");
+        if (layout == ForwardBackwardCorpusTest.Layout.POINT) {
+            MzPeakWriter.writeDirectory(out, List.of(srm), List.of(), List.of(), List.of(), FileMetadata.EMPTY);
+        } else {
+            MzPeakWriter.writeDirectoryNumpress(out, List.of(srm), List.of(), List.of(), List.of(),
+                    FileMetadata.EMPTY, NumpressIntensityEncoding.SLOF);
+        }
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            Spectrum back = r.getSpectrum(4).orElseThrow();
+            // the count comparison alone would report 0 source peaks against the re-read ones
+            assertThat(srm.peaks()).isEmpty();
+            assertThat(back.peaks()).hasSize(srm.mz().length);
+
+            List<String> diffs = new ArrayList<>();
+            ForwardBackwardCorpusTest.comparePeaks(diffs, layout, "spectrum[4]", srm, back);
+            assertThat(diffs).isEmpty();
+
+            double[] other = srm.intensity().clone();
+            other[0] += 1000.0 * (1 + Arrays.stream(other).max().orElse(0));
+            Spectrum wrong = new Spectrum(srm.description(), srm.mz(), other, List.of());
+            List<String> caught = new ArrayList<>();
+            ForwardBackwardCorpusTest.comparePeaks(caught, layout, "spectrum[4]", wrong, back);
+            assertThat(caught).singleElement().asString().startsWith("spectrum[4].peaks.intensity");
+        }
+    }
+
     @Test
     void profileSpectrumWithoutPeaksStaysInSpectraData(@TempDir Path tmp) {
         Spectrum profile = new Spectrum(description(0, SignalContinuity.PROFILE), new double[] {100.0, 200.0, 300.0},
