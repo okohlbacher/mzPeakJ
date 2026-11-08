@@ -27,9 +27,10 @@ import java.util.stream.Collectors;
  *       {@code intensity} is null. A null time reads as NaN, an intensity without any value as 0.
  *   <li><b>chunk</b>, one row per chunk: the time axis is the chunk start followed by the running sum of the chunk
  *       values as deltas; a null delta adds 0. The intensities are the first value-bearing intensity list that
- *       carries a value (non-null and not empty), else the bytes of the first MS-Numpress SLOF column that does, else
- *       none; every list and SLOF column of the plan is considered, in index order. A null intensity reads as 0,
- *       missing ones are padded with 0 and surplus ones dropped. A chunk without a start is skipped.
+ *       carries a value (non-null and not empty), else the values of the first MS-Numpress SLOF column whose bytes
+ *       decode to any (an empty payload, or a SLOF header without values, has none), else none; every list and SLOF
+ *       column of the plan is considered, in index order. A null intensity reads as 0, missing ones are padded with
+ *       0 and surplus ones dropped. A chunk without a start is skipped.
  * </ul>
  * Rows without the prefix struct or an index are skipped; the chunks and points of one index are appended in row
  * order. These are Q-U5's semantics; sharing the spectrum chunk decoder would change them (deferred).
@@ -39,8 +40,8 @@ import java.util.stream.Collectors;
  * row, a plan that names no time values column (point layout) or neither a value-bearing intensity column nor a SLOF
  * column; a chunk whose {@code chunk_encoding} is neither null nor MS:1003089 (delta); a chunk in which a chunk
  * transform column of the time axis (such as Numpress linear time) carries a value; and a chunk in which no intensity
- * list or SLOF column carries a value but another intensity chunk transform column of the plan does: any MS-Numpress
- * PIC (MS:1002313) column, a column of another transform, or one that names none.
+ * list carries a value and no SLOF column decodes to values, but another intensity chunk transform column of the plan
+ * carries one: any MS-Numpress PIC (MS:1002313) column, a column of another transform, or one that names none.
  *
  * <p><b>Extra arrays</b> (AP-9) are the plan's {@link SignalPlan#extras() extras}, under the plan's keys, parallel
  * to the time axis: one cell per point row, and per chunk row a list that aligns 1:1 with the time values the chunk
@@ -55,7 +56,7 @@ import java.util.stream.Collectors;
  *
  * <p><b>Intensity unit</b> (AP-9): the unit of the plan entry that supplied a chromatogram's values, the intensity
  * column or SLOF column chosen above; a chunk without intensities takes the first of them that is non-null (an empty
- * list or payload). It is null when no entry supplied a value, when the entries that did differ in
+ * list or payload, or a SLOF header). It is null when no entry supplied a value, when the entries that did differ in
  * unit (with a WARNING), and for an {@link ArrayIndex.Source#INFERRED INFERRED} plan, whose entries carry no unit.
  */
 final class ChromatogramDataDecoder {
@@ -303,11 +304,12 @@ final class ChromatogramDataDecoder {
 
     /**
      * Intensity values of a chunk row: the first value-bearing intensity list of the plan that carries a value,
-     * otherwise the first SLOF column that does, decoded; the column used is noted on {@code a}. Returns an empty
-     * array when none carries a value; an empty list or SLOF payload is then still noted on {@code a}.
+     * otherwise the values of the first SLOF column whose bytes decode to any; the column used is noted on {@code a}.
+     * Returns an empty array when none has values; an empty list or SLOF payload (or a SLOF header without values) is
+     * then still noted on {@code a}.
      *
-     * @throws MzPeakException when the SLOF bytes do not decode, or when no list or SLOF column carries a value but an
-     *                         intensity chunk transform column that is not decoded (PIC or another) does
+     * @throws MzPeakException when SLOF bytes do not decode, or when no list or SLOF column has values but an intensity
+     *                         chunk transform column that is not decoded (PIC or another) carries a value
      */
     private double[] chunkIntensity(Group chunk, long chromatogramIndex, Accumulator a) {
         Column list = carrying(chunk, intensityColumns);
@@ -315,18 +317,11 @@ final class ChromatogramDataDecoder {
             a.supplied(list);
             return ParquetGroups.doubleListNullable(chunk, list.field());
         }
-        Column slof = carrying(chunk, slofColumns);
-        if (slof != null) {
-            a.supplied(slof);
-            byte[] bytes = ParquetGroups.byteList(chunk, slof.field());
-            if (bytes.length == 0) {
-                return new double[0];
-            }
-            try {
-                return MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, bytes, bytes.length);
-            } catch (RuntimeException e) {
-                throw new MzPeakException("Failed to Numpress-decode intensity for " + indexField + " "
-                        + chromatogramIndex, e);
+        for (Column slof : slofColumns) {
+            double[] values = slofValues(chunk, slof, chromatogramIndex);
+            if (values.length > 0) {
+                a.supplied(slof);
+                return values;
             }
         }
         Column undecoded = carrying(chunk, undecodedIntensity);
@@ -342,6 +337,26 @@ final class ChromatogramDataDecoder {
             a.supplied(empty);
         }
         return new double[0];
+    }
+
+    /**
+     * The decoded values of the SLOF column {@code slof} in {@code chunk}; none when it is null, empty, or a SLOF
+     * header without values.
+     */
+    private double[] slofValues(Group chunk, Column slof, long chromatogramIndex) {
+        if (!ParquetGroups.has(chunk, slof.field())) {
+            return new double[0];
+        }
+        byte[] bytes = ParquetGroups.byteList(chunk, slof.field());
+        if (bytes.length == 0) {
+            return new double[0];
+        }
+        try {
+            return MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, bytes, bytes.length);
+        } catch (RuntimeException e) {
+            throw new MzPeakException("Failed to Numpress-decode intensity for " + indexField + " "
+                    + chromatogramIndex, e);
+        }
     }
 
     /** The first of {@code columns} that carries a value in {@code chunk} (non-null and not empty), or null. */

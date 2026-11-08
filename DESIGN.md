@@ -389,14 +389,15 @@ throws.
   null. A null time reads as NaN, an intensity without any value as 0.
 - **chunk:** the chunk start followed by the running sum of the chunk values as deltas (`chunk_encoding` null
   or `MS:1003089`); the intensities are the first intensity list that carries a value (non-null and not
-  empty), else the bytes of the first Numpress SLOF column that does, considering every list and SLOF column of
-  the plan. Missing intensities are padded with 0 and surplus ones dropped.
+  empty), else the values of the first Numpress SLOF column whose bytes decode to any (an empty payload, or a
+  SLOF header without values, has none), considering every list and SLOF column of the plan. Missing
+  intensities are padded with 0 and surplus ones dropped.
 
 What the decoder cannot decode throws instead of reading as wrong or empty arrays: another `chunk_encoding`, a
-value in a chunk transform column of the time axis (such as Numpress linear time), a chunk in which no list or
-SLOF column carries a value but another intensity chunk transform does (any PIC column, another transform, or
-one that names none), a negative index, and, on the first row, a plan without a time values column (point
-layout) or without any intensity source.
+value in a chunk transform column of the time axis (such as Numpress linear time), a chunk in which no list
+carries a value and no SLOF column decodes to values but another intensity chunk transform does (any PIC
+column, another transform, or one that names none), a negative index, and, on the first row, a plan without a
+time values column (point layout) or without any intensity source.
 
 `Chromatogram.intensityUnit()` is the unit of the plan entry that supplied the values (null for an INFERRED
 plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`), read

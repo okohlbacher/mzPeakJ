@@ -649,6 +649,46 @@ class SignalPlanWiringTest {
     }
 
     /**
+     * A SLOF payload of only its 8-byte header (what the SLOF encoders write for no values) carries no intensities, so
+     * it does not hide a later source: chromatogram 0 reads the values of the second SLOF column, and a chunk whose
+     * other intensities are PIC bytes throws. Before the fix the header was decoded as the chunk's intensities and
+     * both read as zeros. A chunk with only the header still reads as zeros in the header column's unit
+     * (chromatogram 1), as before.
+     */
+    @Test
+    void aSlofHeaderWithoutValuesDoesNotHideALaterSource() {
+        MessageType schema = twoTransformSchema("slof");
+        String index = twoTransformIndex("slof", MSNumpress.ACC_NUMPRESS_SLOF);
+        SimpleGroupFactory rows = new SimpleGroupFactory(schema);
+        byte[] header = slof();
+        byte[] slof = slof(10.0, 20.0);
+        assertThat(header).hasSize(8);
+        Path data = write("chromatograms_data.parquet", schema,
+                Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), index),
+                chunk(rows, 0L, 1.0, null).list("time_chunk_values", 1.0).bytes("slof_a", header)
+                        .bytes("slof_b", slof).parent,
+                chunk(rows, 1L, 5.0, null).list("time_chunk_values", 2.0).bytes("slof_a", header).parent);
+
+        List<Chromatogram> all = chromatograms(data, 0, 1);
+
+        assertArrays(all.get(0), new double[] {1.0, 2.0},
+                MSNumpress.decode(MSNumpress.ACC_NUMPRESS_SLOF, slof, slof.length));
+        assertArrays(all.get(1), new double[] {5.0, 7.0}, new double[] {0.0, 0.0});
+        assertThat(all).extracting(Chromatogram::intensityUnit).containsExactly("UO:0000269", "MS:1000131");
+
+        MessageType inferred = chunkSchema();
+        SimpleGroupFactory inferredRows = new SimpleGroupFactory(inferred);
+        Path headerAndPic = write("chromatograms_data.parquet", inferred,
+                chunk(inferredRows, 6L, 0.0, null).list("time_chunk_values", 1.0)
+                        .bytes("intensity_numpress_slof_bytes", header)
+                        .bytes("intensity_numpress_pic_bytes", pic(10.0, 20.0)).parent);
+        assertThatThrownBy(() -> chromatograms(headerAndPic, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("PIC-encoded chromatogram intensities are not supported (column"
+                        + " intensity_numpress_pic_bytes) for chromatogram_index 6");
+    }
+
+    /**
      * A chunk whose only intensities are in an intensity chunk transform the decoder does not know, or in one that
      * names no transform, throws naming the column; before the fix such a chunk read as zeros.
      */
