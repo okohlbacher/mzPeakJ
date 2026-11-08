@@ -208,6 +208,42 @@ class ZipSourceCharacterizationTest {
         }
     }
 
+    /**
+     * A 2 KiB archive whose 1500-byte comment hides the end record from the first 1 KiB probe: the second search reads
+     * the whole file, no more (a tail of 22 + 65535 bytes would start before the file).
+     */
+    @Test
+    void aSmallArchiveWithACommentLongerThanTheProbe(@TempDir Path tmp) throws IOException {
+        byte[] member = new byte[440];
+        for (int i = 0; i < member.length; i++) {
+            member[i] = (byte) ('A' + i % 26);
+        }
+        CRC32 crc = new CRC32();
+        crc.update(member);
+        Path plain = tmp.resolve("small.zip");
+        try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(plain))) {
+            ZipEntry e = new ZipEntry("a.txt");
+            e.setMethod(ZipEntry.STORED);
+            e.setSize(member.length);
+            e.setCompressedSize(member.length);
+            e.setCrc(crc.getValue());
+            out.putNextEntry(e);
+            out.write(member);
+            out.closeEntry();
+        }
+        byte[] comment = new byte[1500];
+        Arrays.fill(comment, (byte) 'c');
+        byte[] archive = withComment(Files.readAllBytes(plain), comment);
+        assertThat(archive).hasSize(2048);
+
+        RemoteSourceTest.Counting bytes = new RemoteSourceTest.Counting(RemoteSourceTest.inMemory(archive));
+        try (MzPeakSource source = MzPeakSource.zip("memory:comment", bytes)) {
+            assertThat(readAll(source.inputFile("a.txt"))).isEqualTo(member);
+        }
+        assertThat(bytes.maxEnd()).isEqualTo(archive.length);
+        assertThat(bytes.readsAtOrPastEnd()).isZero();
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {22, 2000})
     void theLastEndRecordWhoseCommentReachesTheEndWins(int fromEnd, @TempDir Path tmp) throws IOException {

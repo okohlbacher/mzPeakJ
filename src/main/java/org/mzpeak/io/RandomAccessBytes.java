@@ -26,7 +26,9 @@ public interface RandomAccessBytes extends Closeable {
 
     /**
      * Reads bytes starting at {@code position} into {@code dst}, at most {@code dst.remaining()} of them, and advances
-     * the buffer's position by the number read. A read may return fewer bytes than requested; callers repeat it.
+     * the buffer's position by the number read. A read may return fewer bytes than requested; callers repeat it. A
+     * read that returns {@code 0} although {@code dst} has room breaks this contract: the sources fail instead of
+     * repeating it.
      *
      * @return the number of bytes read, {@code 0} if {@code dst} has no room, otherwise {@code -1} if
      *         {@code position} is at or past {@link #size()}

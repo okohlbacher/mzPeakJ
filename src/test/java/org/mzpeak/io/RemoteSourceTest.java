@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -35,6 +36,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * AP-6: {@link MzPeakSource#zip(String, RandomAccessBytes)} and
@@ -361,6 +363,108 @@ class RemoteSourceTest {
         }
     }
 
+    // ---- FN-12: zero-length reads, and the failure paths of the unpacked source ----------------------------------
+
+    @Test
+    void aZipWhoseReadsReturnZeroFailsInsteadOfHanging() {
+        // before FN-12 the directory read looped forever
+        Counting stalled = new Counting(stalling(new byte[4096], true));
+        assertTimeoutPreemptively(Duration.ofSeconds(30), () ->
+                assertThatThrownBy(() -> MzPeakSource.zip("memory:stalled", stalled))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessageStartingWith("zero-length read of the ZIP archive at position 3072 while reading"
+                                + " 1024 bytes at 3072"));
+        assertThat(stalled.closes()).isEqualTo(1);
+    }
+
+    @Test
+    void zeroLengthMemberReadsFailInsteadOfHanging() throws IOException {
+        Path fixture = Fixtures.legacy("small.mzpeak");
+        Stalling bytes = stalling(Files.readAllBytes(fixture), false);
+        try (MzPeakSource source = MzPeakSource.zip("memory:stalled", bytes)) {
+            bytes.stall = true; // the central directory is read; the members are not
+            assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+                assertThatThrownBy(source::readManifestBytes)
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessageStartingWith("zero-length read of member " + INDEX
+                                + " in memory:stalled at position ");
+                InputFile peaks = source.inputFile("spectra_peaks.parquet");
+                try (SeekableInputStream in = peaks.newStream()) {
+                    assertThatThrownBy(() -> in.readFully(new byte[10]))
+                            .isInstanceOf(IOException.class)
+                            .hasMessageStartingWith("zero-length read at position ")
+                            .hasMessageContaining("with 10 bytes left to read");
+                }
+            });
+        }
+    }
+
+    @Test
+    void anUnpackedManifestWhoseReadsReturnZeroFailsInsteadOfHanging() {
+        try (MzPeakSource source = MzPeakSource.unpacked("files", name -> stalling(new byte[100], true))) {
+            assertTimeoutPreemptively(Duration.ofSeconds(30), () ->
+                    assertThatThrownBy(source::readManifestBytes)
+                            .isInstanceOf(MzPeakException.class)
+                            .hasMessage("zero-length read of member " + INDEX + " in files at position 0; a read must"
+                                    + " return at least one byte or -1"));
+        }
+    }
+
+    @Test
+    void aMemberWhoseSizeFailsIsClosedOnceAndOpenedAgainOnTheNextRequest() {
+        AtomicInteger opens = new AtomicInteger();
+        AtomicInteger closes = new AtomicInteger();
+        try (MzPeakSource source = MzPeakSource.unpacked("files", name -> {
+            opens.incrementAndGet();
+            return failing(() -> {
+                throw new IOException("connection reset");
+            }, closes, null);
+        })) {
+            for (int attempt = 1; attempt <= 2; attempt++) {
+                assertThatThrownBy(() -> source.inputFile("x.parquet"))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("Failed to read the size of member x.parquet of files")
+                        .cause().hasMessage("connection reset");
+                assertThat(opens.get()).as("opens after attempt %d", attempt).isEqualTo(attempt);
+                assertThat(closes.get()).as("closes after attempt %d", attempt).isEqualTo(attempt);
+            }
+        }
+        assertThat(closes.get()).as("a member whose open failed is not closed again").isEqualTo(2);
+    }
+
+    @Test
+    void aMemberWithANegativeSizeIsClosedOnce() {
+        AtomicInteger closes = new AtomicInteger();
+        try (MzPeakSource source = MzPeakSource.unpacked("files", name -> failing(() -> -1L, closes, null))) {
+            assertThatThrownBy(() -> source.inputFile("x.parquet"))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("member x.parquet of files has a negative size -1");
+            assertThat(closes.get()).isEqualTo(1);
+        }
+        assertThat(closes.get()).isEqualTo(1);
+    }
+
+    @Test
+    void twoMembersThatFailOnCloseGiveOneExceptionWithOneSuppressed() {
+        AtomicInteger closes = new AtomicInteger();
+        MzPeakSource source = MzPeakSource.unpacked("files",
+                name -> failing(() -> 10L, closes, new IOException("close of " + name + " failed")));
+        source.inputFile("a.parquet");
+        source.inputFile("b.parquet");
+
+        assertThatThrownBy(source::close)
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("Failed to close files")
+                .satisfies(e -> {
+                    assertThat(e.getCause()).hasMessage("close of a.parquet failed");
+                    assertThat(e.getSuppressed()).singleElement()
+                            .satisfies(s -> assertThat(s).hasMessage("close of b.parquet failed"));
+                });
+        assertThat(closes.get()).isEqualTo(2);
+        source.close(); // a second close does nothing
+        assertThat(closes.get()).isEqualTo(2);
+    }
+
     @Test
     void publicApiOfTheSourceSpi() throws NoSuchMethodException {
         assertThat(abstractMethods(RandomAccessBytes.class))
@@ -457,6 +561,68 @@ class RemoteSourceTest {
             @Override
             public void close() {
                 closed = true;
+            }
+        };
+    }
+
+    /** {@code data} as {@link RandomAccessBytes} whose reads return 0 once {@link Stalling#stall} is set. */
+    private static Stalling stalling(byte[] data, boolean stall) {
+        Stalling bytes = new Stalling(inMemory(data));
+        bytes.stall = stall;
+        return bytes;
+    }
+
+    /** Reads that return 0 although the buffer has room, a breach of the contract, once {@link #stall} is set. */
+    static final class Stalling implements RandomAccessBytes {
+
+        private final RandomAccessBytes delegate;
+        volatile boolean stall;
+
+        Stalling(RandomAccessBytes delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        @Override
+        public int read(ByteBuffer dst, long position) throws IOException {
+            return stall ? 0 : delegate.read(dst, position);
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+    }
+
+    /** A size, for {@link #failing}. */
+    @FunctionalInterface
+    private interface SizeSupplier {
+        long size() throws IOException;
+    }
+
+    /** Bytes of {@code size}, counting the closes on {@code closes}; a close throws {@code closeFailure}, if any. */
+    private static RandomAccessBytes failing(SizeSupplier size, AtomicInteger closes, IOException closeFailure) {
+        return new RandomAccessBytes() {
+            @Override
+            public long size() throws IOException {
+                return size.size();
+            }
+
+            @Override
+            public int read(ByteBuffer dst, long position) {
+                throw new AssertionError("not reached");
+            }
+
+            @Override
+            public void close() throws IOException {
+                closes.incrementAndGet();
+                if (closeFailure != null) {
+                    throw closeFailure;
+                }
             }
         };
     }

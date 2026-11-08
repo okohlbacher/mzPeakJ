@@ -77,10 +77,11 @@ public interface MzPeakSource extends AutoCloseable {
 
     /**
      * An unpacked dataset whose members {@code opener} opens, as {@link #open(Path)} reads a directory. Members are
-     * opened lazily, each at most once, when a reader first asks for them; a member name that is absolute or contains
-     * a {@code ..} segment is rejected before {@code opener} is called. A name counts as absolute if it starts with
-     * {@code /} or {@code \}, or if its first segment contains {@code :} (a drive letter such as {@code C:/x}, or a
-     * URI scheme such as {@code https://host/x} or {@code file:///x}). {@link #close()} closes every member opened.
+     * opened lazily, when a reader first asks for them, and not again once they opened successfully; a member name
+     * that is absolute or contains a {@code ..} segment is rejected before {@code opener} is called. A name
+     * counts as absolute if it starts with {@code /} or {@code \}, or if its first segment contains {@code :} (a drive
+     * letter such as {@code C:/x}, or a URI scheme such as {@code https://host/x} or {@code file:///x}).
+     * {@link #close()} closes every member opened.
      *
      * @param description names the dataset in messages and {@link #describe()}, e.g. its base URL
      */
@@ -95,8 +96,11 @@ public interface MzPeakSource extends AutoCloseable {
 
         /**
          * Opens the member {@code name}, a {@code /}-separated path relative to the dataset root as the manifest
-         * lists it ({@code mzpeak_index.json} for the manifest). The source calls this at most once per name and
-         * closes the returned bytes when it is closed.
+         * lists it ({@code mzpeak_index.json} for the manifest). The source calls this at most once per name that
+         * opened successfully; a failed open (an exception, a {@code null} or failing {@code size()}) is retried on
+         * the next request for that name. Lookups of other members wait while an open runs. Decoding the name, such
+         * as percent-encoding it for a URL, is the opener's job. The source closes the returned bytes when it is
+         * closed, or right away when their {@code size()} fails.
          *
          * @return the member's bytes, or {@code null} if the dataset has no such member
          * @throws IOException if the member cannot be opened

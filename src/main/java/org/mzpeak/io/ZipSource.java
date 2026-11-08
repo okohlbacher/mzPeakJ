@@ -139,6 +139,10 @@ final class ZipSource implements MzPeakSource {
                     throw new MzPeakException("unexpected end of archive reading member " + name + " in "
                             + description);
                 }
+                if (n == 0) {
+                    throw new MzPeakException("zero-length read of member " + name + " in " + description
+                            + " at position " + pos + "; a read must return at least one byte or -1");
+                }
                 pos += n;
             }
             return buf.array();

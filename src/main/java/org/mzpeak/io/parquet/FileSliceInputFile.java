@@ -137,6 +137,11 @@ public final class FileSliceInputFile implements InputFile {
                 if (n < 0) {
                     throw new EOFException("unexpected end of file in archive slice");
                 }
+                if (n == 0) {
+                    // the RandomAccessBytes contract allows 0 only when the buffer has no room; looping would hang
+                    throw new IOException("zero-length read at position " + filePos + " with " + dst.remaining()
+                            + " bytes left to read; a read must return at least one byte or -1");
+                }
                 filePos += n;
             }
             pos += need;
