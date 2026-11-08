@@ -62,6 +62,12 @@ class ColumnStatisticsTest {
     /** The reference value of every small dataset, current and legacy (Rust and Python tests). */
     private static final DoubleRange SMALL_MZ = new DoubleRange(162.24594116210938, 2000.0099466203774);
     private static final String LEGACY_SCAN_START_TIME = "scan.MS_1000016_scan_start_time_unit_UO_0000031";
+    /**
+     * The lowest and highest observed m/z of the rows of {@link #writeSplitMetadata}: null in the middle row group,
+     * the smallest lowest and the largest highest value in the last one.
+     */
+    private static final Double[][] SPLIT_MZ =
+            {{300.0, 900.0}, {250.0, 950.0}, {null, null}, {null, null}, {200.0, 1000.0}};
 
     @TempDir
     Path tmp;
@@ -354,23 +360,32 @@ class ColumnStatisticsTest {
     }
 
     /**
-     * Statistics span the row groups: the minimum of their minima, the maximum of their maxima. A row group of nulls
-     * records no bounds and leaves the statistics complete.
+     * Statistics span the row groups: the minimum of their minima, the maximum of their maxima, which lie in different
+     * row groups here. A row group of nulls records no bounds and leaves the statistics complete.
      */
     @Test
     void statisticsSpanSeveralRowGroups() {
-        writeSplitMetadata(true);
+        writeSplitMetadata(SPLIT_MZ, true);
         try (MzPeakReader reader = MzPeakReader.open(tmp)) {
             ColumnStatistics lowest =
                     reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, LOWEST_MZ).orElseThrow();
             assertThat(lowest.column()).isEqualTo("lowest_observed_mz");
             assertThat(lowest.rowGroups()).containsExactly(
-                    new RowGroup(2, 0L, 200.0, 300.0),
+                    new RowGroup(2, 0L, 250.0, 300.0),
                     new RowGroup(2, 2L, null, null),
-                    new RowGroup(1, 0L, 250.0, 250.0));
+                    new RowGroup(1, 0L, 200.0, 200.0));
             assertThat(lowest.complete()).isTrue();
             assertThat(lowest.min()).hasValue(200.0);
             assertThat(lowest.max()).hasValue(300.0);
+            ColumnStatistics highest =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, HIGHEST_MZ).orElseThrow();
+            assertThat(highest.rowGroups()).containsExactly(
+                    new RowGroup(2, 0L, 900.0, 950.0),
+                    new RowGroup(2, 2L, null, null),
+                    new RowGroup(1, 0L, 1000.0, 1000.0));
+            assertThat(highest.complete()).isTrue();
+            assertThat(highest.min()).hasValue(900.0);
+            assertThat(highest.max()).hasValue(1000.0);
             assertThat(reader.observedMzRange()).contains(new DoubleRange(200.0, 1000.0));
             // uint32 statistics are read without sign extension
             ColumnStatistics points =
@@ -383,7 +398,7 @@ class ColumnStatisticsTest {
     /** Without statistics in the footer, the statistics are incomplete and there is no observed m/z range. */
     @Test
     void missingStatisticsLeaveTheObservedMzRangeEmpty() {
-        writeSplitMetadata(false);
+        writeSplitMetadata(SPLIT_MZ, false);
         try (MzPeakReader reader = MzPeakReader.open(tmp)) {
             ColumnStatistics lowest =
                     reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, LOWEST_MZ).orElseThrow();
@@ -393,6 +408,41 @@ class ColumnStatisticsTest {
             assertThat(lowest.min()).isEmpty();
             assertThat(reader.observedMzRange()).isEmpty();
             assertThat(reader.observedTimeRange()).contains(new DoubleRange(1.0, 5.0));
+        }
+    }
+
+    /**
+     * A single row group without bounds makes a column's statistics incomplete although the other row groups record a
+     * minimum and a maximum, and then there is no observed m/z range. Here the last row group of one observed m/z
+     * column holds only a NaN, whose bounds parquet-java drops while it keeps the null count; the other column stays
+     * complete.
+     */
+    @ParameterizedTest(name = "{0} incomplete")
+    @CsvSource({"MS:1000528, MS:1000527", "MS:1000527, MS:1000528"})
+    void oneUnboundedRowGroupOfEitherObservedMzColumnLeavesTheObservedMzRangeEmpty(String incomplete,
+                                                                                  String complete) {
+        Double[][] mz = new Double[SPLIT_MZ.length][];
+        for (int i = 0; i < mz.length; i++) {
+            mz[i] = SPLIT_MZ[i].clone();
+        }
+        mz[mz.length - 1][LOWEST_MZ.equals(incomplete) ? 0 : 1] = Double.NaN;
+        writeSplitMetadata(mz, true);
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            ColumnStatistics partial =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, incomplete).orElseThrow();
+            assertThat(partial.rowGroups()).hasSize(3);
+            assertThat(partial.rowGroups().get(0).min()).isNotNull();
+            assertThat(partial.rowGroups().get(1)).isEqualTo(new RowGroup(2, 2L, null, null));
+            assertThat(partial.rowGroups().get(2)).isEqualTo(new RowGroup(1, 0L, null, null));
+            assertThat(partial.complete()).isFalse();
+            assertThat(partial.min()).isPresent();
+            assertThat(partial.max()).isPresent();
+            ColumnStatistics other =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, complete).orElseThrow();
+            assertThat(other.complete()).isTrue();
+            assertThat(other.min()).isPresent();
+            assertThat(other.max()).isPresent();
+            assertThat(reader.observedMzRange()).isEmpty();
         }
     }
 
@@ -412,6 +462,14 @@ class ColumnStatisticsTest {
                 new RowGroup(2, 0L, 0.5, 9.0));
         assertThat(partial.min()).hasValue(-1.5);
         assertThat(partial.max()).hasValue(9.0);
+        // the extremes come from the row groups that hold them, wherever these are
+        ColumnStatistics middle = stats(new RowGroup(2, 0L, 0.5, 4.0), new RowGroup(2, 0L, -1.5, 9.0),
+                new RowGroup(2, 0L, 1.0, 3.0));
+        assertThat(middle.min()).hasValue(-1.5);
+        assertThat(middle.max()).hasValue(9.0);
+        ColumnStatistics last = stats(new RowGroup(2, 0L, 0.5, 9.0), new RowGroup(2, 0L, -1.5, 3.0));
+        assertThat(last.min()).hasValue(-1.5);
+        assertThat(last.max()).hasValue(9.0);
     }
 
     @Test
@@ -450,10 +508,10 @@ class ColumnStatisticsTest {
     }
 
     /**
-     * A split spectrum metadata member of 5 rows in row groups of 2, 2 and 1 rows, whose observed m/z cells are null
-     * in the middle row group, with a manifest that maps its columns.
+     * A split spectrum metadata member of 5 rows in row groups of 2, 2 and 1 rows, whose lowest and highest observed
+     * m/z are the pairs of {@code mz} (a {@code null} pair for null cells), with a manifest that maps its columns.
      */
-    private void writeSplitMetadata(boolean statistics) {
+    private void writeSplitMetadata(Double[][] mz, boolean statistics) {
         MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
                 + "  optional int64 index (INTEGER(64,false));\n"
                 + "  optional double time;\n"
@@ -462,7 +520,6 @@ class ColumnStatisticsTest {
                 + "  optional int32 number_of_data_points (INTEGER(32,false));\n"
                 + "}");
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
-        Double[][] mz = {{300.0, 900.0}, {200.0, 1000.0}, {null, null}, {null, null}, {250.0, 950.0}};
         int[] points = {10, (int) 4_000_000_000L, 20, 30, 40};
         Group[] rows = new Group[mz.length];
         for (int i = 0; i < mz.length; i++) {
