@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
@@ -39,6 +40,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ArchivePackerTest {
 
     private static final String INDEX = "mzpeak_index.json";
+    /** The time of every entry: the same on every machine, in every time zone and at every time. */
+    private static final LocalDateTime ENTRY_TIME = LocalDateTime.of(2000, 1, 1, 0, 0);
     /** The members {@link MzPeakWriter} writes for current small.unpacked, in name order with the manifest last. */
     private static final List<String> SMALL_MEMBERS = List.of(
             "chromatograms_data.parquet",
@@ -96,6 +99,78 @@ class ArchivePackerTest {
         }
         assertThat(central).containsExactlyElementsOf(SMALL_MEMBERS);
         assertThat(local).containsExactlyElementsOf(SMALL_MEMBERS);
+    }
+
+    /**
+     * Every entry carries the fixed time 2000-01-01T00:00 (MS-DOS date 0x2821, time 0) and no extra field, neither
+     * in its local header nor in the central directory, so two writes of the same input in one JVM are byte for byte
+     * the same, whenever they run.
+     */
+    @Test
+    void everyEntryHasTheFixedTimeAndNoExtraFieldSoTwoWritesAreIdentical(@TempDir Path tmp) throws IOException {
+        Source s = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        Path first = tmp.resolve("first.mzpeak");
+        Path second = tmp.resolve("second.mzpeak");
+        MzPeakWriter.writeArchive(first, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata);
+        MzPeakWriter.writeArchive(second, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
+                s.fileMetadata);
+
+        List<ArchiveLayout.Entry> entries = ArchiveLayout.entries(first);
+        assertThat(entries).extracting(ArchiveLayout.Entry::name).containsExactlyElementsOf(SMALL_MEMBERS);
+        for (ArchiveLayout.Entry entry : entries) {
+            assertThat(entry.timeLocal()).as("time of %s", entry.name()).isEqualTo(ENTRY_TIME);
+            assertThat(entry.dosDate()).as("MS-DOS date of %s", entry.name()).isEqualTo(0x2821);
+            assertThat(entry.dosTime()).as("MS-DOS time of %s", entry.name()).isZero();
+            assertThat(entry.localExtraLength()).as("local extra field length of %s", entry.name()).isZero();
+            assertThat(entry.centralExtraLength()).as("central extra field length of %s", entry.name()).isZero();
+        }
+        try (ZipInputStream in = new ZipInputStream(Files.newInputStream(first))) {
+            for (ZipEntry entry = in.getNextEntry(); entry != null; entry = in.getNextEntry()) {
+                assertThat(entry.getTimeLocal()).as("local time of %s", entry.getName()).isEqualTo(ENTRY_TIME);
+                assertThat(entry.getExtra()).as("local extra field of %s", entry.getName()).isNull();
+            }
+        }
+        assertThat(Files.mismatch(first, second)).as("first byte at which the two archives differ").isEqualTo(-1L);
+    }
+
+    /**
+     * A child JVM with a 64 MiB heap packs a 200 MiB member, so the packer streams each member instead of holding it
+     * in memory (which would also fail for a member over 2 GiB); the entry's sizes and CRC are those of the member.
+     */
+    @Test
+    void aChildJvmWithA64MegabyteHeapPacksA200MegabyteMember(@TempDir Path tmp) throws Exception {
+        long length = 200L << 20;
+        Path out = Files.createDirectory(tmp.resolve("out"));
+        Path archive = out.resolve("large.mzpeak");
+        ChildJvm.Result result = ChildJvm.run(tmp, List.of("-Xmx64m"), ArchiveChildMain.class,
+                "pack-sparse", Long.toString(length), archive.toString());
+        assertThat(result.exitStatus()).as("exit status of the child; stderr:%n%s", result.stderr()).isZero();
+
+        CRC32 zeros = new CRC32();
+        byte[] buffer = new byte[1 << 16];
+        for (long left = length; left > 0; left -= buffer.length) {
+            zeros.update(buffer, 0, (int) Math.min(buffer.length, left));
+        }
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            assertThat(zip.stream().map(ZipEntry::getName)).containsExactly("big.bin", INDEX);
+            ZipEntry big = zip.getEntry("big.bin");
+            assertThat(big.getMethod()).isEqualTo(ZipEntry.STORED);
+            assertThat(big.getSize()).isEqualTo(length);
+            assertThat(big.getCompressedSize()).isEqualTo(length);
+            assertThat(big.getCrc()).isEqualTo(zeros.getValue());
+            CRC32 read = new CRC32();
+            long count = 0;
+            try (InputStream in = zip.getInputStream(big)) {
+                for (int n = in.read(buffer); n != -1; n = in.read(buffer)) {
+                    read.update(buffer, 0, n);
+                    count += n;
+                }
+            }
+            assertThat(count).isEqualTo(length);
+            assertThat(read.getValue()).isEqualTo(zeros.getValue());
+        }
+        assertThat(list(out)).as("the archive's directory after the pack").containsExactly(archive);
     }
 
     @Test

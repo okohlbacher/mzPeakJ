@@ -713,7 +713,12 @@ Rust reference readers open it unconditionally. `DatasetWriter` then writes the 
 members (point layout, or MS-Numpress chunks of up to 500 points, never one of a single point unless the
 spectrum has one, with linear m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point
 layout, and the manifest last; `ArchivePacker` packs a directory into a STORED ZIP whose last entry is the
-manifest.
+manifest. It streams each member twice, through a CRC-32 and then into the archive, so no member is held in memory
+and a member may exceed 2 GiB (`ZipOutputStream` adds zip64 fields above 4 GiB). Every entry gets the time
+2000-01-01T00:00 through `setTimeLocal` and no extra field. 1980-01-01T00:00 is avoided: it is the JDK's marker
+for a time before 1980, which keeps the time as an instant in the default time zone and writes it as an
+extended-timestamp (0x5455) field, so the bytes would depend on the zone; `setTime(long)` converts through the
+zone too.
 
 **Metadata layouts** (`Options.withMetadataLayout`):
 
@@ -733,6 +738,20 @@ manifest.
 Both layouts get format version 0.9.0, the `cv_list`, a SHA-512 checksum and an empty `parameters` list per
 manifest entry, the array index and the entity and data-point counts in every signal footer, and the file-level
 documents in both the manifest and the `spectra_metadata.parquet` footer.
+
+**Determinism.** Within one JVM, the same input and options give the same bytes. Across JVM runs, the ZIP layer
+and the content of every member are the same, but the footers of the Parquet members can differ: parquet-java
+1.17.1 collects the encodings of each column chunk in a `HashSet` of enum constants
+(`ParquetFileWriter.startColumn`) and writes them in its iteration order
+(`ParquetMetadataConverter.toFormatEncodings`). Enum constants hash by identity, so that order can change from
+one run to the next, and with it the member's bytes, its checksum in the manifest and its CRC in an archive. In
+the MZ-9 investigation, 2 of 12 JVM runs writing current small.unpacked differed so; with the encodings of each
+column chunk sorted, all 12 gave the same bytes for every member, so nothing in mzPeakJ adds to it. mzPeakJ
+therefore claims determinism of member content (`ContentDigest`), not of Parquet bytes. `DeterminismProcessTest`
+writes current small.unpacked, has_uv and Example_Processed.img as archives in six child JVMs each and compares
+the ZIP entries (order, method, time, extra fields, sizes), the `ContentDigest` of every Parquet member and the
+manifest with its checksums masked; it also packs fixed members in three time zones and compares the bytes, and
+writes current small.unpacked in two time zones.
 
 **Readers.** The default output is readable by the HEAD Python reader. The opt-in `UpstreamInteropTest` checks
 this on legacy small.unpacked and current small.unpacked, has_uv, Example_Processed.img and diaPASEF.ref
@@ -1017,6 +1036,9 @@ before `verify` and never run the check.
   precursor of a spectrum, with a WARNING when it drops more.
   Whether the Rust reference reads mzPeakJ's output is untested.
 - **Integrity.** Manifest checksums are not verified on read, unlike in the Rust and Python readers (§8.2).
+- **Byte determinism.** The Parquet members, and with them their checksums and CRCs, can differ between JVM runs
+  in the order of a column chunk's encodings in the footer, which parquet-java takes from a `HashSet` (§8.1);
+  their content does not.
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.
 - **Dataset checks.** A dataset without a spectrum metadata member throws; the format version is not checked.
 - **Metadata not decoded:** products facets; chromatogram precursor and selected-ion facets; the wavelength
