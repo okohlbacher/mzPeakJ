@@ -115,7 +115,8 @@ final class NumpressSignalWriter {
      * 500 points, the last two 499 + 2 where a single point would be left over; m/z is encoded with Numpress linear
      * and intensity with the plan's Numpress intensity encoding. The rows are read by the Numpress path of
      * {@link ChunkRowDecoder}. {@code mz()}/{@code intensity()} are written in the order of the entry's
-     * {@link WritePlan.SignalArrays}.
+     * {@link WritePlan.SignalArrays}. The codecs encode only the values {@link WritePlanner#requireNumpressEncodable}
+     * lets into the plan: finite m/z and intensities of at least 0, and PIC counts up to 2147483647.
      */
     static void writeNumpressChunks(Path file, WritePlan plan, boolean centroidFile) throws IOException {
         NumpressIntensityEncoding intensityEncoding = plan.options().numpressIntensity();

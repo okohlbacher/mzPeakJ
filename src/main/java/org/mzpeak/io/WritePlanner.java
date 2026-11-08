@@ -1,7 +1,9 @@
 package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
+import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SignalArrays;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
@@ -37,9 +39,19 @@ import java.util.function.ToLongFunction;
  * spectra, the extra arrays of chromatograms and their intensity units, none of which are written yet (WR-11), and, in
  * the packed layout, the scans after a spectrum's first, the precursors after its primary one and the selected ions
  * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own, and so do, in the
- * split layout, the scan settings without an id, which get one.
+ * split layout, the scan settings without an id, which get one. With {@link SignalEncoding#NUMPRESS}, a value the
+ * Numpress codecs cannot encode is refused as a contract violation.
  */
 final class WritePlanner {
+
+    /** The largest count Numpress PIC is written with: 2^31 - 1 (design Q26, see {@link #requireNumpressEncodable}). */
+    private static final long MAX_PIC_COUNT = Integer.MAX_VALUE;
+    /** The codec and the values it takes, as the error for a value it cannot encode names them. */
+    private static final String LINEAR_RANGE = "Numpress linear, which takes only finite m/z >= 0";
+    private static final String SLOF_RANGE = "Numpress SLOF, which takes only finite intensities >= 0";
+    private static final String PIC_RANGE = "Numpress PIC, which takes only finite intensities >= 0 that round to at"
+            + " most " + MAX_PIC_COUNT;
+    private static final String POINT = "SignalEncoding.POINT";
 
     private WritePlanner() {
     }
@@ -76,6 +88,7 @@ final class WritePlanner {
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumEntry entry = disposition(s).renumbered(i, precursors)
                     .withArrays(mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
+            requireNumpressEncodable(entry, options);
             writesSpectraPeaks |= entry.peaks();
             spectrumEntries.add(entry);
             if (!s.arrays().isEmpty() || !s.peakArrays().isEmpty()) {
@@ -300,6 +313,65 @@ final class WritePlanner {
             }
         }
         return true;
+    }
+
+    // Numpress values (design §5.7, MZ-23). The Numpress chunk layout holds one intensity transform column and no
+    // plain list, so a chunk cannot fall back to unencoded values, and the codecs write what they cannot encode as
+    // other values: Numpress linear stores m/z as fixed-point integers (NaN as 0, a first m/z of -0.038 reads back as
+    // 42949.63), SLOF the logarithm of intensity + 1 (-0.5 reads back as 1.45e28, NaN as 0) and PIC the low 32 bits of
+    // each rounded count. ChunkCodecs reads PIC counts unsigned, as the C++ reference does, but readers built on the
+    // reference Java decoder read a count from 2^31 on as negative, so PIC is written only up to 2147483647 (design
+    // Q26). Such values are refused before anything is written; the point layout writes them.
+
+    /**
+     * Throws {@link MzPeakException} when {@code options} write Numpress chunks and a value that {@code entry} writes
+     * to one cannot be encoded: an m/z or intensity that is not finite or is below 0, or with
+     * {@link NumpressIntensityEncoding#PIC} an intensity whose rounded count {@code (long) (v + 0.5)} exceeds
+     * 2147483647. The values checked are those the entry writes: its arrays, to spectra_data or as a peak copy to
+     * spectra_peaks, and its peak list to spectra_peaks. The message names the spectrum's index, the array, the value,
+     * the member and the alternative.
+     */
+    static void requireNumpressEncodable(SpectrumEntry entry, Options options) {
+        if (options.signalEncoding() != SignalEncoding.NUMPRESS) {
+            return;
+        }
+        Spectrum s = entry.source();
+        boolean pic = options.numpressIntensity() == NumpressIntensityEncoding.PIC;
+        if (entry.data() || entry.peaksFromArrays()) {
+            double[] mz = entry.arrays().x();
+            double[] intensity = entry.arrays().intensity();
+            String member = entry.data() ? "spectra_data" : "spectra_peaks";
+            for (int i = 0; i < mz.length; i++) {
+                requireNumpressEncodable(s.index(), mz[i], intensity[i], member, pic);
+            }
+        }
+        if (entry.peaks() && !entry.peaksFromArrays()) {
+            for (CentroidPeak p : s.peaks()) {
+                requireNumpressEncodable(s.index(), p.mz(), p.intensity(), "spectra_peaks", pic);
+            }
+        }
+    }
+
+    /** Throws for one point of spectrum {@code index} in {@code member}, as {@link #requireNumpressEncodable}. */
+    private static void requireNumpressEncodable(long index, double mz, double intensity, String member,
+                                                 boolean pic) {
+        if (!Double.isFinite(mz) || mz < 0) {
+            throw unencodable(index, "m/z", mz, member, LINEAR_RANGE, POINT);
+        }
+        if (!Double.isFinite(intensity) || intensity < 0) {
+            throw unencodable(index, "intensity", intensity, member, pic ? PIC_RANGE : SLOF_RANGE, POINT);
+        }
+        if (pic && (long) (intensity + 0.5) > MAX_PIC_COUNT) {
+            throw unencodable(index, "intensity", intensity, member, PIC_RANGE,
+                    "NumpressIntensityEncoding.SLOF or " + POINT);
+        }
+    }
+
+    /** The error for {@code value} of {@code array}, which {@code codec} cannot encode, and its alternative. */
+    private static MzPeakException unencodable(long index, String array, double value, String member, String codec,
+                                               String alternative) {
+        return new MzPeakException("spectrum " + index + ": " + array + " " + value + " in " + member
+                + " cannot be encoded with " + codec + "; use " + alternative);
     }
 
     // Renumbering (design §11.5, WR-8). Spec spectra.md:91-93 and chromatograms.md:40: the indices of each entity

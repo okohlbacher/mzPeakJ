@@ -151,9 +151,7 @@ class NumpressConformanceTest {
      * but never a chunk of one point unless the spectrum has one point, since the HEAD Python reader (pynumpress)
      * cannot decode the 12-byte linear payload of a single value. 501 points are written as 499 + 2 and 1001 as
      * 500 + 499 + 2. Every chunk is bounded by its first and last input m/z, and every spectrum reads back within the
-     * Numpress tolerances. The PIC read-back is of a second write without the one-point spectrum: the vendored
-     * {@code MSNumpress.decode} refuses a PIC payload under 8 bytes, one PIC value takes at most 5, and the reader
-     * decodes a row group at once, so that spectrum would fail the read of every other.
+     * Numpress tolerances, the one-point spectrum included, whose PIC payload is under 8 bytes (MZ-23).
      */
     @ParameterizedTest
     @EnumSource(NumpressIntensityEncoding.class)
@@ -176,13 +174,7 @@ class NumpressConformanceTest {
             assertThat(lengths).as("%s chunk sizes of a spectrum of %d points", encoding, s.mz().length)
                     .isEqualTo(chunking.get(s.mz().length));
         }
-        if (encoding == NumpressIntensityEncoding.PIC) {
-            List<Spectrum> readable = profiles(sizes.subList(1, sizes.size()));
-            assertReadBackWithinTolerance(writeConstructed(readable, encoding, tmp.resolve("readable.mzpeak")),
-                    readable, encoding);
-        } else {
-            assertReadBackWithinTolerance(out, spectra, encoding);
-        }
+        assertReadBackWithinTolerance(out, spectra, encoding);
     }
 
     /**
@@ -283,8 +275,7 @@ class NumpressConformanceTest {
 
     /**
      * A PROFILE MS1 spectrum with {@code index} and {@code n} points: ascending m/z from 100 in steps of about 0.01,
-     * and integer intensities between 2^24 and 2^28, which PIC stores exactly in 4 bytes each, so that every PIC chunk
-     * of two points or more has the 8 bytes the vendored decoder asks for.
+     * and integer intensities between 2^24 and 2^28, which PIC stores exactly in 4 bytes each.
      */
     private static Spectrum profile(long index, int n) {
         double[] mz = new double[n];

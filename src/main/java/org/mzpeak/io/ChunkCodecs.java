@@ -5,6 +5,7 @@ import org.apache.parquet.example.data.Group;
 import org.apache.parquet.schema.Type;
 import org.mzpeak.io.parquet.ParquetGroups;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
@@ -23,16 +24,43 @@ final class ChunkCodecs {
     private ChunkCodecs() {
     }
 
+    /**
+     * The values of the Numpress payload in {@code field} ({@code cvAccession} names the codec), none for an empty or
+     * null payload; a payload that does not decode throws, naming {@code what} and the spectrum. PIC is decoded by
+     * {@link #decodePic}, linear and SLOF by {@code MSNumpress.decode}.
+     */
     static double[] decodeNumpress(Group chunk, String field, String cvAccession, long si, String what) {
         byte[] bytes = ParquetGroups.byteList(chunk, field);
         if (bytes.length == 0) {
             return new double[0];
         }
         try {
-            return MSNumpress.decode(cvAccession, bytes, bytes.length);
+            return cvAccession.equals(MSNumpress.ACC_NUMPRESS_PIC) ? decodePic(bytes)
+                    : MSNumpress.decode(cvAccession, bytes, bytes.length);
         } catch (RuntimeException e) {
             throw new MzPeakException("Failed to Numpress-decode " + what + " for spectrum_index " + si, e);
         }
+    }
+
+    /**
+     * The counts of a non-empty PIC payload, read as unsigned 32-bit integers (design §5.7). A PIC payload has no
+     * fixed-point header, so one count takes one to five bytes; {@code MSNumpress.decode} asks for 8 bytes and would
+     * refuse it, so {@code decodePic} is called directly, with the buffer of two values per byte that
+     * {@code MSNumpress.decode} uses. PIC stores the low 32 bits of each rounded count, which the C++ reference decodes
+     * unsigned (0 to 4294967294), but the vendored {@code IntDecoder} sign-extends them, so a count from 2^31 on comes
+     * back as count - 2^32. A PIC count is never negative: 2^32 is added to every negative value, which restores it.
+     * A negative number of values, which {@code decodePic} never returns, throws from {@code Arrays.copyOf}, as
+     * {@code MSNumpress.decode} throws for it.
+     */
+    private static double[] decodePic(byte[] bytes) {
+        double[] buffer = new double[bytes.length * 2];
+        double[] counts = Arrays.copyOf(buffer, MSNumpress.decodePic(bytes, bytes.length, buffer));
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] < 0) {
+                counts[i] += 0x1p32;
+            }
+        }
+        return counts;
     }
 
     /**

@@ -30,6 +30,7 @@ import java.util.TreeMap;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.withinPercentage;
 
 /**
@@ -346,8 +347,11 @@ class WriterDispositionTest {
     }
 
     /**
-     * A CENTROID spectrum with a non-finite m/z row, as a peak copy and array-only, in Numpress: it reads back with
-     * the source's peak list. Its arrays go to spectra_data and its peak list, if any, to spectra_peaks.
+     * A CENTROID spectrum with a non-finite m/z row, as a peak copy and array-only, in Numpress: its arrays go to
+     * spectra_data and its peak list, if any, to spectra_peaks, but Numpress linear cannot encode the non-finite m/z,
+     * so the write is refused before anything is written (MZ-23, design Q27; on the base code the m/z was written as
+     * another value). The point layout writes such a spectrum
+     * ({@link #centroidPeakCopyWithANonFiniteMzRowKeepsBothFiles}).
      */
     @ParameterizedTest(name = "{0} {1} peak copy={2}")
     @MethodSource("numpressNonFiniteMzRows")
@@ -357,25 +361,13 @@ class WriterDispositionTest {
         double[] intensity = {3e8, 4e8, 5e8};
         Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity,
                 peakCopy ? copyOf(mz, intensity) : List.of());
+        assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, true, peakCopy, false));
 
-        Path out = writeNumpress(tmp, s, encoding);
-
-        try (MzPeakReader r = MzPeakReader.open(out)) {
-            Spectrum back = r.getSpectrum(0).orElseThrow();
-            assertThat(mzs(back.peaks())).containsExactly(mzs(s.peaks()));
-            assertNumpressIntensities(intensities(back.peaks()), intensities(s.peaks()));
-        }
-        Group spectrum = metadataRows(out).get(0L);
-        assertThat(dataPoints(spectrum)).isEqualTo(3L);
-        if (peakCopy) {
-            SpectrumArrayStore.Arrays peaks = decoded(out.resolve(PEAKS), 0);
-            assertThat(peaks.mz()).containsExactly(100.0, 300.0);
-            assertNumpressIntensities(peaks.intensity(), 3e8, 5e8);
-            assertThat(numberOfPeaks(spectrum)).isEqualTo(2L);
-        } else {
-            assertThat(out.resolve(PEAKS)).doesNotExist();
-            assertThat(numberOfPeaks(spectrum)).isNull();
-        }
+        assertThatThrownBy(() -> writeNumpress(tmp, s, encoding))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum 0: m/z " + nonFinite + " in spectra_data cannot be encoded with Numpress linear,"
+                        + " which takes only finite m/z >= 0; use SignalEncoding.POINT");
+        assertThat(tmp.resolve("out.mzpeak")).doesNotExist();
     }
 
     /**

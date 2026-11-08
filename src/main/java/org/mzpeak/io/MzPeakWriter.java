@@ -113,6 +113,8 @@ public final class MzPeakWriter {
      * its key, whatever the row order. The typical violation is a spectrum with several precursors written without
      * its parent spectra; writing the parents as well avoids it. The selected ions of a spectrum are written in the
      * order of their precursor's precursor_index, null first, which the Rust reference reader also needs.
+     * With {@link SignalEncoding#NUMPRESS}, every m/z and intensity written must be in the range that encoding
+     * documents.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}
@@ -276,6 +278,13 @@ public final class MzPeakWriter {
     /**
      * Intensity encoding for Numpress chunks. {@link #SLOF} is the standard choice for floating-point
      * intensities; {@link #PIC} is appropriate for integer ion-count arrays.
+     *
+     * <p>SLOF ({@code MS:1002314}) takes finite intensities of at least 0. PIC ({@code MS:1002313}) rounds each
+     * intensity to the count {@code (long) (v + 0.5)} and takes finite intensities of at least 0 whose count is at most
+     * 2147483647: the codec stores 32 bits, but readers built on the reference Java MS-Numpress decoder read a count
+     * from 2^31 on as negative. {@link MzPeakReader} reads the PIC counts of spectra as unsigned 32-bit integers, as
+     * the C++ reference does, so spectra of other writers with counts up to 4294967294 read correctly, and so do PIC
+     * payloads under 8 bytes. A write with another value throws {@link MzPeakException} before anything is written.
      */
     public enum NumpressIntensityEncoding { SLOF, PIC }
 
@@ -305,7 +314,12 @@ public final class MzPeakWriter {
         POINT,
         /**
          * MS-Numpress chunks: Numpress linear m/z and Numpress SLOF or PIC intensity, as chosen by
-         * {@link Options#numpressIntensity()}.
+         * {@link Options#numpressIntensity()}. The chunks have no unencoded fallback, so every m/z and intensity
+         * written to spectra_data and spectra_peaks must be one the codecs encode: finite m/z of at least 0, and
+         * intensities in the range of the {@link NumpressIntensityEncoding} (finite and at least 0; with PIC, rounding
+         * to at most 2147483647). A write with another value throws {@link MzPeakException} naming the spectrum
+         * index, the array and the value before anything is written; {@link #POINT} writes such values (a NaN m/z
+         * reads back interpolated, as a null in the point layout does).
          */
         NUMPRESS
     }
