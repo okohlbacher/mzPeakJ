@@ -28,7 +28,8 @@ import java.util.stream.Stream;
  * Reads an mzPeak dataset — either an unpacked {@code *.mzpeak/} directory or a single-file (STORED)
  * {@code .mzpeak} ZIP. Surface: open, count, metadata access, spectrum (m/z + intensity + peaks + extra arrays
  * such as ion mobility) materialization, lookup by index / scan number / native id / retention time, iteration, range
- * queries ({@link #extractSignal(SignalQuery)}, {@link #queryPeaks(SignalQuery)}), and chromatograms.
+ * queries ({@link #extractSignal(SignalQuery)}, {@link #queryPeaks(SignalQuery)}), metadata column statistics
+ * ({@link #columnStatistics}, {@link #observedMzRange()}), and chromatograms.
  *
  * <p>Metadata is loaded eagerly; signal files are loaded lazily and cached. Profile null-marked points are
  * reconstructed by default (so the point count matches the declared {@code number_of_data_points}); open with
@@ -138,6 +139,10 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
             return "Options[reconstructProfile=" + reconstructProfile + ", signalMode=" + signalMode + "]";
         }
     }
+
+    /** The lowest and highest observed m/z terms of the spectrum metadata. */
+    private static final String LOWEST_OBSERVED_MZ = "MS:1000528";
+    private static final String HIGHEST_OBSERVED_MZ = "MS:1000527";
 
     private final MzPeakSource source;
     private final MzPeakManifest manifest;
@@ -519,6 +524,74 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         if (closed) {
             throw new IllegalStateException("the reader is closed");
         }
+    }
+
+    // ---- column statistics ------------------------------------------------------------------------
+
+    /**
+     * The Parquet row-group statistics of the metadata column that holds the term {@code accession} for the role
+     * {@code (entity, kind)}, such as ({@code SPECTRUM}, {@code SCANS}, {@code "MS:1000016"}) for the scan start
+     * times. Reads only the footer of the member that holds the column, no row.
+     *
+     * <p>The column is looked up in the facet's own member, else, in the packed layout, in the entity's metadata
+     * member; by the member's column mapping and the known column names, and in the packed layout also by its CURIE
+     * prefix ({@code MS_1000016_}) when exactly one field has it. Only columns directly in the facet's table or
+     * packed struct are found, not ones in a nested struct or list.
+     *
+     * @return empty for the data arrays and peaks roles, for a role that the dataset has no metadata member for,
+     *         when no column holds the term, and when the column is not of the Parquet type INT32, INT64, FLOAT or
+     *         DOUBLE
+     * @throws NullPointerException  if an argument is {@code null}
+     * @throws IllegalStateException if this reader is closed
+     * @throws MzPeakException       if the member has rows but neither metadata layout
+     */
+    public Optional<ColumnStatistics> columnStatistics(EntityType entity, DataKind kind, String accession) {
+        Objects.requireNonNull(entity, "entity");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(accession, "accession");
+        requireOpen();
+        return MetadataColumns.statistics(manifest, source, entity, kind, accession);
+    }
+
+    /**
+     * The m/z range the spectra cover: from the smallest lowest observed m/z (MS:1000528) to the largest highest
+     * observed m/z (MS:1000527) of the spectrum metadata, taken from the Parquet row-group statistics of the two
+     * columns ({@link #columnStatistics}).
+     *
+     * @return empty unless both columns are found and their statistics are {@linkplain ColumnStatistics#complete()
+     *         complete} with a minimum and a maximum
+     * @throws IllegalStateException if this reader is closed
+     * @throws MzPeakException       if the smallest lowest observed m/z exceeds the largest highest observed m/z
+     */
+    public Optional<DoubleRange> observedMzRange() {
+        Optional<ColumnStatistics> lowest =
+                columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, LOWEST_OBSERVED_MZ);
+        Optional<ColumnStatistics> highest =
+                columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, HIGHEST_OBSERVED_MZ);
+        if (lowest.isEmpty() || highest.isEmpty() || !lowest.get().complete() || !highest.get().complete()
+                || lowest.get().min().isEmpty() || highest.get().max().isEmpty()) {
+            return Optional.empty();
+        }
+        double low = lowest.get().min().getAsDouble();
+        double high = highest.get().max().getAsDouble();
+        if (low > high) {
+            throw new MzPeakException(lowest.get().member() + ": the smallest lowest observed m/z " + low
+                    + " exceeds the largest highest observed m/z " + high);
+        }
+        return Optional.of(new DoubleRange(low, high));
+    }
+
+    /**
+     * The retention-time range the spectra cover: from the smallest to the largest finite retention time of the
+     * spectrum metadata held in memory, in the file's time unit (typically minutes). Reads nothing.
+     *
+     * @return empty when no spectrum has a finite retention time
+     */
+    public Optional<DoubleRange> observedTimeRange() {
+        if (sortedTimes.length == 0) {
+            return Optional.empty();
+        }
+        return Optional.of(new DoubleRange(sortedTimes[0], sortedTimes[sortedTimes.length - 1]));
     }
 
     // ---- chromatograms ----------------------------------------------------------------------------
