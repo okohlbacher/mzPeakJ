@@ -64,6 +64,7 @@ import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.Chromatogram;
+import java.nio.file.Path;
 
 // Works for both an unpacked directory and a single-file .mzpeak ZIP:
 try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
@@ -106,7 +107,7 @@ where mzPeakJ deliberately differs from the Rust and Python readers (exact inter
 explicit signal modes, no implicit TIC/BPC by chromatogram index, …).
 
 ```java
-// imports: org.mzpeak.io.*, org.mzpeak.model.*, java.util.*, java.nio.channels.FileChannel
+// imports: org.mzpeak.io.*, org.mzpeak.model.*, java.util.*, java.nio.file.Path, java.nio.channels.FileChannel
 
 // Options: stored profile points only, and only one of the two signal members
 MzPeakReader.Options options = MzPeakReader.Options.defaults()
@@ -130,7 +131,8 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     Optional<DoubleRange> mzRange = reader.observedMzRange();     // Parquet row-group statistics
     Optional<DoubleRange> timeRange = reader.observedTimeRange(); // retention times held in memory
     reader.columnStatistics(MzPeakManifest.EntityType.SPECTRUM, MzPeakManifest.DataKind.SCANS, "MS:1000016")
-            .ifPresent(st -> System.out.println(st.column() + ": " + st.min() + " .. " + st.max()));
+            .ifPresent(st -> System.out.println(st.column() + ": " + st.min().orElse(Double.NaN) + " .. "
+                    + st.max().orElse(Double.NaN)));
 
     // TIC and BPC: a stored chromatogram of that type, else the one derived from the spectrum metadata
     Optional<Chromatogram> tic = reader.tic();             // stored MS:1000235 chromatogram, else encodedTic()
