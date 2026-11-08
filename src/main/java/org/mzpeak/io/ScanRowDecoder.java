@@ -142,12 +142,13 @@ final class ScanRowDecoder {
         if (value == null) {
             return null;
         }
-        MzPeakManifest.ColumnMapping mapping = columns.mapping(field).orElse(null);
-        if (mapping != null && mapping.unitPath() != null) {
+        // a resolved field has a mapping: the column_mapping item or the ColumnTable column it was resolved through
+        MzPeakManifest.ColumnMapping mapping = columns.mapping(field).orElseThrow();
+        if (mapping.unitPath() != null) {
             throw new MzPeakException(columns.member() + ": scan start time column " + columns.path(field)
                     + " takes its unit from the column " + mapping.unitPath() + ", which is not supported");
         }
-        String unit = mapping == null ? null : mapping.unit();
+        String unit = mapping.unit();
         if (unit == null) {
             return value;
         }
