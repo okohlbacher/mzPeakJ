@@ -19,7 +19,8 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Compares {@link SpectrumDescription}s field by field, for writer round trips (design §11.9, WR-5a):
+ * Compares {@link SpectrumDescription}s field by field, precursors included (WR-5b), for writer round trips (design
+ * §11.9, WR-5a):
  * <ul>
  *   <li>typed fields are compared exactly, doubles NaN-aware ({@link Double#compare}), nested lists (scans, scan
  *       windows, precursors, selected ions) pairwise in order;
@@ -46,26 +47,18 @@ final class DescriptionAssert {
     private DescriptionAssert() {
     }
 
-    /**
-     * Asserts that {@code actual} equals {@code expected} spectrum by spectrum, in order; the precursors are compared
-     * only when {@code precursors} is set.
-     */
-    static void assertEqual(String what, List<SpectrumDescription> expected, List<SpectrumDescription> actual,
-                            boolean precursors) {
+    /** Asserts that {@code actual} equals {@code expected} spectrum by spectrum, in order. */
+    static void assertEqual(String what, List<SpectrumDescription> expected, List<SpectrumDescription> actual) {
         List<String> diffs = new ArrayList<>();
         equal(diffs, "spectrum count", expected.size(), actual.size());
         for (int i = 0; i < Math.min(expected.size(), actual.size()); i++) {
-            diffs.addAll(differences("spectrum[" + i + "]", expected.get(i), actual.get(i), precursors));
+            diffs.addAll(differences("spectrum[" + i + "]", expected.get(i), actual.get(i)));
         }
         assertThat(diffs).as("%s: %d differences%s", what, diffs.size(), listed(diffs)).isEmpty();
     }
 
-    /**
-     * The differences between {@code expected} and {@code actual}, each prefixed with {@code path}; the precursors
-     * are compared only when {@code precursors} is set.
-     */
-    static List<String> differences(String path, SpectrumDescription expected, SpectrumDescription actual,
-                                    boolean precursors) {
+    /** The differences between {@code expected} and {@code actual}, each prefixed with {@code path}. */
+    static List<String> differences(String path, SpectrumDescription expected, SpectrumDescription actual) {
         List<String> diffs = new ArrayList<>();
         equal(diffs, path + ".index", expected.index(), actual.index());
         equal(diffs, path + ".id", expected.id(), actual.id());
@@ -80,12 +73,10 @@ final class DescriptionAssert {
         for (int i = 0; i < Math.min(expected.scans().size(), actual.scans().size()); i++) {
             scan(diffs, path + ".scans[" + i + "]", expected.scans().get(i), actual.scans().get(i));
         }
-        if (precursors) {
-            equal(diffs, path + ".precursors.size", expected.precursors().size(), actual.precursors().size());
-            for (int i = 0; i < Math.min(expected.precursors().size(), actual.precursors().size()); i++) {
-                precursor(diffs, path + ".precursors[" + i + "]", expected.precursors().get(i),
-                        actual.precursors().get(i));
-            }
+        equal(diffs, path + ".precursors.size", expected.precursors().size(), actual.precursors().size());
+        for (int i = 0; i < Math.min(expected.precursors().size(), actual.precursors().size()); i++) {
+            precursor(diffs, path + ".precursors[" + i + "]", expected.precursors().get(i),
+                    actual.precursors().get(i));
         }
         return diffs;
     }
