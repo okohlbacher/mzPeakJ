@@ -135,7 +135,7 @@ class SplitWavelengthTest {
             Optional<Entry> entry = Facet.WAVELENGTH_SPECTRUM.entry(MzPeakManifest.fromSource(source));
             cells = entry.map(e -> GoldenMeta.load(fixture).rows(e.name())).orElse(List.of());
             if (entry.isPresent()) {
-                assertThat(WavelengthMetadataDecoder.decode(source, entry.get()))
+                assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.get().name()), entry.get()))
                         .containsExactlyElementsOf(cells.stream()
                                 .map(r -> new WavelengthMetadataDecoder.Header((Long) r.get("index"),
                                         (String) r.get("id"), timeCell(r), (Double) r.get("lambda_max")))
@@ -161,7 +161,8 @@ class SplitWavelengthTest {
     void legacyPackedHeadersResolveLambdaMaxThroughTheFallbackName() {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.legacy(HAS_UV))) {
             Entry entry = Facet.WAVELENGTH_SPECTRUM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
-            List<WavelengthMetadataDecoder.Header> headers = WavelengthMetadataDecoder.decode(source, entry);
+            List<WavelengthMetadataDecoder.Header> headers =
+                    WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry);
             assertThat(headers).hasSize(520);
             assertThat(headers.get(0)).isEqualTo(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0));
         }
@@ -180,7 +181,7 @@ class SplitWavelengthTest {
                 List.of(new ColumnMapping("lambda max", "peak_wavelength", "MS:1003812", "UO:0000018", null)),
                 List.of(), null);
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
-            assertThat(WavelengthMetadataDecoder.decode(source, entry))
+            assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry))
                     .containsExactly(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0));
         }
     }
@@ -201,7 +202,7 @@ class SplitWavelengthTest {
                 rows.newGroup().append("index", 1L).append("id", "last"));
         Entry entry = new Entry("wavelength_spectra_metadata.parquet", "wavelength_spectrum", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
-            assertThat(WavelengthMetadataDecoder.decode(source, entry)).containsExactly(
+            assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry)).containsExactly(
                     new WavelengthMetadataDecoder.Header(1, "last", Double.NaN, null),
                     new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0));
         }

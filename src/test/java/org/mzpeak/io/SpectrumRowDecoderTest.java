@@ -27,7 +27,7 @@ class SpectrumRowDecoderTest {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.current("small.mzpeak"))) {
             Entry entry = Facet.SPECTRUM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
             List<FacetRow> rows = new ArrayList<>();
-            MetadataTable.forEachRow(source, entry, Facet.SPECTRUM, rows::add);
+            MetadataTable.forEachRow(source.inputFile(entry.name()), entry, Facet.SPECTRUM, rows::add);
             FacetRow spectrum0 = rows.get(0);
             assertThat(spectrum0.key()).isZero();
             assertThat(spectrum0.columns().params(spectrum0.group())).as("the list of spectrum 0").isEmpty();

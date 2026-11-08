@@ -63,7 +63,8 @@ final class ChromatogramStore {
         if (metadata == null || dataName == null) {
             return null;
         }
-        return load(ChromatogramMetadataDecoder.decode(source, metadata), source.inputFile(dataName));
+        return load(ChromatogramMetadataDecoder.decode(source.inputFile(metadata.name()), metadata),
+                source.inputFile(dataName));
     }
 
     /**
@@ -72,7 +73,7 @@ final class ChromatogramStore {
      */
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.CHROMATOGRAM.canonical(), DataKind.METADATA.canonical());
-        return load(ChromatogramMetadataDecoder.decode(singleMember(metadataFile), metadata), dataFile);
+        return load(ChromatogramMetadataDecoder.decode(metadataFile, metadata), dataFile);
     }
 
     /** Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. */
@@ -103,29 +104,5 @@ final class ChromatogramStore {
         ParquetFooter footer = ParquetFooter.read(dataFile);
         return SignalPlan.of(ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.CHROMATOGRAM),
                 footer.schema(), SignalEntity.CHROMATOGRAM);
-    }
-
-    /** A source whose every member is {@code file}; it has no manifest. */
-    private static MzPeakSource singleMember(InputFile file) {
-        return new MzPeakSource() {
-            @Override
-            public byte[] readManifestBytes() {
-                throw new UnsupportedOperationException(MEMBER + " given directly has no manifest");
-            }
-
-            @Override
-            public InputFile inputFile(String name) {
-                return file;
-            }
-
-            @Override
-            public String describe() {
-                return MEMBER;
-            }
-
-            @Override
-            public void close() {
-            }
-        };
     }
 }

@@ -186,7 +186,7 @@ class SplitChromatogramTest {
             Optional<Entry> entry = Facet.CHROMATOGRAM.entry(MzPeakManifest.fromSource(source));
             cells = entry.map(e -> GoldenMeta.load(fixture).rows(e.name())).orElse(List.of());
             if (entry.isPresent()) {
-                assertThat(ChromatogramMetadataDecoder.decode(source, entry.get()))
+                assertThat(ChromatogramMetadataDecoder.decode(source.inputFile(entry.get().name()), entry.get()))
                         .extracting(ChromatogramMetadataDecoder.Header::index,
                                 ChromatogramMetadataDecoder.Header::id,
                                 ChromatogramMetadataDecoder.Header::typeCurie)
@@ -215,7 +215,8 @@ class SplitChromatogramTest {
     void legacyPackedHeadersResolveTheTypeThroughTheFallbackName(String fixture) {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.legacy(fixture))) {
             Entry entry = Facet.CHROMATOGRAM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
-            List<ChromatogramMetadataDecoder.Header> headers = ChromatogramMetadataDecoder.decode(source, entry);
+            List<ChromatogramMetadataDecoder.Header> headers =
+                    ChromatogramMetadataDecoder.decode(source.inputFile(entry.name()), entry);
             assertThat(headers).isNotEmpty();
             assertThat(headers.get(0)).isEqualTo(new ChromatogramMetadataDecoder.Header(0, TIC, "MS:1000235"));
         }
@@ -233,7 +234,7 @@ class SplitChromatogramTest {
         Entry entry = new Entry("chromatograms_metadata.parquet", "chromatogram", "metadata",
                 List.of(new ColumnMapping("chromatogram type", "kind", "MS:1000626", null, true)), List.of(), null);
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
-            assertThat(ChromatogramMetadataDecoder.decode(source, entry))
+            assertThat(ChromatogramMetadataDecoder.decode(source.inputFile(entry.name()), entry))
                     .containsExactly(new ChromatogramMetadataDecoder.Header(0, TIC, "MS:1000235"));
         }
     }
@@ -249,7 +250,7 @@ class SplitChromatogramTest {
                 rows.newGroup().append("index", 1L).append("id", "last"));
         Entry entry = new Entry("chromatograms_metadata.parquet", "chromatogram", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
-            assertThat(ChromatogramMetadataDecoder.decode(source, entry)).containsExactly(
+            assertThat(ChromatogramMetadataDecoder.decode(source.inputFile(entry.name()), entry)).containsExactly(
                     new ChromatogramMetadataDecoder.Header(1, "last", null),
                     new ChromatogramMetadataDecoder.Header(0, BPC, "MS:1000628"));
         }

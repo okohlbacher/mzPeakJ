@@ -534,7 +534,7 @@ class SplitLeftoversTest {
     /** The first row of {@code entry}'s member, as {@link MetadataTable} reads it. */
     private static FacetRow first(MzPeakSource source, Entry entry, Facet facet) {
         List<FacetRow> rows = new ArrayList<>();
-        MetadataTable.forEachRow(source, entry, facet, rows::add);
+        MetadataTable.forEachRow(source.inputFile(entry.name()), entry, facet, rows::add);
         assertThat(rows).isNotEmpty();
         assertThat(rows.get(0).key()).isEqualTo(0L);
         return rows.get(0);

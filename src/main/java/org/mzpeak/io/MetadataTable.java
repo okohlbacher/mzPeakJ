@@ -21,7 +21,9 @@ final class MetadataTable {
     }
 
     /**
-     * Passes every row of {@code facet} in {@code entry}'s member to {@code handler}, in file order.
+     * Passes every row of {@code facet} in the member {@code file} to {@code handler}, in file order. {@code entry}
+     * is the member's manifest entry: its name names the member in error messages, and its column_mapping maps the
+     * columns of a split member.
      * <ul>
      *   <li>packed: the non-null structs whose row key is not null; placeholder rows are skipped;
      *   <li>split: every top-level row;
@@ -31,12 +33,11 @@ final class MetadataTable {
      * @throws MzPeakException if the member has rows but neither shape (a split facet without its key column), if
      *                         a split row has a null key, or if a key has the high bit set
      */
-    static void forEachRow(MzPeakSource source, Entry entry, Facet facet, Consumer<FacetRow> handler) {
-        Objects.requireNonNull(source, "source");
+    static void forEachRow(InputFile file, Entry entry, Facet facet, Consumer<FacetRow> handler) {
+        Objects.requireNonNull(file, "file");
         Objects.requireNonNull(facet, "facet");
         Objects.requireNonNull(handler, "handler");
         String member = Objects.requireNonNull(Objects.requireNonNull(entry, "entry").name(), "entry name");
-        InputFile file = source.inputFile(member);
         ParquetFooter footer = ParquetFooter.read(file);
         MessageType schema = footer.schema();
         String key = FacetRow.keyColumn(schema, facet);
