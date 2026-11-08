@@ -78,7 +78,9 @@ public interface MzPeakSource extends AutoCloseable {
     /**
      * An unpacked dataset whose members {@code opener} opens, as {@link #open(Path)} reads a directory. Members are
      * opened lazily, each at most once, when a reader first asks for them; a member name that is absolute or contains
-     * a {@code ..} segment is rejected before {@code opener} is called. {@link #close()} closes every member opened.
+     * a {@code ..} segment is rejected before {@code opener} is called. A name counts as absolute if it starts with
+     * {@code /} or {@code \}, or if its first segment contains {@code :} (a drive letter such as {@code C:/x}, or a
+     * URI scheme such as {@code https://host/x} or {@code file:///x}). {@link #close()} closes every member opened.
      *
      * @param description names the dataset in messages and {@link #describe()}, e.g. its base URL
      */

@@ -261,7 +261,8 @@ class RemoteSourceTest {
     void unpackedRejectsEscapingNamesWithoutCallingTheOpener() {
         Opener opener = new Opener(Fixtures.legacy("small.unpacked.mzpeak"));
         try (MzPeakSource source = MzPeakSource.unpacked("files", opener)) {
-            for (String name : List.of("../x", "..", "a/../../x", "a/..", "/etc/passwd", "\\x", "a\\..\\x", "C:/x")) {
+            for (String name : List.of("../x", "..", "a/../../x", "a/..", "/etc/passwd", "\\x", "a\\..\\x", "C:/x",
+                    "https://evil.example/x", "file:///etc/passwd", "s3:x", "C:x", "a:b\\c")) {
                 assertThatThrownBy(() -> source.inputFile(name))
                         .as(name)
                         .isInstanceOf(MzPeakException.class)

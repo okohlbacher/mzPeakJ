@@ -80,12 +80,16 @@ final class UnpackedSource implements MzPeakSource {
         return m;
     }
 
-    /** Rejects a name that is absolute or has a {@code ..} segment, so an opener never sees one. */
+    /**
+     * Rejects a name that is absolute or has a {@code ..} segment, so an opener never sees one. A name is absolute if
+     * it starts with {@code /} or {@code \}, or if its first segment contains {@code :}, which covers drive letters
+     * ({@code C:/x}) and URI schemes ({@code https://host/x}, {@code file:///x}, {@code s3:x}).
+     */
     private void checkName(String name) {
-        boolean absolute = name.startsWith("/") || name.startsWith("\\")
-                || (name.length() >= 2 && Character.isLetter(name.charAt(0)) && name.charAt(1) == ':');
+        String[] segments = name.split("[/\\\\]", -1);
+        boolean absolute = name.startsWith("/") || name.startsWith("\\") || segments[0].contains(":");
         boolean climbs = false;
-        for (String segment : name.split("[/\\\\]", -1)) {
+        for (String segment : segments) {
             climbs |= segment.equals("..");
         }
         if (absolute || climbs) {
