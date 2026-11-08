@@ -17,6 +17,7 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
@@ -82,9 +83,9 @@ final class ManifestWriter {
      * list, the plan's scan settings and file metadata (the footer key-values).
      *
      * <p>The CV list holds MS and UO, then every other CV of {@link KnownCvs} that a written CURIE uses (design
-     * §11.6): a CURIE of the plan's spectra and chromatograms ({@link #prefixesOf}) or one of this manifest, that is
-     * of a column mapping, a scan-settings param or a file-metadata document. A prefix {@link KnownCvs} does not
-     * know is not declared and gets one warning in the plan's report.
+     * §11.6): a CURIE of the plan's spectra, chromatograms and wavelength spectra ({@link #prefixesOf}) or one of
+     * this manifest, that is of a column mapping, a scan-settings param or a file-metadata document. A prefix
+     * {@link KnownCvs} does not know is not declared and gets one warning in the plan's report.
      */
     static void writeManifest(Path directory, List<WrittenMember> members, WritePlan plan, Dialect dialect)
             throws IOException {
@@ -190,12 +191,13 @@ final class ManifestWriter {
     }
 
     /**
-     * Every CURIE prefix of the plan's spectra and chromatograms, mapped to the first CURIE that uses it: the
-     * accession and unit of every param of a spectrum, of each of its scans, and of each precursor's isolation
-     * window, activation and selected ions; the array type and unit of every extra column of the spectrum signal
-     * files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key that is
-     * not a CURIE is written as MS:1000786); and the chromatogram types. The packed layout writes only a spectrum's
-     * first scan and primary precursor and selected ion, but the prefixes of the others count too. The other CURIEs
+     * Every CURIE prefix of the plan's spectra, chromatograms and wavelength spectra, mapped to the first CURIE that
+     * uses it: the accession and unit of every param of a spectrum, of each of its scans, and of each precursor's
+     * isolation window, activation and selected ions; the array type and unit of every extra column of the spectrum
+     * signal files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key
+     * that is not a CURIE is written as MS:1000786); the chromatogram types; and the accession and unit of every
+     * param of a wavelength spectrum. The packed layout writes only a spectrum's first scan and primary precursor and
+     * selected ion, and no wavelength-spectrum param, but the prefixes of the others count too. The other CURIEs
      * the writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params
      * give rise to.
      */
@@ -223,6 +225,9 @@ final class ManifestWriter {
         }
         for (Entry<Chromatogram> entry : plan.chromatograms()) {
             addPrefix(entry.source().typeCurie(), used);
+        }
+        for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
+            addParamPrefixes(entry.source().parameters(), used);
         }
         return used;
     }

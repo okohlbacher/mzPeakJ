@@ -20,11 +20,13 @@ import org.mzpeak.io.GoldenMeta.Row;
 import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.LongStream;
@@ -46,9 +48,9 @@ class SplitWavelengthTest {
     private static final String ID0 = "merged=212 row=0";
     private static final double TIME0 = 0.001833333333;
 
-    /** The SHA-256 of the canonical wavelength headers of legacy has_uv, pinned by CH-1. */
+    /** The SHA-256 of the canonical wavelength lines of legacy has_uv, pinned by CH-1 (with their Params from MZ-4). */
     private static final String LEGACY_HAS_UV_WAVELENGTH_SHA256 =
-            "e8f510ac303a494f08d39a68917aa79fecd7d3b9d9df371f1af913f74f08aefb";
+            "83b63f369577acebe198592ab10761911d7a04c1a387c5931368cc0018a6f9e3";
 
     @TempDir
     Path tmp;
@@ -101,14 +103,17 @@ class SplitWavelengthTest {
     }
 
     /**
-     * The split current has_uv and the packed legacy has_uv give the same wavelength spectra, value for value; the
-     * current headers therefore also have the canonical digest that CH-1 pins for the legacy file.
+     * The split current has_uv and the packed legacy has_uv give the same wavelength spectra, value for value, except
+     * that the current ones carry the leftovers of the split columns after the legacy struct's Params (MZ-4): the
+     * representation term marker, the base peak intensity and the TIC. Without those leftovers the current spectra
+     * have the canonical digest that CH-1 pins for the legacy file.
      */
     @Test
     void currentAndLegacyHasUvGiveTheSameSpectra() {
         List<WavelengthSpectrum> current = wavelengthSpectra(Fixtures.current(HAS_UV));
         List<WavelengthSpectrum> legacy = wavelengthSpectra(Fixtures.legacy(HAS_UV));
         assertThat(current).hasSameSizeAs(legacy);
+        List<WavelengthSpectrum> withoutLeftovers = new ArrayList<>(current.size());
         for (int i = 0; i < current.size(); i++) {
             WavelengthSpectrum c = current.get(i);
             WavelengthSpectrum l = legacy.get(i);
@@ -116,8 +121,14 @@ class SplitWavelengthTest {
                     .as("header %d", i).isEqualTo(tuple(l.index(), l.id(), l.time(), l.lambdaMax()));
             assertThat(c.wavelength()).as("wavelength %d", i).isEqualTo(l.wavelength());
             assertThat(c.intensity()).as("intensity %d", i).isEqualTo(l.intensity());
+            int n = l.parameters().size();
+            assertThat(c.parameters().subList(0, n)).as("params %d", i).isEqualTo(l.parameters());
+            assertThat(c.parameters().subList(n, c.parameters().size())).as("leftovers %d", i)
+                    .extracting(Param::accession).containsExactly("MS:1000128", "MS:1000505", "MS:1000285");
+            withoutLeftovers.add(new WavelengthSpectrum(c.index(), c.id(), c.time(), c.lambdaMax(), c.wavelength(),
+                    c.intensity(), c.parameters().subList(0, n)));
         }
-        assertThat(Canonical.sha256(Canonical.lines(current, Canonical::describe)))
+        assertThat(Canonical.sha256(Canonical.lines(withoutLeftovers, Canonical::describe)))
                 .isEqualTo(LEGACY_HAS_UV_WAVELENGTH_SHA256);
     }
 
@@ -125,7 +136,8 @@ class SplitWavelengthTest {
 
     /**
      * Index, id, time and lambda max of every wavelength spectrum equal the cells of the member listed as
-     * (wavelength_spectrum, metadata), and its size the number_of_data_points cell.
+     * (wavelength_spectrum, metadata), and its size the number_of_data_points cell. Its Params are checked against
+     * the same cells by {@link WavelengthParamsTest}.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("currentFixtures")
@@ -136,9 +148,10 @@ class SplitWavelengthTest {
             cells = entry.map(e -> GoldenMeta.load(fixture).rows(e.name())).orElse(List.of());
             if (entry.isPresent()) {
                 assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.get().name()), entry.get()))
+                        .extracting(WavelengthMetadataDecoder.Header::index, WavelengthMetadataDecoder.Header::id,
+                                WavelengthMetadataDecoder.Header::time, WavelengthMetadataDecoder.Header::lambdaMax)
                         .containsExactlyElementsOf(cells.stream()
-                                .map(r -> new WavelengthMetadataDecoder.Header((Long) r.get("index"),
-                                        (String) r.get("id"), timeCell(r), (Double) r.get("lambda_max")))
+                                .map(r -> tuple(r.get("index"), r.get("id"), timeCell(r), r.get("lambda_max")))
                                 .toList());
             }
         }
@@ -164,7 +177,8 @@ class SplitWavelengthTest {
             List<WavelengthMetadataDecoder.Header> headers =
                     WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry);
             assertThat(headers).hasSize(520);
-            assertThat(headers.get(0)).isEqualTo(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0));
+            WavelengthMetadataDecoder.Header h = headers.get(0);
+            assertThat(tuple(h.index(), h.id(), h.time(), h.lambdaMax())).isEqualTo(tuple(0L, ID0, TIME0, 374.0));
         }
     }
 
@@ -182,7 +196,7 @@ class SplitWavelengthTest {
                 List.of(), null);
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry))
-                    .containsExactly(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0));
+                    .containsExactly(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0, List.of()));
         }
     }
 
@@ -203,8 +217,8 @@ class SplitWavelengthTest {
         Entry entry = new Entry("wavelength_spectra_metadata.parquet", "wavelength_spectrum", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry)).containsExactly(
-                    new WavelengthMetadataDecoder.Header(1, "last", Double.NaN, null),
-                    new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0));
+                    new WavelengthMetadataDecoder.Header(1, "last", Double.NaN, null, List.of()),
+                    new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0, List.of()));
         }
     }
 

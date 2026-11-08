@@ -247,10 +247,11 @@ wavelength-spectrum metadata has `spectrum` and `scan`.
 Both read either layout through `MetadataTable`, columns by accession:
 
 - `ChromatogramMetadataDecoder`: `index`, `id` and the MS:1000626 chromatogram-type marker.
-- `WavelengthMetadataDecoder`: `index`, `id`, `time` and MS:1003812 lambda max.
+- `WavelengthMetadataDecoder`: `index`, `id`, `time`, MS:1003812 lambda max and the Params (MZ-4): the
+  `parameters` list, then, in the split layout, each leftover column whose accession is not already there.
 
 A repeated index keeps its first position and the values of its last row. The chromatogram precursor and
-selected-ion facets, the wavelength scans facet and the Params of both tables are not decoded (§10).
+selected-ion facets, the wavelength scans facet and the Params of the chromatogram table are not decoded (§10).
 
 ---
 
@@ -726,7 +727,8 @@ manifest.
   a Param moves to its standardized column only where the reader rebuilds it unchanged.
 - `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
   `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
-  `wavelength spectrum`, empty column mappings, and only the first scan and the primary precursor of a spectrum.
+  `wavelength spectrum`, empty column mappings, only the first scan and the primary precursor of a spectrum,
+  and no wavelength-spectrum Params (one WARNING; the pin-era wavelength schema has no `parameters` list).
   Isolation-window Params go to the pin-era `isolation_window.parameters` list.
   The HEAD Python reader rejects it ("Old concatenated storage layout not supported").
 
@@ -1014,13 +1016,13 @@ before `verify` and never run the check.
 - **Writer** (§8.1). Extra signal arrays and the chromatogram intensity unit are not written; each kind of drop
   logs a WARNING. Not written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles
   (the reconstructed arrays are written). The `PACKED` layout writes only the first scan and the primary
-  precursor of a spectrum, with a WARNING when it drops more.
+  precursor of a spectrum, with a WARNING when it drops more, and no wavelength-spectrum Params, with a WARNING.
   Whether the Rust reference reads mzPeakJ's output is untested.
 - **Integrity.** Manifest checksums are not verified on read, unlike in the Rust and Python readers (§8.2).
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.
 - **Dataset checks.** A dataset without a spectrum metadata member throws; the format version is not checked.
 - **Metadata not decoded:** products facets; chromatogram precursor and selected-ion facets; the wavelength
-  scans facet; Params of chromatograms and wavelength spectra; precursor-scope leftovers;
+  scans facet; Params of chromatograms; precursor-scope leftovers;
   leftover Params in the legacy packed layout.
 - **Precursor join.** The reference-identical join (precursors in reverse, last precursor for unmatched ions,
   orphan ions dropped, null-m/z ions kept) is not ported (§2.3).

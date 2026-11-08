@@ -42,7 +42,8 @@ import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
  * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
  * spectrum, primary scan, primary precursor and primary selected-ion facets, and one chromatograms_metadata and
  * wavelength_spectra_metadata row per chromatogram and wavelength spectrum. Its members are listed in the pin-era
- * dialect, {@link Dialect#PIN_29E59B2}.
+ * dialect, {@link Dialect#PIN_29E59B2}. The wavelength schema is frozen without a {@code parameters} list, so the
+ * Params of wavelength spectra are not written; {@link WritePlanner} warns about them.
  */
 final class PackedMetadataWriter implements MetadataTablesWriter {
 
