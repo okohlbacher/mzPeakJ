@@ -10,6 +10,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
@@ -29,18 +30,23 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * WR-8: the indices the writer gives spectra, chromatograms and wavelength spectra, and the precursor_index it writes
@@ -93,8 +99,7 @@ class WriterContiguousIndexTest {
             Path out = write(tmp.resolve(fixture.getFileName()), s.spectra, s.chromatograms, s.wavelengthSpectra, s,
                     options(layout, encoding));
 
-            assertIndexColumnsNumberFromZero(out, s.spectra.size(), s.chromatograms.size(),
-                    s.wavelengthSpectra.size());
+            assertIndexColumnsNumberFromZero(out, layout, s.spectra, s.chromatograms, s.wavelengthSpectra);
             Source back = ForwardBackwardCorpusTest.readSource(out);
             assertThat(indices(back.spectra)).as("%s spectrum indices", fixture.getFileName())
                     .isEqualTo(indices(s.spectra));
@@ -154,7 +159,7 @@ class WriterContiguousIndexTest {
         Path out = write(tmp.resolve("ms2.mzpeak"), ms2, small.chromatograms, List.of(), small,
                 options(layout, SignalEncoding.POINT));
 
-        assertIndexColumnsNumberFromZero(out, 34, small.chromatograms.size(), 0);
+        assertIndexColumnsNumberFromZero(out, layout, ms2, small.chromatograms, List.of());
         Source back = ForwardBackwardCorpusTest.readSource(out);
         assertThat(indices(back.spectra)).isEqualTo(LongStream.range(0, 34).boxed().toList());
         for (int i = 0; i < ms2.size(); i++) {
@@ -197,10 +202,15 @@ class WriterContiguousIndexTest {
 
         Path out = write(tmp.resolve("shifted.mzpeak"), spectra, chromatograms, waves, uv, options(layout, encoding));
 
-        assertIndexColumnsNumberFromZero(out, 212, 2, 520);
+        assertIndexColumnsNumberFromZero(out, layout, spectra, chromatograms, waves);
+        assertThat(spectra).hasSize(212);
+        assertThat(waves).hasSize(520);
         Source back = ForwardBackwardCorpusTest.readSource(out);
         assertThat(back.spectra).extracting(Spectrum::index, s -> s.description().id())
                 .isEqualTo(uv.spectra.stream().map(s -> tuple(s.index(), s.description().id())).toList());
+        for (int i = 0; i < uv.spectra.size(); i++) {
+            assertSameSignal("spectrum " + i, uv.spectra.get(i), back.spectra.get(i), encoding);
+        }
         assertThat(back.chromatograms).extracting(Chromatogram::index, Chromatogram::id)
                 .containsExactly(tuple(0L, dad.id()), tuple(1L, tic.id()));
         LayoutEquivalenceTest.assertIdentical("chromatogram 0 time", dad.time(), back.chromatograms.get(0).time());
@@ -211,6 +221,42 @@ class WriterContiguousIndexTest {
                 back.chromatograms.get(1).intensity());
         assertThat(back.wavelengthSpectra).extracting(WavelengthSpectrum::index, WavelengthSpectrum::id)
                 .isEqualTo(uv.wavelengthSpectra.stream().map(w -> tuple(w.index(), w.id())).toList());
+        for (int i = 0; i < uv.wavelengthSpectra.size(); i++) {
+            WavelengthSpectrum expected = uv.wavelengthSpectra.get(i);
+            WavelengthSpectrum actual = back.wavelengthSpectra.get(i);
+            LayoutEquivalenceTest.assertIdentical("wavelength spectrum " + i + " wavelength", expected.wavelength(),
+                    actual.wavelength());
+            LayoutEquivalenceTest.assertIdentical("wavelength spectrum " + i + " intensity", expected.intensity(),
+                    actual.intensity());
+        }
+    }
+
+    /**
+     * Wavelength spectra given in descending index order are written in index order, numbered 0..n-1: their ids,
+     * wavelengths and intensities read back in index order, in both metadata layouts.
+     */
+    @ParameterizedTest
+    @EnumSource(MetadataLayout.class)
+    void wavelengthSpectraGivenInDescendingOrderAreWrittenInIndexOrder(MetadataLayout layout, @TempDir Path tmp) {
+        Source uv = source(HAS_UV);
+        List<WavelengthSpectrum> ascending = uv.wavelengthSpectra.subList(0, 12);
+        List<WavelengthSpectrum> descending = new ArrayList<>(ascending);
+        Collections.reverse(descending);
+        assertThat(descending.get(0).index()).isGreaterThan(descending.get(1).index());
+
+        Path out = write(tmp.resolve("descending.mzpeak"), uv.spectra, uv.chromatograms, descending, uv,
+                options(layout, SignalEncoding.POINT));
+
+        assertIndexColumnsNumberFromZero(out, layout, uv.spectra, uv.chromatograms, descending);
+        List<WavelengthSpectrum> back = ForwardBackwardCorpusTest.readSource(out).wavelengthSpectra;
+        assertThat(back).extracting(WavelengthSpectrum::index, WavelengthSpectrum::id)
+                .isEqualTo(ascending.stream().map(w -> tuple(w.index(), w.id())).toList());
+        for (int i = 0; i < ascending.size(); i++) {
+            LayoutEquivalenceTest.assertIdentical("wavelength spectrum " + i + " wavelength",
+                    ascending.get(i).wavelength(), back.get(i).wavelength());
+            LayoutEquivalenceTest.assertIdentical("wavelength spectrum " + i + " intensity",
+                    ascending.get(i).intensity(), back.get(i).intensity());
+        }
     }
 
     /**
@@ -224,10 +270,11 @@ class WriterContiguousIndexTest {
         List<Spectrum> spectra = small.spectra.stream().map(s -> shifted(s, 1000)).toList();
         assertThat(spectra.get(2).description().primaryPrecursor().precursorIndex()).isEqualTo(1001L);
 
-        Path out = write(tmp.resolve("shifted.mzpeak"), spectra, List.of(withIndex(small.chromatograms.get(0), 9)),
-                List.of(), small, options(layout, encoding));
+        List<Chromatogram> chromatograms = List.of(withIndex(small.chromatograms.get(0), 9));
+        Path out = write(tmp.resolve("shifted.mzpeak"), spectra, chromatograms, List.of(), small,
+                options(layout, encoding));
 
-        assertIndexColumnsNumberFromZero(out, 48, 1, 0);
+        assertIndexColumnsNumberFromZero(out, layout, spectra, chromatograms, List.of());
         Source back = ForwardBackwardCorpusTest.readSource(out);
         assertThat(indices(back.spectra)).isEqualTo(indices(small.spectra));
         assertThat(precursorIndices(back.spectra)).isEqualTo(precursorIndices(small.spectra));
@@ -304,6 +351,50 @@ class WriterContiguousIndexTest {
                 options(MetadataLayout.PACKED, SignalEncoding.POINT));
         assertThat(ForwardBackwardCorpusTest.readSource(packed).spectra.get(9).description().precursors())
                 .containsExactly(original);
+    }
+
+    /**
+     * The shared key need not be on adjacent precursors: spectrum 9 with three precursors whose written keys are 8, 1
+     * and 8, the third carrying a selected ion, is refused in SPLIT before any I/O (the parent directory stays empty).
+     * When the third carries no ion, nothing moves, and the spectra are written and read back equal.
+     */
+    @Test
+    void aSharedKeyOnNonAdjacentPrecursorsIsRejectedWhenTheLaterOneCarriesIons(@TempDir Path tmp) throws IOException {
+        Source small = source(SMALL);
+        Precursor original = small.spectra.get(9).description().primaryPrecursor();
+        assertThat(original.precursorIndex()).as("parent of spectrum 9").isEqualTo(8L);
+        Precursor middle = secondPrecursor(small.spectra.get(1), true);
+        Options split = options(MetadataLayout.SPLIT, SignalEncoding.POINT);
+
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        spectra.set(9, withPrecursors(spectra.get(9), List.of(original, middle,
+                new Precursor(8L, null, null, List.of(SECOND_ION), Activation.EMPTY))));
+        Path parent = Files.createDirectories(tmp.resolve("rejected"));
+        assertThatThrownBy(() -> write(parent.resolve("split.mzpeak"), spectra, List.of(), List.of(), small, split))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum 9: precursors 0 (precursor_id '" + original.precursorId() + "') and 2 (no"
+                        + " precursor_id) share the written key (source_index 9, precursor_index 8), so readers would"
+                        + " attach the selected ions of precursor 2 to precursor 0; give each precursor of the"
+                        + " spectrum a precursor_index of its own");
+        try (Stream<Path> entries = Files.list(parent)) {
+            assertThat(entries).as("entries of %s after a rejected write", parent).isEmpty();
+        }
+
+        Precursor lossless = new Precursor(8L, null, new IsolationWindow(402.0, 1.0, 1.0), List.of(),
+                Activation.EMPTY);
+        List<Spectrum> written = new ArrayList<>(small.spectra);
+        written.set(9, withPrecursors(written.get(9), List.of(original, middle, lossless)));
+        Path out = write(tmp.resolve("lossless.mzpeak"), written, List.of(), List.of(), small, split);
+
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        DescriptionAssert.assertEqual("small with three precursors on spectrum 9", descriptions(written),
+                descriptions(back.spectra));
+        List<Precursor> precursors = back.spectra.get(9).description().precursors();
+        assertThat(precursors).extracting(Precursor::precursorIndex).containsExactly(8L, 1L, 8L);
+        assertThat(precursors.get(0).selectedIons()).containsExactlyElementsOf(original.selectedIons());
+        assertThat(precursors.get(1).selectedIons()).containsExactly(SECOND_ION);
+        assertThat(precursors.get(2).selectedIons()).isEmpty();
+        assertThat(precursors.get(2).isolationWindow()).isEqualTo(lossless.isolationWindow());
     }
 
     /**
@@ -450,15 +541,21 @@ class WriterContiguousIndexTest {
     // ---- assertions ---------------------------------------------------------------------------------------------
 
     /**
-     * Asserts that in every Parquet member of {@code out} each {@code index} column holds 0..n-1 in row order, n the
-     * number of entities of the member's entity type, and that each other index column ({@link #INDEX_COLUMNS})
-     * holds only values below n, below the spectrum count for {@code precursor_index}. A member with rows must have
-     * an index column.
+     * Asserts that in every Parquet member of {@code out}, written in {@code layout} from the given entities, each
+     * {@code index} column holds 0..n-1 in row order, n the number of entities of the member's entity type, and that
+     * the distinct values of each other key column ({@link #INDEX_COLUMNS} but {@code precursor_index}), sorted, are
+     * exactly the new indices of the entities with rows there ({@link #keyedEntities}). Each {@code precursor_index}
+     * lies below the spectrum count. A member with rows must have an index column. The entities may come in any
+     * order; the writer numbers each kind 0..n-1 in the order of their indices.
      */
-    private static void assertIndexColumnsNumberFromZero(Path out, int spectra, int chromatograms,
-                                                         int wavelengthSpectra) {
-        Map<EntityType, Integer> counts = Map.of(EntityType.SPECTRUM, spectra, EntityType.CHROMATOGRAM,
-                chromatograms, EntityType.WAVELENGTH_SPECTRUM, wavelengthSpectra);
+    private static void assertIndexColumnsNumberFromZero(Path out, MetadataLayout layout, List<Spectrum> spectra,
+                                                         List<Chromatogram> chromatograms,
+                                                         List<WavelengthSpectrum> wavelengthSpectra) {
+        List<Spectrum> spectrumOrder = inIndexOrder(spectra, Spectrum::index);
+        List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
+        List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
+        Map<EntityType, Integer> counts = Map.of(EntityType.SPECTRUM, spectra.size(), EntityType.CHROMATOGRAM,
+                chromatograms.size(), EntityType.WAVELENGTH_SPECTRUM, wavelengthSpectra.size());
         int members = 0;
         try (MzPeakSource dataset = MzPeakSource.open(out)) {
             for (MzPeakManifest.Entry entry : MzPeakManifest.fromSource(dataset).files()) {
@@ -483,15 +580,88 @@ class WriterContiguousIndexTest {
                     if (leaf.equals("index")) {
                         assertThat(column.getValue()).as(what)
                                 .isEqualTo(LongStream.range(0, n).boxed().toList());
-                    } else {
-                        long bound = leaf.equals("precursor_index") ? spectra : n;
+                    } else if (leaf.equals("precursor_index")) {
                         assertThat(column.getValue()).as(what).allSatisfy(v -> assertThat(v).isBetween(0L,
-                                bound - 1));
+                                spectra.size() - 1L));
+                    } else {
+                        assertThat(column.getValue().stream().distinct().sorted().toList()).as(what)
+                                .isEqualTo(keyedEntities(entry, path, layout, spectrumOrder, chromatogramOrder,
+                                        wavelengthOrder));
                     }
                 }
             }
         }
         assertThat(members).as("Parquet members of %s", out).isPositive();
+    }
+
+    /**
+     * The new indices, ascending, of the entities that have rows in the key column {@code path} of {@code entry}:
+     * the position in index order of each spectrum, chromatogram or wavelength spectrum that has a scan (every one),
+     * a precursor, a selected ion, data arrays or peaks there, as the {@code layout} writes them. The routing of
+     * spectra is {@link WritePlanner#disposition}'s.
+     */
+    private static List<Long> keyedEntities(MzPeakManifest.Entry entry, String path, MetadataLayout layout,
+                                            List<Spectrum> spectra, List<Chromatogram> chromatograms,
+                                            List<WavelengthSpectrum> wavelengthSpectra) {
+        boolean packed = layout == MetadataLayout.PACKED;
+        Predicate<Spectrum> withPrecursor = s -> !s.description().precursors().isEmpty();
+        Predicate<Spectrum> withIon = packed
+                ? s -> withPrecursor.test(s) && s.description().primaryPrecursor().primaryIon() != null
+                : s -> s.description().precursors().stream().anyMatch(p -> !p.selectedIons().isEmpty());
+        return switch (entry.entity()) {
+            case SPECTRUM -> switch (entry.kind()) {
+                case METADATA -> positions(spectra, path.startsWith("scan.") ? s -> true
+                        : path.startsWith("precursor.") ? withPrecursor : withIon);
+                case SCANS -> positions(spectra, s -> true);
+                case PRECURSORS -> positions(spectra, withPrecursor);
+                case SELECTED_IONS -> positions(spectra, withIon);
+                case DATA_ARRAYS -> positions(spectra, s -> WritePlanner.disposition(s).data());
+                case PEAKS -> positions(spectra, s -> WritePlanner.disposition(s).peaks());
+                default -> throw new AssertionError("no expected keys for " + entry.name() + " " + path);
+            };
+            case CHROMATOGRAM -> positions(chromatograms, c -> c.size() > 0);
+            case WAVELENGTH_SPECTRUM -> positions(wavelengthSpectra,
+                    w -> entry.kind() == DataKind.SCANS || w.wavelength().length > 0);
+            default -> throw new AssertionError("no expected keys for " + entry.name() + " " + path);
+        };
+    }
+
+    /** The positions of the elements of {@code entities} that {@code keyed} accepts. */
+    private static <T> List<Long> positions(List<T> entities, Predicate<T> keyed) {
+        List<Long> out = new ArrayList<>();
+        for (int i = 0; i < entities.size(); i++) {
+            if (keyed.test(entities.get(i))) {
+                out.add((long) i);
+            }
+        }
+        return out;
+    }
+
+    /** A copy of {@code entities}, stable-sorted by {@code index}. */
+    private static <T> List<T> inIndexOrder(List<T> entities, ToLongFunction<T> index) {
+        List<T> sorted = new ArrayList<>(entities);
+        sorted.sort(Comparator.comparingLong(index));
+        return sorted;
+    }
+
+    /**
+     * Asserts that {@code actual} has the m/z and intensity of {@code expected}: bit for bit in the point layout,
+     * within Numpress precision (m/z 1e-4, intensity 1e-3 of {@code max(|x|, 1)}) in the Numpress layout.
+     */
+    private static void assertSameSignal(String what, Spectrum expected, Spectrum actual, SignalEncoding encoding) {
+        if (encoding == SignalEncoding.POINT) {
+            LayoutEquivalenceTest.assertIdentical(what + " m/z", expected.mz(), actual.mz());
+            LayoutEquivalenceTest.assertIdentical(what + " intensity", expected.intensity(), actual.intensity());
+            return;
+        }
+        assertThat(actual.mz()).as(what + " m/z").hasSameSizeAs(expected.mz());
+        assertThat(actual.intensity()).as(what + " intensity").hasSameSizeAs(expected.intensity());
+        for (int i = 0; i < expected.mz().length; i++) {
+            assertThat(actual.mz()[i]).as("%s m/z %d", what, i).isCloseTo(expected.mz()[i], within(1e-4));
+            double x = expected.intensity()[i];
+            assertThat(actual.intensity()[i]).as("%s intensity %d", what, i)
+                    .isCloseTo(x, within(1e-3 * Math.max(Math.abs(x), 1.0)));
+        }
     }
 
     /**
