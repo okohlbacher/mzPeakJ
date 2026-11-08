@@ -19,14 +19,15 @@ import org.mzpeak.model.Param;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 
 /**
  * Parquet output shared by the {@link MzPeakWriter} components: opening a ZSTD-compressed writer with optional
- * footer key-values and the row-group size of the write, the UINT64 annotation, and the {@code parameters} and
- * {@code scan_windows} list fields with the {@code parameters} encoder.
+ * footer key-values and the row-group size of the write, the footer key-values of a signal file, the UINT64
+ * annotation, and the {@code parameters} and {@code scan_windows} list fields with the {@code parameters} encoder.
  */
 final class ParquetOutput {
 
@@ -72,6 +73,12 @@ final class ParquetOutput {
         return openWriter(file, schema, Map.of(), options);
     }
 
+    /**
+     * A ZSTD writer of {@code file} with {@code footerMetadata} as its footer key-values, which parquet-java fixes when
+     * the writer is built. Every column chunk gets statistics (the parquet-java default, set explicitly because readers
+     * prune row groups by the index column's min/max) and a page index, the column and offset index parquet-java
+     * writes for every column chunk.
+     */
     static ParquetWriter<Group> openWriter(Path file, MessageType schema,
                                            Map<String, String> footerMetadata, Options options) throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
@@ -80,6 +87,7 @@ final class ParquetOutput {
                 .withConf(conf)
                 .withCodecFactory(new ZstdCompressionCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
+                .withStatisticsEnabled(true)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE);
         if (footerMetadata != null && !footerMetadata.isEmpty()) {
             builder = builder.withExtraMetaData(footerMetadata);
@@ -89,6 +97,25 @@ final class ParquetOutput {
             builder = builder.withRowGroupSize(rowGroupSize.getAsLong());
         }
         return builder.build();
+    }
+
+    /**
+     * The footer key-values of a signal file (design §11.7, WR-2), computed from the plan before its writer opens:
+     * {@code <entity>_array_index}, the file's {@code index} as JSON; {@code <entity>_count}, the {@code entityCount}
+     * entities of that type in the archive; and {@code <entity>_data_point_count}, the {@code dataPointCount} points
+     * the file holds. A file without rows gets them too.
+     */
+    static Map<String, String> signalFooter(ArrayIndex index, long entityCount, long dataPointCount) {
+        Map<String, String> footer = new LinkedHashMap<>();
+        footer.put(index.entity().arrayIndexKey(), index.toJson());
+        footer.put(countKey(index.entity()), Long.toString(entityCount));
+        footer.put(index.entity().key() + "_data_point_count", Long.toString(dataPointCount));
+        return footer;
+    }
+
+    /** The footer key of the entity count, {@code <entity>_count}. */
+    static String countKey(SignalEntity entity) {
+        return entity.key() + "_count";
     }
 
     /**

@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.within;
  * member.
  *
  * <p>Wiring: {@link ChromatogramStore} and {@link WavelengthSpectrumStore} decode every such member of both fixture
- * sets with its FOOTER plan, and mzPeakJ output with an INFERRED one; has_uv's 'DAD1 A' values come from the
+ * sets with its FOOTER plan, and so does mzPeakJ output from WR-2 on; has_uv's 'DAD1 A' values come from the
  * {@code intensity_f32_au} entry; constructed members whose array index names other columns than the literal ones
  * are read from the columns the index names.
  *
@@ -198,9 +198,9 @@ class SignalPlanWiringTest {
         }
     }
 
-    /** Members mzPeakJ writes have no array index footer and are decoded with INFERRED plans. */
+    /** Members mzPeakJ writes carry an array index footer (WR-2) and are decoded with FOOTER plans. */
     @Test
-    void mzPeakJOutputIsDecodedWithInferredPlans() {
+    void mzPeakJOutputIsDecodedWithFooterPlans() {
         Path written = tmp.resolve("written.mzpeak");
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
             List<Spectrum> spectra = new ArrayList<>();
@@ -215,11 +215,11 @@ class SignalPlanWiringTest {
             assertThat(chromatograms.all()).hasSize(2);
             assertThat(wavelength.all()).hasSize(520);
 
-            assertThat(chromatograms.plan().source()).isEqualTo(Source.INFERRED);
+            assertThat(chromatograms.plan().source()).isEqualTo(Source.FOOTER);
             assertThat(chromatograms.plan().layout()).isEqualTo(Layout.POINT);
             assertThat(chromatograms.plan().axis().values().path()).isEqualTo("point.time");
             assertThat(chromatograms.plan().intensities()).extracting(Column::path).containsExactly("point.intensity");
-            assertThat(wavelength.plan().source()).isEqualTo(Source.INFERRED);
+            assertThat(wavelength.plan().source()).isEqualTo(Source.FOOTER);
             assertThat(wavelength.plan().axis().values().path()).isEqualTo("point.wavelength");
             assertThat(wavelength.plan().intensities()).extracting(Column::path).containsExactly("point.intensity");
         }

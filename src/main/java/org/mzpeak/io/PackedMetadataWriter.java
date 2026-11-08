@@ -21,10 +21,13 @@ import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalDouble;
 
 import static org.mzpeak.io.ParquetOutput.UINT64;
+import static org.mzpeak.io.ParquetOutput.countKey;
 import static org.mzpeak.io.ParquetOutput.openWriter;
 import static org.mzpeak.io.ParquetOutput.paramListField;
 import static org.mzpeak.io.ParquetOutput.scanWindowListField;
@@ -118,10 +121,16 @@ final class PackedMetadataWriter {
     private PackedMetadataWriter() {
     }
 
+    /**
+     * Write spectra_metadata, one row per spectrum, with the plan's file metadata and {@code spectrum_count}, the
+     * spectra in the archive, as footer key-values.
+     */
     static void writeSpectrumMetadata(Path file, WritePlan plan) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(METADATA_SCHEMA);
         long scanIndexCounter = 0;
-        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, plan.footer(), plan.options())) {
+        Map<String, String> footer = new LinkedHashMap<>(plan.footer());
+        footer.put(countKey(SignalEntity.SPECTRUM), Long.toString(plan.spectra().size()));
+        try (ParquetWriter<Group> writer = openWriter(file, METADATA_SCHEMA, footer, plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 Spectrum s = entry.source();
                 SpectrumDescription d = s.description();
