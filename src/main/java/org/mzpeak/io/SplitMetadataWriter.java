@@ -99,9 +99,9 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       {@code parameters} list; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have
  *       the schemas of the spectrum facets and no rows, since the model has no chromatogram precursors;
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, point count, lambda
- *       max and an empty {@code parameters} list; wavelength_spectra_metadata_scans: one row per wavelength spectrum,
- *       keyed by {@code source_index} with a global {@code scan_index}, whose {@code scan_start_time} is the
- *       spectrum's time, with an empty {@code parameters} list.
+ *       max and its {@code parameters}, none promoted to a column; wavelength_spectra_metadata_scans: one row per
+ *       wavelength spectrum, keyed by {@code source_index} with a global {@code scan_index}, whose
+ *       {@code scan_start_time} is the spectrum's time, with an empty {@code parameters} list.
  * </ul>
  * As in the reference's output, the chromatogram members carry {@code chromatogram_count} as their only footer
  * key-value, and the wavelength members the plan's file metadata and {@code wavelength_spectrum_count}. The reader
@@ -636,8 +636,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 }
                 row.add(field(WAVELENGTH_POINTS), (long) w.size());
                 addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
-                // The model has no wavelength-spectrum Params.
-                params(row, List.of());
+                params(row, w.parameters());
                 writer.write(row);
             }
         }

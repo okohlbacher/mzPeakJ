@@ -153,7 +153,9 @@ class SplitWriterChromWlTest {
             assertThat(row.getDouble("time", 0)).isEqualTo(w.time());
             assertThat(row.getLong("number_of_data_points", 0)).isEqualTo(w.size());
             assertThat(row.getDouble("lambda_max", 0)).isEqualTo(w.lambdaMax());
-            assertThat(ParquetGroups.groupList(row, "parameters")).isEmpty();
+            // MZ-4: every Param goes to the list, none to a column.
+            assertThat(ParquetGroups.readParams(row, "parameters")).as("parameters of %s", w.id())
+                    .isNotEmpty().isEqualTo(w.parameters());
 
             Group scan = scanRows.get(i);
             assertThat(scan.getLong("source_index", 0)).isEqualTo(w.index());
@@ -329,6 +331,7 @@ class SplitWriterChromWlTest {
                 .isEqualTo(a.lambdaMax());
         assertThat(b.wavelength()).as("wavelength spectrum %d wavelength", a.index()).isEqualTo(a.wavelength());
         assertThat(b.intensity()).as("wavelength spectrum %d intensity", a.index()).isEqualTo(a.intensity());
+        assertThat(b.parameters()).as("wavelength spectrum %d parameters", a.index()).isEqualTo(a.parameters());
     }
 
     private static Source source(Path fixture) {

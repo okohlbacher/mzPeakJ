@@ -11,6 +11,7 @@ import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
 
 import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
@@ -54,10 +55,13 @@ class LegacyMetadataSnapshotTest {
                     "5793db6f251216667ed165d10223bf2c7afc68a4d252107fdfcb36d54c4f2a6b", SMALL_TIC, NONE),
             "small.numpress.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
             "small.unpacked.mzpeak", new Snapshot(48, 1, 0, SMALL_METADATA, SMALL_TIC, NONE),
+            // MZ-4: each of the 520 wavelength lines gained "|[...]", the 4 Params of its packed struct's parameters
+            // list (spectrum type, lowest and highest observed wavelength, spectrum title), which the reader used to
+            // drop; header fields and lengths are unchanged (e8f510ac... before). No other digest changed.
             "has_uv.mzpeak", new Snapshot(212, 2, 520,
                     "35518229d5314fb17f486361d16934af5dd9234c51183d363a7036aecc80c8a8",
                     "907aeb63c7f4823af2bd626503cc185c55f8a9df07ba2aa8442fcdb56c44d099",
-                    "e8f510ac303a494f08d39a68917aa79fecd7d3b9d9df371f1af913f74f08aefb"));
+                    "83b63f369577acebe198592ab10761911d7a04c1a387c5931368cc0018a6f9e3"));
 
     static Stream<String> legacyFixtures() {
         return Fixtures.LEGACY_NAMES.stream();
@@ -160,6 +164,9 @@ class LegacyMetadataSnapshotTest {
         assertThat(components(SelectedIon.class)).containsExactly("mz", "charge", "intensity", "parameters");
         assertThat(components(Activation.class)).containsExactly("parameters");
         assertThat(components(Param.class)).containsExactly("name", "accession", "value", "unit");
+        // The wavelength line writes the arrays as their length.
+        assertThat(components(WavelengthSpectrum.class)).containsExactly("index", "id", "time", "lambdaMax",
+                "wavelength", "intensity", "parameters");
     }
 
     private static List<String> components(Class<? extends Record> type) {

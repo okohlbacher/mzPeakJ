@@ -10,8 +10,8 @@ import java.util.List;
  * once the dataset is written. The planner records one warning per entity whose main axis it re-sorts, one for the
  * extra signal arrays of spectra it drops, one for the extra arrays of chromatograms, one for the chromatogram
  * intensity units, and, in the packed metadata layout, one for the scans, precursors and selected ions that layout
- * does not write; in the split layout, one for the scan settings it gives an id. {@link ManifestWriter} records a CV
- * prefix that {@link KnownCvs} does not know.
+ * does not write and one for the Params of wavelength spectra; in the split layout, one for the scan settings it
+ * gives an id. {@link ManifestWriter} records a CV prefix that {@link KnownCvs} does not know.
  */
 final class WriteReport {
 

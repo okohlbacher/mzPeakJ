@@ -36,8 +36,9 @@ import java.util.function.ToLongFunction;
  * directory exists. What the write loses gets one warning in the report for each kind: the extra signal arrays of
  * spectra, the extra arrays of chromatograms and their intensity units, none of which are written yet (WR-11), and, in
  * the packed layout, the scans after a spectrum's first, the precursors after its primary one and the selected ions
- * other than the primary precursor's first. Each re-sorted main axis gets a warning of its own, and so do, in the
- * split layout, the scan settings without an id, which get one.
+ * other than the primary precursor's first (one warning), and the Params of wavelength spectra (another). Each
+ * re-sorted main axis gets a warning of its own, and so do, in the split layout, the scan settings without an id,
+ * which get one.
  */
 final class WritePlanner {
 
@@ -127,10 +128,21 @@ final class WritePlanner {
         }
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
+        // The packed wavelength schema is frozen without a parameters list: one warning for the Params it drops.
+        int withParams = 0;
+        int params = 0;
         for (int i = 0; i < wavelengthOrder.size(); i++) {
             WavelengthSpectrum w = wavelengthOrder.get(i);
             wavelengthEntries.add(new Entry<>(w, i,
                     mainAxisOrder("wavelength spectrum", w.index(), w.wavelength(), w.intensity(), report)));
+            if (!w.parameters().isEmpty()) {
+                withParams++;
+                params += w.parameters().size();
+            }
+        }
+        if (withParams > 0 && options.metadataLayout() == MetadataLayout.PACKED) {
+            report.warn(counted(withParams, "wavelength spectrum carries", "wavelength spectra carry")
+                    + " parameters (" + params + " in all), which the packed metadata layout does not write");
         }
         return new WritePlan(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(chromatogramEntries), Collections.unmodifiableList(wavelengthEntries),
