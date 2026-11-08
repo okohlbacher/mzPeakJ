@@ -35,8 +35,10 @@ ZIP was chosen because members can be accessed at arbitrary byte offsets.
 `mzPeakJ` reads both via the `MzPeakSource` abstraction (`DirectorySource` / `ZipSource`). Because the ZIP
 members are STORED (no ZIP-level compression — Parquet files use their own ZSTD), `ZipSource` parses the
 central directory (`ZipIndex`) and reads each Parquet member **in place** from its byte range via a seekable
-`FileSliceInputFile` over the archive's shared `FileChannel` — no copy into memory. A DEFLATE member, which the
-spec does not use, is inflated into memory as a fallback.
+`FileSliceInputFile` over the archive's shared `RandomAccessBytes` (positional reads; a `FileChannel` for a local
+file) — no copy into memory. A DEFLATE member, which the spec does not use, is inflated into memory as a fallback.
+For other storage, `MzPeakSource.zip` and `MzPeakSource.unpacked` read caller-supplied `RandomAccessBytes`
+(§8.2).
 
 Members, offsets and the archive itself may exceed 4 GiB:
 
@@ -325,7 +327,7 @@ transforms the other way round. Rule 1 and the lowest-rank rule cover them uncha
 | a Numpress column carries a value (the axis's `MS:1002312` transform, or a SLOF/PIC intensity transform) | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
 | `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | plain list, as long as the values or one longer |
 | `MS:1000576` or `MS:1003088` | absolute values | same |
-| `MS:1003826` (coordinate grid) | throws (below) | |
+| `MS:1003826` (coordinate grid) | the grid's model applied to its cumulative indices (below) | plain list, 1:1 |
 | any other CURIE | throws `unsupported chunk encoding <curie> for spectrum_index <n>` | |
 
 Column presence picks the Numpress decoder, but an unknown `chunk_encoding` throws on every row. A row that
@@ -354,22 +356,51 @@ integer-only). The SLOF encoder chooses `fixedPoint = floor(65535 / log(max_inte
 encoded values fit in uint16; this is transparent to the reader.
 
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
-misdecoded: a grid chunk, an unknown `chunk_encoding`, Numpress intensity that decodes to values without a
-Numpress m/z source, Numpress m/z that decodes to values without an intensity column, and a value in a
-`*numpress*` column the plan does not decode.
+misdecoded: a grid chunk without a grid or with an unknown `grid_type` (below), an unknown `chunk_encoding`,
+Numpress intensity that decodes to values without a Numpress m/z source, Numpress m/z that decodes to values
+without an intensity column, and a value in a `*numpress*` column the plan does not decode.
 
-**Coordinate grids are rejected.** A chunk with `chunk_encoding` `MS:1003826` (the draft coordinate-grid
-encoding) throws `unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type <type> for
-spectrum_index <n>; grid decoding is not implemented`. Reading the arrays of any diaPASEF.grid spectrum throws
-it (spectrum 0: grid_type `MS:9999002`); its metadata and chromatograms read. Grid decoding with the
-provisional grid accessions is planned (backlog unit RD-20); unit AP-8 replaces this paragraph once it lands.
+**Coordinate grids** (`MS:1003826`, draft). A grid chunk stores its axis as a struct `{grid_type, parameters,
+indices}` in the column that the array index lists as the axis's `MS:1003826` chunk transform (`mz_grid` in
+diaPASEF.grid): a model CURIE, the model's parameters, and grid indices read as unsigned 32-bit integers
+(`GridChunk`). Each index maps to one coordinate through the model. The grid path is chosen per row by the
+`chunk_encoding`, before the Numpress columns are looked at, so a member may mix grid rows with delta rows.
+
+- **Main axis.** The indices are delta-encoded: their running sum, kept in a `long`, gives each point's grid
+  index, and the first index is absolute. The m/z values pair 1:1 with the plain intensity list; no chunk start
+  point is emitted.
+- **Extra arrays** stored as a grid (their `MS:1003826` transform column carries a value, such as
+  diaPASEF.grid's ion mobility) use absolute indices and land in the extras (§3.6).
+
+`GridModels.KINDS` is the single table of models:
+
+| `grid_type` | Model | Parameters |
+|---|---|---|
+| `MS:1003824` linear grid interpolation | `(a + b·i) / s` | `[a, b]` or `[a, b, s]`; `s` defaults to 1 |
+| `MS:1003825` square root grid interpolation | `(a + b·i)² / s` | `[a, b]` or `[a, b, s]`; `s` defaults to 1 |
+| `MS:9999002` timsTOF m/z grid, **provisional** | a port of mzdata's `convert_f64`: the time of flight `i·timebase + delay`, the root `s` of the cubic calibration `c0 + beta·s + c2·s² + c3·s³ = tof` (Newton when `c3 ≠ 0`), then m/z = `s² − c4` | 7: `c0, beta, c2, c3, c4, timebase, delay` |
+| `MS:9999001` timsTOF 1/K0 grid, **provisional** | `1 / (c6 + c7 / (offset + slope·i))` | 4: `c6, c7, offset, slope` |
+
+The two `MS:9999…` accessions are placeholders that PSI-MS does not define yet; renumbering one is a one-line
+change in `KINDS`. The arithmetic follows the reference's scalar decoders, fused multiply-adds included, and the
+9 spectra of diaPASEF.grid decode to those of diaPASEF.ref bit for bit: m/z, intensity and ion mobility
+(`GridDecodeTest`).
+
+**Grid errors.** On the main axis, a grid row without a grid, or one whose `grid_type` is not in `KINDS`, throws
+RD-12's message `unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type <type> for
+spectrum_index <n>; grid decoding is not implemented`, kept verbatim although the known types are decoded now. A
+row without the grid `chunk_encoding` that carries a grid instead of chunk values throws the same message. A grid
+that cannot be read as the struct, an index that is not an unsigned 32-bit integer, a running sum beyond 2³²−1,
+a parameter count the model does not take, or an intensity list of another length throws an `MzPeakException`
+that names the grid column. A secondary grid of an unknown `grid_type`, or one that cannot be decoded, only drops
+that extra array with a WARNING (§3.6).
 
 ### 3.4 Assembling a spectrum
 
 `MzPeakReader` reads `spectra_data` and `spectra_peaks` separately. `Spectrum.mz()`/`intensity()` hold the
 data arrays, or the peaks when the spectrum has no data rows; `peaks()` holds the centroids (sorted by m/z,
-non-finite m/z dropped). A signal member must be sorted by spectrum index; an index in two non-contiguous runs
-throws.
+non-finite m/z dropped). That is the default `SignalMode.BOTH`; `PROFILE` and `CENTROID` read only one of the two
+members (§8.2). A signal member must be sorted by spectrum index; an index in two non-contiguous runs throws.
 
 ### 3.5 Chromatograms and wavelength spectra
 
@@ -406,15 +437,17 @@ examples and of has_uv carries a per-point `ms level` array (`MS:1000786`): 48 o
 
 **Nulls and drops.** A null cell reads as NaN; an entity whose cells of a key are all NaN gets no entry for
 that key. With `reconstructProfile=false` the points dropped from `mz()` are dropped from the extras too. An
-extra whose list length does not match its chunk, whose transform column carries a value, or whose cells are
-not numbers is dropped with a WARNING (once per member and key). m/z and intensity are never dropped, and a
-problem with an extra never prevents reading them.
+extra whose list or grid length does not match its chunk, whose grid has an unknown `grid_type` or cannot be
+decoded (§3.3), whose other transform column (a Numpress one, not decoded for extras) carries a value, or whose
+cells are not numbers is dropped with a WARNING (once per member and key). m/z and intensity are never dropped,
+and a problem with an extra never prevents reading them.
 
 ### 3.7 Streaming
 
 `SpectrumArrayStore` reads the per-row-group min/max statistics of the plan's index column at open time.
-`get(index)` decodes only the row group(s) that cover the requested index and caches the last block run.
-`ZipSource` reads STORED members in place via `FileSliceInputFile` (positional `FileChannel` reads), so a
+`get(index)` decodes only the row group(s) that cover the requested index and caches the last block run; the
+range queries (§8.2) read through it, so a query decodes only the row groups of the spectra it selects.
+`ZipSource` reads STORED members in place via `FileSliceInputFile` (positional `RandomAccessBytes` reads), so a
 single-file archive streams identically to an unpacked directory.
 
 ---
@@ -585,6 +618,7 @@ org.mzpeak.model             pure data — no I/O deps
               Activation · IsolationWindow · ScanEvent · ScanWindow · ImagingPosition
               Polarity · SignalContinuity
   other:      Chromatogram · WavelengthSpectrum
+  queries:    DoubleRange · SignalSlice
   params:     Param · CvTerms · Tolerance(PPM|Da) · NativeId
 
 org.mzpeak.model.meta        file/run-level metadata records
@@ -593,15 +627,18 @@ org.mzpeak.model.meta        file/run-level metadata records
 
 org.mzpeak.io                reading + writing
   public       MzPeakReader · MzPeakWriter · MzPeakManifest · MzPeakSource · MzPeakException
-  containers   DirectorySource · ZipSource · ZipIndex
+               RandomAccessBytes · SignalQuery · ColumnStatistics (§8.2)
+  containers   DirectorySource · ZipSource · ZipIndex · UnpackedSource
   metadata     SpectrumMetadataDecoder (shape dispatch) · MetadataShape · ParquetFooter
                Facet · ColumnTable · ColumnResolver · FacetRow · MetadataTable
                SplitMetadataReader · PackedMetadataReader (legacy) · SpectrumFacetAssembler
                SpectrumRowDecoder · ScanRowDecoder · PrecursorRowDecoder · SelectedIonRowDecoder
                PrecursorJoin · IonMobilityParams
                ChromatogramMetadataDecoder · WavelengthMetadataDecoder · FooterMetadataReader
+               MetadataColumns (column statistics, encoded TIC/BPC)
   signal       SignalEntity · ArrayIndex · SignalPlan
-               SpectrumArrayStore · ChunkRowDecoder · ChunkCodecs · NullFill · DoubleArrayBuilder
+               SpectrumArrayStore · ChunkRowDecoder · ChunkCodecs · GridChunk · GridModels · NullFill
+               DoubleArrayBuilder
                ChromatogramStore · ChromatogramDataDecoder · WavelengthSpectrumStore · PointArrays
   writer       (§8.1)
                MzPeakWriter → WritePlanner → WritePlan → DatasetWriter
@@ -613,7 +650,7 @@ org.mzpeak.io.parquet         Hadoop-free Parquet I/O
   ParquetGroups               type-variance-safe accessors (optDouble, readParams, groupList, …)
   ZstdCompressionCodecFactory custom ZSTD compressor + decompressor
   ByteArrayInputFile          in-memory Parquet member (for ZIP fallback)
-  FileSliceInputFile          seekable byte-range slice of a FileChannel (STORED ZIP)
+  FileSliceInputFile          seekable byte-range slice of a RandomAccessBytes (STORED ZIP)
 
 org.mzpeak.cli                MzPeakInfo (dataset summary)
 org.mzpeak.examples           ExtractSpectra · ConvertToDta · ExtractXic · MzPeakFileInfo
@@ -666,6 +703,117 @@ Python reader's arrays pass the golden rules against mzPeakJ's read of each sour
 spectrum extras logs one WARNING. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles
 (the reconstructed arrays are written).
 
+### 8.2 Reader API
+
+`MzPeakReader` serves a dataset's spectra, chromatograms, wavelength spectra and file-level metadata; it is not
+thread-safe. The README shows each feature in a short example. This section gives the contract and, at its end,
+the places where mzPeakJ deliberately differs from the Rust and Python readers.
+
+**Opening and options.** `open(Path)`, `open(Path, Options)`, `open(MzPeakSource)` and
+`open(MzPeakSource, Options)`; `open(Path, boolean)` sets `reconstructProfile`. A reader owns its source and
+closes it exactly once: when the open fails, or on the first `close()`. `MzPeakReader.Options` is an immutable
+final class with value equality: `Options.defaults()`, `withReconstructProfile(boolean)` (default `true`, §4.2)
+and `withSignalMode(SignalMode)` (default `BOTH`). `options()` returns the options a reader was opened with.
+
+| `SignalMode` | Members read | `mz()`, `intensity()`, `arrays()` | `peaks()`, `peakArrays()` |
+|---|---|---|---|
+| `BOTH` (default) | data arrays and peaks | the data arrays, else the centroids in stored order (§3.4) | the centroids |
+| `PROFILE` | data arrays only | the data arrays, else empty | empty |
+| `CENTROID` | peaks only | the centroids in stored order, else empty | the centroids |
+
+A spectrum read in `PROFILE` or `CENTROID` mode is a partial view of what the dataset stores. It must not be
+passed to `MzPeakWriter`, which would write only that part; read with `BOTH` before writing.
+
+**Range queries.**
+
+| API | Contract |
+|---|---|
+| `DoubleRange(low, high)` | a closed interval; a bound may be infinite; a NaN bound or `low > high` throws `IllegalArgumentException` |
+| `SignalQuery` | immutable: `all()`, `timeRange(start, end)` or `indexRange(first, last)`, narrowed by `withMz(low, high)`, `withIonMobility(low, high)` and `withMsLevels(min, max)`; every range is closed and compared exactly |
+| `select(query)` | the selected `SpectrumDescription`s in index order, from the metadata in memory; reads no signal, and the m/z and ion-mobility filters play no part |
+| `extractSignal(query)` | a `Stream<SignalSlice>` with one slice per selected spectrum from the data arrays member, keeping the points that pass the m/z and ion-mobility filters; `reconstructProfile` applies |
+| `queryPeaks(query)` | the same from the peaks member: the peaks in stored order, non-finite m/z dropped |
+
+`SignalSlice(index, time, msLevel, mz, intensity, ionMobility)`: a spectrum without points in the member gives
+an empty slice, and `ionMobility` is `null` when the spectrum has no ion mobility array. The ion-mobility filter
+applies only to the spectra that have one. The streams are lazy and sequential, decode only the row groups of
+the selected spectra, ignore the reader's `SignalMode`, and throw `IllegalStateException` for a slice requested
+after `close()`. A slice that the filters leave whole shares its arrays with the reader's cache, like
+`Spectrum.mz()`.
+
+**Column statistics and observed ranges.**
+
+| API | Source |
+|---|---|
+| `columnStatistics(entity, kind, accession)` | an `Optional<ColumnStatistics>`: `ColumnStatistics(member, column, accession, rowGroups)` with `complete()`, `min()` and `max()`, from the Parquet row-group statistics in the footer of the member that holds the column, without reading a row. The column is resolved by accession through `MetadataShape` and `ColumnResolver` (§2), in the packed layout also by a unique field with the CURIE prefix (`MS_1000016_…`). Empty for the data arrays and peaks roles, a role without a metadata member, a term that no column holds, and a column that is not INT32, INT64, FLOAT or DOUBLE |
+| `observedMzRange()` | the smallest row-group minimum of MS:1000528 (lowest observed m/z) and the largest maximum of MS:1000527 (highest observed m/z) in the spectrum metadata; empty unless both statistics are complete |
+| `observedTimeRange()` | the smallest and largest finite retention time of the spectrum metadata held in memory; reads nothing |
+
+**TIC and BPC.**
+
+| API | Result |
+|---|---|
+| `tic()`, `bpc()` | the first of `chromatograms()` of the type MS:1000235 (total ion current chromatogram), resp. MS:1000628 (basepeak chromatogram); else `encodedTic()`, resp. `encodedBpc()` |
+| `encodedTic()`, `encodedBpc()` | one point per spectrum, in index order, that has a total ion current (MS:1000285), resp. a base peak intensity (MS:1000505), and a finite retention time; index 0 and id `TIC`, resp. index 1 and id `BPC`; no intensity unit and no arrays. Empty when the spectrum metadata has no such numeric column; never one of `chromatograms()` |
+
+`chromatograms()`, `getChromatogram(long)` and `getChromatogramById(String)` return stored chromatograms only.
+
+**Extra arrays.** `Spectrum.arrays()`, `peakArrays()`, `array(String)`, `ionMobility()` and
+`ionMobilityArrayType()` (§3.6). `Chromatogram.arrays()` holds a chromatogram's other per-point arrays, parallel
+to `time()`, such as the `ms level` array of every example TIC, and `Chromatogram.intensityUnit()` the unit CURIE
+of its intensities (§3.5). The 5-argument `Chromatogram` constructor sets no unit and no arrays.
+
+**Isolation windows.** `IsolationWindow.parameters()` holds the window's other CV and user params, read and
+written in both metadata layouts (§2.2, §8.1); the 3-argument constructor sets an empty list.
+
+**Sources.** `MzPeakSource.open(Path)` opens a local directory or archive. For other storage, such as an object
+store, the caller supplies the bytes:
+
+- `RandomAccessBytes`: `size()`, `read(ByteBuffer, long)` (a positional read that keeps no position of its own
+  and is safe for concurrent calls) and `close()`; `RandomAccessBytes.of(FileChannel)` wraps a channel.
+- `MzPeakSource.zip(description, bytes)` reads a single-file archive through one `RandomAccessBytes`: the
+  central directory when the source is created, then STORED members in place, only the ranges a reader asks
+  for. The source owns `bytes`.
+- `MzPeakSource.unpacked(description, opener)` reads an unpacked dataset whose members a `MemberOpener` opens as
+  `RandomAccessBytes`, lazily, when a reader first asks for them. A member name that is absolute or contains a
+  `..` segment is rejected before the opener is called. The source closes every member it opened.
+
+What a reader expects of any `MzPeakSource` (member names, concurrent streams, ownership) is stated in its
+Javadoc.
+
+**Grids** need no API: grid chunks decode like the other chunk encodings (§3.3).
+
+**Integrity.** There is no integrity check yet: the manifest's SHA-512 checksums are parsed but not verified on
+read (§10).
+
+**Deviations from the reference readers.** All are deliberate; the tests named pin them:
+
+- **Explicit signal modes return empty arrays.** `PROFILE` and `CENTROID` follow the spec text (`spectra.md`):
+  when the requested representation is absent, the arrays are empty. The Rust reader's
+  `SignalLoadingPreference` only chooses when a spectrum has both and otherwise reads whichever it has; its
+  default prefers the profile, where mzPeakJ's default `BOTH` reads both (`SignalModeTest`).
+- **Partial views.** A spectrum read in `PROFILE` or `CENTROID` mode lacks the other member's arrays and must not
+  be written back (above).
+- **Exact intervals: 562, not 563.** Every range is closed and compared exactly. On current small, with
+  `reconstructProfile=false`, `extractSignal(SignalQuery.timeRange(0.3, 0.4).withMz(800, 820))` gives 562 points;
+  Rust's `extract_signal` gives 563, because its tolerant (`isclose`) bounds also admit a stored point just above
+  820. With `withMz(800, 820.00002)` mzPeakJ gives 563 too (`SignalQueryTest`).
+- **No implicit TIC or BPC.** In the Rust reader, `get_chromatogram_by_id("TIC")`/`("BPC")` and
+  `get_chromatogram_by_index(0)`/`(1)` fall back to the chromatogram encoded in the spectrum metadata when none is
+  stored. mzPeakJ's `getChromatogramById`, `getChromatogram` and `chromatograms()` return stored chromatograms
+  only; the encoded ones are `encodedTic()` and `encodedBpc()`, and `tic()`/`bpc()` pick a stored chromatogram by
+  its type, not by its index. Index 1 is not a BPC in every file (in has_uv it is the 'DAD1 A' absorbance trace),
+  and a stored TIC can differ from the encoded one, as on current small (`EncodedChromatogramTest`).
+- **`observedTimeRange()` comes from the retention times.** Rust's `observed_time_range` reads the row-group
+  statistics of the MS:1000016 scan start time column; mzPeakJ takes the retention times it holds in memory: a
+  spectrum's `time`, else its earliest scan start time (§2.3). Both give (0.004935, 0.487236666667) on current
+  small (`ColumnStatisticsTest`).
+- **No integrity check yet.** The Rust and Python readers verify the manifest checksums
+  (`check_archive_integrity`); mzPeakJ does not (above).
+- **Grid m/z and the Python reader.** The timsTOF m/z model keeps the fused multiply-add of `convert_f64`; the
+  HEAD Python reader computes without it, so its diaPASEF.grid m/z differ from mzPeakJ's by up to 6.8e-13
+  (`GridDecodeTest`).
+
 ---
 
 ## 9. Testing
@@ -694,7 +842,7 @@ checksums):
 | `small.numpress.mzpeak` | STORED ZIP | Numpress chunk (linear m/z, SLOF intensity) | same 48 spectra, profiles without null marking |
 | `has_uv.mzpeak` | STORED ZIP | point | 212 MS1 centroid spectra, 520 UV/DAD wavelength spectra, 2 chromatograms (TIC, DAD1 A) |
 | `diaPASEF.ref.mzpeak` | STORED ZIP | point, peaks member only | 9 spectra (1 MS1 + 8 MS2) of a Bruker diaPASEF run with per-peak ion mobility (MS:1003006); TIC and BPC |
-| `diaPASEF.grid.mzpeak` | STORED ZIP | coordinate-grid chunks | the same run; spectrum arrays are rejected (§3.3) |
+| `diaPASEF.grid.mzpeak` | STORED ZIP | coordinate-grid chunks (timsTOF m/z and 1/K0 grids, provisional) | the same run; its spectra decode to those of diaPASEF.ref bit for bit (§3.3) |
 | `Example_Processed.img.mzpeak` | STORED ZIP | point | 9 profile spectra of an imzML imaging run with pixel positions; no chromatograms |
 
 **Legacy set** — `src/test/resources/mzpeak-legacy/`, upstream `29e59b2` (packed metadata): `small`,
@@ -775,12 +923,13 @@ expected values and says why.
 
 ## 10. Known limitations / deferred
 
-- **Grid decoding.** Coordinate-grid chunks (`MS:1003826`) throw (§3.3); diaPASEF.grid's spectra cannot be read.
+- **Grids.** The timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional (§3.3). Grids are decoded
+  in spectrum signal members only; a chromatogram chunk is read as deltas whatever its encoding (§3.5).
 - **Writer** (§8.1). Extra signal arrays are not written; spectrum extras are dropped with a WARNING. Not
   written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles (the reconstructed
   arrays are written). The `PACKED` layout writes only the first scan and the primary precursor of a spectrum.
   Whether the Rust reference reads mzPeakJ's output is untested.
-- **Integrity.** Manifest checksums are not verified on read.
+- **Integrity.** Manifest checksums are not verified on read, unlike in the Rust and Python readers (§8.2).
 - **ZIP.** A duplicate member name throws instead of resolving to the last one.
 - **Dataset checks.** A dataset without a spectrum metadata member throws; the format version is not checked.
 - **Metadata not decoded:** products facets; chromatogram precursor and selected-ion facets; the wavelength
