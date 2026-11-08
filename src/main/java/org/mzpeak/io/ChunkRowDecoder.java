@@ -29,7 +29,8 @@ import java.util.Map;
  *       ({@link GridChunk}): its indices are delta-encoded from an absolute first one, each maps to one m/z through the
  *       {@link GridModels} model of its grid_type, and the m/z pair one-to-one with the plain intensity list; there is
  *       no chunk start point. A grid row without a grid, or with a grid_type that is not in {@link GridModels#KINDS},
- *       throws RD-12's grid error; one whose grid cannot be read throws an error that names the grid column.
+ *       throws, as does one whose grid cannot be read (the error names the grid column), and a row with a grid,
+ *       intensities and no axis values whose chunk_encoding is not the grid encoding.
  *   <li>Any other chunk_encoding throws, also on a Numpress row, as does a value in a {@code *numpress*} column the
  *       plan does not decode (an extra array's values or transform column excepted).
  *   <li>Each extra array pairs one-to-one with the decoded m/z of the row, chunk start point included; a null list
@@ -140,7 +141,7 @@ final class ChunkRowDecoder {
     private Row decodeSignal(Group chunk, long si) {
         ChunkCodecs.rejectUnknownNumpressColumns(chunk, numpressColumns, extraColumns, si);
         String chunkEncoding = encoding == null ? null : ParquetGroups.optString(chunk, encoding);
-        if (chunkEncoding != null && chunkEncoding.contains("1003826")) {
+        if (ChunkCodecs.GRID_ENCODING.equals(chunkEncoding)) {
             return decodeGrid(chunk, si);
         }
         // Checked for every row: Numpress column presence picks the decoder, but never admits an unknown CURIE.
@@ -154,7 +155,7 @@ final class ChunkRowDecoder {
         double[] chunkIntensity = doubles(chunk, plainIntensity(chunk));
         if (has(chunk, grid) && rawAxis.length == 0 && chunkIntensity.length > 0) {
             // A grid chunk without the grid chunk_encoding: the intensities pair with grid indices, not values.
-            throw ChunkCodecs.unsupportedGrid(chunk, grid, si);
+            throw ChunkCodecs.gridWithoutGridEncoding(grid, chunkEncoding, si);
         }
         if (values == null && start == null && chunkIntensity.length > 0) {
             // no m/z to pair the intensities with: reading them at m/z 0 would invent a point
@@ -198,7 +199,7 @@ final class ChunkRowDecoder {
         GridChunk g = grid == null ? null : GridChunk.read(chunk, grid, si);
         GridModels.Model model = g == null ? null : g.model(si);
         if (model == null) {
-            throw ChunkCodecs.unsupportedGrid(chunk, grid, si);
+            throw ChunkCodecs.undecodableGrid(grid, g != null, g == null ? null : g.gridType(), si);
         }
         double[] axis = GridModels.decode(model, g.cumulativeIndices(si));
         double[] chunkIntensity = doubles(chunk, plainIntensity(chunk));

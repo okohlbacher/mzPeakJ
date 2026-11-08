@@ -52,8 +52,9 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>Constructed members, written with parquet-java into a {@link TempDir} from row 0 of diaPASEF.grid's peaks
  *       member or from the spec's worked example, cover the unsigned index read, the cumulative main axis next to the
  *       absolute secondary grid, grid and delta rows in one spectrum, and the errors: an unknown main-axis grid_type
- *       keeps RD-12's error, while an unknown ion mobility grid only drops that extra array; a grid column that cannot
- *       be read fails naming the column on the main axis and only drops that extra array as an ion mobility grid.
+ *       fails naming the known ones, while an unknown ion mobility grid only drops that extra array; a grid column that
+ *       cannot be read fails naming the column on the main axis and only drops that extra array as an ion mobility
+ *       grid, also when the row's chunk_encoding is not the grid encoding.
  * </ul>
  */
 class GridDecodeTest {
@@ -254,23 +255,41 @@ class GridDecodeTest {
     }
 
     @Test
-    void anUnknownMainAxisGridTypeKeepsRd12sError() {
+    void anUnknownMainAxisGridTypeFailsNamingTheKnownOnes() {
         GridRow row = Row0.INSTANCE.copy();
         row.mzType = UNKNOWN;
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type "
-                        + UNKNOWN + " for spectrum_index 0; grid decoding is not implemented");
+                .hasMessage("grid_type " + UNKNOWN + " of mz_grid is not one of MS:1003824, MS:1003825, MS:9999002,"
+                        + " MS:9999001 for spectrum_index 0");
     }
 
     @Test
-    void aGridRowWithoutItsGridStructKeepsRd12sError() {
+    void aGridRowWithoutItsGridStructFails() {
         GridRow row = Row0.INSTANCE.copy();
         row.mzType = null;
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("unsupported chunk encoding MS:1003826 (coordinate grid, draft) with grid_type (none)"
-                        + " for spectrum_index 0; grid decoding is not implemented");
+                .hasMessage("chunk_encoding MS:1003826 for spectrum_index 0, but the row has no grid in mz_grid");
+    }
+
+    @Test
+    void aGridEncodingWithoutAGridColumnInThePlanFails() {
+        assertThat(ChunkCodecs.undecodableGrid(null, false, null, 4))
+                .hasMessage("chunk_encoding MS:1003826 for spectrum_index 4, but the signal plan has no grid column");
+    }
+
+    @Test
+    void aGridColumnThatIsNotAStructWithoutTheGridEncodingFailsNamingTheColumn() {
+        // before FN-3 the error re-read the column as a struct and failed with a ClassCastException
+        GridRow row = Row0.INSTANCE.copy();
+        row.encoding = "MS:1003089";
+        Path file = write(schema(malformed(MZ_GRID, NOT_A_STRUCT), grid(IM_GRID, UINT32)), row);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), MEMBER, false, Map.of())) {
+            assertThatThrownBy(() -> store.get(0))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("mz_grid carries a grid but chunk_encoding is MS:1003089 for spectrum_index 0");
+        }
     }
 
     @Test
