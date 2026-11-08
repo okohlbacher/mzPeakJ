@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.DoubleUnaryOperator;
 
 /**
  * Reads a spectrum signal file ({@code spectra_data.parquet} / {@code spectra_peaks.parquet}) in a streaming,
@@ -48,7 +49,9 @@ import java.util.function.Consumer;
  * ({@code reconstructProfile} false). An extra that cannot be decoded for a spectrum (a chunk list or grid whose
  * length does not match its m/z, a grid of an unknown grid_type, a Numpress transform column that carries a value,
  * cells that are not numbers) is dropped from that spectrum with a WARNING, logged once per member and extra; the m/z
- * and intensity are read as without it.
+ * and intensity are read as without it. A drift-time ion mobility array ({@link ArrayUnits#DRIFT_TIME_ARRAYS}, by the
+ * array type of its plan entry) is converted to milliseconds from the entry's unit (MZ-3), which must be milliseconds,
+ * seconds, minutes or none; other extras keep their stored values.
  *
  * <p><b>Streaming:</b> per-row-group min/max statistics of the plan's index column ({@code spectrum_index}) are
  * read at open time; {@link #get} decodes only the row group(s) covering the requested index, caching the last
@@ -80,6 +83,8 @@ final class SpectrumArrayStore implements AutoCloseable {
     private final String member;
     /** The extras a WARNING has been logged for. */
     private final Set<String> warnedExtras = new HashSet<>();
+    /** The drift-time extras by key, each with the conversion of its stored values to milliseconds. */
+    private final Map<String, DoubleUnaryOperator> toMilliseconds = new HashMap<>();
 
     // cache of the last-decoded contiguous block run [cachedFirst, cachedLast]
     private int cachedFirst = -1;
@@ -98,13 +103,25 @@ final class SpectrumArrayStore implements AutoCloseable {
         this.rgMin = rgMin;
         this.rgMax = rgMax;
         this.member = member;
+        for (SignalPlan.Extra extra : plan.extras().values()) {
+            if (ArrayUnits.DRIFT_TIME_ARRAYS.contains(extra.arrayType())) {
+                toMilliseconds.put(extra.key(), ArrayUnits.toMilliseconds(extra.unit(), extra.arrayType(), member,
+                        column(plan, extra)));
+            }
+        }
+    }
+
+    /** The column of {@code extra} that an error names: its values column, else its first transform column. */
+    private static String column(SignalPlan plan, SignalPlan.Extra extra) {
+        return extra.values() != null ? extra.values().path()
+                : plan.prefix() + "." + extra.transformFields().values().iterator().next();
     }
 
     /**
      * Opens a spectrum signal member and builds its {@link SignalPlan} from the footer.
      *
      * @throws MzPeakException when the plan cannot be built: the array index names another main axis than m/z, or
-     *                         two m/z value columns
+     *                         two m/z value columns; or when a drift-time extra is in a unit that is not converted
      */
     static SpectrumArrayStore load(InputFile file, boolean reconstructProfile, Map<Long, double[]> deltaModels) {
         return load(file, "spectrum signal member", reconstructProfile, deltaModels);
@@ -202,7 +219,7 @@ final class SpectrumArrayStore implements AutoCloseable {
     private Map<Long, Arrays> decodeBlocks(int first, int last) {
         Map<Long, Arrays> result = new HashMap<>();
         Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels, plan, chunks, this::dropExtra,
-                member);
+                member, toMilliseconds);
         try {
             for (int b = first; b <= last; b++) {
                 PageReadStore pages = reader.readRowGroup(b);
@@ -262,6 +279,8 @@ final class SpectrumArrayStore implements AutoCloseable {
         /** The plan's extras: key to the point values column, or to null when only a transform column holds it. */
         private final Map<String, String> extraFields = new LinkedHashMap<>();
         private final ExtraDrops drops;
+        /** The drift-time extras by key, each with the conversion of its stored values to milliseconds. */
+        private final Map<String, DoubleUnaryOperator> toMilliseconds;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
@@ -270,7 +289,8 @@ final class SpectrumArrayStore implements AutoCloseable {
         private Map<String, DoubleArrayBuilder> extras;
 
         Accumulator(Map<Long, Arrays> result, boolean reconstructProfile, Map<Long, double[]> deltaModels,
-                    SignalPlan plan, ChunkRowDecoder chunks, ExtraDrops drops, String member) {
+                    SignalPlan plan, ChunkRowDecoder chunks, ExtraDrops drops, String member,
+                    Map<String, DoubleUnaryOperator> toMilliseconds) {
             this.result = result;
             this.reconstructProfile = reconstructProfile;
             this.deltaModels = deltaModels;
@@ -286,6 +306,7 @@ final class SpectrumArrayStore implements AutoCloseable {
             plan.extras().forEach((key, extra) -> extraFields.put(key,
                     extra.values() == null ? null : extra.values().field()));
             this.drops = drops;
+            this.toMilliseconds = toMilliseconds;
             this.extras = newExtras();
         }
 
@@ -414,11 +435,20 @@ final class SpectrumArrayStore implements AutoCloseable {
             extras = newExtras();
         }
 
-        /** The current spectrum's extras that have a value other than NaN; an unmodifiable empty map if none. */
+        /**
+         * The current spectrum's extras that have a value other than NaN, drift times in milliseconds; an
+         * unmodifiable empty map if none.
+         */
         private Map<String, double[]> extraArrays() {
             Map<String, double[]> out = new LinkedHashMap<>();
             for (Map.Entry<String, DoubleArrayBuilder> extra : extras.entrySet()) {
                 double[] values = extra.getValue().toArray();
+                DoubleUnaryOperator toModelUnit = toMilliseconds.get(extra.getKey());
+                if (toModelUnit != null) {
+                    for (int i = 0; i < values.length; i++) {
+                        values[i] = toModelUnit.applyAsDouble(values[i]);
+                    }
+                }
                 for (double v : values) {
                     if (!Double.isNaN(v)) {
                         out.put(extra.getKey(), values);
