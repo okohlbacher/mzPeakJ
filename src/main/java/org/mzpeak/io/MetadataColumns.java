@@ -1,10 +1,17 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.column.statistics.Statistics;
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.parquet.io.ColumnIOFactory;
+import org.apache.parquet.io.InputFile;
+import org.apache.parquet.io.MessageColumnIO;
+import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.IntLogicalTypeAnnotation;
@@ -21,9 +28,15 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Finds the metadata column that holds a term, by the role of its facet and its accession, in either layout, and
@@ -35,7 +48,7 @@ import java.util.Optional;
  * {@link ColumnResolver#resolve}; in the packed layout only, a column that it does not know is also found by its
  * CURIE prefix ({@code MS_1000528_} for {@code MS:1000528}) when exactly one field of the scope has that prefix,
  * which covers name variants of packed writers. Only fields directly in the scope are found, never ones in a nested
- * struct or list.
+ * struct or list. The values of a column of an entity's own table are read by index with {@link #valuesByIndex}.
  */
 final class MetadataColumns {
 
@@ -48,8 +61,12 @@ final class MetadataColumns {
     record Resolved(String member, String column) {
     }
 
-    /** A resolved column with what reading its statistics needs. */
-    private record Located(String member, String[] path, PrimitiveType type, ParquetMetadata footer) {
+    /**
+     * A resolved column with what reading its statistics and its values needs, including its scope (the split table
+     * or the packed struct) and the resolver of that scope.
+     */
+    private record Located(String member, String[] path, PrimitiveType type, ParquetMetadata footer,
+                           GroupType scope, ColumnResolver columns) {
 
         String column() {
             return String.join(".", path);
@@ -95,6 +112,77 @@ final class MetadataColumns {
         return Optional.of(new ColumnStatistics(c.member(), c.column(), accession, rowGroups));
     }
 
+    /**
+     * The values of the column {@link #resolve} finds for the term {@code accession} in the entity's own table, the
+     * role {@code (entity, METADATA)}, keyed by entity index, in the member's row order. A projected read of the
+     * index and the value column alone; the index is {@code index} in a split table, the struct's {@code index}
+     * ({@code spectrum.index}) in a packed member. Rows whose value is null are skipped, and so are packed
+     * placeholder rows (a null struct or index). Values are widened to double, unsigned integers without sign
+     * extension.
+     *
+     * @return an unmodifiable map; empty when {@link #resolve} is, and when the column is not an INT32, INT64, FLOAT
+     *         or DOUBLE column
+     * @throws MzPeakException if the member has rows but neither metadata shape, if a split row has a null index, if
+     *                         an index occurs twice, or if an index or an unsigned 64-bit value has the high bit set
+     */
+    static Optional<Map<Long, Double>> valuesByIndex(MzPeakManifest manifest, MzPeakSource source,
+                                                     EntityType entity, String accession) {
+        Optional<Located> located = locate(manifest, source, entity, DataKind.METADATA, accession);
+        if (located.isEmpty() || !numeric(located.get().type())) {
+            return Optional.empty();
+        }
+        Located c = located.get();
+        // present: locate() finds no column for an entity without a metadata facet
+        Facet facet = facet(entity, DataKind.METADATA);
+        boolean packed = c.path().length > 1;
+        String field = c.path()[c.path().length - 1];
+        String key = FacetRow.keyColumn(c.scope(), facet);
+        Map<Long, Double> values = new LinkedHashMap<>();
+        if (!c.scope().containsField(key) || !c.scope().getType(key).isPrimitive()) {
+            // only a packed struct can lack its index (the split shape requires it): then every row is a placeholder
+            return Optional.of(Collections.unmodifiableMap(values));
+        }
+
+        // the scope with only the index and the value column, in schema order
+        List<Type> fields = new ArrayList<>();
+        for (Type t : c.scope().getFields()) {
+            if (t.getName().equals(key) || t.getName().equals(field)) {
+                fields.add(t);
+            }
+        }
+        String name = c.footer().getFileMetaData().getSchema().getName();
+        MessageType projection = packed
+                ? new MessageType(name, c.scope().withNewFields(fields))
+                : new MessageType(name, fields);
+
+        Set<Long> seen = new HashSet<>();
+        long[] ordinal = {0};
+        forEachRow(source.inputFile(c.member()), c.member(), projection, row -> {
+            long rowNumber = ordinal[0]++;
+            Group cells = packed ? ParquetGroups.optGroup(row, c.path()[0]) : row;
+            if (cells == null) {
+                return;
+            }
+            Long index = new FacetRow(facet, cells, c.columns()).optKey(key);
+            if (index == null) {
+                if (packed) {
+                    return;
+                }
+                throw new MzPeakException(c.member() + " row " + rowNumber + ": " + key
+                        + " is null; a split metadata key must not be null");
+            }
+            if (!seen.add(index)) {
+                throw new MzPeakException(c.member() + ": duplicate " + (packed ? c.path()[0] + "." : "") + key
+                        + " " + index);
+            }
+            Double value = c.columns().doubleValue(cells, field);
+            if (value != null) {
+                values.put(index, value);
+            }
+        });
+        return Optional.of(Collections.unmodifiableMap(values));
+    }
+
     // ---- resolution -------------------------------------------------------------------------------------------
 
     private static Optional<Located> locate(MzPeakManifest manifest, MzPeakSource source, EntityType entity,
@@ -127,6 +215,7 @@ final class MetadataColumns {
                 new ParquetFooter(schema, rows, footer.getFileMetaData().getKeyValueMetaData()),
                 shapeOf.packedStruct(), FacetRow.keyColumn(schema, shapeOf), member);
         GroupType scope;
+        ColumnResolver columns;
         String field;
         String[] path;
         switch (shape) {
@@ -136,7 +225,8 @@ final class MetadataColumns {
                     return Optional.empty();
                 }
                 scope = schema.getType(struct).asGroupType();
-                field = ColumnResolver.packed(scope, facet).resolve(accession);
+                columns = ColumnResolver.packed(scope, facet);
+                field = columns.resolve(accession);
                 if (field == null) {
                     field = uniqueWithPrefix(scope, accession.replace(':', '_') + "_");
                 }
@@ -148,7 +238,8 @@ final class MetadataColumns {
                     return Optional.empty();
                 }
                 scope = schema;
-                field = ColumnResolver.split(schema, entry.get(), facet).resolve(accession);
+                columns = ColumnResolver.split(schema, entry.get(), facet);
+                field = columns.resolve(accession);
                 path = new String[] {field};
             }
             default -> {
@@ -162,7 +253,7 @@ final class MetadataColumns {
         if (!type.isPrimitive() || type.isRepetition(Type.Repetition.REPEATED)) {
             return Optional.empty();
         }
-        return Optional.of(new Located(member, path, type.asPrimitiveType(), footer));
+        return Optional.of(new Located(member, path, type.asPrimitiveType(), footer, scope, columns));
     }
 
     /** The metadata facet with the role {@code (entity, kind)}, or {@code null}. */
@@ -198,6 +289,24 @@ final class MetadataColumns {
             return reader.getFooter();
         } catch (IOException e) {
             throw new UncheckedIOException("Failed reading Parquet footer of " + member, e);
+        }
+    }
+
+    /** Passes every row of {@code file}, read with the columns of {@code projection} only, to {@code handler}. */
+    private static void forEachRow(InputFile file, String member, MessageType projection, Consumer<Group> handler) {
+        try (ParquetFileReader reader = ParquetFileReader.open(file, ParquetGroups.readOptions())) {
+            MessageType schema = reader.getFooter().getFileMetaData().getSchema();
+            reader.setRequestedSchema(projection);
+            MessageColumnIO columnIO = new ColumnIOFactory().getColumnIO(projection, schema);
+            PageReadStore pages;
+            while ((pages = reader.readNextRowGroup()) != null) {
+                RecordReader<Group> records = columnIO.getRecordReader(pages, new GroupRecordConverter(projection));
+                for (long i = 0, rows = pages.getRowCount(); i < rows; i++) {
+                    handler.accept(records.read());
+                }
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed reading Parquet member " + member, e);
         }
     }
 
