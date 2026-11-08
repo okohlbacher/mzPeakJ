@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.parquet.ByteArrayInputFile;
 import org.mzpeak.io.parquet.FileSliceInputFile;
 
@@ -20,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -184,6 +186,47 @@ class ZipSourceCharacterizationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {1, 100, 1002, 1003, 4000, 0xFFFF})
+    void archiveCommentsUpToTheMaximumLength(int commentLength, @TempDir Path tmp) throws IOException {
+        byte[] comment = new byte[commentLength];
+        for (int i = 0; i < comment.length; i++) {
+            comment[i] = (byte) ('a' + i % 26);
+        }
+        Path archive = Files.write(tmp.resolve("comment.mzpeak"),
+                withComment(Files.readAllBytes(LEGACY_ARCHIVE), comment));
+        Map<String, byte[]> expected = zipFileMembers(LEGACY_ARCHIVE);
+        try (MzPeakSource source = MzPeakSource.open(archive)) {
+            assertThat(source.readManifestBytes()).isEqualTo(expected.get(INDEX));
+            for (Map.Entry<String, byte[]> member : expected.entrySet()) {
+                assertThat(readAll(source.inputFile(member.getKey()))).as("bytes of %s", member.getKey())
+                        .isEqualTo(member.getValue());
+            }
+        }
+        try (MzPeakReader reader = MzPeakReader.open(archive)) {
+            assertThat(reader.size()).isEqualTo(48);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {22, 2000})
+    void theLastEndRecordWhoseCommentReachesTheEndWins(int fromEnd, @TempDir Path tmp) throws IOException {
+        // A comment holding, fromEnd bytes before the end of the file, an empty end-of-central-directory record whose
+        // comment length reaches the end, and a decoy closer to the end whose comment length does not.
+        byte[] comment = new byte[4000];
+        ByteBuffer le = ByteBuffer.wrap(comment).order(ByteOrder.LITTLE_ENDIAN);
+        le.putInt(comment.length - fromEnd, 0x06054b50);
+        le.putShort(comment.length - fromEnd + 20, (short) (fromEnd - 22));
+        le.putInt(comment.length - 60, 0x06054b50);
+        Path archive = Files.write(tmp.resolve("fake-eocd.mzpeak"),
+                withComment(Files.readAllBytes(LEGACY_ARCHIVE), comment));
+        try (MzPeakSource source = MzPeakSource.open(archive)) {
+            assertThatThrownBy(source::readManifestBytes)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("mzPeak archive " + archive + " has no member " + INDEX);
+        }
+    }
+
     @Test
     void readsAfterCloseFail() throws IOException {
         MzPeakSource source = MzPeakSource.open(LEGACY_ARCHIVE);
@@ -218,6 +261,18 @@ class ZipSourceCharacterizationTest {
             }
         }
         return members;
+    }
+
+    /** {@code archive}, which has no comment, with {@code comment} appended and declared in its end record. */
+    private static byte[] withComment(byte[] archive, byte[] comment) {
+        int eocd = archive.length - 22;
+        ByteBuffer le = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+        assertThat(le.getInt(eocd)).isEqualTo(0x06054b50);
+        assertThat(le.getShort(eocd + 20)).isZero();
+        byte[] out = Arrays.copyOf(archive, archive.length + comment.length);
+        System.arraycopy(comment, 0, out, archive.length, comment.length);
+        ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).putShort(eocd + 20, (short) comment.length);
+        return out;
     }
 
     private static byte[] readAll(InputFile file) throws IOException {
