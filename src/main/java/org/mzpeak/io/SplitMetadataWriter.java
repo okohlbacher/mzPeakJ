@@ -14,9 +14,12 @@ import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
+import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
@@ -44,16 +47,28 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *   <li>spectra_metadata: one row per spectrum with its typed columns (index, id, ms level, time, polarity,
  *       representation, the point counts of the files written) and its {@code parameters};
  *   <li>spectra_metadata_scans: one row per scan of every spectrum, keyed by {@code source_index} with a global
- *       {@code scan_index}, with its typed columns, {@code parameters} and {@code scan_windows}.
+ *       {@code scan_index}, with its typed columns, {@code parameters} and {@code scan_windows};
+ *   <li>spectra_metadata_precursors: one row per precursor of every spectrum, in the spectrum's order, keyed by
+ *       {@code source_index} and the precursor's {@code precursor_index}, with its {@code precursor_id}, its
+ *       {@code isolation_window} and its {@code activation} {@code parameters};
+ *   <li>spectra_metadata_selected_ions: one row per selected ion of every precursor, keyed by {@code source_index}
+ *       and the {@code precursor_index} of its precursor, with a global {@code selected_ion_index}, its typed columns
+ *       and {@code parameters}.
  * </ul>
  *
  * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param stays in its
- * {@code parameters} list, including ion mobility; nothing is derived. The {@code parameters} and
- * {@code scan_windows} lists are empty, never null, when there is nothing in them, as in the reference's output.
+ * {@code parameters} list, including ion mobility and the activation's dissociation method and collision energy;
+ * nothing is derived. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is
+ * nothing in them, as in the reference's output; the isolation window's {@code parameters} list is always empty.
  *
- * <p>Not written yet: the precursor and selected-ion members (WR-5b), which the reader treats as legal when absent,
- * and the split chromatogram and wavelength-spectrum metadata (WR-6), which are written in the packed layout until
- * then. The reader finds every member by role and detects its layout from its own schema.
+ * <p>Every precursor is written as given, its {@code precursor_index} included. Both readers attach a selected ion
+ * to the first precursor of its spectrum whose key {@code (source_index, precursor_index)} equals the ion's, so the
+ * ions of a precursor that shares its key with an earlier one of the same spectrum read back on that earlier one
+ * (WR-8 adds a planner check that refuses such input). The precursor and selected-ion members are written even
+ * when no spectrum has a precursor, as the reference does.
+ *
+ * <p>Not written yet: the split chromatogram and wavelength-spectrum metadata (WR-6), which are written in the packed
+ * layout until then. The reader finds every member by role and detects its layout from its own schema.
  */
 final class SplitMetadataWriter implements MetadataTablesWriter {
 
@@ -62,6 +77,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     private static final String SPECTRA_METADATA = "spectra_metadata.parquet";
     private static final String SPECTRA_SCANS = "spectra_metadata_scans.parquet";
+    private static final String SPECTRA_PRECURSORS = "spectra_metadata_precursors.parquet";
+    private static final String SPECTRA_SELECTED_IONS = "spectra_metadata_selected_ions.parquet";
 
     // structural columns, which no column mapping names
     private static final String INDEX = "index";
@@ -71,6 +88,10 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final String SCAN_INDEX = "scan_index";
     private static final String INSTRUMENT_CONFIGURATION_ID = "instrument_configuration_id";
     private static final String SPECTRUM_REFERENCE = "spectrum_reference";
+    private static final String PRECURSOR_INDEX = "precursor_index";
+    private static final String PRECURSOR_ID = "precursor_id";
+    private static final String SELECTED_ION_INDEX = "selected_ion_index";
+    private static final String ACTIVATION = "activation";
     private static final String PARAMETERS = "parameters";
 
     // CV-mapped spectrum columns
@@ -90,6 +111,19 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     /** The struct list holding the scan windows, the parent of {@link #WINDOW_LOWER} and {@link #WINDOW_UPPER}. */
     private static final String SCAN_WINDOWS = parent(WINDOW_LOWER);
+
+    // CV-mapped precursor columns
+    private static final Column ISOLATION_TARGET = column(Facet.SPECTRUM_PRECURSOR, "MS:1000827");
+    private static final Column ISOLATION_LOWER = column(Facet.SPECTRUM_PRECURSOR, "MS:1000828");
+    private static final Column ISOLATION_UPPER = column(Facet.SPECTRUM_PRECURSOR, "MS:1000829");
+
+    /** The struct holding the isolation window, the parent of {@link #ISOLATION_TARGET} and its offsets. */
+    private static final String ISOLATION_WINDOW = parent(ISOLATION_TARGET);
+
+    // CV-mapped selected-ion columns
+    private static final Column SELECTED_ION_MZ = column(Facet.SPECTRUM_SELECTED_ION, "MS:1000744");
+    private static final Column CHARGE_STATE = column(Facet.SPECTRUM_SELECTED_ION, "MS:1000041");
+    private static final Column PEAK_INTENSITY = column(Facet.SPECTRUM_SELECTED_ION, "MS:1000042");
 
     private static final MessageType SPECTRUM_SCHEMA = Types.buildMessage()
             .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
@@ -116,11 +150,40 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .addField(scanWindowListField())
             .named("spectra_metadata_scans");
 
+    private static final MessageType PRECURSOR_SCHEMA = Types.buildMessage()
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
+            .optional(PrimitiveTypeName.INT64).as(UINT64).named(PRECURSOR_INDEX)
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(PRECURSOR_ID)
+            .addField(Types.optionalGroup()
+                    .optional(PrimitiveTypeName.DOUBLE).named(field(ISOLATION_TARGET))
+                    .optional(PrimitiveTypeName.DOUBLE).named(field(ISOLATION_LOWER))
+                    .optional(PrimitiveTypeName.DOUBLE).named(field(ISOLATION_UPPER))
+                    .addField(paramListField())
+                    .named(ISOLATION_WINDOW))
+            .addField(Types.optionalGroup()
+                    .addField(paramListField())
+                    .named(ACTIVATION))
+            .named("spectra_metadata_precursors");
+
+    private static final MessageType SELECTED_ION_SCHEMA = Types.buildMessage()
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
+            .optional(PrimitiveTypeName.INT64).as(UINT64).named(PRECURSOR_INDEX)
+            .required(PrimitiveTypeName.INT64).as(UINT64).named(SELECTED_ION_INDEX)
+            .optional(PrimitiveTypeName.DOUBLE).named(field(SELECTED_ION_MZ))
+            .optional(PrimitiveTypeName.INT32).named(field(CHARGE_STATE))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(PEAK_INTENSITY))
+            .addField(paramListField())
+            .named("spectra_metadata_selected_ions");
+
     private static final List<ColumnMapping> SPECTRUM_MAPPING = mapping(Facet.SPECTRUM,
             Set.of(MS_LEVEL, SCAN_POLARITY, REPRESENTATION, N_POINTS, N_PEAKS));
     private static final List<ColumnMapping> SCAN_MAPPING = mapping(Facet.SPECTRUM_SCAN,
             Set.of(SCAN_START_TIME, PRESET_SCAN_CONFIGURATION, FILTER_STRING, ION_INJECTION_TIME, WINDOW_LOWER,
                     WINDOW_UPPER));
+    private static final List<ColumnMapping> PRECURSOR_MAPPING = mapping(Facet.SPECTRUM_PRECURSOR,
+            Set.of(ISOLATION_TARGET, ISOLATION_LOWER, ISOLATION_UPPER));
+    private static final List<ColumnMapping> SELECTED_ION_MAPPING = mapping(Facet.SPECTRUM_SELECTED_ION,
+            Set.of(SELECTED_ION_MZ, CHARGE_STATE, PEAK_INTENSITY));
 
     private SplitMetadataWriter() {
     }
@@ -131,9 +194,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     }
 
     /**
-     * Writes spectra_metadata and spectra_metadata_scans. Both carry the plan's file metadata and
-     * {@code spectrum_count}, the spectra in the archive, as footer key-values, as every metadata member of the
-     * reference does.
+     * Writes spectra_metadata, spectra_metadata_scans, spectra_metadata_precursors and
+     * spectra_metadata_selected_ions. Each carries the plan's file metadata and {@code spectrum_count}, the spectra in
+     * the archive, as footer key-values, as every metadata member of the reference does.
      */
     @Override
     public void writeSpectrumMetadata(Path directory, List<WrittenMember> members, WritePlan plan)
@@ -144,6 +207,10 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 SPECTRUM_MAPPING), plan, footer);
         writeScans(member(directory, members, SPECTRA_SCANS, EntityType.SPECTRUM, DataKind.SCANS, SCAN_MAPPING),
                 plan, footer);
+        writePrecursors(member(directory, members, SPECTRA_PRECURSORS, EntityType.SPECTRUM, DataKind.PRECURSORS,
+                PRECURSOR_MAPPING), plan, footer);
+        writeSelectedIons(member(directory, members, SPECTRA_SELECTED_IONS, EntityType.SPECTRUM,
+                DataKind.SELECTED_IONS, SELECTED_ION_MAPPING), plan, footer);
     }
 
     /** Writes the packed chromatogram metadata, until WR-6 splits it. */
@@ -239,6 +306,65 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
     }
 
+    // ---- spectra_metadata_precursors ----------------------------------------------------------------------------
+
+    private static void writePrecursors(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(PRECURSOR_SCHEMA);
+        try (ParquetWriter<Group> writer = openWriter(file, PRECURSOR_SCHEMA, footer, plan.options())) {
+            for (SpectrumEntry entry : plan.spectra()) {
+                for (Precursor precursor : entry.source().description().precursors()) {
+                    Group row = factory.newGroup();
+                    row.add(SOURCE_INDEX, entry.sourceIndex());
+                    if (precursor.precursorIndex() != null) {
+                        row.add(PRECURSOR_INDEX, precursor.precursorIndex());
+                    }
+                    if (precursor.precursorId() != null) {
+                        row.add(PRECURSOR_ID, precursor.precursorId());
+                    }
+                    IsolationWindow window = precursor.isolationWindow();
+                    if (window != null) {
+                        Group iso = row.addGroup(ISOLATION_WINDOW);
+                        addIfPresent(iso, field(ISOLATION_TARGET), window.targetMz());
+                        addIfPresent(iso, field(ISOLATION_LOWER), window.lowerOffset());
+                        addIfPresent(iso, field(ISOLATION_UPPER), window.upperOffset());
+                        // The model has no isolation-window Params yet.
+                        params(iso, List.of());
+                    }
+                    params(row.addGroup(ACTIVATION), precursor.activation().parameters());
+                    writer.write(row);
+                }
+            }
+        }
+    }
+
+    // ---- spectra_metadata_selected_ions -------------------------------------------------------------------------
+
+    private static void writeSelectedIons(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
+        SimpleGroupFactory factory = new SimpleGroupFactory(SELECTED_ION_SCHEMA);
+        long selectedIonIndex = 0;
+        try (ParquetWriter<Group> writer = openWriter(file, SELECTED_ION_SCHEMA, footer, plan.options())) {
+            for (SpectrumEntry entry : plan.spectra()) {
+                for (Precursor precursor : entry.source().description().precursors()) {
+                    for (SelectedIon ion : precursor.selectedIons()) {
+                        Group row = factory.newGroup();
+                        row.add(SOURCE_INDEX, entry.sourceIndex());
+                        if (precursor.precursorIndex() != null) {
+                            row.add(PRECURSOR_INDEX, precursor.precursorIndex());
+                        }
+                        row.add(SELECTED_ION_INDEX, selectedIonIndex++);
+                        row.add(field(SELECTED_ION_MZ), ion.mz());
+                        if (ion.charge() != null) {
+                            row.add(field(CHARGE_STATE), ion.charge());
+                        }
+                        addIfPresent(row, field(PEAK_INTENSITY), ion.intensity());
+                        params(row, ion.parameters());
+                        writer.write(row);
+                    }
+                }
+            }
+        }
+    }
+
     /** {@code scan_windows: list<item: struct<scan_window_lower_limit, scan_window_upper_limit>>}. */
     private static Type scanWindowListField() {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
@@ -259,6 +385,13 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             row.addGroup(PARAMETERS);
         } else {
             writeParams(row, params);
+        }
+    }
+
+    /** Sets {@code field} of {@code group} to {@code value} unless it is null. */
+    private static void addIfPresent(Group group, String field, Double value) {
+        if (value != null) {
+            group.add(field, value);
         }
     }
 

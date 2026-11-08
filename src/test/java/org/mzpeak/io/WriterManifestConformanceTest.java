@@ -76,12 +76,14 @@ class WriterManifestConformanceTest {
             .filter(role -> !role.startsWith("spectra_data.parquet|")).toList();
 
     /**
-     * The roles of the split layout's output of small.unpacked, in manifest order. Precursors and selected ions follow
-     * in WR-5b; the chromatogram metadata stays packed until WR-6.
+     * The roles of the split layout's output of small.unpacked, in manifest order. The chromatogram metadata stays
+     * packed until WR-6.
      */
     private static final List<String> SPLIT_SMALL_ROLES = List.of(
             "spectra_metadata.parquet|spectrum|metadata",
             "spectra_metadata_scans.parquet|spectrum|scans",
+            "spectra_metadata_precursors.parquet|spectrum|precursors",
+            "spectra_metadata_selected_ions.parquet|spectrum|selected_ions",
             "spectra_data.parquet|spectrum|data_arrays",
             "spectra_peaks.parquet|spectrum|peaks",
             "chromatograms_metadata.parquet|chromatogram|metadata",
@@ -94,7 +96,8 @@ class WriterManifestConformanceTest {
 
     /** The members that carry a column mapping in the split layout. */
     private static final List<String> SPLIT_MAPPED = List.of("spectra_metadata.parquet",
-            "spectra_metadata_scans.parquet");
+            "spectra_metadata_scans.parquet", "spectra_metadata_precursors.parquet",
+            "spectra_metadata_selected_ions.parquet");
 
     /** The full form of each legacy writer family, and the split layout's directory, archive and Numpress forms. */
     enum Form {

@@ -45,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code unit}.
  *
  * <p>Each fixture is read with {@link ForwardBackwardCorpusTest#readSource}, written with
- * {@link MetadataLayout#SPLIT}, read back the same way and compared with {@link DescriptionAssert}. Precursors are not
- * written yet (WR-5b), so they are left out of the comparison.
+ * {@link MetadataLayout#SPLIT}, read back the same way and compared with {@link DescriptionAssert}, precursors and
+ * selected ions included since WR-5b ({@link SplitWriterPrecursorsTest}).
  */
 class SplitWriterSpectraTest {
 
@@ -73,13 +73,13 @@ class SplitWriterSpectraTest {
 
     @ParameterizedTest(name = "{0} via {1}")
     @MethodSource("roundTrips")
-    void aSplitRoundTripKeepsEveryFieldButThePrecursors(Path fixture, Form form, @TempDir Path tmp) {
+    void aSplitRoundTripKeepsEveryField(Path fixture, Form form, @TempDir Path tmp) {
         Source source = source(fixture);
         Path out = write(source, form, tmp.resolve("out.mzpeak"));
         Source back = ForwardBackwardCorpusTest.readSource(out);
 
         assertThat(spectrumMetadataShape(out)).isEqualTo(MetadataShape.SPLIT);
-        DescriptionAssert.assertEqual(fixture + " via " + form, descriptions(source), descriptions(back), false);
+        DescriptionAssert.assertEqual(fixture + " via " + form, descriptions(source), descriptions(back));
         assertThat(back.spectra).hasSameSizeAs(source.spectra);
         for (int i = 0; i < source.spectra.size(); i++) {
             Spectrum a = source.spectra.get(i);
@@ -113,10 +113,12 @@ class SplitWriterSpectraTest {
         for (MzPeakManifest.Entry e : manifest.files()) {
             roles.add(e.name() + "|" + e.entityType() + "|" + e.dataKind());
         }
-        // Precursors and selected ions follow in WR-5b; chromatogram metadata stays packed until WR-6.
+        // Chromatogram metadata stays packed until WR-6.
         assertThat(roles).containsExactly(
                 "spectra_metadata.parquet|spectrum|metadata",
                 "spectra_metadata_scans.parquet|spectrum|scans",
+                "spectra_metadata_precursors.parquet|spectrum|precursors",
+                "spectra_metadata_selected_ions.parquet|spectrum|selected_ions",
                 "spectra_data.parquet|spectrum|data_arrays",
                 "spectra_peaks.parquet|spectrum|peaks",
                 "chromatograms_metadata.parquet|chromatogram|metadata",
@@ -266,16 +268,16 @@ class SplitWriterSpectraTest {
         // Order, a name next to an accession, NaN against NaN and a derived TIC the source lacks do not count.
         SpectrumDescription same = description(Double.NaN, scan,
                 List.of(note, new Param(null, "MS:1000800", 100000L, null), tic));
-        assertThat(DescriptionAssert.differences("s", source, same, true)).isEmpty();
+        assertThat(DescriptionAssert.differences("s", source, same)).isEmpty();
 
         // A derived accession the source has is compared, and so is every typed field and nested list.
         SpectrumDescription withTic = description(Double.NaN, scan,
                 List.of(resolution, note, new Param("total ion current", "MS:1000285", 4.0, "MS:1000131")));
-        assertThat(DescriptionAssert.differences("s", withTic, same, true)).singleElement().asString()
+        assertThat(DescriptionAssert.differences("s", withTic, same)).singleElement().asString()
                 .startsWith("s.parameters: missing [ParamKey[id=MS:1000285, value=4.0");
         ScanEvent otherWindow = new ScanEvent(Double.NaN, 1.5, "f", null, 0, null,
                 List.of(new ScanWindow(100, 201)), List.of(resolution, resolution));
-        assertThat(DescriptionAssert.differences("s", source, description(0.5, otherWindow, List.of(note)), true))
+        assertThat(DescriptionAssert.differences("s", source, description(0.5, otherWindow, List.of(note))))
                 .containsExactly(
                         "s.retentionTime: expected NaN, got 0.5",
                         "s.parameters: missing [ParamKey[id=MS:1000800, value=100000, unit=null]], unexpected []",
