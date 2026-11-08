@@ -537,6 +537,58 @@ class MzMLReaderRunTest {
                         + " be converted to UO:0000018");
     }
 
+    // A main array's unit is checked before B-9 drops the arrays of an entity that lacks the other main array.
+
+    @Test
+    void anMzOnlySpectrumInSecondsIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(replaceAfter(s, SCAN_19, TINY_MZ_UNIT,
+                "accession=\"MS:1000514\" name=\"m/z array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000010\""),
+                "unitAccession=\"UO:0000010\""));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageEndingWith(": spectrum 'scan=19': its MS:1000514 array in unit UO:0000010 cannot be"
+                        + " converted to MS:1000040");
+    }
+
+    @Test
+    void anIntensityOnlySpectrumInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(replaceAfter(s, SCAN_19,
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""), SCAN_19));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageEndingWith(": spectrum 'scan=19': its MS:1000515 array in unit MS:1000132 cannot be"
+                        + " converted to MS:1000131");
+    }
+
+    @Test
+    void aWavelengthOnlySpectrumInMicrometersIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        String micrometers = "name=\"wavelength array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000017\"";
+        Path file = tofWith(dir, s -> removeFirstArray(replaceAfter(s, UV_0,
+                "name=\"wavelength array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000018\"", micrometers),
+                micrometers));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageEndingWith(": spectrum 'merged=212 row=0': its MS:1000617 array in unit UO:0000017 cannot"
+                        + " be converted to UO:0000018");
+    }
+
+    @Test
+    void aTimeOnlyChromatogramInNanometersIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(replaceAfter(s, "id=\"tic\"",
+                "name=\"time array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000010\"",
+                "name=\"time array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000018\""),
+                "unitAccession=\"UO:0000018\""));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageEndingWith(": chromatogram 'tic': its MS:1000595 array in unit UO:0000018 cannot be"
+                        + " converted to UO:0000031");
+    }
+
     @Test
     void aScanStartTimeInNanometersIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20, "unitCvRef=\"UO\" unitAccession=\"UO:0000031\"",

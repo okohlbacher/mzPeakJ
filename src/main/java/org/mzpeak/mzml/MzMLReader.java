@@ -79,8 +79,9 @@ import java.util.function.DoubleUnaryOperator;
  * MS:1000131, a wavelength array in a unit other than UO:0000018, a time array or scan start time in a unit other
  * than minute, second, millisecond or hour, an unsupported binary data type (MS:1000520 16-bit float included) or
  * compression, and m/z and intensity arrays (wavelength or time and intensity arrays) of different declared lengths.
- * {@code read} also rejects arrays that cannot be decoded, a decoded length other than the declared one included. A
- * file that cannot be read gives an {@link MzPeakException} with the {@link IOException} as its cause.
+ * The unit of an axis or intensity array is checked even when the other one is missing and both would be dropped
+ * (B-9). {@code read} also rejects arrays that cannot be decoded, a decoded length other than the declared one
+ * included. A file that cannot be read gives an {@link MzPeakException} with the {@link IOException} as its cause.
  */
 public final class MzMLReader {
 
@@ -926,10 +927,13 @@ public final class MzMLReader {
      * arrays without type (B-21), ASCII arrays (B-21), all arrays when the axis or intensity array is missing (B-9),
      * a second array of a key (B-29), extras of wavelength spectra (B-28), extras in a unit that is not their key's
      * default and cannot be converted to it (B-21) and extras whose declared length differs from the axis array's
-     * (B-21). An extra whose key has no default unit is kept without its unit (B-21).
+     * (B-21). An extra whose key has no default unit is kept without its unit (B-21). The first axis and intensity
+     * array are checked for their unit before B-9 drops them: design 6.3 rejects them in a unit the model cannot carry
+     * whether or not the other one is present, so an intensity-only spectrum with its intensity in MS:1000132 is
+     * rejected, not dropped as B-9.
      *
      * @throws MzPeakException for axis and intensity arrays of different declared lengths, or a main array in a unit
-     *                         the model cannot carry (design 6.3)
+     *                         the model cannot carry (design 6.3), with or without the other main array
      */
     private Signal classify(Node owner, Kind kind, List<Array> arrays) {
         List<Array> usable = new ArrayList<>();
@@ -944,6 +948,9 @@ public final class MzMLReader {
         }
         Array axis = first(usable, kind.axis);
         Array intensity = first(usable, INTENSITY_ARRAY);
+        DoubleUnaryOperator axisConversion = axis == null ? null : mainConversion(owner, axis);
+        DoubleUnaryOperator intensityConversion = intensity == null || kind == Kind.CHROMATOGRAM ? AS_IS
+                : mainConversion(owner, intensity);
         Map<String, Kept> extras = new LinkedHashMap<>();
         if (axis == null || intensity == null) {
             note(B_9, usable.isEmpty() ? 0 : 1);
@@ -953,8 +960,8 @@ public final class MzMLReader {
             throw error(owner, describe(owner) + ": its " + axis.key() + " and " + INTENSITY_ARRAY
                     + " arrays declare different lengths, " + axis.length() + " and " + intensity.length());
         }
-        Kept axisKept = main(owner, axis);
-        Kept intensityKept = kind == Kind.CHROMATOGRAM ? kept(intensity, AS_IS) : main(owner, intensity);
+        Kept axisKept = kept(axis, axisConversion);
+        Kept intensityKept = kept(intensity, intensityConversion);
         for (Array a : usable) {
             if (a == axis || a == intensity) {
                 continue;
@@ -987,15 +994,18 @@ public final class MzMLReader {
         return null;
     }
 
-    /** An axis or intensity array, in the model's unit or converted to it (design 5.7, 6.3). */
-    private Kept main(Node owner, Array a) {
+    /**
+     * How the values of an axis or intensity array become values in the model's unit (design 5.7); a unit the model
+     * cannot carry is rejected (design 6.3).
+     */
+    private DoubleUnaryOperator mainConversion(Node owner, Array a) {
         String target = CvTerms.DEFAULT_ARRAY_UNITS.get(a.key());
         DoubleUnaryOperator conversion = conversion(a.unit(), target);
         if (conversion == null) {
             throw error(a.node(), describe(owner) + ": its " + a.key() + " array in unit " + a.unit()
                     + " cannot be converted to " + target);
         }
-        return kept(a, conversion);
+        return conversion;
     }
 
     /** {@code a} kept, its params other than type, data type and compression and its dataProcessingRef lost. */
