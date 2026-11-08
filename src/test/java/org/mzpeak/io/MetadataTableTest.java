@@ -252,6 +252,36 @@ class MetadataTableTest {
         }
     }
 
+    /** A row whose packed struct is null holds no row of the facet, as a placeholder struct without a key does not. */
+    @Test
+    void aNullPackedStructIsSkipped() {
+        MessageType schema = Types.buildMessage()
+                .optionalGroup()
+                    .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                    .optional(PrimitiveTypeName.INT32).named("MS_1000511_ms_level")
+                    .named("spectrum")
+                .named("arrow_schema");
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        Group first = factory.newGroup();
+        first.addGroup("spectrum").append("index", 0L).append("MS_1000511_ms_level", 1);
+        Group nullStruct = factory.newGroup();
+        Group placeholder = factory.newGroup();
+        placeholder.addGroup("spectrum").append("MS_1000511_ms_level", 2);
+        Group second = factory.newGroup();
+        second.addGroup("spectrum").append("index", 1L).append("MS_1000511_ms_level", 2);
+        write("null_struct_spectra.parquet", schema, first, nullStruct, placeholder, second);
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            assertThat(groups(src, new Entry("null_struct_spectra.parquet", "spectrum", "metadata")))
+                    .extracting(g -> ParquetGroups.optGroup(g, "spectrum") == null)
+                    .containsExactly(false, true, false, false);
+            List<FacetRow> rows = rows(src, new Entry("null_struct_spectra.parquet", "spectrum", "metadata"),
+                    Facet.SPECTRUM);
+            assertThat(rows).extracting(FacetRow::key).containsExactly(0L, 1L);
+            assertThat(rows).extracting(r -> r.columns().longValue(r.group(), r.columns().resolve("MS:1000511")))
+                    .containsExactly(1L, 2L);
+        }
+    }
+
     // ---- malformed columns: MzPeakException naming the member and the column ------------------------------------
 
     /** Fails on 1e400ed with a ClassCastException. */
