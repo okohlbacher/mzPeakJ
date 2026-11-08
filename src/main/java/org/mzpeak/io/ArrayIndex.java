@@ -118,7 +118,7 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
         } catch (JsonProcessingException e) {
             throw malformed(entity, "not valid JSON (" + e.getOriginalMessage() + ")", e);
         }
-        if (root == null || !root.isObject()) {
+        if (!(root instanceof ObjectNode)) {
             throw malformed(entity, "not a JSON object", null);
         }
         JsonNode prefix = root.get("prefix");

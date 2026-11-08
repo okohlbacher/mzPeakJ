@@ -41,7 +41,7 @@ final class ChunkCodecs {
      */
     static void rejectUnpairedNumpressIntensity(Group chunk, String field, String cvAccession,
                                                 String kind, String encoding, long si) {
-        if (field != null && ParquetGroups.has(chunk, field)
+        if (ParquetGroups.has(chunk, field)
                 && decodeNumpress(chunk, field, cvAccession, si, "intensity").length > 0) {
             throw new MzPeakException("unsupported chunk: Numpress " + kind + " intensity (" + field
                     + ") without Numpress linear m/z (chunk_encoding " + encoding + ") for spectrum_index " + si);
@@ -50,17 +50,11 @@ final class ChunkCodecs {
 
     /**
      * Throws for a {@code *numpress*} column other than the {@code decoded} ones when it carries a value in this
-     * row: its data would otherwise be dropped (or, in place of the SLOF column, the whole chunk skipped).
+     * row: its data would otherwise be dropped (or, in place of the SLOF column, the whole chunk skipped). The
+     * {@code handled} columns do not throw: the extra-array transform columns of the plan, whose arrays are dropped
+     * with a warning instead.
      *
      * @param decoded the Numpress columns the decoder reads, in the order the message names them
-     */
-    static void rejectUnknownNumpressColumns(Group chunk, List<String> decoded, long si) {
-        rejectUnknownNumpressColumns(chunk, decoded, List.of(), si);
-    }
-
-    /**
-     * {@link #rejectUnknownNumpressColumns(Group, List, long)}, except that the {@code handled} columns do not throw:
-     * the extra-array transform columns of the plan, whose arrays are dropped with a warning instead.
      */
     static void rejectUnknownNumpressColumns(Group chunk, List<String> decoded, Collection<String> handled,
                                              long si) {
