@@ -52,10 +52,13 @@ import java.util.stream.Collectors;
  * <p><b>Extra arrays</b> (AP-9) are the plan's {@link SignalPlan#extras() extras}, under the plan's keys, parallel
  * to the time axis: one cell per point row, and per chunk row a list that aligns 1:1 with the time values the chunk
  * decodes to. A null cell, and every cell of a null list, reads as NaN. A key whose cells in a chromatogram are all
- * NaN gets no entry for that chromatogram. Extras never throw; with a WARNING,
+ * NaN gets no entry for that chromatogram. A drift-time array ({@link ArrayUnits#DRIFT_TIME_ARRAYS}) is in
+ * milliseconds, as for spectra: each cell is converted from the unit of its plan entry, milliseconds or no unit as
+ * stored, seconds and minutes converted. Extras never throw; with a WARNING,
  * <ul>
  *   <li>an extra stored in a chunk transform column is dropped from the member (transforms are not decoded for
  *       chromatograms);
+ *   <li>a drift-time array in any other unit is dropped from the member;
  *   <li>an extra whose cells are not numbers is dropped from the member;
  *   <li>a chunk list of another length than its chunk's time values drops that key for that chromatogram.
  * </ul>
@@ -106,8 +109,10 @@ final class ChromatogramDataDecoder {
     private final boolean unitsDeclared;
     /** The decodable extras, in plan order. */
     private final List<Extra> extras;
-    /** Per extra: its cells did not read as numbers, so it is dropped from the member. */
+    /** Per extra: its cells did not read as numbers, or its unit is not converted, so it is dropped from the member. */
     private final boolean[] unreadable;
+    /** Per extra: the conversion of its stored cells, to milliseconds for a drift-time array, else as stored. */
+    private final DoubleUnaryOperator[] conversions;
 
     private ChromatogramDataDecoder(SignalPlan plan, String member) {
         this.prefix = plan.prefix();
@@ -148,6 +153,19 @@ final class ChromatogramDataDecoder {
         }
         this.extras = List.copyOf(decodable);
         this.unreadable = new boolean[extras.size()];
+        this.conversions = new DoubleUnaryOperator[extras.size()];
+        for (int k = 0; k < extras.size(); k++) {
+            Extra extra = extras.get(k);
+            conversions[k] = DoubleUnaryOperator.identity();
+            if (ArrayUnits.DRIFT_TIME_ARRAYS.contains(extra.arrayType())) {
+                try {
+                    conversions[k] = ArrayUnits.toMilliseconds(extra.unit(), extra.arrayType(), member,
+                            extra.values().path());
+                } catch (MzPeakException e) {
+                    markUnreadable(k, e);
+                }
+            }
+        }
     }
 
     /**
@@ -231,7 +249,7 @@ final class ChromatogramDataDecoder {
                 markUnreadable(k, e);
                 continue;
             }
-            a.add(k, cell == null ? Double.NaN : cell);
+            a.add(k, cell == null ? Double.NaN : conversions[k].applyAsDouble(cell));
         }
     }
 
@@ -316,7 +334,7 @@ final class ChromatogramDataDecoder {
                     + " time points; the array is dropped for this chromatogram");
         } else {
             for (double cell : cells) {
-                a.add(k, cell);
+                a.add(k, conversions[k].applyAsDouble(cell));
             }
         }
     }

@@ -353,19 +353,25 @@ public final class MzPeakManifest {
      * Parses a {@code scan_settings_list} document, from the manifest or a footer; anything but an array gives an
      * empty list. An entry's {@code parameters} and each of its {@code targets} are read by
      * {@link #parseParamArray}; a {@code source_file_refs} or {@code targets} that is absent or not an array reads as
-     * empty, and a {@code null} source file reference is skipped.
+     * empty, and a {@code null} source file reference is skipped. The schema form is read too (the spec's
+     * {@code schema/scan_settings_list.json} and the mzpeak-0.9 validator's): the references under
+     * {@code source_file_references} when {@code source_file_refs} is absent or not an array, and a target that is an
+     * object as its {@code parameters} array ({@code {"parameters": [...]}}); an object without one is an empty
+     * target. The writer writes the Rust form, {@code source_file_refs} and bare arrays.
      */
     static List<ScanSettings> parseScanSettings(JsonNode ssList) {
         if (ssList == null || !ssList.isArray()) return List.of();
         List<ScanSettings> out = new ArrayList<>();
         for (JsonNode ss : ssList) {
+            JsonNode refsNode = ss.get("source_file_refs");
+            if (refsNode == null || !refsNode.isArray()) refsNode = ss.get("source_file_references");
             List<String> refs = new ArrayList<>();
-            for (JsonNode ref : arrayOf(ss.get("source_file_refs"))) {
+            for (JsonNode ref : arrayOf(refsNode)) {
                 if (!ref.isNull()) refs.add(ref.asText());
             }
             List<List<Param>> targets = new ArrayList<>();
             for (JsonNode target : arrayOf(ss.get("targets"))) {
-                targets.add(parseParamArray(target));
+                targets.add(parseParamArray(target.isObject() ? target.get("parameters") : target));
             }
             out.add(new ScanSettings(text(ss, "id"), parseParamArray(ss.get("parameters")), refs, targets));
         }

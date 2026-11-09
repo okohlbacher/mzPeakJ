@@ -13,11 +13,16 @@ import java.util.List;
  * @param wavelength wavelength axis (MS:1000617), in nm
  * @param intensity  absorbance/intensity axis (MS:1000515), parallel to {@link #wavelength}
  * @param parameters the spectrum's CV and user params, such as its spectrum type, representation, observed
- *                   wavelength range and title; never {@code null}, may be empty
+ *                   wavelength range and title; never {@code null}, may be empty. Unmodifiable, a copy of the given
+ *                   list
  */
 public record WavelengthSpectrum(long index, String id, double time, Double lambdaMax,
                                  double[] wavelength, double[] intensity, List<Param> parameters) {
 
+    /**
+     * @throws IllegalArgumentException when {@code wavelength} and {@code intensity} differ in length
+     * @throws NullPointerException     when {@code parameters} holds a {@code null} element
+     */
     public WavelengthSpectrum {
         wavelength = wavelength == null ? new double[0] : wavelength;
         intensity = intensity == null ? new double[0] : intensity;

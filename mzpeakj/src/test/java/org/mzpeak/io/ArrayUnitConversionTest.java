@@ -30,6 +30,7 @@ import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -42,10 +43,14 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.DoubleUnaryOperator;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -328,6 +333,147 @@ class ArrayUnitConversionTest {
         }
     }
 
+    /**
+     * MZ-3 note 2: a second MS:1002477 value column, keyed {@code MS:1002477@<column>}, is converted by its own unit
+     * (seconds here) while the first stays in milliseconds; a conversion keyed by array type would mix them up.
+     */
+    @Test
+    void aSecondDriftTimeColumnOfASpectrumIsConvertedByItsOwnUnit() {
+        Path dir = tmp.resolve("two-drift.mzpeak");
+        Map<String, double[]> arrays = new LinkedHashMap<>();
+        arrays.put(MEAN_DRIFT_TIME, new double[] {1.5, 2.5});
+        arrays.put("second drift", new double[] {3.5, 4.5});
+        Spectrum s = new Spectrum(centroid(), new double[] {100.0, 200.0}, new double[] {10.0, 20.0}, List.of(),
+                arrays, Map.of());
+        MzPeakWriter.writeDirectory(dir, List.of(s));
+        rewriteInPlace(dir.resolve(SPECTRA_PEAKS), SignalEntity.SPECTRUM,
+                Map.of("point.second_drift", new Edit("UO:0000010", MEAN_DRIFT_TIME, v -> v / 1000)));
+
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            Spectrum read = reader.getSpectrum(0).orElseThrow();
+            assertThat(read.arrays().keySet()).containsExactly(MEAN_DRIFT_TIME, MEAN_DRIFT_TIME + "@second_drift");
+            assertClose(read.arrays().get(MEAN_DRIFT_TIME), new double[] {1.5, 2.5}, RELATIVE, "first column");
+            assertClose(read.arrays().get(MEAN_DRIFT_TIME + "@second_drift"), new double[] {3.5, 4.5}, RELATIVE,
+                    "second column");
+        }
+    }
+
+    /**
+     * MZ-3 note 3: {@link ArrayUnits#DRIFT_TIME_ARRAYS} are exactly the keys {@link CvTerms#DEFAULT_ARRAY_UNITS} maps
+     * to UO:0000028 millisecond.
+     */
+    @Test
+    void theDriftTimeArraysAreTheKeysWhoseDefaultUnitIsMillisecond() {
+        Set<String> milliseconds = new HashSet<>();
+        CvTerms.DEFAULT_ARRAY_UNITS.forEach((key, unit) -> {
+            if (unit.equals("UO:0000028")) {
+                milliseconds.add(key);
+            }
+        });
+
+        assertThat(ArrayUnits.DRIFT_TIME_ARRAYS).isEqualTo(milliseconds).hasSize(6);
+    }
+
+    // ---- drift-time arrays of chromatograms ------------------------------------------------------------------
+
+    /**
+     * A chromatogram written with the drift-time array {1.5, 2.5} (MS:1002477), its chromatograms_data column then
+     * stored in {@code unit}: the reader returns {1.5, 2.5} within a relative 1e-15, as for spectra. Before, the
+     * stored values were returned under the millisecond label of {@code CvTerms.DEFAULT_ARRAY_UNITS}.
+     */
+    @ParameterizedTest(name = "unit {0}")
+    @MethodSource("driftTimeUnits")
+    void aChromatogramDriftTimeArrayInAnotherUnitIsReadInMilliseconds(String unit,
+                                                                     DoubleUnaryOperator fromMilliseconds) {
+        Path dir = tmp.resolve("drift-chromatogram.mzpeak");
+        MzPeakWriter.writeDirectory(dir, List.of(), List.of(driftTimeChromatogram()));
+        Path data = dir.resolve(CHROMATOGRAMS_DATA);
+        SignalPlan written = plan(new LocalInputFile(data), SignalEntity.CHROMATOGRAM);
+        assertThat(written.layout()).isEqualTo(SignalPlan.Layout.POINT);
+        String column = written.extras().get(MEAN_DRIFT_TIME).values().path();
+        rewriteInPlace(data, SignalEntity.CHROMATOGRAM, Map.of(column, new Edit(unit, fromMilliseconds)));
+        if ("UO:0000010".equals(unit)) {
+            assertThat(cells(data, "point", column.substring("point.".length()))).containsExactly(0.0015, 0.0025);
+        }
+
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            Chromatogram c = reader.chromatograms().get(0);
+            assertThat(c.arrays().keySet()).containsExactly(MEAN_DRIFT_TIME);
+            assertClose(c.arrays().get(MEAN_DRIFT_TIME), new double[] {1.5, 2.5}, RELATIVE, "drift time");
+            assertThat(c.time()).containsExactly(1.0, 2.0);
+            assertThat(c.intensity()).containsExactly(10.0, 20.0);
+        }
+    }
+
+    /**
+     * The chunk layout: current small.chunked's chromatogram {@code ms level} list relabelled as a drift-time array
+     * in seconds reads 1000 times the values the unchanged member reads as {@code ms level}, each chunk cell
+     * converted.
+     */
+    @Test
+    void aChunkedChromatogramDriftTimeListIsConverted() {
+        try (MzPeakSource source = MzPeakSource.open(SMALL_CHUNKED)) {
+            InputFile metadata = source.inputFile(CHROMATOGRAMS_METADATA);
+            InputFile data = source.inputFile(CHROMATOGRAMS_DATA);
+            Path rewritten = tmp.resolve(CHROMATOGRAMS_DATA);
+            rewrite(data, rewritten, SignalEntity.CHROMATOGRAM,
+                    Map.of("chunk.ms_level", new Edit("UO:0000010", MEAN_DRIFT_TIME, null)));
+            assertThat(plan(new LocalInputFile(rewritten), SignalEntity.CHROMATOGRAM).extras().get(MEAN_DRIFT_TIME)
+                    .values().format()).isEqualTo(BufferFormat.CHUNK_SECONDARY);
+
+            List<Chromatogram> expected = ChromatogramStore.load(metadata, data).all();
+            List<Chromatogram> actual = ChromatogramStore.load(metadata, new LocalInputFile(rewritten)).all();
+            assertThat(actual).hasSameSizeAs(expected);
+            int cells = 0;
+            for (int c = 0; c < expected.size(); c++) {
+                double[] msLevel = expected.get(c).arrays().get(MS_LEVEL);
+                assertThat(actual.get(c).arrays().keySet()).as("arrays of %s", expected.get(c).id())
+                        .isEqualTo(msLevel == null ? Set.of() : Set.of(MEAN_DRIFT_TIME));
+                if (msLevel != null) {
+                    double[] scaled = new double[msLevel.length];
+                    for (int i = 0; i < msLevel.length; i++) {
+                        scaled[i] = msLevel[i] * 1000;
+                    }
+                    assertThat(actual.get(c).arrays().get(MEAN_DRIFT_TIME)).containsExactly(scaled);
+                    cells += msLevel.length;
+                }
+                assertThat(actual.get(c).time()).isEqualTo(expected.get(c).time());
+            }
+            assertThat(cells).isPositive();
+        }
+    }
+
+    /**
+     * A chromatogram drift-time array in a unit that is no time unit is dropped from the member with the WARNING of
+     * an unreadable extra, naming the member, the column and the unit; extras never throw, so time and intensity are
+     * read.
+     */
+    @Test
+    void aChromatogramDriftTimeArrayInAnUnknownUnitIsDroppedWithAWarning() {
+        Path dir = tmp.resolve("drift-chromatogram.mzpeak");
+        MzPeakWriter.writeDirectory(dir, List.of(), List.of(driftTimeChromatogram()));
+        Path data = dir.resolve(CHROMATOGRAMS_DATA);
+        String column = plan(new LocalInputFile(data), SignalEntity.CHROMATOGRAM).extras().get(MEAN_DRIFT_TIME)
+                .values().path();
+        rewriteInPlace(data, SignalEntity.CHROMATOGRAM, Map.of(column, new Edit("UO:0000033", v -> v)));
+
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            List<Chromatogram> read = new ArrayList<>();
+            List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
+                    () -> read.addAll(reader.chromatograms()));
+
+            assertThat(read).hasSize(1);
+            assertThat(read.get(0).arrays()).isEmpty();
+            assertThat(read.get(0).time()).containsExactly(1.0, 2.0);
+            assertThat(read.get(0).intensity()).containsExactly(10.0, 20.0);
+            assertThat(records).filteredOn(r -> r.getLevel() == Level.WARNING).extracting(LogRecord::getMessage)
+                    .containsExactly("chromatogram extra array '" + MEAN_DRIFT_TIME + "' (" + column + ") cannot be"
+                            + " read as numbers (" + CHROMATOGRAMS_DATA + ": drift time array column " + column
+                            + " (" + MEAN_DRIFT_TIME + ") has the unit UO:0000033; supported are millisecond"
+                            + " (UO:0000028), second (UO:0000010) and minute (UO:0000031)); the array is dropped");
+        }
+    }
+
     /** An array that is not a drift-time array keeps its stored values whatever its unit. */
     @Test
     void anotherArrayKeepsItsStoredValues() {
@@ -366,6 +512,12 @@ class ArrayUnitConversionTest {
     private static Spectrum driftTimeSpectrum() {
         return new Spectrum(centroid(), new double[] {100.0, 200.0}, new double[] {10.0, 20.0}, List.of(),
                 Map.of(MEAN_DRIFT_TIME, new double[] {1.5, 2.5}), Map.of());
+    }
+
+    /** A chromatogram of two points, times 1 and 2 minutes, with the drift-time array {1.5, 2.5}. */
+    private static Chromatogram driftTimeChromatogram() {
+        return new Chromatogram(0, "TIC", TIC, new double[] {1.0, 2.0}, new double[] {10.0, 20.0}, "MS:1000131",
+                Map.of(MEAN_DRIFT_TIME, new double[] {1.5, 2.5}));
     }
 
     /** Copies current small.unpacked into the temporary directory. */

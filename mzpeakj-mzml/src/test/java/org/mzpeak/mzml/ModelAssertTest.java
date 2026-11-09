@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -702,7 +703,9 @@ class ModelAssertTest {
             mz[3] = Double.NaN;
             return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
         });
-        assertThat(ModelAssert.assertEqual("B_34", nan, small, STRICT, ModelAssert.B_34).hidden())
+        // the mzPeak read fills the leading NaN with the first finite m/z (NullFill.interpolateGaps)
+        Model filled = withMz(small, 0, m -> m[0] = m[1]);
+        assertThat(ModelAssert.assertEqual("B_34", nan, filled, STRICT, ModelAssert.B_34).hidden())
                 .containsExactly(Map.entry("B_34", 1));
 
         Model alsoChanged = withSpectrum(nan, 0, s -> {
@@ -710,14 +713,167 @@ class ModelAssertTest {
             mz[4] = 1.0;
             return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
         });
-        Result kept = ModelAssert.compare(alsoChanged, small, STRICT, ModelAssert.B_34);
+        Result kept = ModelAssert.compare(alsoChanged, filled, STRICT, ModelAssert.B_34);
         assertThat(kept.paths()).containsExactly("spectrum[0].mz");
         assertThat(kept.stale()).containsExactly("B_34");
-        assertThat(ModelAssert.compare(nan, small, STRICT, ModelAssert.B_34).equal()).isTrue();
+        assertThat(ModelAssert.compare(nan, filled, STRICT, ModelAssert.B_34).equal()).isTrue();
         Model shorter = withSpectrum(nan, 0, s -> new Spectrum(s.description(), Arrays.copyOf(s.mz(), 5),
                 Arrays.copyOf(s.intensity(), 5), s.peaks()));
         assertThat(ModelAssert.compare(nan, shorter, STRICT, ModelAssert.B_34).paths())
                 .containsExactly("spectrum[0].mz", "spectrum[0].intensity");
+    }
+
+    // ---- negative controls: each exclusion hides only what design 6.1 and 6.2 define ------------------------------
+
+    @Test
+    void a7HidesOnlyOneBareNoCombinationOnASpectrumWithAtMostOneScan() {
+        Param noCombination = new Param("no combination", "MS:1000795", null, null);
+        assertThat(small.spectrumList().get(5).description().scans()).hasSize(1);
+        Model twice = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "parameters",
+                append(append(d.parameters(), noCombination), noCombination))));
+        Model withUnit = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "parameters",
+                append(d.parameters(), new Param("no combination", "MS:1000795", null, "UO:0000186")))));
+        Model withValue = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "parameters",
+                append(d.parameters(), new Param("no combination", "MS:1000795", "x", null)))));
+        for (Model added : List.of(twice, withUnit, withValue)) {
+            Result kept = ModelAssert.compare(small, added, STRICT, ModelAssert.A_7);
+            assertThat(kept.paths()).containsExactly("spectrum[5].parameters[MS:1000795]");
+            assertThat(kept.stale()).containsExactly("A_7");
+        }
+
+        // design 5.5 writes the term for a spectrum of at most one scan, none for two or more
+        Model noScans = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "scans", List.of())));
+        Model twoScans = withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "scans",
+                List.of(d.scans().get(0), d.scans().get(0)))));
+        assertThat(ModelAssert.assertEqual("A_7 no scan", noScans, withSpectrum(noScans, 5, s -> withDescription(s,
+                d -> with(d, "parameters", append(d.parameters(), noCombination)))), STRICT, ModelAssert.A_7)
+                .hidden()).containsExactly(Map.entry("A_7", 1));
+        Result two = ModelAssert.compare(twoScans, withSpectrum(twoScans, 5, s -> withDescription(s,
+                d -> with(d, "parameters", append(d.parameters(), noCombination)))), STRICT, ModelAssert.A_7);
+        assertThat(two.paths()).containsExactly("spectrum[5].parameters[MS:1000795]");
+        assertThat(two.stale()).containsExactly("A_7");
+    }
+
+    @Test
+    void a16HidesADerivedTypeOnlyForItsMsLevelAndASummaryOnlyOnceWithAFiniteNumber() {
+        int msn = 0;
+        while (small.spectrumList().get(msn).description().msLevel() < 2) {
+            msn++;
+        }
+        int ms2 = msn;
+        assertThat(small.spectrumList().get(0).description().msLevel()).isEqualTo(1);
+        assertThat(Param.contains(small.spectrumList().get(ms2).description().parameters(), "MS:1000580")).isTrue();
+        Model bare = withSpectra(small, s -> withDescription(s, d -> with(d, "parameters", List.of())));
+        assertThat(ModelAssert.assertEqual("A_16 MS1 and MSn", withSpectrum(small, ms2, s -> bare.spectrumList()
+                .get(ms2)), small, STRICT, ModelAssert.A_16).hidden()).containsExactly(Map.entry("A_16", 6));
+
+        // an MS1 type on an MSn spectrum and an MSn type on an MS1 spectrum
+        Model ms1OnMsn = withSpectrum(small, ms2, s -> withDescription(s, d -> with(d, "parameters",
+                replaceParam(d.parameters(), "MS:1000580", p -> new Param("MS1 spectrum", "MS:1000579", null, null)))));
+        Model msnOnMs1 = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "parameters",
+                replaceParam(d.parameters(), "MS:1000579", p -> new Param("MSn spectrum", "MS:1000580", null, null)))));
+        Result ms1 = ModelAssert.compare(bare, ms1OnMsn, STRICT, ModelAssert.A_16);
+        assertThat(ms1.paths()).contains("spectrum[" + ms2 + "].parameters[MS:1000579]")
+                .noneMatch(path -> path.startsWith("spectrum[0]."));
+        Result msn1 = ModelAssert.compare(bare, msnOnMs1, STRICT, ModelAssert.A_16);
+        assertThat(msn1.paths()).contains("spectrum[0].parameters[MS:1000580]")
+                .noneMatch(path -> path.startsWith("spectrum[" + ms2 + "]."));
+
+        // a summary that is not a finite number, or that is there twice
+        Model bare0 = withSpectrum(small, 0, s -> bare.spectrumList().get(0));
+        Param tic = Param.find(small.spectrumList().get(0).description().parameters(), "MS:1000285").orElseThrow();
+        assertThat(tic.value()).isInstanceOf(Number.class);
+        for (Object value : Arrays.asList(Double.NaN, Double.POSITIVE_INFINITY, "123", null)) {
+            Model changed = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "parameters",
+                    replaceParam(d.parameters(), "MS:1000285", p -> with(p, "value", value)))));
+            Result kept = ModelAssert.compare(bare0, changed, STRICT, ModelAssert.A_16);
+            assertThat(kept.paths()).as("%s", value).containsExactly("spectrum[0].parameters[MS:1000285]");
+            assertThat(kept.hidden()).containsExactly(Map.entry("A_16", 5));
+        }
+        Model twice = withSpectrum(small, 0, s -> withDescription(s, d -> with(d, "parameters",
+                append(d.parameters(), tic))));
+        assertThat(ModelAssert.compare(bare0, twice, STRICT, ModelAssert.A_16).paths())
+                .containsExactly("spectrum[0].parameters[MS:1000285]");
+    }
+
+    @Test
+    void a17HidesOnlyDistinctKnownEntriesInTheirOrderWithMsAndUo() {
+        Model empty = with(small, "cvList", List.of());
+        List<MzPeakManifest.CvEntry> known = MzPeakManifest.CvEntry.known();
+        List<List<MzPeakManifest.CvEntry>> notFilledByTheWriter = List.of(
+                List.of(known.get(0)),
+                List.of(known.get(1), known.get(0)),
+                List.of(known.get(0), known.get(1), known.get(1)),
+                List.of(known.get(0), known.get(9)),
+                Arrays.asList(known.get(0), known.get(1), null));
+        for (List<MzPeakManifest.CvEntry> filled : notFilledByTheWriter) {
+            Result kept = ModelAssert.compare(empty, with(small, "cvList", filled), STRICT, ModelAssert.A_17);
+            assertThat(kept.paths()).as("%s", filled).containsExactly("cvList.size");
+            assertThat(kept.stale()).containsExactly("A_17");
+        }
+    }
+
+    @Test
+    void b22HidesNothingWhereTheActualMzIsNotSorted() {
+        double[] mz = dia.spectrumList().get(0).mz();
+        int i = 0;
+        while (!(mz[i] < mz[i + 1])) {
+            i++;
+        }
+        int at = i;
+        Model unsorted = withSpectrum(dia, 0, s -> swapped(s, at));
+
+        Result kept = ModelAssert.compare(dia, unsorted, STRICT, ModelAssert.B_22);
+        assertThat(kept.paths()).containsExactly("spectrum[0].mz", "spectrum[0].intensity",
+                "spectrum[0].arrays[MS:1003006]");
+        assertThat(kept.stale()).containsExactly("B_22");
+    }
+
+    @Test
+    void b34HidesOnlyAFiniteValueBetweenTheNearestFiniteNeighbours() {
+        double[] mz = small.spectrumList().get(0).mz();
+        int last = mz.length - 1;
+        Model nan = withMz(small, 0, m -> {
+            m[0] = Double.NaN;
+            m[3] = Double.NaN;
+            m[last] = Double.NaN;
+        });
+        // a leading or trailing NaN takes the nearest finite m/z, as NullFill.interpolateGaps fills it
+        Consumer<double[]> carried = m -> {
+            m[0] = mz[1];
+            m[last] = mz[last - 1];
+        };
+        // inside the neighbours, inclusive
+        for (double v : new double[] {mz[2], (mz[2] + mz[4]) / 2, mz[4]}) {
+            Model filled = withMz(small, 0, carried.andThen(m -> m[3] = v));
+            assertThat(ModelAssert.assertEqual("B_34 " + v, nan, filled, STRICT, ModelAssert.B_34).hidden())
+                    .containsExactly(Map.entry("B_34", 1));
+        }
+
+        // 0, Infinity, NaN, or a value outside the neighbours where expected has NaN; before the first finite m/z
+        // or after the last one, any value but that m/z, on either side of it
+        List<Consumer<double[]>> wrong = List.of(m -> m[3] = 0.0,
+                m -> m[3] = Math.nextUp(mz[4]),
+                m -> m[0] = Double.POSITIVE_INFINITY,
+                m -> m[0] = Math.nextUp(mz[1]),
+                m -> m[0] = Math.nextDown(mz[1]),
+                m -> m[0] = -999.0,
+                m -> m[last] = Math.nextDown(mz[last - 1]),
+                m -> m[last] = Math.nextUp(mz[last - 1]),
+                m -> m[last] = mz[last - 1] + 1000.0,
+                m -> m[3] = Double.NaN);
+        for (Consumer<double[]> change : wrong) {
+            Result kept = ModelAssert.compare(nan, withMz(small, 0, carried.andThen(change)), STRICT,
+                    ModelAssert.B_34);
+            assertThat(kept.paths()).containsExactly("spectrum[0].mz");
+            assertThat(kept.stale()).containsExactly("B_34");
+        }
+
+        // an all-NaN m/z array stays NaN
+        Model allNaN = withMz(small, 0, m -> Arrays.fill(m, Double.NaN));
+        Result kept = ModelAssert.compare(allNaN, small, STRICT, ModelAssert.B_34);
+        assertThat(kept.paths()).containsExactly("spectrum[0].mz");
+        assertThat(kept.stale()).containsExactly("B_34");
     }
 
     @Test
@@ -1007,6 +1163,30 @@ class ModelAssertTest {
             intensity[n - 1] += 1;
         }
         return new Spectrum(s.description(), mz, intensity, s.peaks(), arrays, s.peakArrays());
+    }
+
+    /** {@code s} with the points {@code i} and {@code i + 1} swapped in every array. */
+    private static Spectrum swapped(Spectrum s, int i) {
+        Map<String, double[]> arrays = new LinkedHashMap<>();
+        s.arrays().forEach((key, values) -> arrays.put(key, swap(values, i)));
+        return new Spectrum(s.description(), swap(s.mz(), i), swap(s.intensity(), i), s.peaks(), arrays,
+                s.peakArrays());
+    }
+
+    private static double[] swap(double[] values, int i) {
+        double[] out = values.clone();
+        out[i] = values[i + 1];
+        out[i + 1] = values[i];
+        return out;
+    }
+
+    /** {@code m} with the m/z array of spectrum {@code i} copied and changed by {@code change}. */
+    private static Model withMz(Model m, int i, java.util.function.Consumer<double[]> change) {
+        return withSpectrum(m, i, s -> {
+            double[] mz = s.mz().clone();
+            change.accept(mz);
+            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+        });
     }
 
     private static <T> List<T> append(List<T> list, T element) {

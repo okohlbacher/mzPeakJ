@@ -2,6 +2,8 @@ package org.mzpeak.mzml;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mzpeak.model.CvTerms;
 import org.w3c.dom.DOMException;
 import org.w3c.dom.Document;
@@ -531,6 +533,84 @@ class MzMLTermsTest {
         assertThat(MzMLTerms.name(null)).isNull();
     }
 
+    /**
+     * Every entry of the five generated tables with its psi-ms name, pinned in the default build: checked once against
+     * psi-ms 4.2.11 (mzdata v0.68.0 {@code cv/psi-ms.obo.gz}), as {@code CvTermsTablesTest} pins
+     * {@code CvTerms.ARRAY_TYPES}. {@code MzMLFixturesTest.theTermListsRegenerateFromThePsiMsObo} compares the tables
+     * with that file when {@code -Dmzpeak.psims.obo} names it.
+     */
+    @ParameterizedTest(name = "{0} {1} {2}")
+    @CsvSource(delimiter = '|', value = {
+            "SPECTRUM_TYPES | MS:1000294 | mass spectrum",
+            "SPECTRUM_TYPES | MS:1000322 | charge inversion mass spectrum",
+            "SPECTRUM_TYPES | MS:1000325 | constant neutral gain spectrum",
+            "SPECTRUM_TYPES | MS:1000326 | constant neutral loss spectrum",
+            "SPECTRUM_TYPES | MS:1000328 | e/2 mass spectrum",
+            "SPECTRUM_TYPES | MS:1000341 | precursor ion spectrum",
+            "SPECTRUM_TYPES | MS:1000579 | MS1 spectrum",
+            "SPECTRUM_TYPES | MS:1000580 | MSn spectrum",
+            "SPECTRUM_TYPES | MS:1000581 | CRM spectrum",
+            "SPECTRUM_TYPES | MS:1000582 | SIM spectrum",
+            "SPECTRUM_TYPES | MS:1000583 | SRM spectrum",
+            "SPECTRUM_TYPES | MS:1000789 | enhanced multiply charged spectrum",
+            "SPECTRUM_TYPES | MS:1000790 | time-delayed fragmentation spectrum",
+            "SPECTRUM_TYPES | MS:1000804 | electromagnetic radiation spectrum",
+            "SPECTRUM_TYPES | MS:1000805 | emission spectrum",
+            "SPECTRUM_TYPES | MS:1000806 | absorption spectrum",
+            "CHROMATOGRAM_TYPES | MS:1000235 | total ion current chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1000627 | selected ion current chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1000628 | basepeak chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1000810 | ion current chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1000811 | electromagnetic radiation chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1000812 | absorption chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1000813 | emission chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1001472 | selected ion monitoring chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1001473 | selected reaction monitoring chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1002715 | temperature chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1003019 | pressure chromatogram",
+            "CHROMATOGRAM_TYPES | MS:1003020 | flow rate chromatogram",
+            "CHROMATOGRAM_TYPES | MS:4000025 | precursor ion current chromatogram",
+            "CHROMATOGRAM_TYPES | MS:4000104 | total ion currents",
+            "SPECTRA_COMBINATION | MS:1000571 | sum of spectra",
+            "SPECTRA_COMBINATION | MS:1000573 | median of spectra",
+            "SPECTRA_COMBINATION | MS:1000575 | mean of spectra",
+            "SPECTRA_COMBINATION | MS:1000795 | no combination",
+            "DATA_TYPES | MS:1000519 | 32-bit integer",
+            "DATA_TYPES | MS:1000521 | 32-bit float",
+            "DATA_TYPES | MS:1000522 | 64-bit integer",
+            "DATA_TYPES | MS:1000523 | 64-bit float",
+            "DATA_TYPES | MS:1001479 | null-terminated ASCII string",
+            "COMPRESSIONS | MS:1000574 | zlib compression",
+            "COMPRESSIONS | MS:1000576 | no compression",
+            "COMPRESSIONS | MS:1002312 | MS-Numpress linear prediction compression",
+            "COMPRESSIONS | MS:1002313 | MS-Numpress positive integer compression",
+            "COMPRESSIONS | MS:1002314 | MS-Numpress short logged float compression",
+            "COMPRESSIONS | MS:1002746 | MS-Numpress linear prediction compression followed by zlib compression",
+            "COMPRESSIONS | MS:1002747 | MS-Numpress positive integer compression followed by zlib compression",
+            "COMPRESSIONS | MS:1002748 | MS-Numpress short logged float compression followed by zlib compression",
+            "COMPRESSIONS | MS:1003088 | truncation and zlib compression",
+            "COMPRESSIONS | MS:1003089 | truncation, delta prediction and zlib compression",
+            "COMPRESSIONS | MS:1003090 | truncation, linear prediction and zlib compression",
+            "COMPRESSIONS | MS:1003780 | zstd compression",
+            "COMPRESSIONS | MS:1003781 | byte-shuffled zstd compression",
+            "COMPRESSIONS | MS:1003782 | dictionary-encoded zstd compression",
+            "COMPRESSIONS | MS:1003783 | MS-Numpress linear prediction compression followed by zstd compression",
+            "COMPRESSIONS | MS:1003784 | MS-Numpress positive integer compression followed by zstd compression",
+            "COMPRESSIONS | MS:1003785 | MS-Numpress short logged float compression followed by zstd compression",
+            "COMPRESSIONS | MS:1003826 | coordinate grid encoding"
+    })
+    void everyGeneratedTableEntryHasItsPsiMsName(String table, String accession, String name) {
+        Map<String, String> entries = switch (table) {
+            case "SPECTRUM_TYPES" -> MzMLTerms.SPECTRUM_TYPES;
+            case "CHROMATOGRAM_TYPES" -> MzMLTerms.CHROMATOGRAM_TYPES;
+            case "SPECTRA_COMBINATION" -> MzMLTerms.SPECTRA_COMBINATION;
+            case "DATA_TYPES" -> MzMLTerms.DATA_TYPES;
+            default -> MzMLTerms.COMPRESSIONS;
+        };
+
+        assertThat(entries).containsEntry(accession, name);
+    }
+
     @Test
     void theGeneratedTablesHoldTheNonObsoleteDescendantsInAccessionOrder() {
         assertThat(MzMLTerms.SPECTRUM_TYPES.keySet()).containsExactly("MS:1000294", "MS:1000322", "MS:1000325",
@@ -628,11 +708,22 @@ class MzMLTermsTest {
         assertThat(MzMLTerms.collapse(null)).isNull();
     }
 
+    /**
+     * Java's {@code $} also matches before a final U+0085, U+2028 or U+2029, which are no XML whitespace: the
+     * whitespace before them stays, as in XSD and JAXB collapse (MJ-5 note 1).
+     */
+    @Test
+    void whitespaceBeforeAFinalLineTerminatorThatIsNoXmlWhitespaceStays() {
+        assertThat(MzMLTerms.collapse("a \u0085")).isEqualTo("a \u0085");
+        assertThat(MzMLTerms.collapse(" a \t\u2028")).isEqualTo("a \u2028");
+        assertThat(MzMLTerms.collapse("a\n\u2029 ")).isEqualTo("a \u2029");
+    }
+
     @Test
     void collapseGivesWhatTheEarlierEndsFirstOrderGave() {
-        // the order before MJ-5: ends removed first, then the inner runs; '$' also matches before a final line
-        // terminator, so U+0085, U+2028 and U+2029 are drawn too
-        Pattern ends = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$");
+        // the order before MJ-5: ends removed first, then the inner runs; the end anchored at the end of input, not
+        // with '$', which also matches before a final line terminator, so U+0085, U+2028 and U+2029 are drawn too
+        Pattern ends = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+\\z");
         Pattern runs = Pattern.compile("[ \\t\\n\\r]+");
         String alphabet = " \t\n\ra \u0085  ";
         Random random = new Random(5);

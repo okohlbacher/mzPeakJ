@@ -22,7 +22,8 @@ import java.util.zip.Inflater;
  * endian; no compression (MS:1000576), zlib (MS:1000574) and MS-Numpress linear (MS:1002312), PIC (MS:1002313) and
  * SLOF (MS:1002314), alone, followed by zlib (MS:1002746, MS:1002747, MS:1002748) or as the legacy pair of a Numpress
  * term and MS:1000574; Base64. Everything else is rejected with an {@link MzPeakException} naming the caller's
- * context, as is a decoded length that differs from the declared one.
+ * context, as is a decoded length that differs from the declared one. A zlib stream is inflated only up to the bytes
+ * the declared length allows, so a small payload cannot claim unbounded memory.
  */
 final class BinaryCodec {
 
@@ -51,6 +52,8 @@ final class BinaryCodec {
     private static final Pattern WHITESPACE = Pattern.compile("[ \t\r\n]+");
     /** The largest integer up to which every integer is a double. */
     private static final double EXACT_INTEGERS = 0x1p53;
+    /** The longest array the JDK's growing buffers allocate (its soft maximum array length). */
+    private static final long MAX_ARRAY = Integer.MAX_VALUE - 8;
 
     /** What an array holds, which decides its data type under the precision rule (design 5.7). */
     enum Kind { AXIS, INTENSITY, CHARGE, NON_STANDARD, OTHER }
@@ -80,7 +83,10 @@ final class BinaryCodec {
 
     /**
      * Decodes one array. Whitespace in {@code base64} is ignored; an empty text decodes to an empty array under any
-     * compression. MS-Numpress PIC counts are read as unsigned 32-bit integers, as the C++ reference decodes them.
+     * compression. A zlib stream may inflate to at most the bytes {@code declaredLength} allows: that many values of
+     * the data type's width, or for an MS-Numpress payload 16 + 5 bytes per value (linear: a 16-byte header and at
+     * most 4.5 bytes per further value; SLOF 8 + 2 bytes per value; PIC at most 4.5 bytes per value). MS-Numpress PIC
+     * counts are read as unsigned 32-bit integers, as the C++ reference decodes them.
      *
      * @param dataType         the binary data type accession, or null when the array has none
      * @param compressionTerms the compression accessions of the array
@@ -88,7 +94,10 @@ final class BinaryCodec {
      *                         {@code defaultArrayLength}
      * @param context          names the array in error messages, such as {@code spectrum scan=19, m/z array}
      * @throws MzPeakException for an unsupported data type or compression, invalid Base64, a corrupt zlib or
-     *                         Numpress payload, or a decoded length other than {@code declaredLength}
+     *                         Numpress payload, a zlib stream that inflates to more bytes than {@code declaredLength}
+     *                         allows (or a {@code declaredLength} that allows more than a byte array holds) or that is
+     *                         followed by more bytes, a linear or SLOF fixed point of 0 or NaN in a payload with
+     *                         values, or a decoded length other than {@code declaredLength}
      */
     static Decoded decode(String base64, String dataType, List<String> compressionTerms, int declaredLength,
                           String context) {
@@ -103,10 +112,15 @@ final class BinaryCodec {
             decoded = new Decoded(new double[0], 0);
         } else {
             byte[] bytes = base64(compact, context);
-            if (term.equals(ZLIB) || WITH_ZLIB.containsValue(term)) {
-                bytes = inflate(bytes, context);
-            }
             String codec = CODEC.get(term);
+            if (term.equals(ZLIB) || WITH_ZLIB.containsValue(term)) {
+                long limit = codec == null ? (long) declaredLength * width : 16 + 5L * declaredLength;
+                if (limit > MAX_ARRAY) {
+                    throw new MzPeakException("declared length " + declaredLength + " allows " + limit
+                            + " inflated bytes, more than a byte array can hold, in " + context);
+                }
+                bytes = inflate(bytes, limit, declaredLength, context);
+            }
             decoded = codec == null ? decodeRaw(bytes, dataType, width, context)
                     : new Decoded(decodeNumpress(bytes, codec, context), 0);
         }
@@ -197,7 +211,12 @@ final class BinaryCodec {
         }
     }
 
-    private static byte[] inflate(byte[] bytes, String context) {
+    /**
+     * The bytes of the zlib stream {@code bytes}, at most {@code limit} of them, the bound of {@code declaredLength}:
+     * inflating stops with an {@link MzPeakException} as soon as the output would exceed it. Bytes after the end of
+     * the stream are rejected.
+     */
+    private static byte[] inflate(byte[] bytes, long limit, int declaredLength, String context) {
         Inflater inflater = new Inflater();
         try {
             inflater.setInput(bytes);
@@ -208,7 +227,16 @@ final class BinaryCodec {
                     throw new MzPeakException("truncated zlib stream (or one that needs a preset dictionary) in "
                             + context);
                 }
-                out.write(buffer, 0, inflater.inflate(buffer));
+                int n = inflater.inflate(buffer);
+                if (out.size() + (long) n > limit) {
+                    throw new MzPeakException("zlib stream inflates to at least " + (out.size() + (long) n)
+                            + " bytes, more than the " + limit + " bytes the declared length " + declaredLength
+                            + " allows, in " + context);
+                }
+                out.write(buffer, 0, n);
+            }
+            if (inflater.getRemaining() > 0) {
+                throw new MzPeakException("bytes after the end of the zlib stream in " + context);
             }
             return out.toByteArray();
         } catch (DataFormatException e) {
@@ -263,6 +291,13 @@ final class BinaryCodec {
      * The values of a Numpress payload. PIC goes through {@code decodePic} with a buffer of two values per byte, since
      * {@code MSNumpress.decode} rejects PIC payloads under 8 bytes; its counts come back sign-extended from 2^31 on
      * (the vendored {@code IntDecoder}), and since a count is never negative, 2^32 is added to every negative value.
+     * A linear or SLOF payload with values must not have the fixed point (its first 8 bytes, read as
+     * {@code MSNumpress.decodeFixedPoint} reads them) 0, of either sign, or NaN: the reference decoders divide by it
+     * and return NaN or infinite values (SLOF at -0.0 also -1). Every other fixed point is accepted, infinite and
+     * negative ones included: {@code MSNumpress.optimalLinearFixedPoint}, the algorithm of the C++ reference encoder,
+     * gives +Infinity for [0.0] and [0.0, 0.0] and a negative fixed point for [-1.0] and [-2.0, -1.0], and the
+     * reference decoder reads those payloads back exactly. A header without values uses none, so its fixed point is
+     * not checked.
      */
     private static double[] decodeNumpress(byte[] bytes, String codec, String context) {
         double[] buffer = new double[bytes.length * 2];
@@ -277,6 +312,13 @@ final class BinaryCodec {
         if (n < 0) {
             throw new MzPeakException("MS-Numpress " + NAMES.get(codec) + " payload of " + bytes.length
                     + " bytes is too short or corrupt in " + context);
+        }
+        if (!codec.equals(PIC) && n > 0) {
+            double fixedPoint = MSNumpress.decodeFixedPoint(bytes);
+            if (fixedPoint == 0 || Double.isNaN(fixedPoint)) {
+                throw new MzPeakException("MS-Numpress " + NAMES.get(codec) + " fixed point " + fixedPoint
+                        + " is 0 or NaN in " + context);
+            }
         }
         double[] values = Arrays.copyOf(buffer, n);
         if (codec.equals(PIC)) {

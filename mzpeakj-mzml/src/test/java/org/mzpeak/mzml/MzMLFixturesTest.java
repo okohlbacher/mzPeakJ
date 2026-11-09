@@ -29,6 +29,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -264,6 +265,16 @@ class MzMLFixturesTest {
 
         assertThat(IndexedMzMLVerifier.verify(file)).singleElement().asString()
                 .startsWith("chromatogram offset 20654 for idRef 'tic' is not after the previous offset 22253");
+    }
+
+    /** A later offset that repeats the previous entry's idRef and value is not after it either. */
+    @Test
+    void anOffsetRepeatingThePreviousOneIsReported(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> withChecksum(replaceOnce(s, "<offset idRef=\"sic\">22253</offset>",
+                "<offset idRef=\"tic\">20654</offset>")));
+
+        assertThat(IndexedMzMLVerifier.verify(file)).containsExactly("chromatogram offset 20654 for idRef 'tic' is"
+                + " not after the previous offset 20654 (offsets must follow document order)");
     }
 
     @Test
@@ -614,6 +625,20 @@ class MzMLFixturesTest {
         assertThat(obo.obsolete("MS:1000626")).containsExactly("MS:1001474");
         assertThat(obo.current("MS:1000031")).containsExactlyElementsOf(MzMLMappingCheck.instrumentModels());
         assertThat(obo.obsolete("MS:1000031")).containsExactly("MS:1000870");
+
+        // MzMLTerms' generated tables: their keys in order, each with its psi-ms name
+        Map<String, Map<String, String>> tables = new LinkedHashMap<>();
+        tables.put("MS:1000559", MzMLTerms.SPECTRUM_TYPES);
+        tables.put("MS:1000626", MzMLTerms.CHROMATOGRAM_TYPES);
+        tables.put("MS:1000570", MzMLTerms.SPECTRA_COMBINATION);
+        tables.put("MS:1000518", MzMLTerms.DATA_TYPES);
+        tables.put("MS:1000572", MzMLTerms.COMPRESSIONS);
+        tables.forEach((root, table) -> {
+            List<Map.Entry<String, String>> fromObo = obo.current(root).stream()
+                    .map(id -> Map.entry(id, obo.names.get(id)))
+                    .toList();
+            assertThat(List.copyOf(table.entrySet())).as("the table of %s", root).containsExactlyElementsOf(fromObo);
+        });
     }
 
     // ---- MzMLCountCheck (MJ-4) ------------------------------------------------------------------------------------
@@ -841,6 +866,7 @@ class MzMLFixturesTest {
         String dataVersion;
         final Map<String, List<String>> children = new HashMap<>();
         final Set<String> obsoleteTerms = new HashSet<>();
+        final Map<String, String> names = new HashMap<>();
 
         static Obo read(Path path) throws IOException {
             Obo obo = new Obo();
@@ -859,6 +885,8 @@ class MzMLFixturesTest {
                         obo.dataVersion = line.substring("data-version:".length()).trim();
                     } else if (term && line.startsWith("id:")) {
                         id = line.substring(3).trim();
+                    } else if (term && id != null && line.startsWith("name:")) {
+                        obo.names.put(id, line.substring("name:".length()).trim());
                     } else if (term && id != null && line.startsWith("is_a:")) {
                         String parent = line.substring(5).trim().split("[\\s!{]", 2)[0];
                         obo.children.computeIfAbsent(parent, k -> new ArrayList<>()).add(id);

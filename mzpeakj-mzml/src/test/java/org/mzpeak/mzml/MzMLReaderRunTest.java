@@ -8,6 +8,7 @@ import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
@@ -58,6 +59,7 @@ class MzMLReaderRunTest {
     private static final String SCAN_19 = "id=\"scan=19\"";
     private static final String SCAN_20 = "id=\"scan=20\"";
     private static final String SCAN_21 = "id=\"scan=21\"";
+    private static final String CYCLE_22 = "id=\"sample=1 period=1 cycle=22 experiment=1\"";
     private static final String UV_0 = "id=\"merged=212 row=0\"";
     private static final String UV_1 = "id=\"merged=213 row=1\"";
     private static final String UV_2 = "id=\"merged=214 row=2\"";
@@ -751,6 +753,55 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-29 second arrays of a type already present dropped (1)");
     }
 
+    /**
+     * A non-standard data array named with an array type's accession would stand for that array type, here the m/z
+     * array, which the real m/z array after it would then lose as a second one (B-29); such a name is rejected.
+     */
+    @Test
+    void aNonStandardArrayNamedWithAnArrayTypeAccessionIsRejected(@TempDir Path dir) throws IOException {
+        for (String name : List.of("MS:1000514", "MS:1000515", "MS:1000516", "MS:1000786")) {
+            Path file = tinyWith(dir, s -> spectrum19With(s, 1,
+                    array(cv("MS:1000786", "non-standard data array", name, null), 999),
+                    array(cv("MS:1000514", "m/z array", "", "MS:1000040"), 100),
+                    array(cv("MS:1000515", "intensity array", "", "MS:1000131"), 5)));
+
+            assertThatThrownBy(() -> new MzMLReader(file).survey())
+                    .as(name)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+:"
+                            + " spectrum 'scan=19': its non-standard data array \\(MS:1000786\\) is named '" + name
+                            + "', the accession of an array type");
+        }
+    }
+
+    /**
+     * Three extra keys first seen in three different spectra, in an order that is neither sorted nor that of a hash
+     * set, and in the reverse order: {@code survey()} declares them in first-seen order, as {@code read()} emits them
+     * (the {@link #read} helper compares the two). A copy into a hash-ordered set iterates the same three keys in one
+     * order in a JVM, so it cannot give both.
+     */
+    @Test
+    void theSurveyDeclaresExtraKeysOfDifferentSpectraInFirstSeenOrder(@TempDir Path dir) throws IOException {
+        List<String> anchors = List.of(SCAN_19, SCAN_20, CYCLE_22);
+        int[] lengths = {15, 10, 15};
+        List<String> keys = List.of("ms level", "MS:1003006", "MS:1000516");
+        for (List<String> order : List.of(keys, List.of(keys.get(2), keys.get(1), keys.get(0)))) {
+            Path file = tinyWith(dir, s -> {
+                for (int i = 0; i < anchors.size(); i++) {
+                    s = withArray(s, anchors.get(i), extraArray(order.get(i), lengths[i]));
+                }
+                return s;
+            });
+
+            Run run = read(file);
+
+            assertThat(run.reader.survey().spectrumArrays()).containsExactlyElementsOf(order);
+            assertThat(run.spectra.get(0).arrays().keySet()).containsExactly(order.get(0));
+            assertThat(run.spectra.get(1).arrays().keySet()).containsExactly(order.get(1));
+            assertThat(run.spectra.get(3).arrays().keySet()).containsExactly(order.get(2));
+        }
+    }
+
     @Test
     void secondAxisAndIntensityArraysAreDropped(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> withArray(withArray(s, SCAN_19,
@@ -873,6 +924,21 @@ class MzMLReaderRunTest {
         assertThat(run.reader.survey().spectrumIds()).containsExactly("scan=19", "scan=20", "scan=19",
                 "sample=1 period=1 cycle=22 experiment=1");
         assertThat(run.spectra.get(1).description().primaryPrecursor().precursorIndex()).isZero();
+    }
+
+    @Test
+    void aScanInstrumentConfigurationRefNamingNoneReadsAsNullWithAWarning(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "instrumentConfigurationRef=\"LCQ_x0020_Deca\"",
+                "instrumentConfigurationRef=\"missing_IC\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).description().scans()).extracting(ScanEvent::instrumentConfigurationRef)
+                .containsExactly((Integer) null);
+        assertThat(run.spectra.get(1).description().scans()).extracting(ScanEvent::instrumentConfigurationRef)
+                .containsExactly(0);
+        assertThat(run.reader.warnings()).contains(
+                "B-39 instrument configuration refs that name no instrument configuration read as null (1)");
     }
 
     @Test
@@ -1469,11 +1535,31 @@ class MzMLReaderRunTest {
         return s.substring(0, start) + spectrum + arrays + s.substring(end);
     }
 
+    /** {@code s} with scan=19 of default array length {@code length} holding the binaryDataArrays {@code arrays}. */
+    private static String spectrum19With(String s, int length, String... arrays) {
+        int start = s.indexOf(SCAN_19);
+        int from = s.indexOf("<binaryDataArrayList", start);
+        int end = s.indexOf("</binaryDataArrayList>", from) + "</binaryDataArrayList>".length();
+        String spectrum = s.substring(start, from).replace("defaultArrayLength=\"15\"",
+                "defaultArrayLength=\"" + length + "\"");
+        return s.substring(0, start) + spectrum + "<binaryDataArrayList count=\"" + arrays.length + "\">\n"
+                + String.join("", arrays) + "</binaryDataArrayList>" + s.substring(end);
+    }
+
     /** A binaryDataArray of 64-bit floats without compression, with the array type term {@code type}. */
     private static String array(String type, double... values) {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /**
+     * An extra binaryDataArray of {@code n} values 1, 2, ..., n: of the array type {@code key} when it is a CURIE,
+     * else a non-standard data array named {@code key}.
+     */
+    private static String extraArray(String key, int n) {
+        return array(key.startsWith("MS:") ? cv(key, CvTerms.ARRAY_TYPES.get(key), "", null)
+                : cv("MS:1000786", "non-standard data array", key, null), ramp(n));
     }
 
     /** A cvParam element; the cvRef and unitCvRef are the prefixes of the accessions. */

@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.Comparator;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedInputStream;
@@ -19,7 +20,9 @@ import java.util.zip.ZipOutputStream;
  * Packs a dataset directory into a single-file STORED {@code .mzpeak} ZIP for the archives of {@link MzPeakWriter}
  * (its archive sessions, on which the archive overloads run): the members in name order, then the manifest as the last
  * entry. The members are written into a temp directory next to the archive ({@link #stagingDirectory}), packed into a
- * temp file next to it and moved into place ({@link #pack}).
+ * temp file next to it and moved into place ({@link #pack}). The temp file, and so the archive, is created with the
+ * default permissions of a new file in that directory (the umask's), as a file the caller writes itself would be;
+ * only the staging directory, which is deleted, is owner-only.
  *
  * <p>Each member is read twice as a stream, once through a CRC-32 for the entry header, which a STORED entry needs
  * before its data, and once into the archive. So no member is held in memory, and a member may exceed the 2 GiB of an
@@ -86,9 +89,9 @@ final class ArchivePacker {
     }
 
     /**
-     * Packs the members of {@code directory} as a STORED ZIP into a temp file next to {@code archive} and moves it to
-     * {@code archive} by renaming it, which replaces a file there only when {@code replace} is set. The temp file is
-     * deleted in all cases.
+     * Packs the members of {@code directory} as a STORED ZIP into a temp file next to {@code archive}, created with
+     * the default permissions of a new file, and moves it to {@code archive} by renaming it, which replaces a file
+     * there only when {@code replace} is set. The temp file is deleted in all cases.
      *
      * @throws MzPeakException when a member cannot be read or the archive cannot be written or moved into place, among
      *                         others when {@code archive} exists and {@code replace} is not set
@@ -96,7 +99,7 @@ final class ArchivePacker {
     static void pack(Path directory, Path archive, boolean replace) {
         Path tmpZip = null;
         try {
-            tmpZip = Files.createTempFile(parent(archive), ".mzpeak-write-", ".zip");
+            tmpZip = Files.createFile(parent(archive).resolve(".mzpeak-write-" + UUID.randomUUID() + ".zip"));
             packStored(directory, tmpZip);
             Files.move(tmpZip, archive, replace ? REPLACE : NO_REPLACE);
             tmpZip = null;

@@ -462,13 +462,14 @@ final class MzMLTerms {
                 && (!m.group(4).equals("24") || m.group(5).equals("00") && seconds == 0);
     }
 
-    private static final Pattern XML_SPACE_ENDS = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$");
+    /** Whitespace at either end; {@code \z}, since {@code $} also matches before a final U+0085, U+2028 or U+2029. */
+    private static final Pattern XML_SPACE_ENDS = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+\\z");
     private static final Pattern XML_SPACE = Pattern.compile("[ \\t\\n\\r]+");
 
     /**
      * XSD whiteSpace collapse (also of every xs:ID and xs:IDREF value): no leading or trailing space, tab, LF or CR,
-     * each inner run one space; null for null. Runs are made one space before the ends go, so neither pattern
-     * backtracks over a long run (linear time).
+     * each inner run one space, as XSD and JAXB collapse (U+0085, U+2028 and U+2029 are no XML whitespace); null for
+     * null. Runs are made one space before the ends go, so neither pattern backtracks over a long run (linear time).
      */
     static String collapse(String text) {
         return text == null ? null : XML_SPACE_ENDS.matcher(XML_SPACE.matcher(text).replaceAll(" ")).replaceAll("");

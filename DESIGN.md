@@ -703,6 +703,11 @@ Only the classes marked public are API; everything else in `org.mzpeak.io` is pa
 members lazily on first use. The decoders take `(MzPeakSource, MzPeakManifest)` and find their own members by
 role.
 
+**Modules.** The library above is the reactor module `mzpeakj/`. The second module, `mzpeakj-mzml/`
+(`org.mzpeak.mzml`), is an mzML reader (mzML → mzPeakJ model, read-only, own StAX code: `MzMLReader`,
+`BinaryCodec`, `MzMLTerms`, `Losses`); the jmzML-based converter and the `MzPeakConvert` CLI are not built yet
+(maintainer gates GATE-Q28..Q31, Q33), and its `-all` jar has no entry point.
+
 ### 8.1 Writer
 
 `MzPeakWriter`'s public overloads delegate to one pipeline, whose settings are `MzPeakWriter.Options` (signal
@@ -772,13 +777,18 @@ Rust reference is untested.
 Known limits of the HEAD Python reader (2ee2589) on that output, left to the maintainer's upstream reports and
 pinned by no test, since a test would pin an upstream bug: it loses the selected ions of precursors whose
 `precursor_index` is null when other precursors in the file keep theirs (`reader.py:421`: a pandas groupby
-drops NaN keys), where mzPeakJ and the Rust reference attach them; and pynumpress cannot decode the 12-byte
-Numpress linear payload of a single value, which the writer still produces for a spectrum of one point.
+drops NaN keys), where mzPeakJ and the Rust reference attach them; pynumpress cannot decode the 12-byte
+Numpress linear payload of a single value, which the writer still produces for a spectrum of one point; and it
+cannot open a dataset with 0 spectra, such as one written for a chromatogram-only mzML (an `IndexError` in
+`_read_spectra`, `reader.py:569-573`).
 
-**Not written:** extra signal arrays (spectrum ion mobility, the TIC's `ms level`) and the chromatogram
-intensity unit; each kind of drop logs one WARNING, and so does a `PACKED` write that drops scans, precursors or
-selected ions. Nor the delta-`chunk` layout, chunked chromatograms or null-marked profiles (the reconstructed
-arrays are written).
+**Not written:** the delta-`chunk` layout, chunked chromatograms and null-marked profiles (the reconstructed
+arrays are written). The extra signal arrays of spectra and chromatograms (spectrum ion mobility, the TIC's
+`ms level`) and the chromatogram intensity unit are written, and so are, in `SPLIT`, chromatogram
+polarity, data processing reference, Params and precursors and wavelength-spectrum Params. A `PACKED` write logs
+one WARNING for each kind of content it drops: scans, precursors and selected ions beyond the first of a
+spectrum, wavelength-spectrum Params, and chromatogram polarity, data processing reference, Params and
+precursors.
 
 ### 8.2 Reader API
 
@@ -1009,7 +1019,7 @@ expected values and says why.
 
 `mvn verify` runs the tests under the JaCoCo agent, which instruments only `org.mzpeak.*` and
 `ms.numpress.*`, writes the report and then runs `jacoco:check` (root `pom.xml`, execution `check`, inherited by
-both modules, `mzpeakj` and `mzpeakj-mzml`):
+both modules, `mzpeakj` and `mzpeakj-mzml` (§8)):
 
 | Rule | Lines | Branches | Methods |
 |---|---|---|---|
@@ -1023,7 +1033,7 @@ true branch of `if (nbrOfDoubles < 0)` and its `Corrupt numPic data!` throw. `de
 count, which starts at 0 and only grows, so no input reaches the throw.
 
 The report is written before the check, so a failing build leaves it in `mzpeakj/target/site/jacoco/` (the
-converter's in `mzpeakj-mzml/target/site/jacoco/`). The log names each package that breaks a rule and the
+mzML module's in `mzpeakj-mzml/target/site/jacoco/`). The log names each package that breaks a rule and the
 ratio it reached; `index.html` leads from package to class to the source, where red lines were never run and
 yellow lines have a branch that was never taken (the diamond in the margin gives the count); `jacoco.csv` has a row per class with `LINE_MISSED`, `BRANCH_MISSED` and
 `METHOD_MISSED`, and `jacoco.xml` has the counts per line. A new gap is closed with a test that asserts
@@ -1040,8 +1050,7 @@ the agent, the report and the check. `mvn test` and `mvn package` stop before `v
 
 - **Grids.** The timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional (§3.3). Grids are decoded
   in spectrum signal members only; a chromatogram chunk is read as deltas whatever its encoding (§3.5).
-- **Writer** (§8.1). Extra signal arrays and the chromatogram intensity unit are not written; each kind of drop
-  logs a WARNING. Not written either: the delta-`chunk` layout, chunked chromatograms and null-marked profiles
+- **Writer** (§8.1). Not written: the delta-`chunk` layout, chunked chromatograms and null-marked profiles
   (the reconstructed arrays are written). The `PACKED` layout writes only the first scan and the primary
   precursor of a spectrum, with a WARNING when it drops more, and no wavelength-spectrum Params and no
   chromatogram polarity, data processing reference, Params or precursors, with a WARNING each.

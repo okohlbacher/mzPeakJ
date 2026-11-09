@@ -95,6 +95,75 @@
                 <createDependencyReducedPom>false</createDependencyReducedPom>
                 <transformers>
                   <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                  <!-- Licence and notice texts of the bundled libraries (mzML design 2.1). A file that several jars
+                       ship under one name is concatenated instead of kept once; the Apache NOTICE files are merged.
+                       The first transformer that takes a resource wins, so the appending ones come first. -->
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/LICENSE</resource>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/LICENSE.txt</resource>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/LICENSE.md</resource>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/NOTICE.txt</resource>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/NOTICE.md</resource>
+                  </transformer>
+                  <!-- jackson-core and parquet-jackson ship different texts under this name -->
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>META-INF/FastDoubleParser-LICENSE</resource>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                    <addHeader>false</addHeader>
+                  </transformer>
+                  <!-- This project's licence and notice, and the licence texts of the bundled libraries whose jars
+                       carry none (licenses/), under names no dependency uses: META-INF/LICENSE.<file name>. -->
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.mzpeakj</resource>
+                    <file>${project.basedir}/../LICENSE</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/NOTICE.mzpeakj</resource>
+                    <file>${project.basedir}/../NOTICE</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.Apache-2.0.txt</resource>
+                    <file>${project.basedir}/../licenses/Apache-2.0.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.BSD-2-Clause-zstd-jni.txt</resource>
+                    <file>${project.basedir}/../licenses/BSD-2-Clause-zstd-jni.txt</file>
+                  </transformer>
+                  <!-- zstd compiled into the native libraries of zstd-jni; snappy and bitshuffle compiled into the
+                       native libraries of snappy-java -->
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.BSD-3-Clause-zstd.txt</resource>
+                    <file>${project.basedir}/../licenses/BSD-3-Clause-zstd.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.BSD-3-Clause-snappy.txt</resource>
+                    <file>${project.basedir}/../licenses/BSD-3-Clause-snappy.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.MIT-bitshuffle.txt</resource>
+                    <file>${project.basedir}/../licenses/MIT-bitshuffle.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.MIT-slf4j.txt</resource>
+                    <file>${project.basedir}/../licenses/MIT-slf4j.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.EPL-2.0.txt</resource>
+                    <file>${project.basedir}/../licenses/EPL-2.0.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.EDL-1.0-jts.txt</resource>
+                    <file>${project.basedir}/../licenses/EDL-1.0-jts.txt</file>
+                  </transformer>
                 </transformers>
                 <filters>
                   <filter>

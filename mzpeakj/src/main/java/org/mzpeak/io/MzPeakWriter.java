@@ -337,7 +337,9 @@ public final class MzPeakWriter {
      * @param spectrumArrays the keys of every {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} the spectra
      *                       may carry, each written as one extra column of spectra_data and spectra_peaks in the set's
      *                       iteration order, whether a spectrum has it or not, and named as {@code writeDirectory}
-     *                       names the keys it meets in that order
+     *                       names the keys it meets in that order. The column order follows the set's iteration
+     *                       order, so for reproducible output pass a {@link java.util.LinkedHashSet} or a
+     *                       {@link java.util.SortedSet}: the order of {@link Set#of} can differ between JVM runs
      * @param options        the settings of the write
      * @return the open session
      * @throws MzPeakException      when {@code target} exists and is not an empty directory, when it cannot be read,
@@ -360,7 +362,8 @@ public final class MzPeakWriter {
      * @param target         the archive file
      * @param fileMetadata   as for {@link #openDirectory(Path, FileMetadata, List, Set, Options) openDirectory}
      * @param scanSettings   as for {@code openDirectory}
-     * @param spectrumArrays as for {@code openDirectory}
+     * @param spectrumArrays as for {@code openDirectory}: the extra columns follow the set's iteration order, so for
+     *                       reproducible output pass a {@link java.util.LinkedHashSet} or a {@link java.util.SortedSet}
      * @param options        the settings of the write
      * @return the open session
      * @throws MzPeakException      when {@code target} exists, when the temp directory cannot be created or written,
@@ -551,10 +554,13 @@ public final class MzPeakWriter {
          * These options with the caller's controlled vocabularies, such as the cv list of an mzML source, so that
          * {@code metadata.cv_list} keeps their versions and URIs. The writer still declares only MS, UO and the CVs
          * the dataset uses, in the order of {@link CvEntry#known()}, but a CV the list holds is declared with the
-         * list's entry, the first one when the list holds its id more than once. A CV in use that
-         * {@link CvEntry#known()} lacks and the list holds is declared after the known ones, in the list's order,
-         * without the warning that such a CV otherwise gets. An entry for a CV the dataset does not use is not
-         * declared. The list is copied.
+         * list's entry, the first one when the list holds its id more than once, its missing fields filled: each
+         * {@code null} full name, URI or version takes the value of {@link CvEntry#known()}, with a warning naming
+         * the fields. A CV in use that {@link CvEntry#known()} lacks and the list holds is declared after the known
+         * ones, in the list's order, without the warning that such a CV otherwise gets, if the list's entry has all
+         * fields; else it is not declared, and the warning names the missing fields. An entry without an id is not
+         * declared, with a warning; nor is an entry for a CV the dataset does not use. So every
+         * {@code metadata.cv_list} entry has an id, full name, URI and version. The list is copied.
          *
          * @throws NullPointerException if {@code cvList} or one of its entries is {@code null}
          */

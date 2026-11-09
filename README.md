@@ -57,9 +57,9 @@ The repository is a Maven reactor (parent `pom.xml`) with two modules:
 | Module | Artifact | Contents | Jars in `<module>/target/` |
 |---|---|---|---|
 | `mzpeakj/` | `org.mzpeak:mzpeakj` | the mzPeak library (reader, writer, CLI, examples) | `mzpeakj-<version>.jar`, `mzpeakj-<version>-all.jar` (self-contained), `mzpeakj-<version>-tests.jar` (test helpers) |
-| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | the mzML converter (`org.mzpeak.mzml`), on top of the library | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library and converter, self-contained) |
+| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML reader (mzML → mzPeakJ model, read-only, own StAX code, `org.mzpeak.mzml`), on top of the library; the jmzML-based converter and the `MzPeakConvert` CLI are not built yet (maintainer gates GATE-Q28..Q31, Q33) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library and mzML reader, self-contained; no entry point) |
 
-`mvn -pl mzpeakj verify` builds and tests the library alone. The converter needs the library from the same
+`mvn -pl mzpeakj verify` builds and tests the library alone. The mzML module needs the library from the same
 build: select it with `-pl mzpeakj-mzml -am`, never with `-pl mzpeakj-mzml` alone (Maven would then look for
 `org.mzpeak:mzpeakj` in a repository).
 
@@ -250,8 +250,9 @@ Without a row-group size, the `mzpeak.writer.rowGroupSize` system property appli
   chromatograms and wavelength spectra. Every scan, precursor and selected ion of a spectrum is written. The
   manifest uses the current dialect, with column mappings. The HEAD reference Python reader reads this output.
 - **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
-  and only the first scan and the primary precursor of a spectrum. Use it only for readers of that era; the
-  current Python reader rejects it.
+  and only the first scan and the primary precursor of a spectrum; no wavelength-spectrum Params, and no
+  chromatogram polarity, data processing reference, Params or precursors (one WARNING for each kind dropped).
+  Use it only for readers of that era; the current Python reader rejects it.
 
 #### Round-trip example (read → write)
 
@@ -277,17 +278,25 @@ Writer notes:
   as an invented peak (a deviation from the spec's routing).
 - An m/z, chromatogram time or wavelength axis that is not ascending is written re-sorted, with one WARNING per
   entity. The sort orders rows by `Double.compare`, so rows with a NaN move to the end.
-- Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The point layout
-  requires finite m/z, so transition data with no product-ion m/z (SRM/MRM) must use the Numpress layout.
-- Not yet written: extra signal arrays of spectra (such as per-peak ion mobility) and of chromatograms (such as
-  the TIC's `ms level`), the chromatogram intensity unit, and the delta-`chunk` layout; the m/z + intensity
-  payload is preserved in full. Each kind of drop logs one WARNING, and so does a `PACKED` write that drops
-  scans, precursors or selected ions.
+- Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The Numpress layout
+  takes only finite m/z of at least 0 that its fixed point encodes (see `SignalEncoding.NUMPRESS`; sorted m/z up
+  to 21474.83 always are) and refuses any other before anything is written. The point layout writes every m/z,
+  but reads a NaN m/z back interpolated, as its null marker; so transition data without a product-ion m/z
+  (SRM/MRM) keeps its NaN m/z in neither layout.
+- Extra signal arrays are written: those of spectra (`arrays()` and `peakArrays()`, such as per-peak ion
+  mobility) as extra columns of `spectra_data` and `spectra_peaks` in both signal encodings, those of
+  chromatograms (such as the TIC's `ms level`) as extra columns of `chromatograms_data`, which holds the
+  intensities of each chromatogram intensity unit in a column of their own, so the unit is kept (a chromatogram
+  without points reads back without one). The default `SPLIT` layout also writes chromatogram polarity, data
+  processing reference, Params and precursors, and wavelength-spectrum Params.
+- Not yet written: the delta-`chunk` layout and chunked chromatograms; the m/z + intensity payload is preserved
+  in full. A `PACKED` write logs one WARNING for each kind of content that layout drops (see above).
 - Known limits of the HEAD Python reader (HUPO-PSI/mzPeak `2ee2589`) on mzPeakJ's output: it loses the
   selected ions of precursors whose `precursor_index` is null when other precursors in the file keep theirs
-  (`reader.py:421`, a pandas groupby drops NaN keys; mzPeakJ and the Rust reference attach them), and its
+  (`reader.py:421`, a pandas groupby drops NaN keys; mzPeakJ and the Rust reference attach them), its
   pynumpress cannot decode a spectrum of one point in the Numpress layout (a 12-byte linear payload; the writer
-  never leaves a one-point chunk otherwise).
+  never leaves a one-point chunk otherwise), and it cannot open a dataset with 0 spectra, such as one written for
+  a chromatogram-only mzML (an `IndexError` in `_read_spectra`, `reader.py:569-573`).
 
 ## Running the CLI & examples
 
@@ -459,9 +468,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
   STORED ZIP, format version `0.9.0`, in the split metadata layout that the HEAD Python reader reads (the
   pin-era packed layout on request). Round-trips the metadata schema — derived spectrum columns, precursor
-  activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD) facets, and the
-  imaging `scan_settings_list` — except the extra signal arrays of spectra and chromatograms and the
-  chromatogram intensity unit, which are not written yet (each drop logs a WARNING). The opt-in
+  activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD) facets, the
+  imaging `scan_settings_list`, the extra signal arrays of spectra and chromatograms and the chromatogram
+  intensity unit. The opt-in
   `mzpeak-validate` gate currently fails (validator 0.9.25 predates the array-index schema; whether the CV
   list of `PACKED` output must declare IMS is undecided), so validation is not claimed.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
@@ -476,11 +485,10 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 **Deferred / known limitations:**
 
-- **Writing**: the delta-`chunk` layout, extra signal arrays of spectra (such as per-peak ion mobility) and
-  of chromatograms, and the chromatogram intensity unit (each kind dropped with a warning; the m/z +
-  intensity payload is preserved in full). The `PACKED` compatibility layout writes only the primary scan /
-  precursor / selected ion of a spectrum (with a warning), so combineIMS frames lose their secondary
-  mobility-scan metadata there.
+- **Writing**: the delta-`chunk` layout (the m/z + intensity payload is preserved in full). The `PACKED`
+  compatibility layout writes only the primary scan / precursor / selected ion of a spectrum (with a warning),
+  so combineIMS frames lose their secondary mobility-scan metadata there, and no wavelength-spectrum Params or
+  chromatogram polarity, data processing reference, Params or precursors (with a warning each).
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
@@ -507,5 +515,13 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders (`mzpeakj/src/main/java/ms/numpress/`)
 - Apache-2.0 HUPO-PSI mzPeak example fixtures (`mzpeakj/src/test/resources/`)
 - mzML test fixtures and the PSI mzML schemas (`mzpeakj-mzml/src/test/resources/mzml/`)
+- in the two `-all` jars only, the runtime libraries: parquet-java 1.17.1, Jackson 2.18.2, hadoop-client-api 3.5.0,
+  snappy-java 1.1.10.7, aircompressor 2.0.2 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
+  jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);
+  slf4j-api and slf4j-nop 1.7.33 (MIT); and the native code compiled into the native libraries of two of them:
+  zstd 1.5.7 in zstd-jni's (BSD-3-Clause; zstd is dual-licensed BSD or GPLv2), snappy 1.1.10 (BSD-3-Clause) and
+  bitshuffle 0.3.4 (MIT) in snappy-java's. Each `-all` jar carries their licence and notice files (`META-INF/`,
+  those of several jars concatenated), this project's as `META-INF/LICENSE.mzpeakj` and `META-INF/NOTICE.mzpeakj`,
+  and the texts of [licenses/](licenses/) as `META-INF/LICENSE.<file name>`.
 
 See [NOTICE](NOTICE).

@@ -3,7 +3,8 @@ Copyright (c) 2026 Oliver Kohlbacher
 Licensed under the MIT License (see LICENSE).
 
 ------------------------------------------------------------------------
-This product bundles the following third-party software:
+This product bundles the following third-party software. The full text of the Apache License, Version 2.0, under
+which much of it is licensed, is in licenses/Apache-2.0.txt; the other licence texts are in licenses/ as well.
 
 MS-Numpress (ms-numpress)
   Files: mzpeakj/src/main/java/ms/numpress/MSNumpress.java
@@ -13,6 +14,43 @@ MS-Numpress (ms-numpress)
   Licensed under the Apache License, Version 2.0
   (http://www.apache.org/licenses/LICENSE-2.0).
   The original Apache-2.0 license headers are retained in those files.
+
+Runtime libraries bundled in the self-contained jars
+  Files: mzpeakj/target/mzpeakj-<version>-all.jar and mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar (the
+         plain jars bundle none of them); the converter's jar also bundles org.mzpeak:mzpeakj (this project, MIT).
+  Each -all jar carries the licence and notice files of these libraries (META-INF/LICENSE, LICENSE.txt, NOTICE,
+  NOTICE.txt and FastDoubleParser-LICENSE, the files of several jars concatenated), this project's LICENSE and
+  NOTICE as META-INF/LICENSE.mzpeakj and META-INF/NOTICE.mzpeakj, and the licence texts in licenses/ as
+  META-INF/LICENSE.<file name>.
+
+  org.apache.parquet:parquet-hadoop, parquet-column, parquet-common, parquet-encoding,
+    parquet-format-structures, parquet-jackson 1.17.1      Apache License 2.0 (licenses/Apache-2.0.txt);
+                                                           parquet-jackson bundles Jackson with FastDoubleParser
+                                                           and Schubfach (MIT), see its LICENSE and NOTICE files
+  com.fasterxml.jackson.core:jackson-core, jackson-databind,
+    jackson-annotations 2.18.2                             Apache License 2.0; jackson-core bundles
+                                                           FastDoubleParser (see its FastDoubleParser files)
+  org.apache.hadoop:hadoop-client-api 3.5.0                Apache License 2.0, with the third-party code it lists
+                                                           in its LICENSE.txt and NOTICE.txt
+  org.xerial.snappy:snappy-java 1.1.10.7                   Apache License 2.0; its native libraries (libsnappyjava)
+                                                           embed snappy 1.1.10 (Copyright 2011 Google Inc.), BSD
+                                                           3-Clause License (licenses/BSD-3-Clause-snappy.txt),
+                                                           and bitshuffle 0.3.4 (Copyright (c) 2014 Kiyoshi
+                                                           Masui), MIT License (licenses/MIT-bitshuffle.txt)
+  io.airlift:aircompressor 2.0.2                           Apache License 2.0
+  commons-pool:commons-pool 1.6                            Apache License 2.0
+  com.github.luben:zstd-jni 1.5.7-3                        BSD 2-Clause License (licenses/BSD-2-Clause-zstd-jni.txt);
+                                                           its native libraries (libzstd-jni) embed zstd 1.5.7
+                                                           (Copyright (c) Meta Platforms, Inc. and affiliates),
+                                                           BSD 3-Clause License (licenses/BSD-3-Clause-zstd.txt;
+                                                           zstd is dual-licensed BSD or GPLv2 and is
+                                                           redistributed here under the BSD licence)
+  org.locationtech.jts:jts-core 1.20.0                     Eclipse Public License 2.0 or Eclipse Distribution
+                                                           License 1.0 (licenses/EPL-2.0.txt,
+                                                           licenses/EDL-1.0-jts.txt)
+  javax.annotation:javax.annotation-api 1.3.2              CDDL + GPLv2 with Classpath Exception (the texts are
+                                                           in its META-INF/LICENSE.txt)
+  org.slf4j:slf4j-api, slf4j-nop 1.7.33                    MIT License (licenses/MIT-slf4j.txt)
 
 HUPO-PSI mzPeak example data (current set)
   Files: mzpeakj/src/test/resources/mzpeak/**

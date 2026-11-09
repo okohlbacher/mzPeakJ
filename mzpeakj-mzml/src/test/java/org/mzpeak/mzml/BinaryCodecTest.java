@@ -29,6 +29,8 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
@@ -37,6 +39,7 @@ import java.util.zip.Inflater;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.data.Offset.offset;
 import static org.mzpeak.mzml.BinaryCodec.ASCII;
@@ -770,6 +773,125 @@ class BinaryCodecTest {
                 .hasMessage("corrupt MS-Numpress linear payload in " + CTX);
     }
 
+    /**
+     * A zlib stream is inflated only up to the bytes its declared length allows: the length times the width for a
+     * data type, 16 + 5 bytes per value for an MS-Numpress payload. A few KB of zlib zeros stop after the first
+     * buffer, not after 8 MiB (or with an OutOfMemoryError for a larger stream).
+     */
+    @Test
+    void aZlibStreamThatInflatesBeyondWhatTheDeclaredLengthAllowsIsRejectedEarly() {
+        int zeros = 8 << 20;
+        String bomb = base64(deflate(new byte[zeros]));
+        assertThat(bomb.length()).isLessThan(16 << 10);
+
+        Throwable raw = catchThrowable(() -> BinaryCodec.decode(bomb, FLOAT64, List.of(ZLIB), 1, CTX));
+        assertThat(raw).isExactlyInstanceOf(MzPeakException.class)
+                .hasMessageMatching("zlib stream inflates to at least \\d+ bytes, more than the 8 bytes the declared"
+                        + " length 1 allows, in " + Pattern.quote(CTX));
+        assertThat(inflatedSoFar(raw)).isGreaterThan(8).isLessThan(zeros);
+
+        for (List<String> terms : List.of(List.of(LINEAR_ZLIB), List.of(SLOF, ZLIB), List.of(PIC_ZLIB))) {
+            Throwable numpress = catchThrowable(() -> BinaryCodec.decode(bomb, FLOAT64, terms, 1, CTX));
+            assertThat(numpress).as("%s", terms).isExactlyInstanceOf(MzPeakException.class)
+                    .hasMessageMatching("zlib stream inflates to at least \\d+ bytes, more than the 21 bytes the"
+                            + " declared length 1 allows, in " + Pattern.quote(CTX));
+            assertThat(inflatedSoFar(numpress)).isGreaterThan(21).isLessThan(zeros);
+        }
+    }
+
+    @Test
+    void aDeclaredLengthWhoseInflatedBytesNoArrayCanHoldIsRejectedBeforeInflating() {
+        String stream = base64(deflate(new byte[8]));
+        assertThatThrownBy(() -> BinaryCodec.decode(stream, INT32, List.of(ZLIB), 536_870_910, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("declared length 536870910 allows 2147483640 inflated bytes, more than a byte array can"
+                        + " hold, in " + CTX);
+        assertThatThrownBy(() -> BinaryCodec.decode(stream, INT32, List.of(ZLIB), 536_870_909, CTX))
+                .hasMessage("decoded length 2 differs from the declared length 536870909 in " + CTX);
+        assertThatThrownBy(() -> BinaryCodec.decode(stream, FLOAT64, List.of(LINEAR_ZLIB), 429_496_726, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("declared length 429496726 allows 2147483646 inflated bytes, more than a byte array can"
+                        + " hold, in " + CTX);
+    }
+
+    @Test
+    void bytesAfterTheEndOfTheZlibStreamAreRejected() {
+        byte[] stream = deflate(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putDouble(1.0).array());
+        byte[] trailing = Arrays.copyOf(stream, stream.length + 5);
+        System.arraycopy(new byte[] {1, 2, 3, 4, 5}, 0, trailing, stream.length, 5);
+        assertThat(BinaryCodec.decode(base64(stream), FLOAT64, List.of(ZLIB), 1, CTX).values()).containsExactly(1.0);
+
+        assertThatThrownBy(() -> BinaryCodec.decode(base64(trailing), FLOAT64, List.of(ZLIB), 1, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("bytes after the end of the zlib stream in " + CTX);
+    }
+
+    /**
+     * A linear or SLOF fixed point of 0, of either sign, or NaN is rejected (the reference decoders divide by it and
+     * return NaN or infinite values), once the payload holds a value; a header without values decodes to none. Every
+     * other fixed point, infinite and negative ones included, decodes to what the reference decoders return.
+     */
+    @Test
+    void aLinearOrSlofFixedPointOf0OrNaNIsRejected() {
+        assertThatThrownBy(() -> BinaryCodec.decode(base64(new byte[16]), FLOAT64, List.of(LINEAR), 2, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("MS-Numpress linear fixed point 0.0 is 0 or NaN in " + CTX);
+        assertThatThrownBy(() -> BinaryCodec.decode(base64(new byte[10]), FLOAT64, List.of(SLOF), 1, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("MS-Numpress SLOF fixed point 0.0 is 0 or NaN in " + CTX);
+        for (double fixedPoint : new double[] {-0.0, Double.NaN}) {
+            byte[] linear = linearWithFixedPoint(fixedPoint);
+            assertThatThrownBy(() -> BinaryCodec.decode(base64(deflate(linear)), FLOAT64, List.of(LINEAR_ZLIB), 2,
+                    CTX)).isExactlyInstanceOf(MzPeakException.class)
+                    .hasMessage("MS-Numpress linear fixed point " + fixedPoint + " is 0 or NaN in " + CTX);
+            byte[] slof = Arrays.copyOf(linear, 10);
+            assertThatThrownBy(() -> BinaryCodec.decode(base64(slof), FLOAT64, List.of(SLOF), 1, CTX))
+                    .isExactlyInstanceOf(MzPeakException.class)
+                    .hasMessage("MS-Numpress SLOF fixed point " + fixedPoint + " is 0 or NaN in " + CTX);
+        }
+        for (double fixedPoint : new double[] {-100.0, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            byte[] linear = linearWithFixedPoint(fixedPoint);
+            double[] reference = new double[32];
+            int n = MSNumpress.decodeLinear(linear, linear.length, reference);
+            assertThat(BinaryCodec.decode(base64(deflate(linear)), FLOAT64, List.of(LINEAR_ZLIB), 2, CTX).values())
+                    .as("linear %s", fixedPoint).containsExactly(Arrays.copyOf(reference, n));
+            byte[] slof = Arrays.copyOf(linear, 10);
+            n = MSNumpress.decodeSlof(slof, slof.length, reference);
+            assertThat(BinaryCodec.decode(base64(slof), FLOAT64, List.of(SLOF), 1, CTX).values())
+                    .as("SLOF %s", fixedPoint).containsExactly(Arrays.copyOf(reference, n));
+        }
+        assertThat(BinaryCodec.decode(base64(new byte[8]), FLOAT64, List.of(LINEAR), 0, CTX).values()).isEmpty();
+        assertThat(BinaryCodec.decode(base64(new byte[8]), FLOAT64, List.of(SLOF), 0, CTX).values()).isEmpty();
+    }
+
+    /**
+     * {@code MSNumpress.optimalLinearFixedPoint}, the algorithm of the C++ reference encoder, gives +Infinity for
+     * [0.0] (a one-point chromatogram at RT 0.0) and [0.0, 0.0] and a negative fixed point for [-1.0] and
+     * [-2.0, -1.0]; the reference decoder reads these payloads back exactly, and so does decode, alone and after zlib.
+     */
+    @Test
+    void referenceLinearPayloadsWithAnInfiniteOrNegativeFixedPointDecodeExactly() {
+        double[][] cases = {{0.0}, {-1.0}, {0.0, 0.0}, {-2.0, -1.0}};
+        double[] fixedPoints = {Double.POSITIVE_INFINITY, -4294967295.0, Double.POSITIVE_INFINITY, -2147483647.0};
+        for (int c = 0; c < cases.length; c++) {
+            double[] values = cases[c];
+            double fixedPoint = MSNumpress.optimalLinearFixedPoint(values, values.length);
+            assertThat(fixedPoint).as("fixed point of %s", Arrays.toString(values)).isEqualTo(fixedPoints[c]);
+            byte[] out = new byte[8 + 5 * values.length];
+            byte[] payload = Arrays.copyOf(out, MSNumpress.encodeLinear(values, values.length, out, fixedPoint));
+            double[] reference = new double[2 * payload.length];
+            assertThat(Arrays.copyOf(reference, MSNumpress.decodeLinear(payload, payload.length, reference)))
+                    .as("reference decoding of %s", Arrays.toString(values)).containsExactly(values);
+
+            assertThat(BinaryCodec.decode(base64(payload), FLOAT64, List.of(LINEAR), values.length, CTX).values())
+                    .as("%s", Arrays.toString(values)).containsExactly(values);
+            for (List<String> terms : List.of(List.of(LINEAR_ZLIB), List.of(ZLIB, LINEAR))) {
+                assertThat(BinaryCodec.decode(base64(deflate(payload)), FLOAT64, terms, values.length, CTX).values())
+                        .as("%s with %s", Arrays.toString(values), terms).containsExactly(values);
+            }
+        }
+    }
+
     @Test
     void aDecodedLengthOtherThanTheDeclaredOneIsRejected() {
         Array a = tiny.get(0);
@@ -828,6 +950,13 @@ class BinaryCodecTest {
     private static byte[] payload(Encoded encoded) {
         byte[] bytes = Base64.getDecoder().decode(encoded.base64());
         return List.of(LINEAR_ZLIB, PIC_ZLIB, SLOF_ZLIB).contains(encoded.compressionTerm()) ? inflate(bytes) : bytes;
+    }
+
+    /** The inflated byte count the message of a rejected zlib stream gives. */
+    private static long inflatedSoFar(Throwable e) {
+        Matcher m = Pattern.compile("zlib stream inflates to at least (\\d+) bytes, .*").matcher(e.getMessage());
+        assertThat(m.matches()).as(e.getMessage()).isTrue();
+        return Long.parseLong(m.group(1));
     }
 
     private static String combined(String codec) {
@@ -894,6 +1023,14 @@ class BinaryCodecTest {
             buffer.putLong(v);
         }
         return buffer.array();
+    }
+
+    /** A 16-byte linear payload of two values, 10 and 0 before the division by {@code fixedPoint}. */
+    private static byte[] linearWithFixedPoint(double fixedPoint) {
+        byte[] linear = new byte[16];
+        MSNumpress.encodeFixedPoint(fixedPoint, linear);
+        linear[8] = 10;
+        return linear;
     }
 
     private static String base64(byte[] bytes) {

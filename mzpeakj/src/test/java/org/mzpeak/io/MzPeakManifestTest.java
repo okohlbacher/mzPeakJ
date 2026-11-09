@@ -194,6 +194,46 @@ class MzPeakManifestTest {
                         new Param("pixel size x", "IMS:1000046", 100L, "UO:0000017"))));
     }
 
+    /**
+     * The schema form of scan settings (the spec's schema/scan_settings_list.json and the mzpeak-0.9 validator's,
+     * which the maintainer's mzPeakConverter fork writes) reads like the Rust form the writer writes: references under
+     * {@code source_file_references} when {@code source_file_refs} is absent or not an array, and a target given as
+     * an object {@code {"parameters": [...]}} as that array; an object without a {@code parameters} array is an
+     * empty target. Until then, schema-form references and targets read as empty without a message.
+     */
+    @Test
+    void scanSettingsInTheSchemaFormReadTheirReferencesAndTargets() {
+        ObjectNode index = fixtureIndex();
+        ArrayNode list = ((ObjectNode) index.get("metadata")).putArray("scan_settings_list");
+        ObjectNode schema = list.addObject().put("id", "schema");
+        schema.putArray("source_file_references").add("sf1").add("sf2");
+        ArrayNode schemaTargets = schema.putArray("targets");
+        schemaTargets.addObject().putArray("parameters").addObject().put("name", "isolation window target m/z")
+                .put("accession", "MS:1000827").put("value", 445.12).put("unit", "MS:1000040");
+        schemaTargets.addObject();
+        schemaTargets.addObject().put("parameters", "none");
+        ObjectNode rust = list.addObject().put("id", "rust");
+        rust.putArray("source_file_refs").add("sf1");
+        rust.putArray("targets").addArray().addObject().put("name", "isolation window target m/z")
+                .put("accession", "MS:1000827").put("value", 445.12).put("unit", "MS:1000040");
+        ObjectNode both = list.addObject().put("id", "both");
+        both.putArray("source_file_refs").add("rust ref");
+        both.putArray("source_file_references").add("schema ref");
+        ObjectNode notAnArray = list.addObject().put("id", "refs not an array");
+        notAnArray.put("source_file_refs", "rust ref");
+        notAnArray.putArray("source_file_references").add("schema ref");
+
+        List<ScanSettings> settings = parse(index).scanSettingsList();
+
+        Param target = new Param("isolation window target m/z", "MS:1000827", 445.12, "MS:1000040");
+        assertThat(settings).containsExactly(
+                new ScanSettings("schema", List.of(), List.of("sf1", "sf2"),
+                        List.of(List.of(target), List.of(), List.of())),
+                new ScanSettings("rust", List.of(), List.of("sf1"), List.of(List.of(target))),
+                new ScanSettings("both", List.of(), List.of("rust ref"), List.of()),
+                new ScanSettings("refs not an array", List.of(), List.of("schema ref"), List.of()));
+    }
+
     static Stream<Arguments> imagingFlags() {
         return Stream.of(
                 Arguments.of("true", false),
