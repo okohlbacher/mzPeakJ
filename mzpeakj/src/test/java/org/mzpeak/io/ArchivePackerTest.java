@@ -3,6 +3,10 @@ package org.mzpeak.io;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.model.SignalContinuity;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,6 +15,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -18,6 +24,7 @@ import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -29,6 +36,7 @@ import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * {@link ArchivePacker#packArchive}: the layout of the archive it packs, and its behaviour when its temporary
@@ -171,6 +179,32 @@ class ArchivePackerTest {
             assertThat(read.getValue()).isEqualTo(zeros.getValue());
         }
         assertThat(list(out)).as("the archive's directory after the pack").containsExactly(archive);
+    }
+
+    /**
+     * The archive gets the permissions any new file of its directory gets (the umask's), as a file the caller writes
+     * would, from writeArchive and from a strict openArchive session alike. Before, it was always owner-only
+     * (rw-------), the mode of {@code Files.createTempFile}, which the move kept.
+     */
+    @Test
+    void anArchiveHasTheDefaultPermissionsOfANewFileInItsDirectory(@TempDir Path tmp) throws IOException {
+        assumeTrue(Files.getFileStore(tmp).supportsFileAttributeView(PosixFileAttributeView.class),
+                "a POSIX file store");
+        Set<PosixFilePermission> expected = Files.getPosixFilePermissions(Files.createFile(tmp.resolve("probe")));
+        Spectrum spectrum = new Spectrum(new SpectrumDescription(0, "scan=1", 1, 1.0, null, SignalContinuity.CENTROID,
+                0, 0, List.of(), List.of(), List.of()), new double[] {100.0}, new double[] {10.0}, List.of());
+        Path written = tmp.resolve("written.mzpeak");
+        Path session = tmp.resolve("session.mzpeak");
+
+        MzPeakWriter.writeArchive(written, List.of(spectrum), List.of());
+        try (MzPeakWriter.Session s = MzPeakWriter.openArchive(session, FileMetadata.EMPTY, List.of(), Set.of(),
+                MzPeakWriter.Options.defaults())) {
+            s.addSpectrum(spectrum);
+            s.finish();
+        }
+
+        assertThat(Files.getPosixFilePermissions(written)).isEqualTo(expected);
+        assertThat(Files.getPosixFilePermissions(session)).isEqualTo(expected);
     }
 
     @Test
