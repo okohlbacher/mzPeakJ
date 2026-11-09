@@ -25,6 +25,8 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.Writer;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -66,6 +68,10 @@ class JmzmlAsIsTest {
     private static final String FLOAT_64 = "MS:1000523";
     private static final String NUMPRESS_LINEAR = "MS:1002312";
     private static final String NUMPRESS_PIC = "MS:1002313";
+    private static final String NUMPRESS_SLOF = "MS:1002314";
+    /** zstd compression and 16-bit float: a compression and a data type jmzML does not know. */
+    private static final String ZSTD = "MS:1003780";
+    private static final String FLOAT_16 = "MS:1000520";
     /** MS-Numpress short logged float compression followed by zlib compression, one of the combined terms. */
     private static final String NUMPRESS_SLOF_ZLIB = "MS:1002748";
     /** A zlib stream with a preset dictionary (FDICT set): jmzML's inflater loop never ends on it. */
@@ -318,8 +324,10 @@ class JmzmlAsIsTest {
 
     /**
      * (k) jmzML's array codec: an empty zlib array decodes to nothing, PIC counts of 2^31 and above decode negative,
-     * a combined Numpress term is not understood, an empty array is encoded without compression, and with zlib the
-     * encoder never returns (a child JVM, since the thread cannot be stopped).
+     * a combined Numpress term is not understood, an empty or header-only MS-Numpress linear payload and an empty SLOF
+     * payload make the decoder throw, of two compression or data type terms the one jmzML knows decodes, an empty array
+     * is encoded without compression, and with zlib the encoder never returns (a child JVM, since the thread cannot be
+     * stopped).
      */
     @Test
     void k_binaryDataArrayCodec() throws IOException, InterruptedException {
@@ -330,8 +338,26 @@ class JmzmlAsIsTest {
         byte[] pic = Arrays.copyOf(buffer, MSNumpress.encodePic(counts, counts.length, buffer));
         assertThat(doubles(array(pic, NUMPRESS_PIC, FLOAT_64).getBinaryDataAsNumberArray()))
                 .containsExactly(-1294967296.0, -2147483648.0, 5.0);
+        // design 5.7 relies on this message: guard 2 names the spectrum, the array and the term instead
         assertThatThrownBy(() -> array(pic, NUMPRESS_SLOF_ZLIB, FLOAT_64).getBinaryDataAsNumberArray())
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Required compression CV parameter not found in BinaryDataArray!");
+
+        byte[] linearHeader = new byte[8];
+        assertThat(MSNumpress.encodeLinear(new double[0], 0, linearHeader, 1000.0)).isEqualTo(8);
+        for (byte[] payload : List.of(new byte[0], linearHeader)) {
+            assertThatThrownBy(() -> array(payload, NUMPRESS_LINEAR, FLOAT_64).getBinaryDataAsNumberArray())
+                    .as("linear, %d bytes", payload.length)
+                    .isInstanceOf(NegativeArraySizeException.class).hasMessage("-1");
+        }
+        assertThatThrownBy(() -> array(new byte[0], NUMPRESS_SLOF, FLOAT_64).getBinaryDataAsNumberArray())
+                .isInstanceOf(NegativeArraySizeException.class).hasMessage("-1");
+
+        byte[] oneAndTwo = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).putDouble(1).putDouble(2).array();
+        assertThat(doubles(array(oneAndTwo, ZSTD, NO_COMPRESSION, FLOAT_64).getBinaryDataAsNumberArray()))
+                .containsExactly(1.0, 2.0);
+        assertThat(doubles(array(oneAndTwo, NO_COMPRESSION, FLOAT_16, FLOAT_64).getBinaryDataAsNumberArray()))
+                .containsExactly(1.0, 2.0);
 
         BinaryDataArray empty = new BinaryDataArray();
         empty.set64BitFloatArrayAsBinaryData(new double[0], false, null);
