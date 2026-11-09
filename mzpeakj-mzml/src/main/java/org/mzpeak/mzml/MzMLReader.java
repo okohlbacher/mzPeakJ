@@ -35,6 +35,7 @@ import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
+import java.io.CharConversionException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -1162,11 +1163,13 @@ public final class MzMLReader {
     /**
      * The parser's error as an {@link MzPeakException}: as {@link #cannotRead} when an {@link IOException} caused it
      * (its nested exception or cause; the parser reads the file as it goes, so a directory fails here), else as
-     * {@link #malformed}.
+     * {@link #malformed}. A {@link CharConversionException}, through which the JDK parser reports a byte sequence
+     * that is invalid in the declared encoding, is a well-formedness error and so malformed.
      */
     static MzPeakException failure(Path file, XMLStreamException e) {
         Throwable io = e.getNestedException() instanceof IOException ? e.getNestedException() : e.getCause();
-        return io instanceof IOException cause ? cannotRead(file, cause) : malformed(file, e);
+        return io instanceof IOException cause && !(cause instanceof CharConversionException)
+                ? cannotRead(file, cause) : malformed(file, e);
     }
 
     /**

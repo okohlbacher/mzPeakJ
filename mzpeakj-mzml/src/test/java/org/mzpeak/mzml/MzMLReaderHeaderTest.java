@@ -24,6 +24,7 @@ import org.mzpeak.mzml.ModelAssert.Mode;
 import org.mzpeak.mzml.ModelAssert.Model;
 
 import javax.xml.stream.XMLStreamException;
+import java.io.CharConversionException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -523,6 +524,24 @@ class MzMLReaderHeaderTest {
                 .hasCauseInstanceOf(IOException.class);
     }
 
+    /**
+     * The parser reports a byte that is invalid in the declared encoding through an IOException (the JDK's
+     * MalformedByteSequenceException, a CharConversionException), but it is a well-formedness error: malformed, with
+     * its line and column, not unreadable.
+     */
+    @Test
+    void anInvalidUtf8ByteIsMalformedWithItsLineAndColumn(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-8\""),
+                "<fileContent>", "<!-- ÿ --><fileContent>"));
+
+        assertThatThrownBy(() -> new MzMLReader(file).header())
+                .isInstanceOf(MzPeakException.class)
+                .hasCauseInstanceOf(XMLStreamException.class)
+                .hasRootCauseInstanceOf(CharConversionException.class)
+                .hasMessage("mzML " + file + " line " + lineOf(file, "<!-- ") + " column 11: Invalid byte 1 of 1-byte"
+                        + " UTF-8 sequence.");
+    }
+
     @Test
     void aParserErrorThatAnIoErrorCausedIsUnreadableAndAnyOtherMalformed() {
         Path file = Path.of("x.mzML");
@@ -530,11 +549,13 @@ class MzMLReaderHeaderTest {
         XMLStreamException causeOnly = new XMLStreamException("wrapped");
         causeOnly.initCause(io);
         XMLStreamException other = new XMLStreamException("boom", new IllegalStateException("state"));
+        XMLStreamException badByte = new XMLStreamException("bad byte", new CharConversionException("invalid"));
 
         assertThat(MzMLReader.failure(file, new XMLStreamException("wrapped", io)))
                 .hasMessage("mzML x.mzML: cannot read: disk gone").hasCause(io);
         assertThat(MzMLReader.failure(file, causeOnly)).hasMessage("mzML x.mzML: cannot read: disk gone").hasCause(io);
         assertThat(MzMLReader.failure(file, other)).hasMessage("mzML x.mzML: boom").hasCause(other);
+        assertThat(MzMLReader.failure(file, badByte)).hasMessage("mzML x.mzML: bad byte").hasCause(badByte);
     }
 
     /**
