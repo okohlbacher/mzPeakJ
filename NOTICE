@@ -19,9 +19,9 @@ Runtime libraries bundled in the self-contained jars
   Files: mzpeakj/target/mzpeakj-<version>-all.jar and mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar (the
          plain jars bundle none of them); the converter's jar also bundles org.mzpeak:mzpeakj (this project, MIT).
   Each -all jar carries the licence and notice files of these libraries (META-INF/LICENSE, LICENSE.txt, NOTICE,
-  NOTICE.txt and FastDoubleParser-LICENSE, the files of several jars concatenated), this project's LICENSE and
-  NOTICE as META-INF/LICENSE.mzpeakj and META-INF/NOTICE.mzpeakj, and the licence texts in licenses/ as
-  META-INF/LICENSE.<file name>.
+  NOTICE.txt and FastDoubleParser-LICENSE, in the converter's jar also LICENSE.md and NOTICE.md, the files of
+  several jars concatenated), this project's LICENSE and NOTICE as META-INF/LICENSE.mzpeakj and
+  META-INF/NOTICE.mzpeakj, and the licence texts in licenses/ as META-INF/LICENSE.<file name>.
 
   org.apache.parquet:parquet-hadoop, parquet-column, parquet-common, parquet-encoding,
     parquet-format-structures, parquet-jackson 1.17.1      Apache License 2.0 (licenses/Apache-2.0.txt);
@@ -51,6 +51,23 @@ Runtime libraries bundled in the self-contained jars
   javax.annotation:javax.annotation-api 1.3.2              CDDL + GPLv2 with Classpath Exception (the texts are
                                                            in its META-INF/LICENSE.txt)
   org.slf4j:slf4j-api, slf4j-nop 1.7.33                    MIT License (licenses/MIT-slf4j.txt)
+
+  Bundled in mzpeakj-mzml-<version>-all.jar only (the converter's dependencies):
+  uk.ac.ebi.jmzml:jmzml 1.7.11                             Apache License 2.0 (licenses/Apache-2.0.txt), Copyright
+                                                           EMBL-European Bioinformatics Institute; the licence is
+                                                           declared by the parent POM
+                                                           uk.ac.ebi.pride.architectural:pride-core 1.0.1, the jar
+                                                           carries no licence or notice file
+  psidev.psi.tools:xxindex 0.23                            Apache License 2.0, Copyright EMBL-European
+                                                           Bioinformatics Institute; declared by the same parent
+                                                           POM, the jar carries no licence or notice file
+  it.unimi.dsi:fastutil 6.5.1                              Apache License 2.0
+  commons-io:commons-io 2.22.0                             Apache License 2.0, see its LICENSE.txt and NOTICE.txt
+  JAXB RI 2.3.9 (Eclipse Implementation of JAXB):          Eclipse Distribution License 1.0 (BSD 3-Clause), the
+    org.glassfish.jaxb:jaxb-runtime 2.3.9, txw2 2.3.9,     texts in their META-INF/LICENSE.md and NOTICE.md
+    com.sun.istack:istack-commons-runtime 3.0.12,
+    jakarta.xml.bind:jakarta.xml.bind-api 2.3.3,
+    com.sun.activation:jakarta.activation 1.2.2
 
 HUPO-PSI mzPeak example data (current set)
   Files: mzpeakj/src/test/resources/mzpeak/**
