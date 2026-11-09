@@ -14,7 +14,7 @@
   <packaging>jar</packaging>
 
   <name>mzPeakJ mzML converter</name>
-  <description>Converts between mzML and mzPeak on top of the mzPeakJ library.</description>
+  <description>Reads mzML into the mzPeakJ model through jmzML 1.7.11; the mzML writer and converter are to come.</description>
 
   <!-- jmzML and its parent POMs are published only here (mzML design 2.1). The id is the one the artifacts in the
        local repository were resolved with; a checksum mismatch fails the build. -->
@@ -40,7 +40,9 @@
          Excluded: logback (known CVEs, a second SLF4J binding) and the other SLF4J artifacts (the library brings
          slf4j-api and slf4j-nop 1.7.33), the JAXB 2.2.7 artifacts (replaced by jaxb-runtime below), cpdetector,
          chardet, commons-collections and commons-codec (not loaded on the paths used), commons-io 2.6 (known CVEs,
-         replaced below). -->
+         replaced below). Since commons-collections and cpdetector are excluded, MzMLUnmarshaller.isOkFileChecksum()
+         (CircularFifoBuffer) and xxindex's StandardXmlElementExtractor throw NoClassDefFoundError: never call
+         them. -->
     <dependency>
       <groupId>uk.ac.ebi.jmzml</groupId>
       <artifactId>jmzml</artifactId>
