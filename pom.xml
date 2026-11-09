@@ -138,6 +138,20 @@
                     <resource>META-INF/LICENSE.BSD-2-Clause-zstd-jni.txt</resource>
                     <file>${project.basedir}/../licenses/BSD-2-Clause-zstd-jni.txt</file>
                   </transformer>
+                  <!-- zstd compiled into the native libraries of zstd-jni; snappy and bitshuffle compiled into the
+                       native libraries of snappy-java -->
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.BSD-3-Clause-zstd.txt</resource>
+                    <file>${project.basedir}/../licenses/BSD-3-Clause-zstd.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.BSD-3-Clause-snappy.txt</resource>
+                    <file>${project.basedir}/../licenses/BSD-3-Clause-snappy.txt</file>
+                  </transformer>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                    <resource>META-INF/LICENSE.MIT-bitshuffle.txt</resource>
+                    <file>${project.basedir}/../licenses/MIT-bitshuffle.txt</file>
+                  </transformer>
                   <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
                     <resource>META-INF/LICENSE.MIT-slf4j.txt</resource>
                     <file>${project.basedir}/../licenses/MIT-slf4j.txt</file>

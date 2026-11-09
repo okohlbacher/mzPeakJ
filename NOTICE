@@ -32,10 +32,19 @@ Runtime libraries bundled in the self-contained jars
                                                            FastDoubleParser (see its FastDoubleParser files)
   org.apache.hadoop:hadoop-client-api 3.5.0                Apache License 2.0, with the third-party code it lists
                                                            in its LICENSE.txt and NOTICE.txt
-  org.xerial.snappy:snappy-java 1.1.10.7                   Apache License 2.0
+  org.xerial.snappy:snappy-java 1.1.10.7                   Apache License 2.0; its native libraries (libsnappyjava)
+                                                           embed snappy 1.1.10 (Copyright 2011 Google Inc.), BSD
+                                                           3-Clause License (licenses/BSD-3-Clause-snappy.txt),
+                                                           and bitshuffle 0.3.4 (Copyright (c) 2014 Kiyoshi
+                                                           Masui), MIT License (licenses/MIT-bitshuffle.txt)
   io.airlift:aircompressor 2.0.2                           Apache License 2.0
   commons-pool:commons-pool 1.6                            Apache License 2.0
-  com.github.luben:zstd-jni 1.5.7-3                        BSD 2-Clause License (licenses/BSD-2-Clause-zstd-jni.txt)
+  com.github.luben:zstd-jni 1.5.7-3                        BSD 2-Clause License (licenses/BSD-2-Clause-zstd-jni.txt);
+                                                           its native libraries (libzstd-jni) embed zstd 1.5.7
+                                                           (Copyright (c) Meta Platforms, Inc. and affiliates),
+                                                           BSD 3-Clause License (licenses/BSD-3-Clause-zstd.txt;
+                                                           zstd is dual-licensed BSD or GPLv2 and is
+                                                           redistributed here under the BSD licence)
   org.locationtech.jts:jts-core 1.20.0                     Eclipse Public License 2.0 or Eclipse Distribution
                                                            License 1.0 (licenses/EPL-2.0.txt,
                                                            licenses/EDL-1.0-jts.txt)
