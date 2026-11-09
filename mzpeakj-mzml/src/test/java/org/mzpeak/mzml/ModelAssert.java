@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -879,8 +880,10 @@ public final class ModelAssert {
     static final String MZML_SIDE = "the mzML side has ";
     /** The spectra combinations other than MS:1000795 'no combination': sum, median and mean of spectra. */
     private static final Set<String> OTHER_COMBINATIONS = Set.of("MS:1000571", "MS:1000573", "MS:1000575");
-    /** The spectrum types the mzML writer derives from the MS level: MS1 spectrum, MSn spectrum. */
-    private static final Set<String> DERIVED_TYPES = Set.of("MS:1000579", "MS:1000580");
+    /** The spectrum type the mzML writer derives for MS level 1: MS1 spectrum. */
+    private static final String MS1_SPECTRUM = "MS:1000579";
+    /** The spectrum types the mzML writer derives from the MS level: MS1 spectrum (1), MSn spectrum (above 1). */
+    private static final Set<String> DERIVED_TYPES = Set.of(MS1_SPECTRUM, "MS:1000580");
     /** The five summary params the mzPeak writer derives when a spectrum has none of them. */
     private static final Set<String> SUMMARIES =
             Set.of("MS:1000528", "MS:1000527", "MS:1000504", "MS:1000505", "MS:1000285");
@@ -904,12 +907,13 @@ public final class ModelAssert {
 
     /** A-7: MS:1000795 'no combination' added. */
     public static final Exclusion A_7 = new Exclusion("A_7",
-            "A-7: MS:1000795 'no combination' in the params of a spectrum or wavelength spectrum of actual and"
-                    + " absent from expected, whose params carry no other combination term (MS:1000571, MS:1000573,"
-                    + " MS:1000575): every spectrum of every mzPeak fixture (small* 48, has_uv 212 + 520, diaPASEF.ref"
-                    + " and .grid 9, Example_Processed 9)",
-            d -> NO_COMBINATION.matcher(d.path()).matches() && onlyActual(d)
-                    && noOtherCombination(d.expectedRoot()));
+            "A-7: one MS:1000795 'no combination' without value and unit in the params of a spectrum or wavelength"
+                    + " spectrum of actual and absent from expected, whose params carry no other combination term"
+                    + " (MS:1000571, MS:1000573, MS:1000575) and which has at most one scan (design 5.5 writes none for"
+                    + " two or more): every spectrum of every mzPeak fixture (small* 48, has_uv 212 + 520,"
+                    + " diaPASEF.ref and .grid 9, Example_Processed 9)",
+            d -> NO_COMBINATION.matcher(d.path()).matches() && onlyActual(d) && oneBareParam(d.actual())
+                    && noOtherCombination(d.expectedRoot()) && atMostOneScan(d.expectedRoot()));
 
     /** A-8: the run's default data processing taken from the first data processing. */
     public static final Exclusion A_8 = new Exclusion("A_8",
@@ -929,18 +933,20 @@ public final class ModelAssert {
 
     /** A-16: the spectrum type and the five summary params gained. */
     public static final Exclusion A_16 = new Exclusion("A_16",
-            "A-16: the spectrum types MS:1000579, MS:1000580 and the summary params MS:1000528, MS:1000527,"
-                    + " MS:1000504, MS:1000505, MS:1000285 present only in actual, in a spectrum whose expected params"
-                    + " carry no spectrum type (for a type) or none of the five (for a summary param): legacy small*"
-                    + " 48, legacy has_uv 212",
+            "A-16: the spectrum types MS:1000579 (for MS level 1) and MS:1000580 (for MS level above 1) and the"
+                    + " summary params MS:1000528, MS:1000527, MS:1000504, MS:1000505, MS:1000285 (once, with a finite"
+                    + " number) present only in actual, in a spectrum whose expected params carry no spectrum type"
+                    + " (for a type) or none of the five (for a summary param); the values are not recomputed: legacy"
+                    + " small* 48, legacy has_uv 212",
             ModelAssert::gainedTypeOrSummary);
 
     /** A-17: an empty cv list filled. */
     public static final Exclusion A_17 = new Exclusion("A_17",
-            "A-17: the cv list, empty in expected and in actual filled with entries of CvEntry.known(): legacy"
-                    + " fixtures [] -> [MS, UO], Example_Processed [] -> [MS, UO, IMS]",
+            "A-17: the cv list, empty in expected and in actual filled with distinct entries of CvEntry.known(), in"
+                    + " its order, MS and UO among them: legacy fixtures [] -> [MS, UO], Example_Processed []"
+                    + " -> [MS, UO, IMS]",
             d -> d.path().equals("cvList.size") && Integer.valueOf(0).equals(d.expected())
-                    && d.actualRoot() instanceof List<?> a && MzPeakManifest.CvEntry.known().containsAll(a));
+                    && d.actualRoot() instanceof List<?> a && knownInOrderWithMsAndUo(a));
 
     /** A-18: a dangling run default instrument configuration redirected to the first. */
     public static final Exclusion A_18 = new Exclusion("A_18",
@@ -955,14 +961,18 @@ public final class ModelAssert {
     /** B-22: arrays written sorted by m/z. */
     public static final Exclusion B_22 = new Exclusion("B_22",
             "B-22: the m/z, intensity and extra arrays of a spectrum that are equal as m/z-sorted parallel tuples"
-                    + " (ties ordered by the other values): diaPASEF.mzML, 9 spectra (pwiz writes scan order)",
+                    + " (ties ordered by the other values), the finite m/z values of actual non-decreasing:"
+                    + " diaPASEF.mzML, 9 spectra (pwiz writes scan order)",
             d -> SIGNAL.matcher(d.path()).matches() && d.expectedRoot() instanceof Spectrum e
-                    && d.actualRoot() instanceof Spectrum a && sortedTuplesEqual(e, a));
+                    && d.actualRoot() instanceof Spectrum a && finiteNonDecreasing(a.mz())
+                    && sortedTuplesEqual(e, a));
 
     /** B-34: NaN m/z values interpolated. */
     public static final Exclusion B_34 = new Exclusion("B_34",
-            "B-34: an m/z array that differs only where expected has NaN (interpolated by the mzPeak read): the NaN"
-                    + " m/z branch document of MZ-20a",
+            "B-34: an m/z array that differs only where expected has NaN (interpolated by the mzPeak read), with a"
+                    + " finite value there between the nearest finite values of expected, inclusive (a missing one"
+                    + " before the first or after the last leaves that side open), or NaN where expected has no"
+                    + " finite value; bit-equal elsewhere: the NaN m/z branch document of MZ-20a",
             d -> MZ.matcher(d.path()).matches() && d.expected() instanceof double[] e
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
@@ -977,6 +987,36 @@ public final class ModelAssert {
     /** A difference of the Params of one accession: none in expected, some in actual. */
     private static boolean onlyActual(Difference d) {
         return d.expected() instanceof List<?> e && e.isEmpty() && d.actual() instanceof List<?> a && !a.isEmpty();
+    }
+
+    /** {@code params}, the Params of one accession, are one Param without value and unit. */
+    private static boolean oneBareParam(Object params) {
+        return params instanceof List<?> l && l.size() == 1 && l.get(0) instanceof Param p && p.value() == null
+                && p.unit() == null;
+    }
+
+    /** {@code root} is a wavelength spectrum, or a spectrum with at most one scan. */
+    private static boolean atMostOneScan(Object root) {
+        return root instanceof WavelengthSpectrum || root instanceof Spectrum s && s.description().scans().size() <= 1;
+    }
+
+    /**
+     * {@code list} holds distinct, non-null entries of {@link MzPeakManifest.CvEntry#known()} in its order, MS and UO
+     * among them, as the writer fills an empty cv list.
+     */
+    private static boolean knownInOrderWithMsAndUo(List<?> list) {
+        List<MzPeakManifest.CvEntry> known = MzPeakManifest.CvEntry.known();
+        int last = -1;
+        Set<String> ids = new HashSet<>();
+        for (Object entry : list) {
+            int at = entry == null ? -1 : known.indexOf(entry);
+            if (at <= last) {
+                return false;
+            }
+            last = at;
+            ids.add(known.get(at).id());
+        }
+        return ids.contains("MS") && ids.contains("UO");
     }
 
     /**
@@ -994,28 +1034,89 @@ public final class ModelAssert {
         return p.accession() != null && accessions.contains(p.accession());
     }
 
+    /**
+     * A-16: a spectrum type gained that fits the expected MS level (MS1 spectrum for level 1, MSn spectrum above), or
+     * a summary param gained once with a finite number, where the expected params carry no type or no summary.
+     */
     private static boolean gainedTypeOrSummary(Difference d) {
         Matcher m = SPECTRUM_PARAM.matcher(d.path());
         if (!m.matches() || !onlyActual(d) || !(d.expectedRoot() instanceof Spectrum e)) {
             return false;
         }
         String accession = m.group(1);
-        Set<String> blocking = DERIVED_TYPES.contains(accession) ? MzMLTerms.SPECTRUM_TYPES.keySet()
-                : SUMMARIES.contains(accession) ? SUMMARIES : Set.of();
+        int msLevel = e.description().msLevel();
+        Set<String> blocking;
+        if (DERIVED_TYPES.contains(accession)) {
+            blocking = (accession.equals(MS1_SPECTRUM) ? msLevel == 1 : msLevel > 1)
+                    ? MzMLTerms.SPECTRUM_TYPES.keySet() : Set.of();
+        } else {
+            blocking = SUMMARIES.contains(accession) && oneFiniteNumber(d.actual()) ? SUMMARIES : Set.of();
+        }
         return !blocking.isEmpty()
                 && e.description().parameters().stream().noneMatch(p -> hasAccessionIn(p, blocking));
     }
 
+    /** {@code params}, the Params of one accession, are one Param whose value is a finite number. */
+    private static boolean oneFiniteNumber(Object params) {
+        return params instanceof List<?> l && l.size() == 1 && l.get(0) instanceof Param p
+                && p.value() instanceof Number n && Double.isFinite(n.doubleValue());
+    }
+
+    /** The finite values of {@code values} do not decrease. */
+    private static boolean finiteNonDecreasing(double[] values) {
+        double last = Double.NEGATIVE_INFINITY;
+        for (double v : values) {
+            if (Double.isFinite(v)) {
+                if (v < last) {
+                    return false;
+                }
+                last = v;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * B-34: {@code actual} is bit-equal to {@code expected} where that is not NaN; where it is, NaN if
+     * {@code expected} has no finite value, else finite and between the nearest finite values of {@code expected}
+     * before and after, inclusive; before the first one and after the last one, that side is open.
+     */
     private static boolean differsOnlyAtNaN(double[] expected, double[] actual) {
         if (expected.length != actual.length) {
             return false;
         }
+        boolean anyFinite = Arrays.stream(expected).anyMatch(Double::isFinite);
         for (int i = 0; i < expected.length; i++) {
-            if (Double.compare(expected[i], actual[i]) != 0 && !Double.isNaN(expected[i])) {
+            boolean fits = !Double.isNaN(expected[i]) ? Double.compare(expected[i], actual[i]) == 0
+                    : !anyFinite ? Double.isNaN(actual[i])
+                    : Double.isFinite(actual[i]) && betweenNeighbours(expected, i, actual[i]);
+            if (!fits) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * {@code v} lies between the nearest finite values of {@code values} before and after {@code i}, inclusive; a
+     * side without one is open.
+     */
+    private static boolean betweenNeighbours(double[] values, int i, double v) {
+        double before = Double.NEGATIVE_INFINITY;
+        for (int k = i - 1; k >= 0; k--) {
+            if (Double.isFinite(values[k])) {
+                before = values[k];
+                break;
+            }
+        }
+        double after = Double.POSITIVE_INFINITY;
+        for (int k = i + 1; k < values.length; k++) {
+            if (Double.isFinite(values[k])) {
+                after = values[k];
+                break;
+            }
+        }
+        return v >= Math.min(before, after) && v <= Math.max(before, after);
     }
 
     private static boolean sortedTuplesEqual(Spectrum expected, Spectrum actual) {
