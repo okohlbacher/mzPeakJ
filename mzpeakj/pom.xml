@@ -89,7 +89,8 @@
           </execution>
         </executions>
       </plugin>
-      <!-- The library stays free of jmzML, JAXB and the activation API: they belong to the converter only. -->
+      <!-- The library stays free of jmzML, JAXB, the activation API and logging frameworks: they belong to the
+           converter only (the library logs through slf4j-api with slf4j-nop). -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
@@ -100,7 +101,7 @@
             <configuration>
               <rules>
                 <bannedDependencies>
-                  <!-- groupId patterns, every artifact of the group, also transitively -->
+                  <!-- groupId patterns (every artifact of the group) or groupId:artifactId, also transitively -->
                   <excludes>
                     <exclude>uk.ac.ebi.*</exclude>
                     <exclude>psidev.*</exclude>
@@ -112,8 +113,11 @@
                     <exclude>jakarta.activation</exclude>
                     <exclude>javax.activation</exclude>
                     <exclude>com.sun.istack</exclude>
+                    <exclude>ch.qos.logback</exclude>
+                    <exclude>org.slf4j:jcl-over-slf4j</exclude>
+                    <exclude>commons-logging</exclude>
                   </excludes>
-                  <message>the library mzpeakj must not depend on jmzML, JAXB or the activation API (they belong in mzpeakj-mzml/)</message>
+                  <message>the library mzpeakj must not depend on jmzML, JAXB, the activation API or logging frameworks (they belong in mzpeakj-mzml/)</message>
                 </bannedDependencies>
               </rules>
             </configuration>

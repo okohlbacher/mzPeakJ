@@ -16,12 +16,59 @@
   <name>mzPeakJ mzML converter</name>
   <description>Converts between mzML and mzPeak on top of the mzPeakJ library.</description>
 
+  <!-- jmzML and its parent POMs are published only here (mzML design 2.1). The id is the one the artifacts in the
+       local repository were resolved with; a checksum mismatch fails the build. -->
+  <repositories>
+    <repository>
+      <id>ebi-repo</id>
+      <url>https://www.ebi.ac.uk/Tools/maven/repos/content/groups/ebi-repo/</url>
+      <releases><enabled>true</enabled><checksumPolicy>fail</checksumPolicy></releases>
+      <snapshots><enabled>false</enabled></snapshots>
+    </repository>
+  </repositories>
+
   <dependencies>
     <!-- The library, used through its public API only. -->
     <dependency>
       <groupId>org.mzpeak</groupId>
       <artifactId>mzpeakj</artifactId>
       <version>${project.version}</version>
+    </dependency>
+
+    <!-- jmzML as is: MzMLUnmarshaller reads, MzMLMarshaller writes, BinaryDataArray decodes and encodes. Kept from
+         its tree: xxindex (the byte index of the input) and fastutil (CharOpenHashSet in EscapingXMLUtilities).
+         Excluded: logback (known CVEs, a second SLF4J binding) and the other SLF4J artifacts (the library brings
+         slf4j-api and slf4j-nop 1.7.33), the JAXB 2.2.7 artifacts (replaced by jaxb-runtime below), cpdetector,
+         chardet, commons-collections and commons-codec (not loaded on the paths used), commons-io 2.6 (known CVEs,
+         replaced below). -->
+    <dependency>
+      <groupId>uk.ac.ebi.jmzml</groupId>
+      <artifactId>jmzml</artifactId>
+      <version>1.7.11</version>
+      <exclusions>
+        <exclusion><groupId>ch.qos.logback</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>org.slf4j</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>com.sun.xml.bind</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>javax.xml.bind</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>com.sun.istack</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>net.sourceforge.cpdetector</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>org.mozilla.intl</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>commons-collections</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>commons-codec</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>commons-io</groupId><artifactId>*</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+    <!-- CountingInputStream for xxindex, instead of the 2.6 it declares. -->
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.22.0</version>
+    </dependency>
+    <!-- The JAXB 2 runtime for the javax.xml.bind API jmzML is compiled against (Java 11+ ships none). -->
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <version>2.3.9</version>
     </dependency>
 
     <!-- Test: the library's test helpers (Fixtures, ContentDigest, ChildJvm, ...); their fixtures stay in
