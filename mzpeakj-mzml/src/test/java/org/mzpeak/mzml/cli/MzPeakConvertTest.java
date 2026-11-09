@@ -139,14 +139,13 @@ class MzPeakConvertTest {
                 arguments(List.of("--layout", "packed"), packed, defaults),
                 arguments(List.of("--numpress-slof"), slof, defaults),
                 arguments(List.of("--numpress-pic"), pic, slof),
-                arguments(List.of("--row-group-size", "1048576"), defaults.withRowGroupSize(1048576), null),
-                arguments(List.of("--row-group-size", "4096", "--numpress-pic", "--layout", "packed"),
-                        pic.withMetadataLayout(MetadataLayout.PACKED).withRowGroupSize(4096), pic));
+                arguments(List.of("--row-group-size", "1048576"), defaults.withRowGroupSize(1048576), null));
     }
 
     /**
      * Each option writes what {@link MzMLConversion#toMzPeak} writes with the options it names, which differ from
-     * {@code other}'s output where tiny can show it (a row-group size cannot: tiny's members are one row group).
+     * {@code other}'s output where tiny can show it (a row-group size cannot: tiny's members are one row group;
+     * {@link #theRowGroupSizeSplitsSmallsMembersIntoRowGroups} shows it).
      */
     @ParameterizedTest
     @MethodSource("mzPeakOptions")
@@ -170,6 +169,46 @@ class MzPeakConvertTest {
             MzMLConversion.toMzPeak(tiny, differs, false, other);
             assertThat(digests(target)).isNotEqualTo(digests(differs));
         }
+    }
+
+    static Stream<Arguments> rowGroupSizes() {
+        MzPeakWriter.Options defaults = MzPeakWriter.Options.defaults();
+        MzPeakWriter.Options picPacked = defaults.withSignalEncoding(SignalEncoding.NUMPRESS)
+                .withNumpressIntensity(NumpressIntensityEncoding.PIC).withMetadataLayout(MetadataLayout.PACKED);
+        return Stream.of(
+                arguments(List.of("--row-group-size", "65536"), defaults.withRowGroupSize(65536), defaults),
+                arguments(List.of("--row-group-size", "65536", "--numpress-pic", "--layout", "packed"),
+                        picPacked.withRowGroupSize(65536), picPacked));
+    }
+
+    /**
+     * small's spectra_data is larger than 65536 bytes: {@code --row-group-size 65536} writes what
+     * {@link MzMLConversion#toMzPeak} writes with that size, its spectra_data in more than one row group, unlike
+     * {@code other}, the same options without a row-group size.
+     */
+    @ParameterizedTest
+    @MethodSource("rowGroupSizes")
+    void theRowGroupSizeSplitsSmallsMembersIntoRowGroups(List<String> options, MzPeakWriter.Options expected,
+                                                        MzPeakWriter.Options other) throws IOException {
+        Path small = MzMLFixtures.extract(MzMLFixtures.SMALL, dir);
+        Path target = dir.resolve("x.mzpeak");
+        List<String> args = new ArrayList<>(options);
+        args.addAll(List.of(small.toString(), target.toString()));
+
+        Run r = run(args.toArray(String[]::new));
+
+        assertThat(r.code()).as(r.err()).isZero();
+        assertThat(r.out().lines()).containsExactly(
+                "wrote " + target + ": 48 spectra, 0 wavelength spectra, 1 chromatograms");
+        Path reference = dir.resolve("reference.mzpeak");
+        MzMLConversion.toMzPeak(small, reference, false, expected);
+        Path differs = dir.resolve("other.mzpeak");
+        MzMLConversion.toMzPeak(small, differs, false, other);
+        Map<String, ContentDigest> written = digests(target, 48);
+        Map<String, ContentDigest> without = digests(differs, 48);
+        assertThat(written).isEqualTo(digests(reference, 48)).isNotEqualTo(without);
+        assertThat(rowGroups(written.get("spectra_data.parquet"))).isGreaterThan(1);
+        assertThat(rowGroups(without.get("spectra_data.parquet"))).isEqualTo(1);
     }
 
     /** --directory writes an unpacked directory, which converts back to mzML as a directory input of any name. */
@@ -447,14 +486,25 @@ class MzPeakConvertTest {
 
     /** The content digest of every member the manifest of {@code dataset} lists, by name; the dataset has 4 spectra. */
     private static Map<String, ContentDigest> digests(Path dataset) {
+        return digests(dataset, 4);
+    }
+
+    /** The content digest of every member the manifest of {@code dataset} lists, by name; it has {@code spectra}. */
+    private static Map<String, ContentDigest> digests(Path dataset, int spectra) {
         Map<String, ContentDigest> digests = new TreeMap<>();
         try (MzPeakReader reader = MzPeakReader.open(dataset); MzPeakSource source = MzPeakSource.open(dataset)) {
-            assertThat(reader.size()).isEqualTo(4);
+            assertThat(reader.size()).isEqualTo(spectra);
             for (MzPeakManifest.Entry member : reader.manifest().files()) {
                 digests.put(member.name(), ContentDigest.of(source, member.name()));
             }
         }
         return digests;
+    }
+
+    /** The row-group count of a Parquet member, from its digest's detail ({@code row_groups=N rows=...}). */
+    private static int rowGroups(ContentDigest member) {
+        assertThat(member.detail()).startsWith("row_groups=");
+        return Integer.parseInt(member.detail().substring("row_groups=".length(), member.detail().indexOf(' ')));
     }
 
     /** Every path below {@code root}, relative, with the content of each regular file (ISO-8859-1). */
