@@ -199,6 +199,21 @@ class MzMLWriterTest {
     }
 
     @Test
+    void chromatogramIdsThatXmlReadsAlikeAreRepaired() {
+        // XML reads tab, LF, CR and CR LF in an attribute as one space each, so these pairs would break
+        // KEY_CHROMATOGRAM_ID; a spectrum id with them breaks the pattern, but takes part in the same set.
+        Contents contents = contents(metadata(), chromatogram("c\tid"), chromatogram("c id"), chromatogram("d\r\nid"),
+                chromatogram("d id"), chromatogram("e\rid"), chromatogram("e\nid"), chromatogram("e id"),
+                chromatogram("f  id"), chromatogram("f\t\nid"));
+
+        for (Written w : write("normalized-ids", contents)) {
+            assertThat(read(w.file()).chromatograms()).extracting(Chromatogram::id).containsExactly("c id", "index=1",
+                    "d id", "index=3", "e id", "index=5", "index=6", "f  id", "index=8");
+            assertThat(w.warnings()).contains(MzMLWriter.A_3 + " (5)", MzMLWriter.A_27 + " (3)");
+        }
+    }
+
+    @Test
     void nullEmptyAndRepeatedHeaderIdsAreRenamed() {
         FileDescription description = new FileDescription(List.of(), List.of(
                 new SourceFile(null, "a", "file:///a", List.of()), new SourceFile("x", "b", "file:///b", List.of())));
@@ -564,6 +579,20 @@ class MzMLWriterTest {
                     String.format(MzMLWriter.A_18, "spectrumList defaultDataProcessingRef redirected to the first"
                             + " data processing") + " (1)");
         }
+    }
+
+    @Test
+    void aNegativeProcessingMethodOrderIsRejected() throws IOException {
+        FileMetadata m = metadata(List.of(software("sw")), List.of(instrument(0, "sw")), List.of(processing("dp", "sw"),
+                new DataProcessing("bad", List.of(new ProcessingMethod(0, "sw", List.of()),
+                        new ProcessingMethod(-1, "sw", List.of())))), run("run"));
+        Path target = dir.resolve("negative-order.mzML");
+
+        assertThatThrownBy(() -> MzMLWriter.open(target, contents(m), true)).isInstanceOf(MzPeakException.class)
+                .hasMessageContaining(target.toString()).hasMessageContaining("dataProcessing 'bad'")
+                .hasMessageContaining("processingMethod #1").hasMessageContaining("order -1");
+
+        assertThat(listing()).isEmpty();
     }
 
     @Test

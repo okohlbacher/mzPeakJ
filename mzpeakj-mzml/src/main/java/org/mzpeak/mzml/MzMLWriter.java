@@ -94,9 +94,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * {@code mzpeakj_conversion}, instrument configuration {@code IC1}, run {@code mzpeakj_run}; A-8); then the ids of
  * the spectra, wavelength spectra and chromatograms, in one set: a spectrum id that is null, empty, does not match the
  * schema's pattern or is taken, and a chromatogram id that is null, empty or taken, is written {@code index=<i>} (A-3),
- * each decided after the id is made XML-safe. References are written through the id of what they name; one that names
- * nothing is dropped, or redirected to the first entry where mzML requires it (A-18), and an instrument configuration
- * without software reference is given the first software (A-25).
+ * each decided after the id is made XML-safe, and taken as an XML parser reads it back (tab, LF, CR and CR LF as one
+ * space). References are written through the id of what they name; one that names nothing is dropped, or redirected
+ * to the first entry where mzML requires it (A-18), and an instrument configuration without software reference is
+ * given the first software (A-25).
  *
  * <p><b>CVs</b> (design 5.11): the cv list is that of the contents, an entry without id dropped and a missing full
  * name or URI completed from {@link CvEntry#known()}, else with the prefix and {@code unknown}; then MS, UO and every
@@ -178,6 +179,8 @@ public final class MzMLWriter implements AutoCloseable {
     private static final Map<ComponentType, Supplier<Component>> COMPONENTS = components();
     private static final Map<String, CvEntry> KNOWN = known();
     private static final Pattern TAB_LF_CR = Pattern.compile("[\t\n\r]");
+    /** What XML's end-of-line handling and attribute-value normalization read as one space: CR LF, tab, LF, CR. */
+    private static final Pattern ATTRIBUTE_SPACE = Pattern.compile("\r\n|[\t\n\r]");
     private static final Pattern NON_ASCII = Pattern.compile("[^\\x00-\\x7F]");
 
     private final Path target;
@@ -245,7 +248,8 @@ public final class MzMLWriter implements AutoCloseable {
      * A writer of {@code contents} to the mzML file {@code target}, zlib-compressed if {@code zlib}: every id is
      * allocated and the header and run of the document are built; nothing is written yet.
      *
-     * @throws MzPeakException      if {@code target} exists
+     * @throws MzPeakException      if {@code target} exists, or a processing method's order is negative (mzML
+     *                              requires a nonNegativeInteger); nothing is created then
      * @throws NullPointerException if an argument is null
      */
     public static MzMLWriter open(Path target, Contents contents, boolean zlib) {
@@ -515,7 +519,8 @@ public final class MzMLWriter implements AutoCloseable {
     /**
      * Step 5 of the registry: the ids of spectra (with the schema's pattern) or chromatograms, the first at mzML index
      * {@code first}, each made XML-safe; one that is null, empty, breaks the pattern or is taken becomes
-     * {@code index=<i>} (A-3).
+     * {@code index=<i>} (A-3). Taken is decided on the value an XML parser reads back, which ids that differ only in
+     * tab, LF, CR or CR LF against a space share (A-27).
      */
     private List<String> entityIds(List<String> originals, int first, boolean pattern) {
         List<String> written = new ArrayList<>();
@@ -523,7 +528,8 @@ public final class MzMLWriter implements AutoCloseable {
             String id = null;
             if (present(originals.get(i))) {
                 MzMLTerms.Repaired safe = MzMLTerms.xmlSafe(originals.get(i));
-                if ((!pattern || MzMLTerms.spectrumIdValid(safe.value())) && entityIds.add(safe.value())) {
+                if ((!pattern || MzMLTerms.spectrumIdValid(safe.value()))
+                        && entityIds.add(ATTRIBUTE_SPACE.matcher(safe.value()).replaceAll(" "))) {
                     id = safe.value();
                     note(A_28, safe.repaired() ? 1 : 0);
                 }
@@ -677,14 +683,23 @@ public final class MzMLWriter implements AutoCloseable {
         return list;
     }
 
-    /** The data processings (a synthesized one when the model has none); one without methods gets MS:1000544. */
+    /**
+     * The data processings (a synthesized one when the model has none); one without methods gets MS:1000544. A
+     * negative method order, which mzML's xs:nonNegativeInteger cannot hold, is rejected.
+     */
     private DataProcessingList dataProcessingList(List<FileMetadata.DataProcessing> model, List<String> ids) {
         DataProcessingList list = new DataProcessingList();
         for (int i = 0; i < ids.size(); i++) {
             DataProcessing x = new DataProcessing();
             x.setId(text(ids.get(i)));
             List<FileMetadata.ProcessingMethod> methods = model.isEmpty() ? List.of() : model.get(i).methods();
-            for (FileMetadata.ProcessingMethod method : methods) {
+            for (int j = 0; j < methods.size(); j++) {
+                FileMetadata.ProcessingMethod method = methods.get(j);
+                if (method.order() < 0) {
+                    throw new MzPeakException("mzML " + target + ": dataProcessing '" + model.get(i).id()
+                            + "' processingMethod #" + j + ": order " + method.order()
+                            + " is negative; mzML requires a nonNegativeInteger");
+                }
                 ProcessingMethod pm = new ProcessingMethod();
                 pm.setOrder(method.order());
                 String software = ref(softwareIds, method.softwareReference(),
