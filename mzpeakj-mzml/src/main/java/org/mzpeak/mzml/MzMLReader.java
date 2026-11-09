@@ -85,9 +85,10 @@ import java.util.function.Function;
  * <p>{@link #header()} unmarshals the cv list, the file description (contents, source files, contacts), samples,
  * software, scan settings, instrument configurations and data processings, and takes the attributes of the run and of
  * its spectrumList and chromatogramList as written in their start tags (design 5.0, 5.1): a character or entity
- * reference in them is not resolved, and a value containing {@code &} is counted (B-40). A chromatogram without a data
- * processing of its own takes the {@code chromatogramList}'s default. The run's params are not read (L-2). Ids are kept
- * as jmzML gives them.
+ * reference in them is not resolved, and a value containing {@code &} is counted (B-40); xxindex decodes them as
+ * US-ASCII whatever the declared encoding, so each byte of 0x80 or more becomes U+FFFD, and a value with one is counted
+ * too (B-40). A chromatogram without a data processing of its own takes the {@code chromatogramList}'s default. The
+ * run's params are not read (L-2). Ids are kept as jmzML gives them.
  *
  * <p>{@link #survey()} and {@link #read(Visitor)} take the spectra and then the chromatograms one at a time (design
  * 5.4-5.9). {@code read} maps every spectrum, wavelength spectrum and chromatogram to the model and hands it to a
@@ -194,6 +195,8 @@ public final class MzMLReader {
     static final String B_39 = "B-39 instrument configuration refs that name no instrument configuration read as null";
     static final String B_40 = "B-40 run, spectrumList and chromatogramList attribute values containing & kept as"
             + " written";
+    static final String B_40_ASCII = "B-40 run, spectrumList and chromatogramList attribute values with bytes >= 0x80"
+            + " read as US-ASCII, each such byte as U+FFFD";
     // Warned by design 5.4 and 5.5, without a loss number.
     static final String BOTH_POLARITIES = "spectra and chromatograms with both scan polarities read as polarity"
             + " unknown, the terms kept as params";
@@ -443,6 +446,7 @@ public final class MzMLReader {
         Map<String, String> chromatogramList = attributes(u, "/run/chromatogramList");
         for (Map<String, String> attributes : List.of(run, spectrumList, chromatogramList)) {
             losses.note(B_40, attributes.values().stream().filter(v -> v.contains("&")).count());
+            losses.note(B_40_ASCII, attributes.values().stream().filter(v -> v.indexOf('\uFFFD') >= 0).count());
         }
         losses.note(B_7, run.get("sampleRef") == null ? 0 : 1);
         String defaultIc = run.get("defaultInstrumentConfigurationRef");

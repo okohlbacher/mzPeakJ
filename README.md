@@ -532,7 +532,11 @@ classes statically reference Hadoop types — but it is never actually invoked.
   above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
   intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
   wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data
-  type terms on one array, jmzML decodes by the one it knows, and the other is not checked.
+  type terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40 in
+  `warnings()`: the attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as
+  jmzML's index reads them, so a character or entity reference stays as written and, whatever the declared
+  encoding, each byte >= 0x80 becomes U+FFFD (a default ref with such a byte then names nothing, while the header
+  lists keep the character).
 - No **Maven Central** publication yet.
 
 ## Development

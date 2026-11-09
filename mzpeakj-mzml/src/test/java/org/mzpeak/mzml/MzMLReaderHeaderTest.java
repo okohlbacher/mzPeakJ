@@ -771,6 +771,41 @@ class MzMLReaderHeaderTest {
     }
 
     /**
+     * xxindex decodes the run, spectrumList and chromatogramList start tags as US-ASCII whatever the declared
+     * encoding, so each byte of 0x80 or more in their attribute values becomes U+FFFD (one for an ISO-8859-1 é, two for
+     * a UTF-8 é), and each such value is counted (B-40); the header lists, read through JAXB, keep the character, so a
+     * run default naming one of them names nothing (a configuration ref also gives B-39).
+     */
+    @Test
+    void nonAsciiRunAndListAttributesAreReadAsUsAsciiAndCounted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(s.replace("pwiz_processing", "pwiz_\u00e9_processing")
+                        .replace("LCQ_x0020_Deca", "LCQ_\u00e9_Deca"),
+                "<run id=\"Experiment_x0020_1\"", "<run id=\"Exp\u00e9riment_x0020_1\""));
+        MzMLReader reader = new MzMLReader(file);
+        FileMetadata m = reader.header().fileMetadata();
+
+        assertThat(m.run()).isEqualTo(new MsRun("Exp\uFFFDriment_x0020_1", null, "pwiz_\uFFFD_processing",
+                "tiny1.yep", "2007-06-27T15:23:45.00035", List.of()));
+        assertThat(m.dataProcessingMethods()).extracting(DataProcessing::id).contains("pwiz_\u00e9_processing");
+        assertThat(m.instrumentConfigurations()).extracting(InstrumentConfiguration::id).containsExactly(0);
+        assertThat(reader.warnings()).contains("B-40 run, spectrumList and chromatogramList attribute values with"
+                        + " bytes >= 0x80 read as US-ASCII, each such byte as U+FFFD (4)",
+                "B-39 instrument configuration refs that name no instrument configuration read as null (1)")
+                .noneMatch(w -> w.contains("containing &"));
+
+        // UTF-8: the two bytes of é become two U+FFFD; JAXB reads the data processing id as é
+        Path utf8 = tinyWith(dir, s -> replaceOnce(s, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-8\"")
+                .replace("pwiz_processing", "pwiz_\u00c3\u00a9_processing"));
+        MzMLReader utf8Reader = new MzMLReader(utf8);
+        FileMetadata u = utf8Reader.header().fileMetadata();
+
+        assertThat(u.run().defaultDataProcessingId()).isEqualTo("pwiz_\uFFFD\uFFFD_processing");
+        assertThat(u.dataProcessingMethods()).extracting(DataProcessing::id).contains("pwiz_\u00e9_processing");
+        assertThat(utf8Reader.warnings()).contains("B-40 run, spectrumList and chromatogramList attribute values with"
+                + " bytes >= 0x80 read as US-ASCII, each such byte as U+FFFD (2)");
+    }
+
+    /**
      * xxindex reads at most 2,048 bytes of a start tag; for a longer list start tag, legal XML padded with whitespace,
      * jmzML gives no attributes (null), which is rejected naming the element instead of failing without a message.
      */
