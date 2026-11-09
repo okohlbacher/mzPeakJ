@@ -553,6 +553,42 @@ class WriterCvListTest {
         assertEveryWrittenPrefixIsDeclared(out);
     }
 
+    /**
+     * The cv list of an mzML header, whose cv@version is optional, with entries that lack fields and one without an
+     * id: every cv_list entry written has a string id, full_name, uri and version, as the spec's cv_list schema
+     * requires; the known CVs are filled from the built-in entries, the unknown FOO is left undeclared, and each case
+     * is warned about once.
+     */
+    @Test
+    void everyWrittenCvListEntryHasStringFieldsWhateverTheCallersEntriesLack(@TempDir Path tmp) {
+        Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(s.spectra);
+        spectra.set(0, withParam(spectra.get(0), new Param("odd", "FOO:0000001", null, null)));
+        List<CvEntry> caller = List.of(new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", null),
+                new CvEntry("UO", null, null, null), new CvEntry("FOO", "Foo", "https://example.org/foo.obo", null),
+                new CvEntry(null, "no id", null, null));
+        Path out = tmp.resolve("cv.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(caller)));
+
+        JsonNode cvList = index(out).path("metadata").path("cv_list");
+        assertThat(cvList).hasSize(2);
+        for (JsonNode cv : cvList) {
+            for (String field : List.of("id", "full_name", "uri", "version")) {
+                assertThat(cv.path(field).isTextual()).as("%s of %s", field, cv).isTrue();
+            }
+        }
+        assertThat(cvList(out)).containsExactly("{\"id\":\"MS\",\"full_name\":\"PSI-MS\","
+                + "\"uri\":\"https://example.org/ms.obo\",\"version\":\"4.1.249\"}", UO);
+        assertThat(warnings).extracting(LogRecord::getMessage).hasSize(4)
+                .anySatisfy(m -> assertThat(m).contains("without an id"))
+                .anySatisfy(m -> assertThat(m).contains("entry of MS has no version"))
+                .anySatisfy(m -> assertThat(m).contains("entry of UO has no full_name, uri, version"))
+                .anySatisfy(m -> assertThat(m).contains("FOO:0000001").contains("has no version"));
+    }
+
     static Stream<Arguments> callerEntriesForCvsUsedOnlyInWavelengthOrChromatogramParams() {
         return Stream.of(
                 Arguments.of("wavelength spectrum", new Param("odd", "XYZ:0000001", null, null), XYZ, List.of()),

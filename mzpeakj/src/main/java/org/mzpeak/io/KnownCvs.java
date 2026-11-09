@@ -6,13 +6,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * The controlled vocabularies {@link ManifestWriter} declares in {@code metadata.cv_list}: a verbatim copy of the
  * reference's {@code From<ControlledVocabulary> for ControlledVocabularyEntry} (param.rs:272-336 at 2ee2589), in its
  * order. Every URI names a fixed release, as conformance.md requires of a writer, except that of IMS, which is the
  * imzML repository's master branch in the reference too. Public as {@link CvEntry#known()}; a caller's cv list
- * ({@link MzPeakWriter.Options#withCvList}) takes precedence.
+ * ({@link MzPeakWriter.Options#withCvList}) takes precedence, field by field.
  */
 final class KnownCvs {
 
@@ -64,31 +65,71 @@ final class KnownCvs {
      * every used prefix that is not in {@link #ALL} but in {@code callerCvs}, as its first entry there, in the order
      * of {@code callerCvs}. An entry of {@code callerCvs} whose prefix is not used is not declared. A used prefix in
      * neither list is not declared; {@code report} gets one warning for it, which names the CURIE.
+     *
+     * <p>Every declared entry has all four fields, as the spec's cv_list schema requires: a caller's entry of a CV of
+     * {@link #ALL} takes each field it lacks (null) from the entry of {@link #ALL}, with one warning per CV naming
+     * the fields; a caller's entry of another CV in use that lacks a field is not declared, with one warning naming
+     * the CURIE and the fields. A caller's entry without an id is skipped with one warning.
      */
     static List<CvEntry> declare(Map<String, String> used, List<CvEntry> callerCvs, WriteReport report) {
         Map<String, CvEntry> caller = new LinkedHashMap<>();
         for (CvEntry cv : callerCvs) {
-            caller.putIfAbsent(cv.id(), cv);
+            if (cv.id() == null) {
+                report.warn("a cv list entry without an id (" + cv + ") is not declared in metadata.cv_list");
+            } else {
+                caller.putIfAbsent(cv.id(), cv);
+            }
         }
         List<CvEntry> declared = new ArrayList<>();
         for (CvEntry cv : ALL) {
             if (ALWAYS.contains(cv.id()) || used.containsKey(cv.id())) {
-                declared.add(caller.getOrDefault(cv.id(), cv));
+                CvEntry given = caller.get(cv.id());
+                declared.add(given == null ? cv : filled(given, cv, report));
             }
         }
         for (CvEntry cv : caller.values()) {
-            if (used.containsKey(cv.id()) && !isKnown(cv.id())) {
+            if (used.containsKey(cv.id()) && !isKnown(cv.id()) && missing(cv).isEmpty()) {
                 declared.add(cv);
             }
         }
         for (Map.Entry<String, String> e : used.entrySet()) {
-            if (!isKnown(e.getKey()) && !caller.containsKey(e.getKey())) {
+            CvEntry given = caller.get(e.getKey());
+            if (!isKnown(e.getKey()) && (given == null || !missing(given).isEmpty())) {
                 report.warn("the CV prefix " + e.getKey() + " (used by " + e.getValue() + ") is not a controlled "
-                        + "vocabulary mzPeakJ knows; its terms are written as given, but metadata.cv_list does not "
-                        + "declare it");
+                        + "vocabulary mzPeakJ knows" + (given == null ? "" : ", and its cv list entry has no "
+                        + String.join(", ", missing(given))) + "; its terms are written as given, but"
+                        + " metadata.cv_list does not declare it");
             }
         }
         return declared;
+    }
+
+    /** {@code given}, the caller's entry of the known CV {@code known}, with each null field taken from it. */
+    private static CvEntry filled(CvEntry given, CvEntry known, WriteReport report) {
+        List<String> missing = missing(given);
+        if (missing.isEmpty()) {
+            return given;
+        }
+        report.warn("the cv list entry of " + given.id() + " has no " + String.join(", ", missing)
+                + "; metadata.cv_list fills in the missing fields from mzPeakJ's entry of " + known.id());
+        return new CvEntry(given.id(), Objects.requireNonNullElse(given.fullName(), known.fullName()),
+                Objects.requireNonNullElse(given.uri(), known.uri()),
+                Objects.requireNonNullElse(given.version(), known.version()));
+    }
+
+    /** The cv_list fields {@code cv} lacks (null), by their JSON names: full_name, uri, version. */
+    private static List<String> missing(CvEntry cv) {
+        List<String> missing = new ArrayList<>();
+        if (cv.fullName() == null) {
+            missing.add("full_name");
+        }
+        if (cv.uri() == null) {
+            missing.add("uri");
+        }
+        if (cv.version() == null) {
+            missing.add("version");
+        }
+        return missing;
     }
 
     /** {@code true} if {@code id} is the id of an entry of {@link #ALL}. */
