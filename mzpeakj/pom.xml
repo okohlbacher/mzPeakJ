@@ -89,8 +89,9 @@
           </execution>
         </executions>
       </plugin>
-      <!-- The library stays free of jmzML, JAXB, the activation API and logging frameworks: they belong to the
-           converter only (the library logs through slf4j-api with slf4j-nop). -->
+      <!-- The library stays free of jmzML, JAXB and the activation API, which belong to the converter only, and of
+           every logging framework, SLF4J binding or bridge but slf4j-api with slf4j-nop, through which it logs (the
+           converter bans the same logging artifacts). -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
@@ -116,8 +117,17 @@
                     <exclude>ch.qos.logback</exclude>
                     <exclude>org.slf4j:jcl-over-slf4j</exclude>
                     <exclude>commons-logging</exclude>
+                    <exclude>log4j</exclude>
+                    <exclude>org.apache.logging.log4j</exclude>
+                    <exclude>ch.qos.reload4j</exclude>
+                    <exclude>org.slf4j:slf4j-simple</exclude>
+                    <exclude>org.slf4j:slf4j-jdk14</exclude>
+                    <exclude>org.slf4j:slf4j-log4j12</exclude>
+                    <exclude>org.slf4j:slf4j-reload4j</exclude>
+                    <exclude>org.slf4j:log4j-over-slf4j</exclude>
+                    <exclude>org.slf4j:jul-to-slf4j</exclude>
                   </excludes>
-                  <message>the library mzpeakj must not depend on jmzML, JAXB, the activation API or logging frameworks (they belong in mzpeakj-mzml/)</message>
+                  <message>the library mzpeakj must not depend on jmzML, JAXB or the activation API (they belong in mzpeakj-mzml/), nor on a logging framework, SLF4J binding or bridge other than slf4j-api and slf4j-nop</message>
                 </bannedDependencies>
               </rules>
             </configuration>

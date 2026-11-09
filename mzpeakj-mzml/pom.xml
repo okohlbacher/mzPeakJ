@@ -91,6 +91,41 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
       </plugin>
+      <!-- Guards the exclusions of jmzML above: its pride-logging parent POM declares logback-core, logback-classic
+           and jcl-over-slf4j, which must stay out, and so must every other logging framework, SLF4J binding or
+           bridge (jmzML's logging goes, like the library's, to slf4j-api with slf4j-nop). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>no-logging-frameworks</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <!-- groupId patterns (every artifact of the group) or groupId:artifactId, also transitively -->
+                  <excludes>
+                    <exclude>ch.qos.logback</exclude>
+                    <exclude>commons-logging</exclude>
+                    <exclude>org.slf4j:jcl-over-slf4j</exclude>
+                    <exclude>log4j</exclude>
+                    <exclude>org.apache.logging.log4j</exclude>
+                    <exclude>ch.qos.reload4j</exclude>
+                    <exclude>org.slf4j:slf4j-simple</exclude>
+                    <exclude>org.slf4j:slf4j-jdk14</exclude>
+                    <exclude>org.slf4j:slf4j-log4j12</exclude>
+                    <exclude>org.slf4j:slf4j-reload4j</exclude>
+                    <exclude>org.slf4j:log4j-over-slf4j</exclude>
+                    <exclude>org.slf4j:jul-to-slf4j</exclude>
+                  </excludes>
+                  <message>mzpeakj-mzml must not depend on a logging framework, SLF4J binding or bridge other than slf4j-api and slf4j-nop (keep jmzML's org.slf4j and ch.qos.logback exclusions)</message>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
