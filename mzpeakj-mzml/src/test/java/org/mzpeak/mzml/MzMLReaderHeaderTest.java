@@ -770,6 +770,37 @@ class MzMLReaderHeaderTest {
                 "B-40 run, spectrumList and chromatogramList attribute values containing & kept as written (2)");
     }
 
+    /**
+     * xxindex reads at most 2,048 bytes of a start tag; for a longer list start tag, legal XML padded with whitespace,
+     * jmzML gives no attributes (null), which is rejected naming the element instead of failing without a message.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"spectrumList", "chromatogramList"})
+    void aListStartTagLongerThanXxindexReadsIsRejectedWithItsElement(String element, @TempDir Path dir)
+            throws IOException {
+        Path file = tinyWith(dir, s -> padStartTag(s, element));
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThatThrownBy(reader::header).isInstanceOf(MzPeakException.class)
+                .hasMessage("mzML " + file + ": " + element + ": jmzML cannot read the attributes of its start tag")
+                .hasNoCause();
+    }
+
+    /**
+     * A run start tag longer than xxindex reads fails earlier: jmzML's constructor matches the run id in the null start
+     * tag, and its NullPointerException is wrapped naming the file (design 6.3), before the run attributes are asked.
+     */
+    @Test
+    void aRunStartTagLongerThanXxindexReadsIsRejectedWhileJmzmlIndexesTheFile(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> padStartTag(s, "run"));
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThatThrownBy(reader::header).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("mzML " + file + ": ")
+                .hasCauseInstanceOf(NullPointerException.class);
+        assertThat(reader.warnings()).isEmpty();
+    }
+
     /** A run cvParam is not read (L-2), in an indexedmzML, where jmzML cannot reach it, as in a plain mzML. */
     @Test
     void runParamsAreNotRead(@TempDir Path dir) throws IOException {
@@ -890,6 +921,14 @@ class MzMLReaderHeaderTest {
         assertThat(at).as("'%s' occurs", target).isNotNegative();
         assertThat(s.indexOf(target, at + 1)).as("'%s' occurs once", target).isNegative();
         return s.substring(0, at) + replacement + s.substring(at + target.length());
+    }
+
+    /** {@code s} with 2,048 spaces before the {@code >} of the first {@code element} start tag. */
+    private static String padStartTag(String s, String element) {
+        int start = s.indexOf("<" + element + " ");
+        assertThat(start).as("'<%s ' occurs", element).isNotNegative();
+        int end = s.indexOf('>', start);
+        return s.substring(0, end) + " ".repeat(2048) + s.substring(end);
     }
 
     /** {@code s} with the first occurrence of {@code target} after {@code anchor} replaced. */

@@ -101,9 +101,10 @@ import java.util.function.Function;
  * a path that is not a readable regular file. What jmzML cannot index (tags that do not match, no {@code mzML} root,
  * a UTF-16 or UTF-32 document, for which jmzML reports an "Invalid ID in xml") fails with
  * {@code mzML <file>: <message>}. {@code header} rejects an mzML version that does not start with
- * {@code 1.1} and a document without {@code run}; a failure while a header list is read or mapped (a
- * {@code referenceableParamGroupRef} naming no group, an attribute that is no integer) is
- * {@code mzML <file>: <list>: <message>}. In the run, everything is named by its element,
+ * {@code 1.1}, a document without {@code run}, and a {@code spectrumList} or {@code chromatogramList} start tag longer
+ * than the 2,048 bytes xxindex reads ({@code mzML <file>: <list>: jmzML cannot read the attributes of its start tag});
+ * a failure while a header list is read or mapped (a {@code referenceableParamGroupRef} naming no group, an attribute
+ * that is no integer) is {@code mzML <file>: <list>: <message>}. In the run, everything is named by its element,
  * {@code mzML <file>: spectrum #<n> (<id>): <message>} (or {@code chromatogram}), with {@code n} its 0-based position
  * and the id once jmzML returned the element, and an exception of jmzML, JAXB or the model as its cause.
  * {@code survey} also rejects what the model or jmzML cannot carry: a non-standard data array (MS:1000786) whose name
@@ -437,9 +438,9 @@ public final class MzMLReader {
                                 .map(m -> new ProcessingMethod(m.getOrder(), m.getSoftwareRef(), params(m)))
                                 .toList())).toList());
 
-        Map<String, String> run = u.getSingleElementAttributes("/run");
-        Map<String, String> spectrumList = listAttributes(u, "/run/spectrumList");
-        Map<String, String> chromatogramList = listAttributes(u, "/run/chromatogramList");
+        Map<String, String> run = attributes(u, "/run");
+        Map<String, String> spectrumList = attributes(u, "/run/spectrumList");
+        Map<String, String> chromatogramList = attributes(u, "/run/chromatogramList");
         for (Map<String, String> attributes : List.of(run, spectrumList, chromatogramList)) {
             losses.note(B_40, attributes.values().stream().filter(v -> v.contains("&")).count());
         }
@@ -473,11 +474,20 @@ public final class MzMLReader {
     }
 
     /**
-     * The attributes of the list element at {@code xpath} as written in its start tag, also of an empty list; none if
-     * the document has no such element, for which jmzML would throw.
+     * The attributes of the element at {@code xpath} as written in its start tag, also of an empty list; none if the
+     * document has no such element, for which jmzML would throw. xxindex reads at most 2,048 bytes of a start tag, so
+     * jmzML gives null for a longer one, which is rejected naming the element.
      */
-    private static Map<String, String> listAttributes(MzMLUnmarshaller u, String xpath) {
-        return u.getObjectCountForXpath(xpath) > 0 ? u.getSingleElementAttributes(xpath) : Map.of();
+    private Map<String, String> attributes(MzMLUnmarshaller u, String xpath) {
+        if (u.getObjectCountForXpath(xpath) < 1) {
+            return Map.of();
+        }
+        Map<String, String> attributes = u.getSingleElementAttributes(xpath);
+        if (attributes == null) {
+            throw new MzPeakException("mzML " + mzml + ": " + xpath.substring(xpath.lastIndexOf('/') + 1)
+                    + ": jmzML cannot read the attributes of its start tag");
+        }
+        return attributes;
     }
 
     /**

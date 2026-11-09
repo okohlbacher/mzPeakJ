@@ -526,7 +526,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
     its tag stack to stdout when tags do not match
 
   Rejected with an `MzPeakException`: gzipped input (a name ending in `.gz`, in any case: "gzip-compressed mzML is
-  not supported by jmzML 1.7.11 as is: gunzip it first"); UTF-16 and UTF-32 documents; arrays compressed with the
+  not supported by jmzML 1.7.11 as is: gunzip it first"); UTF-16 and UTF-32 documents; a `run`, `spectrumList` or
+  `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of it; arrays compressed with the
   combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748; MS-Numpress PIC counts of 2^31 and
   above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
   intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
