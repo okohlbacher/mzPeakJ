@@ -121,9 +121,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  *
  * <p><b>CVs</b> (design 5.11): the cv list is that of the contents, an entry without id dropped and a missing full
  * name or URI completed from {@link CvEntry#known()}, else with the prefix and {@code unknown}; then MS, UO and every
- * other prefix an accession or unit of the contents uses, as {@link CvEntry#known()} declares it (A-17). Every
- * {@code cvRef} and {@code unitCvRef} is the id of its prefix's CV. The prefixes of the spectra's and wavelength
- * spectra's params must be declared by the contents' cv list: a spectrum that uses another is rejected.
+ * other prefix an accession or unit of the contents uses or {@link MzMLConversion} announces for the spectra, as
+ * {@link CvEntry#known()} declares it (A-17). Every {@code cvRef} and {@code unitCvRef} is the id of its prefix's CV.
+ * The prefixes of the spectra's and wavelength spectra's params must be declared by the contents' cv list or
+ * announced: a spectrum that uses another is rejected.
  *
  * <p><b>Values</b> (design 5.3): params are written in list order, cvParams before userParams, a value formatted by
  * {@link MzMLTerms#format}, a cvParam without name named by {@link MzMLTerms#name}, else by its accession. Every
@@ -240,6 +241,8 @@ public final class MzMLWriter implements AutoCloseable {
     private final Path target;
     private final Contents contents;
     private final boolean zlib;
+    /** The CV prefixes {@link MzMLConversion} announces for the spectra and wavelength spectra (design 5.11). */
+    private final List<String> spectrumPrefixes;
     private final Losses losses = new Losses();
     /** The document; null once {@link #finish()} or {@link #close()} ran. */
     private MzML mzml;
@@ -295,10 +298,11 @@ public final class MzMLWriter implements AutoCloseable {
         }
     }
 
-    private MzMLWriter(Path target, Contents contents, boolean zlib) {
+    private MzMLWriter(Path target, Contents contents, boolean zlib, List<String> spectrumPrefixes) {
         this.target = target;
         this.contents = contents;
         this.zlib = zlib;
+        this.spectrumPrefixes = spectrumPrefixes;
         LIMITS.forEach(losses::limit);
         build();
     }
@@ -312,12 +316,26 @@ public final class MzMLWriter implements AutoCloseable {
      * @throws NullPointerException if an argument is null
      */
     public static MzMLWriter open(Path target, Contents contents, boolean zlib) {
+        return open(target, contents, zlib, Set.of());
+    }
+
+    /**
+     * {@link #open(Path, Contents, boolean)}, with the CV prefixes {@code spectrumPrefixes} that the spectra and
+     * wavelength spectra use declared like those the contents use (design 5.11): {@link MzMLConversion} announces them
+     * here rather than in {@link Contents#cvList()}, which is then the dataset's own, so that every CV in use that the
+     * dataset does not declare is counted as A-17 and the cv list keeps the order of {@link CvEntry#known()}.
+     *
+     * @throws MzPeakException      as {@link #open(Path, Contents, boolean)}
+     * @throws NullPointerException if an argument is or holds null
+     */
+    static MzMLWriter open(Path target, Contents contents, boolean zlib, Set<String> spectrumPrefixes) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(contents, "contents");
+        List<String> prefixes = List.copyOf(spectrumPrefixes);
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             throw new MzPeakException("mzML " + target + ": the target exists; it is never replaced");
         }
-        return new MzMLWriter(target, contents, zlib);
+        return new MzMLWriter(target, contents, zlib, prefixes);
     }
 
     /**
@@ -550,8 +568,9 @@ public final class MzMLWriter implements AutoCloseable {
 
     /**
      * The CV prefixes of every accession and unit the contents put into the document, in first-seen order: those of
-     * the header params, the scan settings and the chromatograms (their type, intensity unit, params and first
-     * precursor). Array keys are not accessions: a key outside {@link CvTerms#ARRAY_TYPES} is written as MS:1000786.
+     * the header params, the scan settings, the announced spectrum prefixes and the chromatograms (their type,
+     * intensity unit, params and first precursor). Array keys are not accessions: a key outside
+     * {@link CvTerms#ARRAY_TYPES} is written as MS:1000786.
      */
     private Set<String> prefixes(FileMetadata m, FileMetadata.FileDescription d, MsRun run) {
         Set<String> used = new LinkedHashSet<>();
@@ -574,6 +593,7 @@ public final class MzMLWriter implements AutoCloseable {
         });
         m.dataProcessingMethods().forEach(dp -> dp.methods().forEach(pm -> add.accept(pm.parameters())));
         add.accept(run.parameters());
+        used.addAll(spectrumPrefixes);
         for (Chromatogram c : contents.chromatograms()) {
             add.accept(List.of(new Param(null, c.typeCurie(), null, c.intensityUnit())));
             add.accept(c.parameters());
