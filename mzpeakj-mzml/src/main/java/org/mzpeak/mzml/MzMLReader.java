@@ -98,21 +98,28 @@ import java.util.function.Function;
  * {@code run}, a {@code referenceableParamGroupRef} naming no group, a missing required attribute this reader needs,
  * and an {@code order} that is not an integer. A file that cannot be read, a directory included, gives an
  * {@link MzPeakException} with the {@link IOException} as its cause. In the run (design 6.3, 10), what jmzML cannot
- * index (tags that do not match, no {@code mzML} root) fails with {@code mzML <file>: <message>}; everything else is
- * named by its element, {@code mzML <file>: spectrum #<n> (<id>): <message>} (or {@code chromatogram}), with
- * {@code n} its 0-based position and the id once jmzML returned the element, and an exception of jmzML, JAXB or the
- * model as its cause. {@code survey} also rejects what the model or jmzML cannot carry: a non-standard data array
- * (MS:1000786) whose name is the accession of an array type; an array compressed with MS:1002746, MS:1002747 or
- * MS:1002748 (MS-Numpress and zlib in one term, which jmzML cannot decode); a data type or compression jmzML cannot
- * decode (MS:1000520 16-bit float, zstd, none); in the first usable (typed, not ASCII) array of each main key of a
+ * index (tags that do not match, no {@code mzML} root) fails with {@code mzML <file>: <message>}; so does a UTF-16
+ * document, which {@code header} reads but jmzML cannot index: {@code survey} and {@code read} fail with jmzML's
+ * "Invalid ID in xml" (a UTF-32 document fails in {@code header} already: the JDK parser does not know that encoding
+ * name). Everything else is named by its element, {@code mzML <file>: spectrum #<n> (<id>): <message>} (or
+ * {@code chromatogram}), with {@code n} its 0-based position and the id once jmzML returned the element, and an
+ * exception of jmzML, JAXB or the model as its cause. {@code survey} also rejects what the model or jmzML cannot
+ * carry: a non-standard data array (MS:1000786) whose name is the accession of an array type; an array compressed with
+ * MS:1002746, MS:1002747 or MS:1002748 (MS-Numpress and zlib in one term, which jmzML cannot decode); a data type or
+ * compression jmzML cannot decode (MS:1000520 16-bit float, zstd, none), unless a term jmzML knows is present too: then
+ * jmzML decodes by that term, and the other is neither checked nor warned about (a second data type term counts as a
+ * lost array param, B-21); in the first usable (typed, not ASCII) array of each main key of a
  * spectrum or chromatogram, the only one whose unit is checked, an m/z array in a unit other than MS:1000040, an
  * intensity array of a spectrum in a unit other than MS:1000131, a wavelength array in a unit other than UO:0000018
  * and a time array in a unit other than minute, second, millisecond or hour; a scan start time in a unit other than
  * those four; and m/z and intensity arrays (wavelength or time and intensity arrays) of different declared lengths. A
  * further array of a main key is dropped (B-29) without a unit check. The unit of an axis or intensity array is checked
  * even when the other one is missing and both would be dropped (B-9). {@code read} also rejects an array jmzML cannot
- * decode, an MS-Numpress PIC count of 2^31 or more (jmzML decodes it as a negative number) and main arrays that decode
- * to different lengths; declared lengths are not checked against the decoded ones (L-6).
+ * decode, among them an MS-Numpress linear array with an empty or header-only payload and an empty SLOF payload
+ * (jmzML's decoder throws NegativeArraySizeException), an MS-Numpress PIC count of 2^31 or more (jmzML decodes it as a
+ * negative number) and main arrays that decode to different lengths; declared lengths are not checked against the
+ * decoded ones (L-6). An empty array under no compression, zlib or MS-Numpress PIC, or an SLOF payload that is its
+ * header only, is read as an empty array.
  */
 public final class MzMLReader {
 
