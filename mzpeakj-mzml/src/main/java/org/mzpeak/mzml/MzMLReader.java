@@ -87,8 +87,10 @@ import java.util.function.Function;
  * {@code survey} runs the same mapping without decoding arrays. Both take every array through one classification by
  * its attributes and terms only, before any array of its element is decoded (design 8.1), so the extra array keys
  * {@code survey} declares are exactly those {@code read} emits. Params come in jmzML's order: an element's cvParams,
- * then those of its referenced groups, then its userParams and its groups' (design 5.3, Q41). Creating the
- * unmarshaller notes the limit lines {@link #LIMITS} (design 6.0).
+ * then those of its referenced groups, then its userParams and its groups' (design 5.3, Q41). The
+ * {@code chromatogramList}'s default data processing, which a chromatogram without its own takes, is kept as written in
+ * its start tag: a character or entity reference in it is not resolved, and a value containing {@code &} is counted
+ * (B-40). Creating the unmarshaller notes the limit lines {@link #LIMITS} (design 6.0).
  *
  * <p>Invalid input is rejected with an {@link MzPeakException} naming the file. The header names the line and column
  * where the parser found the fault: malformed XML, elements nested more than 100 deep, a DTD, a root that is neither
@@ -178,6 +180,8 @@ public final class MzMLReader {
     static final String B_31 = "B-31 64-bit integer array values rounded to the nearest double";
     static final String B_33 = "B-33 spectrum references whose kind (local or external) changes on the way back";
     static final String B_39 = "B-39 instrument configuration refs that name no instrument configuration read as null";
+    static final String B_40 = "B-40 run, spectrumList and chromatogramList attribute values containing & kept as"
+            + " written";
     // Warned by design 5.4 and 5.5, without a loss number.
     static final String BOTH_POLARITIES = "spectra and chromatograms with both scan polarities read as polarity"
             + " unknown, the terms kept as params";
@@ -776,6 +780,7 @@ public final class MzMLReader {
         }
         if (u.getObjectCountForXpath("/run/chromatogramList") > 0) {
             String listDefault = u.getSingleElementAttributes("/run/chromatogramList").get("defaultDataProcessingRef");
+            note(B_40, Objects.toString(listDefault, "").contains("&") ? 1 : 0);
             each("/run/chromatogramList/chromatogram", uk.ac.ebi.jmzml.model.mzml.Chromatogram.class, "chromatogram",
                     uk.ac.ebi.jmzml.model.mzml.Chromatogram::getId, c -> chromatogram(c, listDefault), visitor);
         }

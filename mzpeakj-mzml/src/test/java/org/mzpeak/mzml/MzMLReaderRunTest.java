@@ -1739,6 +1739,30 @@ class MzMLReaderRunTest {
                 .containsExactly("CompassXtract_x0020_processing", null);
     }
 
+    /**
+     * B-40: the chromatogramList's default data processing is kept as written in its start tag, a character reference
+     * included, and noted once per read (survey() notes nothing); sic, given no ref of its own, takes it.
+     */
+    @Test
+    void aChromatogramListDefaultWithAnAmpersandIsKeptAsWrittenAndNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s,
+                        "<chromatogramList count=\"2\" defaultDataProcessingRef=\"pwiz_processing\">",
+                        "<chromatogramList count=\"2\" defaultDataProcessingRef=\"pwiz&#x5F;processing\">"),
+                "id=\"sic\" defaultArrayLength=\"10\" dataProcessingRef=\"pwiz_processing\"",
+                "id=\"sic\" defaultArrayLength=\"10\""));
+        MzMLReader reader = new MzMLReader(file);
+        Run run = new Run(reader);
+
+        reader.survey();
+        reader.read(run);
+
+        assertThat(run.chromatograms.get(1).dataProcessingRef()).isEqualTo("pwiz&#x5F;processing");
+        assertThat(reader.warnings()).filteredOn(w -> w.startsWith("B-40")).containsExactly(
+                "B-40 run, spectrumList and chromatogramList attribute values containing & kept as written (1)");
+        assertThat(read(MzMLFixtures.extract(MzMLFixtures.TINY, dir)).reader.warnings())
+                .noneMatch(w -> w.startsWith("B-40"));
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------------------------
 
     /** What a read gives: the visitor collects it in document order. */
