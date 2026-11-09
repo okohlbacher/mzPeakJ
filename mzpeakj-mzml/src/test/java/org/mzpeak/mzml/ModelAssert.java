@@ -970,9 +970,9 @@ public final class ModelAssert {
     /** B-34: NaN m/z values interpolated. */
     public static final Exclusion B_34 = new Exclusion("B_34",
             "B-34: an m/z array that differs only where expected has NaN (interpolated by the mzPeak read), with a"
-                    + " finite value there between the nearest finite values of expected, inclusive (a missing one"
-                    + " before the first or after the last leaves that side open), or NaN where expected has no"
-                    + " finite value; bit-equal elsewhere: the NaN m/z branch document of MZ-20a",
+                    + " finite value there between the nearest finite values of expected, inclusive (before the first"
+                    + " or after the last, bit-equal to that nearest one), or NaN where expected has no finite value;"
+                    + " bit-equal elsewhere: the NaN m/z branch document of MZ-20a",
             d -> MZ.matcher(d.path()).matches() && d.expected() instanceof double[] e
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
@@ -1079,7 +1079,7 @@ public final class ModelAssert {
     /**
      * B-34: {@code actual} is bit-equal to {@code expected} where that is not NaN; where it is, NaN if
      * {@code expected} has no finite value, else finite and between the nearest finite values of {@code expected}
-     * before and after, inclusive; before the first one and after the last one, that side is open.
+     * before and after, inclusive; before the first one and after the last one, bit-equal to that one.
      */
     private static boolean differsOnlyAtNaN(double[] expected, double[] actual) {
         if (expected.length != actual.length) {
@@ -1098,23 +1098,27 @@ public final class ModelAssert {
     }
 
     /**
-     * {@code v} lies between the nearest finite values of {@code values} before and after {@code i}, inclusive; a
-     * side without one is open.
+     * {@code v} lies between the nearest finite values of {@code values} before and after {@code i}, inclusive; with
+     * a finite value on one side only (a leading or trailing NaN run), {@code v} is bit-equal to it, the value the
+     * mzPeak read carries to the end (design 6.1 B-34, {@code NullFill.interpolateGaps}).
      */
     private static boolean betweenNeighbours(double[] values, int i, double v) {
-        double before = Double.NEGATIVE_INFINITY;
+        double before = Double.NaN;
         for (int k = i - 1; k >= 0; k--) {
             if (Double.isFinite(values[k])) {
                 before = values[k];
                 break;
             }
         }
-        double after = Double.POSITIVE_INFINITY;
+        double after = Double.NaN;
         for (int k = i + 1; k < values.length; k++) {
             if (Double.isFinite(values[k])) {
                 after = values[k];
                 break;
             }
+        }
+        if (Double.isNaN(before) || Double.isNaN(after)) {
+            return Double.compare(v, Double.isNaN(before) ? after : before) == 0;
         }
         return v >= Math.min(before, after) && v <= Math.max(before, after);
     }

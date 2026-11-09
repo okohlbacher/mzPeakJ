@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -702,7 +703,9 @@ class ModelAssertTest {
             mz[3] = Double.NaN;
             return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
         });
-        assertThat(ModelAssert.assertEqual("B_34", nan, small, STRICT, ModelAssert.B_34).hidden())
+        // the mzPeak read fills the leading NaN with the first finite m/z (NullFill.interpolateGaps)
+        Model filled = withMz(small, 0, m -> m[0] = m[1]);
+        assertThat(ModelAssert.assertEqual("B_34", nan, filled, STRICT, ModelAssert.B_34).hidden())
                 .containsExactly(Map.entry("B_34", 1));
 
         Model alsoChanged = withSpectrum(nan, 0, s -> {
@@ -710,10 +713,10 @@ class ModelAssertTest {
             mz[4] = 1.0;
             return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
         });
-        Result kept = ModelAssert.compare(alsoChanged, small, STRICT, ModelAssert.B_34);
+        Result kept = ModelAssert.compare(alsoChanged, filled, STRICT, ModelAssert.B_34);
         assertThat(kept.paths()).containsExactly("spectrum[0].mz");
         assertThat(kept.stale()).containsExactly("B_34");
-        assertThat(ModelAssert.compare(nan, small, STRICT, ModelAssert.B_34).equal()).isTrue();
+        assertThat(ModelAssert.compare(nan, filled, STRICT, ModelAssert.B_34).equal()).isTrue();
         Model shorter = withSpectrum(nan, 0, s -> new Spectrum(s.description(), Arrays.copyOf(s.mz(), 5),
                 Arrays.copyOf(s.intensity(), 5), s.peaks()));
         assertThat(ModelAssert.compare(nan, shorter, STRICT, ModelAssert.B_34).paths())
@@ -829,27 +832,39 @@ class ModelAssertTest {
     @Test
     void b34HidesOnlyAFiniteValueBetweenTheNearestFiniteNeighbours() {
         double[] mz = small.spectrumList().get(0).mz();
+        int last = mz.length - 1;
         Model nan = withMz(small, 0, m -> {
             m[0] = Double.NaN;
             m[3] = Double.NaN;
+            m[last] = Double.NaN;
         });
-        // inside the neighbours, inclusive; a missing neighbour at the start leaves that side open
+        // a leading or trailing NaN takes the nearest finite m/z, as NullFill.interpolateGaps fills it
+        Consumer<double[]> carried = m -> {
+            m[0] = mz[1];
+            m[last] = mz[last - 1];
+        };
+        // inside the neighbours, inclusive
         for (double v : new double[] {mz[2], (mz[2] + mz[4]) / 2, mz[4]}) {
-            Model filled = withMz(small, 0, m -> m[3] = v);
+            Model filled = withMz(small, 0, carried.andThen(m -> m[3] = v));
             assertThat(ModelAssert.assertEqual("B_34 " + v, nan, filled, STRICT, ModelAssert.B_34).hidden())
                     .containsExactly(Map.entry("B_34", 1));
         }
-        assertThat(ModelAssert.assertEqual("B_34 leading", nan, withMz(small, 0, m -> m[0] = mz[1]), STRICT,
-                ModelAssert.B_34).hidden()).containsExactly(Map.entry("B_34", 1));
 
-        // 0, Infinity, NaN, or a value outside the neighbours where expected has NaN
-        List<Model> wrong = List.of(withMz(small, 0, m -> m[3] = 0.0),
-                withMz(small, 0, m -> m[3] = Math.nextUp(mz[4])),
-                withMz(small, 0, m -> m[0] = Double.POSITIVE_INFINITY),
-                withMz(small, 0, m -> m[0] = Math.nextUp(mz[1])),
-                withMz(small, 0, m -> m[3] = Double.NaN));
-        for (Model changed : wrong) {
-            Result kept = ModelAssert.compare(nan, changed, STRICT, ModelAssert.B_34);
+        // 0, Infinity, NaN, or a value outside the neighbours where expected has NaN; before the first finite m/z
+        // or after the last one, any value but that m/z, on either side of it
+        List<Consumer<double[]>> wrong = List.of(m -> m[3] = 0.0,
+                m -> m[3] = Math.nextUp(mz[4]),
+                m -> m[0] = Double.POSITIVE_INFINITY,
+                m -> m[0] = Math.nextUp(mz[1]),
+                m -> m[0] = Math.nextDown(mz[1]),
+                m -> m[0] = -999.0,
+                m -> m[last] = Math.nextDown(mz[last - 1]),
+                m -> m[last] = Math.nextUp(mz[last - 1]),
+                m -> m[last] = mz[last - 1] + 1000.0,
+                m -> m[3] = Double.NaN);
+        for (Consumer<double[]> change : wrong) {
+            Result kept = ModelAssert.compare(nan, withMz(small, 0, carried.andThen(change)), STRICT,
+                    ModelAssert.B_34);
             assertThat(kept.paths()).containsExactly("spectrum[0].mz");
             assertThat(kept.stale()).containsExactly("B_34");
         }
