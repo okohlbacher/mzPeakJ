@@ -751,6 +751,27 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-29 second arrays of a type already present dropped (1)");
     }
 
+    /**
+     * A non-standard data array named with an array type's accession would stand for that array type, here the m/z
+     * array, which the real m/z array after it would then lose as a second one (B-29); such a name is rejected.
+     */
+    @Test
+    void aNonStandardArrayNamedWithAnArrayTypeAccessionIsRejected(@TempDir Path dir) throws IOException {
+        for (String name : List.of("MS:1000514", "MS:1000515", "MS:1000516", "MS:1000786")) {
+            Path file = tinyWith(dir, s -> spectrum19With(s, 1,
+                    array(cv("MS:1000786", "non-standard data array", name, null), 999),
+                    array(cv("MS:1000514", "m/z array", "", "MS:1000040"), 100),
+                    array(cv("MS:1000515", "intensity array", "", "MS:1000131"), 5)));
+
+            assertThatThrownBy(() -> new MzMLReader(file).survey())
+                    .as(name)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+:"
+                            + " spectrum 'scan=19': its non-standard data array \\(MS:1000786\\) is named '" + name
+                            + "', the accession of an array type");
+        }
+    }
+
     @Test
     void secondAxisAndIntensityArraysAreDropped(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> withArray(withArray(s, SCAN_19,
@@ -873,6 +894,21 @@ class MzMLReaderRunTest {
         assertThat(run.reader.survey().spectrumIds()).containsExactly("scan=19", "scan=20", "scan=19",
                 "sample=1 period=1 cycle=22 experiment=1");
         assertThat(run.spectra.get(1).description().primaryPrecursor().precursorIndex()).isZero();
+    }
+
+    @Test
+    void aScanInstrumentConfigurationRefNamingNoneReadsAsNullWithAWarning(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "instrumentConfigurationRef=\"LCQ_x0020_Deca\"",
+                "instrumentConfigurationRef=\"missing_IC\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).description().scans()).extracting(ScanEvent::instrumentConfigurationRef)
+                .containsExactly((Integer) null);
+        assertThat(run.spectra.get(1).description().scans()).extracting(ScanEvent::instrumentConfigurationRef)
+                .containsExactly(0);
+        assertThat(run.reader.warnings()).contains(
+                "B-39 instrument configuration refs that name no instrument configuration read as null (1)");
     }
 
     @Test
@@ -1467,6 +1503,17 @@ class MzMLReaderRunTest {
                 + extra + "</binaryDataArrayList>";
         String spectrum = s.substring(start, from).replace("defaultArrayLength=\"15\"", "defaultArrayLength=\"2\"");
         return s.substring(0, start) + spectrum + arrays + s.substring(end);
+    }
+
+    /** {@code s} with scan=19 of default array length {@code length} holding the binaryDataArrays {@code arrays}. */
+    private static String spectrum19With(String s, int length, String... arrays) {
+        int start = s.indexOf(SCAN_19);
+        int from = s.indexOf("<binaryDataArrayList", start);
+        int end = s.indexOf("</binaryDataArrayList>", from) + "</binaryDataArrayList>".length();
+        String spectrum = s.substring(start, from).replace("defaultArrayLength=\"15\"",
+                "defaultArrayLength=\"" + length + "\"");
+        return s.substring(0, start) + spectrum + "<binaryDataArrayList count=\"" + arrays.length + "\">\n"
+                + String.join("", arrays) + "</binaryDataArrayList>" + s.substring(end);
     }
 
     /** A binaryDataArray of 64-bit floats without compression, with the array type term {@code type}. */

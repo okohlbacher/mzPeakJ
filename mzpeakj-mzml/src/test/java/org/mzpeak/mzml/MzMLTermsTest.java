@@ -628,11 +628,22 @@ class MzMLTermsTest {
         assertThat(MzMLTerms.collapse(null)).isNull();
     }
 
+    /**
+     * Java's {@code $} also matches before a final U+0085, U+2028 or U+2029, which are no XML whitespace: the
+     * whitespace before them stays, as in XSD and JAXB collapse (MJ-5 note 1).
+     */
+    @Test
+    void whitespaceBeforeAFinalLineTerminatorThatIsNoXmlWhitespaceStays() {
+        assertThat(MzMLTerms.collapse("a \u0085")).isEqualTo("a \u0085");
+        assertThat(MzMLTerms.collapse(" a \t\u2028")).isEqualTo("a \u2028");
+        assertThat(MzMLTerms.collapse("a\n\u2029 ")).isEqualTo("a \u2029");
+    }
+
     @Test
     void collapseGivesWhatTheEarlierEndsFirstOrderGave() {
-        // the order before MJ-5: ends removed first, then the inner runs; '$' also matches before a final line
-        // terminator, so U+0085, U+2028 and U+2029 are drawn too
-        Pattern ends = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+$");
+        // the order before MJ-5: ends removed first, then the inner runs; the end anchored at the end of input, not
+        // with '$', which also matches before a final line terminator, so U+0085, U+2028 and U+2029 are drawn too
+        Pattern ends = Pattern.compile("^[ \\t\\n\\r]+|[ \\t\\n\\r]+\\z");
         Pattern runs = Pattern.compile("[ \\t\\n\\r]+");
         String alphabet = " \t\n\ra \u0085  ";
         Random random = new Random(5);

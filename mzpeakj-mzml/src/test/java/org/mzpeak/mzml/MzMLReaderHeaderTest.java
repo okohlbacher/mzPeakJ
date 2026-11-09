@@ -505,6 +505,74 @@ class MzMLReaderHeaderTest {
         assertThatThrownBy(() -> new MzMLReader(null)).isInstanceOf(NullPointerException.class);
     }
 
+    /** A directory fails while the parser reads it, not when it is opened; it is still unreadable, not malformed. */
+    @Test
+    void aDirectoryIsAnMzPeakExceptionWithTheIoCause(@TempDir Path dir) {
+        assertThatThrownBy(() -> new MzMLReader(dir).header())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("mzML " + dir + ": cannot read: ")
+                .hasCauseInstanceOf(IOException.class);
+    }
+
+    @Test
+    void aParserErrorThatAnIoErrorCausedIsUnreadableAndAnyOtherMalformed() {
+        Path file = Path.of("x.mzML");
+        IOException io = new IOException("disk gone");
+        XMLStreamException causeOnly = new XMLStreamException("wrapped");
+        causeOnly.initCause(io);
+        XMLStreamException other = new XMLStreamException("boom", new IllegalStateException("state"));
+
+        assertThat(MzMLReader.failure(file, new XMLStreamException("wrapped", io)))
+                .hasMessage("mzML x.mzML: cannot read: disk gone").hasCause(io);
+        assertThat(MzMLReader.failure(file, causeOnly)).hasMessage("mzML x.mzML: cannot read: disk gone").hasCause(io);
+        assertThat(MzMLReader.failure(file, other)).hasMessage("mzML x.mzML: boom").hasCause(other);
+    }
+
+    /**
+     * JDK 17 and 21 set no element depth limit by default (set here as the system default), and the reader's
+     * recursion over nested elements ended in a StackOverflowError; the reader limits the depth to 100 itself.
+     */
+    @Test
+    void elementsNestedDeeperThan100AreRejectedWithTheirLineAndColumn(@TempDir Path dir) throws IOException {
+        String nested = "<x>".repeat(200_000) + "</x>".repeat(200_000);
+        Path file = tinyWith(dir, s -> replaceOnce(s, "<fileContent>", nested + "\n      <fileContent>"));
+        String property = "jdk.xml.maxElementDepth";
+        String previous = System.getProperty(property);
+        System.setProperty(property, "0");
+        try {
+            assertThatThrownBy(() -> new MzMLReader(file).header())
+                    .isInstanceOf(MzPeakException.class)
+                    .hasCauseInstanceOf(XMLStreamException.class)
+                    .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line " + lineOf(file, "<x>")
+                            + " column \\d+: JAXP00010006: .*\"101\".*\"100\".*");
+        } finally {
+            if (previous == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, previous);
+            }
+        }
+    }
+
+    @Test
+    void aRunDefaultInstrumentConfigurationRefNamingNoneReadsAsNullWithAWarning(@TempDir Path dir)
+            throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(s, "defaultInstrumentConfigurationRef=\"LCQ_x0020_Deca\"",
+                "defaultInstrumentConfigurationRef=\"missing_IC\""));
+
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThat(reader.header().fileMetadata().run().defaultInstrumentId()).isNull();
+        assertThat(reader.warnings()).contains(
+                "B-39 instrument configuration refs that name no instrument configuration read as null (1)");
+
+        // no ref at all (the attribute is required) is null too, but names nothing, so it is no B-39
+        Path none = tinyWith(dir, s -> replaceOnce(s, " defaultInstrumentConfigurationRef=\"LCQ_x0020_Deca\"", ""));
+        MzMLReader noRef = new MzMLReader(none);
+        assertThat(noRef.header().fileMetadata().run().defaultInstrumentId()).isNull();
+        assertThat(noRef.warnings()).noneMatch(w -> w.startsWith("B-39"));
+    }
+
     @Test
     void anOrderThatIsNoIntegerIsRejected(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceOnce(s, "<processingMethod order=\"2\"",

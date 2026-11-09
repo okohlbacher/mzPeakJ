@@ -71,17 +71,21 @@ import java.util.function.DoubleUnaryOperator;
  * extra array keys {@code survey} declares are exactly those {@code read} emits.
  *
  * <p>Invalid input is rejected with an {@link MzPeakException} naming the file, and the line and column where the
- * parser found the fault: malformed XML, a DTD, a root that is neither {@code mzML} nor {@code indexedmzML} around
- * {@code mzML}, an mzML version that does not start with {@code 1.1}, no {@code run}, a
- * {@code referenceableParamGroupRef} naming no group, a missing required attribute this reader needs, and an
- * {@code order} or array length that is not an integer. {@code survey} also rejects what the model cannot carry
- * (design 6.3): an m/z array in a unit other than MS:1000040, an intensity array of a spectrum in a unit other than
- * MS:1000131, a wavelength array in a unit other than UO:0000018, a time array or scan start time in a unit other
- * than minute, second, millisecond or hour, an unsupported binary data type (MS:1000520 16-bit float included) or
- * compression, and m/z and intensity arrays (wavelength or time and intensity arrays) of different declared lengths.
- * The unit of an axis or intensity array is checked even when the other one is missing and both would be dropped
- * (B-9). {@code read} also rejects arrays that cannot be decoded, a decoded length other than the declared one
- * included. A file that cannot be read gives an {@link MzPeakException} with the {@link IOException} as its cause.
+ * parser found the fault: malformed XML, elements nested more than 100 deep, a DTD, a root that is neither
+ * {@code mzML} nor {@code indexedmzML} around {@code mzML}, an mzML version that does not start with {@code 1.1}, no
+ * {@code run}, a {@code referenceableParamGroupRef} naming no group, a missing required attribute this reader needs,
+ * and an {@code order} or array length that is not an integer. {@code survey} also rejects what the model cannot
+ * carry (design 6.3): a non-standard data array (MS:1000786) whose name is the accession of an array type; in the
+ * first usable (typed, not ASCII) array of each main key of a spectrum or chromatogram, the only one whose unit is
+ * checked, an m/z array in a unit other than MS:1000040, an intensity array of a spectrum in a unit other than
+ * MS:1000131, a wavelength array in a unit other than UO:0000018 and a time array in a unit other than minute,
+ * second, millisecond or hour; a scan start time in a unit other than those four; an unsupported binary data type
+ * (MS:1000520 16-bit float included) or compression; and m/z and intensity arrays (wavelength or time and intensity
+ * arrays) of different declared lengths. A further array of a main key is dropped (B-29) without a unit check. The
+ * unit of an axis or intensity array is checked even when the other one is missing and both would be dropped (B-9).
+ * {@code read} also rejects arrays that cannot be decoded, a decoded length other than the declared one included. A
+ * file that cannot be read, a directory included, gives an {@link MzPeakException} with the {@link IOException} as
+ * its cause.
  */
 public final class MzMLReader {
 
@@ -116,6 +120,7 @@ public final class MzMLReader {
     static final String B_30 = "B-30 cvRef aliases replaced by the accession prefix";
     static final String B_31 = "B-31 64-bit integer array values rounded to the nearest double";
     static final String B_33 = "B-33 spectrum references whose kind (local or external) changes on the way back";
+    static final String B_39 = "B-39 instrument configuration refs that name no instrument configuration read as null";
     // Warned by design 5.4 and 5.5, without a loss number.
     static final String BOTH_POLARITIES = "spectra and chromatograms with both scan polarities read as polarity"
             + " unknown, the terms kept as params";
@@ -142,6 +147,11 @@ public final class MzMLReader {
     private static final List<String> SPECTRUM_LOST = List.of("spotID", "sourceFileRef", "dataProcessingRef");
     /** A conversion that leaves the values as they are. */
     private static final DoubleUnaryOperator AS_IS = v -> v;
+    /**
+     * The deepest element nesting read (JAXP's {@code maxElementDepth}); valid mzML nests about 12 deep, and deeper
+     * nesting would overflow the stack of the recursive {@link #element} (JDK 17 and 21 set no limit by default).
+     */
+    private static final int MAX_ELEMENT_DEPTH = 100;
     /**
      * Per model unit that values in other units are converted to (design 5.5, 5.7): times to minutes from seconds,
      * milliseconds and hours; drift times to milliseconds from seconds and minutes.
@@ -291,9 +301,9 @@ public final class MzMLReader {
                 r.close();
             }
         } catch (IOException e) {
-            throw new MzPeakException("mzML " + mzml + ": cannot read: " + e.getMessage(), e);
+            throw cannotRead(mzml, e);
         } catch (XMLStreamException e) {
-            throw malformed(mzml, e);
+            throw failure(mzml, e);
         }
     }
 
@@ -308,6 +318,7 @@ public final class MzMLReader {
         factory.setProperty(XMLInputFactory.IS_NAMESPACE_AWARE, true);
         factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
         factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+        factory.setProperty("http://www.oracle.com/xml/jaxp/properties/maxElementDepth", MAX_ELEMENT_DEPTH);
         return factory;
     }
 
@@ -454,8 +465,13 @@ public final class MzMLReader {
         if (run.attr("sampleRef") != null) {
             losses.note(B_7);
         }
-        MsRun msRun = new MsRun(run.attr("id"), icIds.map().get(run.attr("defaultInstrumentConfigurationRef")),
-                defaultDataProcessing, run.attr("defaultSourceFileRef"), run.attr("startTimeStamp"), params(run));
+        String defaultIc = run.attr("defaultInstrumentConfigurationRef");
+        Integer defaultInstrument = icIds.map().get(defaultIc);
+        if (defaultIc != null && defaultInstrument == null) {
+            losses.note(B_39);
+        }
+        MsRun msRun = new MsRun(run.attr("id"), defaultInstrument, defaultDataProcessing,
+                run.attr("defaultSourceFileRef"), run.attr("startTimeStamp"), params(run));
         FileMetadata fileMetadata = new FileMetadata(description, List.copyOf(instruments), dataProcessing, samples,
                 software, msRun);
         return new Header(fileMetadata, scanSettings, cvList);
@@ -759,8 +775,8 @@ public final class MzMLReader {
 
     /**
      * A scan of {@code spectrum} (design 5.5): its start time in minutes (NaN if absent); injection time in ms, filter
-     * string (verbatim), preset scan configuration and instrument configuration (rule IC) promoted; its windows with
-     * both limits in m/z.
+     * string (verbatim), preset scan configuration and instrument configuration (rule IC; a ref naming none is null,
+     * B-39) promoted; its windows with both limits in m/z.
      */
     private ScanEvent scan(Node scan, Node spectrum) {
         List<Param> params = new ArrayList<>(params(scan));
@@ -793,8 +809,10 @@ public final class MzMLReader {
                 windows.add(new ScanWindow(lower, upper));
             }
         }
-        return new ScanEvent(startTime, injectionTime, filter, preset,
-                icIds.get(scan.attr("instrumentConfigurationRef")), reference(scan, true), windows, params);
+        String icRef = scan.attr("instrumentConfigurationRef");
+        Integer ic = icIds.get(icRef);
+        note(B_39, icRef != null && ic == null ? 1 : 0);
+        return new ScanEvent(startTime, injectionTime, filter, preset, ic, reference(scan, true), windows, params);
     }
 
     /**
@@ -882,7 +900,8 @@ public final class MzMLReader {
 
     /**
      * The binaryDataArrays of {@code owner}, a spectrum or chromatogram. A data type or compression that cannot be
-     * decoded is rejected here, for every array, before any is decoded.
+     * decoded is rejected here, for every array, before any is decoded, as is a non-standard data array whose name is
+     * the accession of an array type, under whose key it would replace or displace that array.
      */
     private List<Array> arrays(Node owner) {
         List<Array> arrays = new ArrayList<>();
@@ -907,7 +926,14 @@ public final class MzMLReader {
             String key = null;
             String unit = null;
             if (type != null) {
-                key = type.hasAccession(NON_STANDARD_ARRAY) ? text(a, NON_STANDARD_ARRAY) : type.accession();
+                key = type.accession();
+                if (type.hasAccession(NON_STANDARD_ARRAY)) {
+                    key = text(a, NON_STANDARD_ARRAY);
+                    if (CvTerms.ARRAY_TYPES.containsKey(key)) {
+                        throw error(a, describe(owner) + ": its non-standard data array (" + NON_STANDARD_ARRAY
+                                + ") is named '" + key + "', the accession of an array type");
+                    }
+                }
                 unit = type.unit();
             }
             String context = "mzML " + mzml + " line " + a.line + " column " + a.column + ", " + describe(owner)
@@ -1126,6 +1152,21 @@ public final class MzMLReader {
 
     private static String place(Path file, int line, int column) {
         return "mzML " + file + " line " + line + " column " + column + ": ";
+    }
+
+    /** An I/O error reading {@code file}, with {@code e} as the cause. */
+    private static MzPeakException cannotRead(Path file, IOException e) {
+        return new MzPeakException("mzML " + file + ": cannot read: " + e.getMessage(), e);
+    }
+
+    /**
+     * The parser's error as an {@link MzPeakException}: as {@link #cannotRead} when an {@link IOException} caused it
+     * (its nested exception or cause; the parser reads the file as it goes, so a directory fails here), else as
+     * {@link #malformed}.
+     */
+    static MzPeakException failure(Path file, XMLStreamException e) {
+        Throwable io = e.getNestedException() instanceof IOException ? e.getNestedException() : e.getCause();
+        return io instanceof IOException cause ? cannotRead(file, cause) : malformed(file, e);
     }
 
     /**
