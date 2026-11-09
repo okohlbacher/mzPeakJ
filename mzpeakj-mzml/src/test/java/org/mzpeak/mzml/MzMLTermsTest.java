@@ -498,9 +498,24 @@ class MzMLTermsTest {
                 .isEqualTo(new MzMLTerms.Repaired("x\ufffd\ud83d\ude00\ufffd", true));
     }
 
+    /** JZ-5: the C1 controls are replaced too (design 5.3, A-28); DEL before them and NBSP after them are kept. */
+    @Test
+    void c1ControlsBecomeTheReplacementCharacter() {
+        for (String c1 : List.of("\u0080", "\u0085", "\u009f")) {
+            assertThat(MzMLTerms.xmlSafe("a" + c1 + "b"))
+                    .as("U+%04X", (int) c1.charAt(0)).isEqualTo(new MzMLTerms.Repaired("a\ufffdb", true));
+        }
+        assertThat(MzMLTerms.xmlSafe("\u0080\u009f")).isEqualTo(new MzMLTerms.Repaired("\ufffd\ufffd", true));
+        for (String kept : List.of("\u007f", "\u00a0", "a\u007f\u00a0b")) {
+            MzMLTerms.Repaired safe = MzMLTerms.xmlSafe(kept);
+            assertThat(safe.repaired()).as("U+%04X", (int) kept.charAt(0)).isFalse();
+            assertThat(safe.value()).isSameAs(kept);
+        }
+    }
+
     @Test
     void textXmlCanCarryIsReturnedUnchanged() {
-        for (String good : List.of("", "plain", "\t\n\r", "\ud83d\ude00", "a\ud83d\ude00b", " \u007f\u0085\ud7ff",
+        for (String good : List.of("", "plain", "\t\n\r", "\ud83d\ude00", "a\ud83d\ude00b", " \u007f\u00a0\ud7ff",
                 "\ue000\ufffd\ufdd0", "\u00e4")) {
             MzMLTerms.Repaired safe = MzMLTerms.xmlSafe(good);
             assertThat(safe.repaired()).as(good).isFalse();
