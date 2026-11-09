@@ -2,11 +2,16 @@ package org.mzpeak.mzml;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.ComponentType;
@@ -30,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -502,6 +508,41 @@ class MzMLReaderHeaderTest {
 
         assertThat(run.defaultDataProcessingId()).isNull();
         assertThat(run.id()).isEqualTo("Experiment_x0020_1");
+    }
+
+    /**
+     * An empty spectrumList, also self-closed, keeps its default data processing (design 5.1), against which the
+     * chromatograms keep their own: sic's equals it (null), tic's differs.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"<spectrumList count=\"0\" defaultDataProcessingRef=\"pwiz_processing\"></spectrumList>",
+            "<spectrumList count=\"0\" defaultDataProcessingRef=\"pwiz_processing\"/>"})
+    void anEmptySpectrumListKeepsItsDefault(String spectrumList, @TempDir Path dir) throws IOException {
+        Path file = plainTiny(dir, s -> s.replaceAll("(?s)<spectrumList .*</spectrumList>", spectrumList));
+        MzMLReader reader = new MzMLReader(file);
+        List<Chromatogram> chromatograms = new ArrayList<>();
+
+        assertThat(reader.header().fileMetadata().run().defaultDataProcessingId()).isEqualTo("pwiz_processing");
+        assertThat(reader.survey()).isEqualTo(new MzMLReader.Survey(List.of(), List.of(), Set.of(), 2));
+        reader.read(new MzMLReader.Visitor() {
+            @Override
+            public void spectrum(Spectrum spectrum) {
+                throw new AssertionError(spectrum.description().id());
+            }
+
+            @Override
+            public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
+                throw new AssertionError(spectrum.id());
+            }
+
+            @Override
+            public void chromatogram(Chromatogram chromatogram) {
+                chromatograms.add(chromatogram);
+            }
+        });
+
+        assertThat(chromatograms).extracting(Chromatogram::id, Chromatogram::dataProcessingRef).containsExactly(
+                tuple("tic", "CompassXtract_x0020_processing"), tuple("sic", null));
     }
 
     @Test
