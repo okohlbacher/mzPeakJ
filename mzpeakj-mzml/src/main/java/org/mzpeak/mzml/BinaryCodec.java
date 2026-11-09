@@ -96,8 +96,8 @@ final class BinaryCodec {
      * @throws MzPeakException for an unsupported data type or compression, invalid Base64, a corrupt zlib or
      *                         Numpress payload, a zlib stream that inflates to more bytes than {@code declaredLength}
      *                         allows (or a {@code declaredLength} that allows more than a byte array holds) or that is
-     *                         followed by more bytes, a linear or SLOF fixed point that is not finite or not above 0
-     *                         in a payload with values, or a decoded length other than {@code declaredLength}
+     *                         followed by more bytes, a linear or SLOF fixed point of 0 or NaN in a payload with
+     *                         values, or a decoded length other than {@code declaredLength}
      */
     static Decoded decode(String base64, String dataType, List<String> compressionTerms, int declaredLength,
                           String context) {
@@ -291,9 +291,13 @@ final class BinaryCodec {
      * The values of a Numpress payload. PIC goes through {@code decodePic} with a buffer of two values per byte, since
      * {@code MSNumpress.decode} rejects PIC payloads under 8 bytes; its counts come back sign-extended from 2^31 on
      * (the vendored {@code IntDecoder}), and since a count is never negative, 2^32 is added to every negative value.
-     * A linear or SLOF payload with values must have a fixed point (its first 8 bytes, read as
-     * {@code MSNumpress.decodeFixedPoint} reads them) that is finite and above 0; the reference decoders return NaN or
-     * Infinity for another. A header without values uses none, so its fixed point is not checked.
+     * A linear or SLOF payload with values must not have the fixed point (its first 8 bytes, read as
+     * {@code MSNumpress.decodeFixedPoint} reads them) 0, of either sign, or NaN: the reference decoders divide by it
+     * and return NaN or infinite values (SLOF at -0.0 also -1). Every other fixed point is accepted, infinite and
+     * negative ones included: {@code MSNumpress.optimalLinearFixedPoint}, the algorithm of the C++ reference encoder,
+     * gives +Infinity for [0.0] and [0.0, 0.0] and a negative fixed point for [-1.0] and [-2.0, -1.0], and the
+     * reference decoder reads those payloads back exactly. A header without values uses none, so its fixed point is
+     * not checked.
      */
     private static double[] decodeNumpress(byte[] bytes, String codec, String context) {
         double[] buffer = new double[bytes.length * 2];
@@ -311,9 +315,9 @@ final class BinaryCodec {
         }
         if (!codec.equals(PIC) && n > 0) {
             double fixedPoint = MSNumpress.decodeFixedPoint(bytes);
-            if (!(fixedPoint > 0) || fixedPoint == Double.POSITIVE_INFINITY) {
+            if (fixedPoint == 0 || Double.isNaN(fixedPoint)) {
                 throw new MzPeakException("MS-Numpress " + NAMES.get(codec) + " fixed point " + fixedPoint
-                        + " is not a finite number above 0 in " + context);
+                        + " is 0 or NaN in " + context);
             }
         }
         double[] values = Arrays.copyOf(buffer, n);

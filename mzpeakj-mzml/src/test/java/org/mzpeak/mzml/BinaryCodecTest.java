@@ -827,32 +827,69 @@ class BinaryCodecTest {
     }
 
     /**
-     * A linear or SLOF fixed point that is not finite or not above 0 is rejected (the reference decoders return NaN
-     * or Infinity for it), once the payload holds a value; a header without values decodes to none.
+     * A linear or SLOF fixed point of 0, of either sign, or NaN is rejected (the reference decoders divide by it and
+     * return NaN or infinite values), once the payload holds a value; a header without values decodes to none. Every
+     * other fixed point, infinite and negative ones included, decodes to what the reference decoders return.
      */
     @Test
-    void aLinearOrSlofFixedPointThatIsNotFiniteOrNotAbove0IsRejected() {
+    void aLinearOrSlofFixedPointOf0OrNaNIsRejected() {
         assertThatThrownBy(() -> BinaryCodec.decode(base64(new byte[16]), FLOAT64, List.of(LINEAR), 2, CTX))
                 .isExactlyInstanceOf(MzPeakException.class)
-                .hasMessage("MS-Numpress linear fixed point 0.0 is not a finite number above 0 in " + CTX);
+                .hasMessage("MS-Numpress linear fixed point 0.0 is 0 or NaN in " + CTX);
         assertThatThrownBy(() -> BinaryCodec.decode(base64(new byte[10]), FLOAT64, List.of(SLOF), 1, CTX))
                 .isExactlyInstanceOf(MzPeakException.class)
-                .hasMessage("MS-Numpress SLOF fixed point 0.0 is not a finite number above 0 in " + CTX);
-        for (double fixedPoint : new double[] {-100.0, Double.NaN, Double.POSITIVE_INFINITY}) {
-            byte[] linear = new byte[16];
-            MSNumpress.encodeFixedPoint(fixedPoint, linear);
-            linear[8] = 10;
+                .hasMessage("MS-Numpress SLOF fixed point 0.0 is 0 or NaN in " + CTX);
+        for (double fixedPoint : new double[] {-0.0, Double.NaN}) {
+            byte[] linear = linearWithFixedPoint(fixedPoint);
             assertThatThrownBy(() -> BinaryCodec.decode(base64(deflate(linear)), FLOAT64, List.of(LINEAR_ZLIB), 2,
                     CTX)).isExactlyInstanceOf(MzPeakException.class)
-                    .hasMessage("MS-Numpress linear fixed point " + fixedPoint + " is not a finite number above 0 in "
-                            + CTX);
+                    .hasMessage("MS-Numpress linear fixed point " + fixedPoint + " is 0 or NaN in " + CTX);
             byte[] slof = Arrays.copyOf(linear, 10);
             assertThatThrownBy(() -> BinaryCodec.decode(base64(slof), FLOAT64, List.of(SLOF), 1, CTX))
-                    .hasMessage("MS-Numpress SLOF fixed point " + fixedPoint + " is not a finite number above 0 in "
-                            + CTX);
+                    .isExactlyInstanceOf(MzPeakException.class)
+                    .hasMessage("MS-Numpress SLOF fixed point " + fixedPoint + " is 0 or NaN in " + CTX);
+        }
+        for (double fixedPoint : new double[] {-100.0, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            byte[] linear = linearWithFixedPoint(fixedPoint);
+            double[] reference = new double[32];
+            int n = MSNumpress.decodeLinear(linear, linear.length, reference);
+            assertThat(BinaryCodec.decode(base64(deflate(linear)), FLOAT64, List.of(LINEAR_ZLIB), 2, CTX).values())
+                    .as("linear %s", fixedPoint).containsExactly(Arrays.copyOf(reference, n));
+            byte[] slof = Arrays.copyOf(linear, 10);
+            n = MSNumpress.decodeSlof(slof, slof.length, reference);
+            assertThat(BinaryCodec.decode(base64(slof), FLOAT64, List.of(SLOF), 1, CTX).values())
+                    .as("SLOF %s", fixedPoint).containsExactly(Arrays.copyOf(reference, n));
         }
         assertThat(BinaryCodec.decode(base64(new byte[8]), FLOAT64, List.of(LINEAR), 0, CTX).values()).isEmpty();
         assertThat(BinaryCodec.decode(base64(new byte[8]), FLOAT64, List.of(SLOF), 0, CTX).values()).isEmpty();
+    }
+
+    /**
+     * {@code MSNumpress.optimalLinearFixedPoint}, the algorithm of the C++ reference encoder, gives +Infinity for
+     * [0.0] (a one-point chromatogram at RT 0.0) and [0.0, 0.0] and a negative fixed point for [-1.0] and
+     * [-2.0, -1.0]; the reference decoder reads these payloads back exactly, and so does decode, alone and after zlib.
+     */
+    @Test
+    void referenceLinearPayloadsWithAnInfiniteOrNegativeFixedPointDecodeExactly() {
+        double[][] cases = {{0.0}, {-1.0}, {0.0, 0.0}, {-2.0, -1.0}};
+        double[] fixedPoints = {Double.POSITIVE_INFINITY, -4294967295.0, Double.POSITIVE_INFINITY, -2147483647.0};
+        for (int c = 0; c < cases.length; c++) {
+            double[] values = cases[c];
+            double fixedPoint = MSNumpress.optimalLinearFixedPoint(values, values.length);
+            assertThat(fixedPoint).as("fixed point of %s", Arrays.toString(values)).isEqualTo(fixedPoints[c]);
+            byte[] out = new byte[8 + 5 * values.length];
+            byte[] payload = Arrays.copyOf(out, MSNumpress.encodeLinear(values, values.length, out, fixedPoint));
+            double[] reference = new double[2 * payload.length];
+            assertThat(Arrays.copyOf(reference, MSNumpress.decodeLinear(payload, payload.length, reference)))
+                    .as("reference decoding of %s", Arrays.toString(values)).containsExactly(values);
+
+            assertThat(BinaryCodec.decode(base64(payload), FLOAT64, List.of(LINEAR), values.length, CTX).values())
+                    .as("%s", Arrays.toString(values)).containsExactly(values);
+            for (List<String> terms : List.of(List.of(LINEAR_ZLIB), List.of(ZLIB, LINEAR))) {
+                assertThat(BinaryCodec.decode(base64(deflate(payload)), FLOAT64, terms, values.length, CTX).values())
+                        .as("%s with %s", Arrays.toString(values), terms).containsExactly(values);
+            }
+        }
     }
 
     @Test
@@ -986,6 +1023,14 @@ class BinaryCodecTest {
             buffer.putLong(v);
         }
         return buffer.array();
+    }
+
+    /** A 16-byte linear payload of two values, 10 and 0 before the division by {@code fixedPoint}. */
+    private static byte[] linearWithFixedPoint(double fixedPoint) {
+        byte[] linear = new byte[16];
+        MSNumpress.encodeFixedPoint(fixedPoint, linear);
+        linear[8] = 10;
+        return linear;
     }
 
     private static String base64(byte[] bytes) {
