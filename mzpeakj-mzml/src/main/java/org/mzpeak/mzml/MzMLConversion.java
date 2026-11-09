@@ -50,10 +50,11 @@ import java.util.Set;
  * through {@link MzMLWriter}. It removes what the mzPeak writer adds where the run names no source file or data
  * processing and the file has none (design 5.10): a source file {@code mzpeakj_source} named {@code unknown} at
  * {@code file:///unknown} without params, and a data processing {@code mzpeakj_export} without methods, and the
- * run's default that names a removed one. The writer's cv list is the dataset's, followed by an entry for each CV
- * prefix that the params of the spectra (their scans, precursors, selected ions and activations included) and of the
- * wavelength spectra use, as accession or unit, and the dataset's list lacks: that of {@link CvEntry#known()} in its
- * order, then the prefix alone, which the writer completes (design 5.11).
+ * run's default that names a removed one. The writer is given the dataset's cv list and announced every CV prefix
+ * that the params of the spectra (their scans, precursors, selected ions and activations included) and of the
+ * wavelength spectra use, as accession or unit; it adds MS, UO and every prefix in use that the dataset's list lacks,
+ * as {@link CvEntry#known()} declares it and in its order, then the prefix alone, and counts them as A-17 (design
+ * 5.11, 6.2).
  *
  * <p>Each {@link Result} carries the warnings of its direction: for {@code toMzPeak} the reader's limit and loss lines,
  * then the conversion's own; for {@code toMzML} the writer's.
@@ -148,10 +149,11 @@ public final class MzMLConversion {
             List<WavelengthSpectrum> wavelengthSpectra = reader.wavelengthSpectra();
             List<Chromatogram> chromatograms = reader.chromatograms();
             MzMLWriter.Contents contents = new MzMLWriter.Contents(withoutStubs(reader.fileMetadata()),
-                    reader.scanSettings(), cvList(reader.manifest().cvList(), spectra, wavelengthSpectra),
+                    reader.scanSettings(), reader.manifest().cvList(),
                     spectra.stream().map(SpectrumDescription::id).toList(),
                     wavelengthSpectra.stream().map(WavelengthSpectrum::id).toList(), chromatograms);
-            try (MzMLWriter writer = MzMLWriter.open(target, contents, zlib)) {
+            try (MzMLWriter writer = MzMLWriter.open(target, contents, zlib,
+                    spectrumPrefixes(spectra, wavelengthSpectra))) {
                 for (int i = 0; i < spectra.size(); i++) {
                     writer.write(reader.getSpectrumAt(i));
                 }
@@ -293,13 +295,12 @@ public final class MzMLConversion {
     }
 
     /**
-     * {@code declared} followed by an entry for each CV prefix the params of {@code spectra} (with their scans,
-     * isolation windows, selected ions and activations) and of {@code wavelengthSpectra} use, as accession or unit,
-     * that {@code declared} lacks: the entry of {@link CvEntry#known()}, in its order, then the prefix alone, in the
-     * order first used (design 5.11, 8.1).
+     * The CV prefixes the params of {@code spectra} (with their scans, isolation windows, selected ions and
+     * activations) and of {@code wavelengthSpectra} use, as accession or unit, in the order first used (design 5.11,
+     * 8.1).
      */
-    private static List<CvEntry> cvList(List<CvEntry> declared, List<SpectrumDescription> spectra,
-                                        List<WavelengthSpectrum> wavelengthSpectra) {
+    private static Set<String> spectrumPrefixes(List<SpectrumDescription> spectra,
+                                                List<WavelengthSpectrum> wavelengthSpectra) {
         List<List<Param>> lists = new ArrayList<>();
         for (SpectrumDescription d : spectra) {
             lists.add(d.parameters());
@@ -321,15 +322,7 @@ public final class MzMLConversion {
             }
         }
         used.remove("");
-        declared.forEach(cv -> used.remove(cv.id()));
-        List<CvEntry> list = new ArrayList<>(declared);
-        for (CvEntry known : CvEntry.known()) {
-            if (used.remove(known.id())) {
-                list.add(known);
-            }
-        }
-        used.forEach(prefix -> list.add(new CvEntry(prefix, null, null, null)));
-        return list;
+        return used;
     }
 
     /**

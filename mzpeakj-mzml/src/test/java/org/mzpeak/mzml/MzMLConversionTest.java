@@ -63,8 +63,8 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * JZ-7: {@link MzMLConversion} in both directions (mzML design 3, 5.6, 5.10, 6.1, 6.2, 8.1, 12.4), under the default
  * time zone UTC, restored after each test. (a) Smoke round trips B: tiny and small, each read by {@link MzMLReader}
  * before and after mzML -> mzPeak -> mzML, equal up to A-26 for tiny, every output valid and the warnings pinned.
- * (b) Smoke round trips A: small.mzpeak and Example_Processed through mzML and back, equal up to the A exclusions of
- * design 12.4. (c) Branch documents derived from tiny, and mzPeak inputs written with {@link MzPeakWriter}: refs whose
+ * (b) Smoke round trips A: small.mzpeak, Example_Processed and legacy small.mzpeak through mzML and back, equal up to
+ * the A exclusions of design 12.4, with the toMzML warnings and the cv lists pinned (A-17). (c) Branch documents derived from tiny, and mzPeak inputs written with {@link MzPeakWriter}: refs whose
  * kind is kept or changes (B-33), the losses the conversion counts (B-19, B-26, B-34, B-35, B-36), A-26, and the
  * removal of the mzPeak writer's stubs. (d) Failures: the clean-up after a failed conversion, the early target check of
  * {@code toMzML} and gzip input.
@@ -153,18 +153,38 @@ class MzMLConversionTest {
 
     // ---- (b) smoke round trips A: mzPeak -> mzML -> mzPeak -------------------------------------------------------
 
+    /**
+     * Name, dataset, the exclusions of design 12.4 with the differences each hides, the number of spectra, the loss
+     * lines of toMzML, the CVs of the mzML and of the mzPeak written from it, and whether the mzML of that mzPeak is
+     * byte-identical to the first (design 12.5: the current fixtures are normal; the legacy ones gain the summary params
+     * in the mzPeak). Legacy small declares no CV, so the mzML declares MS and UO (A-17, 2); Example_Processed uses
+     * IMS too (A-17, 3), declared after UO as CvEntry.known() orders them.
+     */
     static Stream<Arguments> mzPeakFixtures() {
         Map<Exclusion, Integer> example = new LinkedHashMap<>();
         example.put(ModelAssert.A_7, 9);
         example.put(ModelAssert.A_17, 1);
-        return Stream.of(arguments("small.mzpeak", Map.of(ModelAssert.A_7, 48), 48L),
-                arguments("Example_Processed.img.mzpeak", example, 9L));
+        Map<Exclusion, Integer> legacy = new LinkedHashMap<>();
+        legacy.put(ModelAssert.A_7, 48);
+        legacy.put(ModelAssert.A_9, 48);
+        legacy.put(ModelAssert.A_16, 48 + 5 * 48); // a type and five summary params per spectrum
+        legacy.put(ModelAssert.A_17, 1);
+        return Stream.of(
+                arguments("small.mzpeak", Fixtures.current("small.mzpeak"), Map.of(ModelAssert.A_7, 48), 48L,
+                        List.of(MzMLWriter.A_7 + " (48)"), List.of("MS", "UO"), true),
+                arguments("Example_Processed.img.mzpeak", Fixtures.current("Example_Processed.img.mzpeak"), example,
+                        9L, List.of(MzMLWriter.A_17 + " (3)", MzMLWriter.A_7 + " (9)"), List.of("MS", "UO", "IMS"),
+                        true),
+                arguments("legacy small.mzpeak", Fixtures.legacy("small.mzpeak"), legacy, 48L,
+                        List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_16 + " (48)", MzMLWriter.A_9 + " (48)",
+                                MzMLWriter.A_7 + " (48)"), List.of("MS", "UO"), false));
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("mzPeakFixtures")
-    void mzPeakFixtureComesBackEqualUpToTheExclusionsOfA(String name, Map<Exclusion, Integer> hidden, long spectra) {
-        Path fixture = Fixtures.current(name);
+    void mzPeakFixtureComesBackEqualUpToTheExclusionsOfA(String name, Path fixture, Map<Exclusion, Integer> hidden,
+                                                         long spectra, List<String> losses, List<String> cvs,
+                                                         boolean normal) throws IOException {
         Path mzml = dir.resolve("a.mzML");
         Path back = dir.resolve("back.mzpeak");
 
@@ -174,12 +194,18 @@ class MzMLConversionTest {
 
         assertThat(toMzML.spectra()).isEqualTo(spectra);
         assertThat(toMzPeak.spectra()).isEqualTo(spectra);
-        assertThat(toMzML.warnings()).startsWith(MzMLWriter.LIMITS.toArray(String[]::new));
+        assertThat(toMzML.warnings()).containsExactlyElementsOf(writerLimits(losses.toArray(String[]::new)));
         assertThat(toMzPeak.warnings()).startsWith(MzMLReader.LIMITS.toArray(String[]::new));
+        assertThat(new MzMLReader(mzml).header().cvList()).extracting(CvEntry::id).containsExactlyElementsOf(cvs);
         Map<String, Integer> counts = new LinkedHashMap<>();
         hidden.forEach((exclusion, n) -> counts.put(exclusion.id(), n));
-        assertThat(ModelAssert.assertEqual(name + " A", Model.load(fixture), Model.load(back), STRICT,
+        Model a = Model.load(back);
+        assertThat(a.cvList()).extracting(CvEntry::id).containsExactlyElementsOf(cvs);
+        assertThat(ModelAssert.assertEqual(name + " A", Model.load(fixture), a, STRICT,
                 hidden.keySet().toArray(Exclusion[]::new)).hidden()).isEqualTo(counts);
+        Path again = dir.resolve("again.mzML");
+        MzMLConversion.toMzML(back, again, true);
+        assertThat(Files.mismatch(mzml, again) == -1L).as("the mzML of the mzPeak is the first").isEqualTo(normal);
     }
 
     /**
@@ -211,8 +237,9 @@ class MzMLConversionTest {
         MzMLAssert.valid(mzml);
         assertThat(List.of(toMzML.spectra(), toMzML.wavelengthSpectra(), toMzML.chromatograms()))
                 .containsExactly(2L, 1L, 1L);
-        assertThat(toMzML.warnings()).contains(MzMLWriter.CV_COMPLETED + " (1)");
-        assertThat(model(mzml).cvList()).contains(new CvEntry("XX", "XX", "unknown", null));
+        assertThat(toMzML.warnings()).contains(MzMLWriter.A_17 + " (1)", MzMLWriter.CV_COMPLETED + " (1)");
+        assertThat(model(mzml).cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1),
+                new CvEntry("XX", "XX", "unknown", null));
 
         Path back = dir.resolve("back");
         MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, true, MzPeakWriter.Options.defaults());

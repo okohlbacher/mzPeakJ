@@ -654,6 +654,33 @@ class MzMLWriterSpectraTest {
         }
     }
 
+    /**
+     * The CV prefixes the conversion announces for the spectra are declared like those the contents use: after the
+     * contents' cv list, MS, UO and the known ones in the order of CvEntry.known(), then the others as announced, and
+     * every one the contents' cv list lacks counted in the single A-17 line (design 5.11, 6.2).
+     */
+    @Test
+    void theCvPrefixesAnnouncedForTheSpectraAreDeclaredInTheKnownOrderAndCountedAsA17() {
+        Param bto = new Param("tissue", "BTO:0000142", null, null);
+        Param xx = new Param("custom", "XX:0000001", 1.5, null);
+        Param ims = new Param("pixel size", "IMS:1000046", 10.0, "UO:0000017");
+        Spectrum s = spectrum(description("scan=1", 1, List.of(scan(1.0)), List.of(), List.of(xx, ims, bto)));
+        Contents contents = new Contents(metadata(), List.of(), List.of(), List.of("scan=1"), List.of(), List.of());
+        Path target = dir.resolve("announced.mzML");
+
+        try (MzMLWriter writer = MzMLWriter.open(target, contents, true, new LinkedHashSet<>(List.of("XX", "IMS",
+                "UO", "BTO")))) {
+            writer.write(s);
+            writer.finish();
+            assertThat(writer.warnings()).startsWith(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
+                    MzMLWriter.A_17 + " (5)", MzMLWriter.CV_COMPLETED + " (1)");
+        }
+        MzMLAssert.valid(target);
+        ReadBack back = read(target);
+        assertThat(back.header().cvList()).extracting(CvEntry::id).containsExactly("MS", "UO", "BTO", "IMS", "XX");
+        assertThat(back.spectra().get(0).description().parameters()).contains(xx, ims, bto);
+    }
+
     // ---- (i) determinism ----------------------------------------------------------------------------------------
 
     @Test
