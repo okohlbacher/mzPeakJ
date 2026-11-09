@@ -19,8 +19,7 @@ import java.util.Set;
  * 12.2, MJ-4): the count must equal the number of the element's child elements other than {@code cvParam},
  * {@code userParam} and {@code referenceableParamGroupRef}, so {@code scanList} counts its scans,
  * {@code componentList} its components and {@code indexList} its indexes. No other oracle checks the counts that the
- * mzML writer sets by hand: the schema accepts any non-negative count, {@link IndexedMzMLVerifier} checks only those
- * of {@code spectrumList}, {@code chromatogramList} and {@code indexList}, and {@code MzMLReader} ignores counts.
+ * mzML writer sets by hand: the schema accepts any non-negative count and {@code MzMLReader} ignores counts.
  */
 public final class MzMLCountCheck {
 

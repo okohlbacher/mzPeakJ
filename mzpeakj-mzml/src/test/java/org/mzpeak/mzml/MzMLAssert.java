@@ -8,10 +8,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The validity gate for mzML that tests write (mzML design 12.2): {@link MzMLSchema} validation, the
- * {@link MzMLCountCheck} and, for an {@code <indexedmzML>} document, the {@link IndexedMzMLVerifier}. Every test that
- * writes mzML calls {@link #valid(Path)} on every option variant it writes (plain, FLOAT32/64, no zlib, each Numpress
- * combination).
+ * The validity gate for mzML that tests write (mzML design 12.2), for plain mzML only: the root element is
+ * {@code <mzML>} (the converter writes plain mzML only), {@link MzMLSchema} validation ({@code mzML1.1.0.xsd} for the
+ * plain root) and the {@link MzMLCountCheck}. Every test that writes mzML calls {@link #valid(Path)} on every zlib
+ * variant it writes.
  */
 public final class MzMLAssert {
 
@@ -19,25 +19,23 @@ public final class MzMLAssert {
     }
 
     /**
-     * Fails with an {@link AssertionError} that lists every schema problem, every count problem and every index
-     * problem of {@code file}; returns normally when there are none. A document whose root element cannot be read
-     * has only its schema problems.
+     * Fails with an {@link AssertionError} that lists every problem of {@code file}: a root element other than
+     * {@code <mzML>}, every schema problem and every count problem; returns normally when there are none. A document
+     * whose root element cannot be read has only its schema problems.
      */
     public static void valid(Path file) {
         List<String> problems = new ArrayList<>();
         try {
+            String root = root(file);
+            if (root != null && !MzMLSchema.PLAIN_ROOT.equals(root)) {
+                problems.add("root " + root + ": the converter writes plain mzML only");
+            }
             for (String p : MzMLSchema.validate(file)) {
                 problems.add("schema: " + p);
             }
-            String root = root(file);
             if (root != null) {
                 for (String p : MzMLCountCheck.problems(file)) {
                     problems.add("count: " + p);
-                }
-            }
-            if (MzMLSchema.INDEXED_ROOT.equals(root)) {
-                for (String p : IndexedMzMLVerifier.verify(file)) {
-                    problems.add("index: " + p);
                 }
             }
         } catch (IOException e) {
