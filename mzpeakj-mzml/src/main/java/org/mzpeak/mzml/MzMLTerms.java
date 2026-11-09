@@ -483,7 +483,8 @@ final class MzMLTerms {
 
     /**
      * {@code text} with every character XML 1.0 cannot carry (C0 controls other than tab, LF and CR; U+FFFE; U+FFFF;
-     * unpaired surrogates) replaced by U+FFFD. Unchanged text is returned as the same instance.
+     * unpaired surrogates) and every C1 control (U+0080-U+009F, which jmzML's writer replaces anyway) replaced by
+     * U+FFFD. Unchanged text is returned as the same instance.
      */
     static Repaired xmlSafe(String text) {
         StringBuilder out = new StringBuilder(text.length());
@@ -492,7 +493,8 @@ final class MzMLTerms {
             char c = text.charAt(i);
             if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
                 out.append(c).append(text.charAt(++i));
-            } else if (c >= 0x20 ? c < 0xD800 || c > 0xDFFF && c < 0xFFFE : c == '\t' || c == '\n' || c == '\r') {
+            } else if (c >= 0x20 ? (c < 0x80 || c > 0x9F) && (c < 0xD800 || c > 0xDFFF && c < 0xFFFE)
+                    : c == '\t' || c == '\n' || c == '\r') {
                 out.append(c);
             } else {
                 out.append('\uFFFD');
