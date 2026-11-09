@@ -41,7 +41,11 @@ public record FileMetadata(FileDescription fileDescription,
      */
     public record Contact(String name, String affiliation, List<Param> parameters) {
 
-        /** Copies the list; a {@code null} list becomes an empty one. */
+        /**
+         * The params are unmodifiable, a copy of the given list; a {@code null} list becomes an empty one.
+         *
+         * @throws NullPointerException when {@code parameters} holds a {@code null} element
+         */
         public Contact {
             parameters = parameters == null ? List.of() : List.copyOf(parameters);
         }
@@ -50,7 +54,12 @@ public record FileMetadata(FileDescription fileDescription,
     /** The {@code file_description}: the file content params, the source files and the contacts. */
     public record FileDescription(List<Param> contents, List<SourceFile> sourceFiles, List<Contact> contacts) {
 
-        /** Copies the contacts; a {@code null} list of them becomes an empty one. */
+        /**
+         * The contacts are unmodifiable, a copy of the given list; a {@code null} list of them becomes an empty one.
+         * The contents and source files are kept as given.
+         *
+         * @throws NullPointerException when {@code contacts} holds a {@code null} element
+         */
         public FileDescription {
             contacts = contacts == null ? List.of() : List.copyOf(contacts);
         }

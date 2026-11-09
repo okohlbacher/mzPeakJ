@@ -32,8 +32,11 @@ public record ScanSettings(String id, List<Param> parameters, List<String> sourc
                            List<List<Param>> targets) {
 
     /**
-     * Copies every list, {@code targets} with each of its param lists; a {@code null} list, also a {@code null}
-     * target, becomes an empty one.
+     * Every list is unmodifiable, a copy of the given list, {@code targets} with each of its param lists; a
+     * {@code null} list, also a {@code null} target, becomes an empty one.
+     *
+     * @throws NullPointerException when {@code parameters}, {@code sourceFileRefs} or a target holds a {@code null}
+     *                              element
      */
     public ScanSettings {
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
