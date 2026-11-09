@@ -57,7 +57,7 @@ The repository is a Maven reactor (parent `pom.xml`) with two modules:
 | Module | Artifact | Contents | Jars in `<module>/target/` |
 |---|---|---|---|
 | `mzpeakj/` | `org.mzpeak:mzpeakj` | the mzPeak library (reader, writer, CLI, examples) | `mzpeakj-<version>.jar`, `mzpeakj-<version>-all.jar` (self-contained), `mzpeakj-<version>-tests.jar` (test helpers) |
-| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML reader (mzML → mzPeakJ model, read-only, `org.mzpeak.mzml`), on top of the library: the header and the run region (spectra, chromatograms, their arrays) are read through jmzML 1.7.11 as is, arrays decoded by jmzML's codec; there is no mzML writer, `MzMLConversion` or `MzPeakConvert` CLI yet (the gates GATE-Q28..Q31, Q33 were answered by the maintainer's decisions of 2026-11-09) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library, mzML reader, jmzML and the JAXB runtime, self-contained; no entry point) |
+| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML ↔ mzPeak converter on top of the library, through jmzML 1.7.11 as is: `MzMLReader` (mzML → mzPeakJ model), `MzMLWriter` (model → plain mzML) and `MzMLConversion` (both directions) in `org.mzpeak.mzml`, and the CLI `org.mzpeak.mzml.cli.MzPeakConvert` (see [mzML conversion](#mzml-conversion)) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library, converter, jmzML and the JAXB runtime, self-contained; no `Main-Class`: run the CLI with `-cp`) |
 
 `mvn -pl mzpeakj verify` builds and tests the library alone. The mzML module needs the library from the same
 build: select it with `-pl mzpeakj-mzml -am`, never with `-pl mzpeakj-mzml` alone (Maven would then look for
@@ -387,6 +387,132 @@ One `.dta` per spectrum (`<base>.<scan>.<scan>.<charge>.dta`); first line `<MH+>
 ```
 Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--tol-ppm` or `--tol-da`.
 
+## mzML conversion
+
+The module `mzpeakj-mzml` converts mzML 1.1 to mzPeak and mzPeak to mzML through jmzML 1.7.11 as is
+(`org.mzpeak.mzml.MzMLConversion`; `MzMLReader` and `MzMLWriter` are public too). The command-line tool runs from
+the module's self-contained jar, which `mvn verify` (or `mvn -DskipTests package`) builds:
+
+```bash
+java [-Xmx...] -cp mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar org.mzpeak.mzml.cli.MzPeakConvert \
+    [--help] [options] <input> <output>
+
+jar=$(ls mzpeakj-mzml/target/mzpeakj-mzml-*-all.jar)
+java -cp "$jar" org.mzpeak.mzml.cli.MzPeakConvert mzpeakj-mzml/src/test/resources/mzml/tiny.pwiz.1.1.mzML /tmp/tiny.mzpeak
+java -Xmx2g -cp "$jar" org.mzpeak.mzml.cli.MzPeakConvert mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/small.mzML
+```
+
+On JDK 24 and later, `--enable-native-access=ALL-UNNAMED` before `-cp` silences the JDK's warning about the native
+zstd library, as `run-example.sh` does.
+
+The direction comes from the names, case-insensitive:
+
+| Input | Output | Written as |
+|---|---|---|
+| `<input>.mzML` (plain or indexedmzML, not gzipped) | `<output>.mzpeak` | a single-file ZIP archive; with `--directory` an unpacked directory |
+| `<input>.mzpeak` (ZIP) or a dataset directory | `<output>.mzML` | plain mzML 1.1.0, 64-bit float arrays, zlib-compressed unless `--no-zlib` |
+
+| Option | Output | Effect |
+|---|---|---|
+| `--no-zlib` | mzML | arrays without compression (default: zlib) |
+| `--directory` | mzPeak | an unpacked directory instead of a ZIP archive |
+| `--layout split\|packed` | mzPeak | metadata layout, default `split` (see [Options and the metadata layout](#options-and-the-metadata-layout)) |
+| `--numpress-slof`, `--numpress-pic` | mzPeak | spectra in MS-Numpress chunks: linear m/z with SLOF or PIC intensity (one of the two). Values the codecs cannot encode, such as negative or non-finite ones or PIC intensities that round above 2147483647, fail the conversion (`MzPeakWriter.SignalEncoding.NUMPRESS` lists the ranges) |
+| `--row-group-size <bytes>` | mzPeak | Parquet row-group size, a positive number |
+| `--help` | | the usage, the options, the limits below and the memory rule |
+
+On success, stdout gets one line, `wrote <output>: N spectra, M wavelength spectra, K chromatograms`. stderr gets a
+`warning: ` line for each warning of the library as it happens (such as an m/z array written re-sorted), and after
+the run one for each limit of the direction and one for each kind of loss, with its count. Exit codes:
+
+- `0`: the output was written (warnings allowed).
+- `1`: the conversion failed, with `error: <message>` on stderr: the input cannot be read or holds what the
+  converter rejects (below), or the output cannot be written. No output and no temp file is left. For input whose
+  tags do not match, xxindex (jmzML's indexer) prints its own diagnostic lines to stdout first.
+- `2`: a usage error, with `error: <message>` and the usage line on stderr; nothing is written. An unknown option, an
+  option given twice or without its value, a missing or extra argument, an option for the other direction, both
+  Numpress options, a layout other than `split` or `packed`, a row-group size that is no positive number, an input
+  ending in `.mzML.gz` ("gunzip it first: jmzML 1.7.11 cannot read gzip-compressed mzML"), an input that is neither
+  `.mzML`, `.mzpeak` nor a directory, an output with the wrong extension, an output that exists ("remove it first":
+  an output is never replaced).
+
+### Limits
+
+jmzML as is sets these limits. Each is printed as a `warning:` line on every conversion in its direction; the texts
+are `MzMLReader.LIMITS` and `MzMLWriter.LIMITS`, and `--help` prints them.
+
+Reading mzML:
+
+- **L-1 Index and open files.** jmzML indexes the whole input before it reads the first spectrum (a byte scan at
+  about 60 MB/s) and keeps the index in memory while the reader lives, about 0.3-0.5 KB per spectrum. A reader keeps
+  two file handles on the input open until the garbage collector finalizes jmzML's objects (never, when finalization
+  is disabled); `MzMLReader` has no `close()`. On Windows the input cannot be moved or deleted meanwhile.
+- **L-2 Run params.** `cvParam`, `userParam` and `referenceableParamGroupRef` directly under `run` are not read.
+- **L-3 C1 controls.** The characters U+0080-U+009F in the input are read as U+FFFD.
+- **L-4 userParam units.** `unitAccession`, `unitName` and `unitCvRef` of userParams are not read.
+- **L-5 Undeclared encoding.** A file whose XML declaration names no encoding is read as US-ASCII: every byte >= 0x80
+  becomes U+FFFD. ProteoWizard and OpenMS always declare the encoding; the converter's own mzML output does not, so
+  non-ASCII text in it is read back as U+FFFD.
+- **L-6 Lenient input.** The document is taken as jmzML and JAXB read it: elements the schema does not allow are
+  skipped, of two singleton children the last is kept, Base64 is decoded leniently (characters outside the alphabet
+  skipped, an unpadded final group dropped, misplaced padding decoded into other bytes), a truncated zlib payload
+  gives a shorter array, declared array lengths are not checked against the decoded ones, a missing integer attribute
+  reads as 0, references are not whitespace-collapsed, and errors carry no line or column (one found while the index
+  is built names no element). A zlib payload with a preset dictionary makes the conversion hang (jmzML's decoder never
+  returns), and a zlib bomb, a payload that inflates without bound, exhausts the heap (`OutOfMemoryError`): convert
+  only input you trust. When tags do not match, xxindex prints diagnostics (its tag stack) to stdout.
+
+Gzip-compressed mzML is not read at all: gunzip it first. Rejected with an `MzPeakException` (exit 1 in the CLI):
+gzipped input (a name ending in `.gz`, in any case: "gzip-compressed mzML is not supported by jmzML 1.7.11 as is:
+gunzip it first"; the CLI reports a `.mzML.gz` input as a usage error); UTF-16 and UTF-32 documents; a `run`,
+`spectrumList` or `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of it; arrays
+compressed with the combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748; MS-Numpress PIC counts
+of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
+intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or wavelength
+or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type terms on
+one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the attributes of
+`run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads them, so a
+character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80 becomes U+FFFD
+(a default ref with such a byte then names nothing, while the header lists keep the character).
+
+Writing mzML:
+
+- **L-8 Plain mzML.** The output has no `indexedmzML` wrapper: no index, no offsets, no checksum. Tools that need
+  random access (ProteoWizard, OpenMS) index a plain file when they open it.
+- **L-9 Whole document in memory.** jmzML has no streaming writer, so the whole document is built in memory before it
+  is written: about 0.75 bytes of heap per byte of the arrays' Base64 text plus 13 KB per spectrum.
+
+Every write through jmzML's `MzMLMarshaller` sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
+to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`. It changes no output, and the CLI's JVM ends with the run, but
+code that embeds `MzMLWriter` or `MzMLConversion.toMzML` keeps the property for every later user of the StAX output
+factory in its JVM.
+
+### Memory
+
+mzML → mzPeak reads one spectrum at a time and keeps about 2.5 KB per spectrum (jmzML's index and the mzPeak
+writer's entries): 300,000 spectra need about `-Xmx2g`. mzPeak → mzML holds the whole mzML document (L-9); give it
+
+**`-Xmx` >= expected mzML size + 13 KB per spectrum + 1 GB**
+
+which errs on the safe side. The largest mzML output for a heap, estimated from the measurements of the converter's
+design (it works up to about 90% of `-Xmx`):
+
+| `-Xmx` | spectra like small.mzML's (67.5 KB of mzML each) | spectra of 15 points (3.5 KB of mzML each) |
+|---|---|---|
+| 1 GB | ≈ 10,700 spectra, ≈ 0.7 GB of mzML | ≈ 48,000 spectra, ≈ 0.16 GB of mzML |
+| 4 GB | ≈ 58,500 spectra, ≈ 3.85 GB | ≈ 260,000 spectra, ≈ 0.9 GB |
+| 16 GB | ≈ 249,000 spectra, ≈ 16.4 GB | ≈ 1.1 million spectra, ≈ 3.8 GB |
+
+A JVM that runs out of heap while the document is built fails with `OutOfMemoryError`.
+
+### What is lost
+
+Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
+kind with its count: B-1 … B-40 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
+converted to minutes or lost array data processing refs, and A-1 … A-30 for mzPeak → mzML, such as required content
+synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
+lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
+
 ## Architecture
 
 For format internals and decode decisions (manifest roles and zip64, the split metadata tables and their
@@ -402,6 +528,7 @@ readers, the fixture sets and golden oracles), see **[DESIGN.md](DESIGN.md)**.
 | `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, `SignalQuery`, `ColumnStatistics`, source abstraction (`MzPeakSource`, `RandomAccessBytes`; `DirectorySource` / `ZipSource` / `UnpackedSource`), metadata + array + chromatogram + wavelength stores |
 | `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O: `ParquetGroups` (type-variance-safe accessors), `ZstdCompressionCodecFactory`, `ByteArrayInputFile`, `FileSliceInputFile` |
 | `org.mzpeak.cli` / `org.mzpeak.examples` | Runnable demonstrator tools |
+| `org.mzpeak.mzml` / `org.mzpeak.mzml.cli` (module `mzpeakj-mzml`) | mzML ↔ mzPeak through jmzML: `MzMLReader`, `MzMLWriter`, `MzMLConversion`; the CLI `MzPeakConvert` |
 
 **Parquet without Hadoop:** mzPeak Parquet files are ZSTD-compressed. Rather than using parquet-java's
 default Hadoop-based codec factory, mzPeakJ supplies a `ZstdCompressionCodecFactory` backed by the
@@ -484,6 +611,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
   `mzpeak-validate` gate currently fails (validator 0.9.25 predates the array-index schema; whether the CV
   list of `PACKED` output must declare IMS is undecided), so validation is not claimed.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
+- mzML ↔ mzPeak conversion in both directions (`mzpeakj-mzml`, CLI `MzPeakConvert`), see
+  [mzML conversion](#mzml-conversion).
 - Tests on both vendored fixture sets, checked against golden outputs of the upstream Python reader
   (JDK 17 + 21 via GitHub Actions CI). Opt-in corpus gates
   (`CorpusTest`, `ValidatedRoundTripTest`, `ForwardBackwardCorpusTest`, enabled with
@@ -506,37 +635,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - **Grid models**: the timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional; grids are
   decoded in spectrum signal members only.
 - **Predicate/page-level pushdown** within a row group (whole row groups are skipped by min/max stats, but all pages within a selected group are decoded).
-- **mzML reader** (`mzpeakj-mzml`, `MzMLReader`): the document is read through jmzML 1.7.11 as is, with these
-  limits, which `MzMLReader.warnings()` lists first once the file was opened:
-  - L-1 the whole input is indexed before the first element is read, and the index stays in memory while the
-    reader lives (about 0.3-0.5 KB per spectrum; a byte scan of the whole file at about 60 MB/s); the reader keeps
-    two file handles on the input open until the garbage collector finalizes jmzML's objects (never with
-    finalization disabled), so on Windows the input cannot be moved or deleted meanwhile
-  - L-2 run-level params (cvParam, userParam, referenceableParamGroupRef directly under run) are not read
-  - L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD
-  - L-4 userParam units (unitAccession, unitName, unitCvRef) are not read
-  - L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD
-  - L-6 the input is taken as jmzML and JAXB read it: elements the schema does not allow are skipped; of two
-    singleton children the last is kept; Base64 is decoded leniently (characters outside the alphabet skipped, an
-    unpadded final group dropped, misplaced padding decoded into other bytes); a truncated zlib payload gives a
-    shorter array; a zlib payload with a preset dictionary is never decoded (the conversion does not end) and a
-    zlib payload is inflated without bound (a zip bomb ends in OutOfMemoryError); declared array lengths are not
-    checked against the decoded ones; a missing integer attribute reads as 0; refs are not whitespace-collapsed;
-    errors carry no line or column, and an error found while the index is built names no element; xxindex prints
-    its tag stack to stdout when tags do not match
-
-  Rejected with an `MzPeakException`: gzipped input (a name ending in `.gz`, in any case: "gzip-compressed mzML is
-  not supported by jmzML 1.7.11 as is: gunzip it first"); UTF-16 and UTF-32 documents; a `run`, `spectrumList` or
-  `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of it; arrays compressed with the
-  combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748; MS-Numpress PIC counts of 2^31 and
-  above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
-  intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
-  wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data
-  type terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40 in
-  `warnings()`: the attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as
-  jmzML's index reads them, so a character or entity reference stays as written and, whatever the declared
-  encoding, each byte >= 0x80 becomes U+FFFD (a default ref with such a byte then names nothing, while the header
-  lists keep the character).
+- **mzML conversion** (`mzpeakj-mzml`): jmzML 1.7.11 as is indexes the whole input, reads it leniently and cannot
+  read gzip; the mzML output is plain mzML, built in memory as a whole. See [mzML conversion](#mzml-conversion) for
+  the limits L-1 … L-6, L-8 and L-9, the rejected input and the memory rule.
 - No **Maven Central** publication yet.
 
 ## Development
