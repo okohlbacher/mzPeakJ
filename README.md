@@ -507,5 +507,11 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders (`mzpeakj/src/main/java/ms/numpress/`)
 - Apache-2.0 HUPO-PSI mzPeak example fixtures (`mzpeakj/src/test/resources/`)
 - mzML test fixtures and the PSI mzML schemas (`mzpeakj-mzml/src/test/resources/mzml/`)
+- in the two `-all` jars only, the runtime libraries: parquet-java 1.17.1, Jackson 2.18.2, hadoop-client-api 3.5.0,
+  snappy-java 1.1.10.7, aircompressor 2.0.2 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
+  jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);
+  slf4j-api and slf4j-nop 1.7.33 (MIT). Each `-all` jar carries their licence and notice files (`META-INF/`, those
+  of several jars concatenated), this project's as `META-INF/LICENSE.mzpeakj` and `META-INF/NOTICE.mzpeakj`, and
+  the texts of [licenses/](licenses/) as `META-INF/LICENSE.<file name>`.
 
 See [NOTICE](NOTICE).
