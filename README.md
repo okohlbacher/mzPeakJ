@@ -57,7 +57,7 @@ The repository is a Maven reactor (parent `pom.xml`) with two modules:
 | Module | Artifact | Contents | Jars in `<module>/target/` |
 |---|---|---|---|
 | `mzpeakj/` | `org.mzpeak:mzpeakj` | the mzPeak library (reader, writer, CLI, examples) | `mzpeakj-<version>.jar`, `mzpeakj-<version>-all.jar` (self-contained), `mzpeakj-<version>-tests.jar` (test helpers) |
-| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML reader (mzML → mzPeakJ model, read-only, `org.mzpeak.mzml`), on top of the library: the run region (spectra, chromatograms, their arrays) is read through jmzML 1.7.11 as is, arrays decoded by jmzML's codec, and the header through own StAX code until JZ-4 moves it onto jmzML; there is no mzML writer, `MzMLConversion` or `MzPeakConvert` CLI yet (the gates GATE-Q28..Q31, Q33 were answered by the maintainer's decisions of 2026-11-09) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library, mzML reader, jmzML and the JAXB runtime, self-contained; no entry point) |
+| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML reader (mzML → mzPeakJ model, read-only, `org.mzpeak.mzml`), on top of the library: the header and the run region (spectra, chromatograms, their arrays) are read through jmzML 1.7.11 as is, arrays decoded by jmzML's codec; there is no mzML writer, `MzMLConversion` or `MzPeakConvert` CLI yet (the gates GATE-Q28..Q31, Q33 were answered by the maintainer's decisions of 2026-11-09) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library, mzML reader, jmzML and the JAXB runtime, self-contained; no entry point) |
 
 `mvn -pl mzpeakj verify` builds and tests the library alone. The mzML module needs the library from the same
 build: select it with `-pl mzpeakj-mzml -am`, never with `-pl mzpeakj-mzml` alone (Maven would then look for
@@ -506,12 +506,13 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - **Grid models**: the timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional; grids are
   decoded in spectrum signal members only.
 - **Predicate/page-level pushdown** within a row group (whole row groups are skipped by min/max stats, but all pages within a selected group are decoded).
-- **mzML reader** (`mzpeakj-mzml`, `MzMLReader`): the run is read through jmzML 1.7.11 as is, with these limits,
-  which `MzMLReader.warnings()` lists first once the run was read:
+- **mzML reader** (`mzpeakj-mzml`, `MzMLReader`): the document is read through jmzML 1.7.11 as is, with these
+  limits, which `MzMLReader.warnings()` lists first once the file was opened:
   - L-1 the whole input is indexed before the first element is read, and the index stays in memory while the
     reader lives (about 0.3-0.5 KB per spectrum; a byte scan of the whole file at about 60 MB/s); the reader keeps
     two file handles on the input open until the garbage collector finalizes jmzML's objects (never with
     finalization disabled), so on Windows the input cannot be moved or deleted meanwhile
+  - L-2 run-level params (cvParam, userParam, referenceableParamGroupRef directly under run) are not read
   - L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD
   - L-4 userParam units (unitAccession, unitName, unitCvRef) are not read
   - L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD
@@ -524,13 +525,18 @@ classes statically reference Hadoop types — but it is never actually invoked.
     errors carry no line or column, and an error found while the index is built names no element; xxindex prints
     its tag stack to stdout when tags do not match
 
-  Rejected with an `MzPeakException`: gzipped input (`.mzML.gz`: gunzip it first; it fails with an XML encoding
-  error, "Invalid byte 1 of 1-byte UTF-8 sequence"); UTF-16 and UTF-32 documents; arrays compressed with the
+  Rejected with an `MzPeakException`: gzipped input (a name ending in `.gz`, in any case: "gzip-compressed mzML is
+  not supported by jmzML 1.7.11 as is: gunzip it first"); UTF-16 and UTF-32 documents; a `run`, `spectrumList` or
+  `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of it; arrays compressed with the
   combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748; MS-Numpress PIC counts of 2^31 and
   above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
   intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
   wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data
-  type terms on one array, jmzML decodes by the one it knows, and the other is not checked.
+  type terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40 in
+  `warnings()`: the attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as
+  jmzML's index reads them, so a character or entity reference stays as written and, whatever the declared
+  encoding, each byte >= 0x80 becomes U+FFFD (a default ref with such a byte then names nothing, while the header
+  lists keep the character).
 - No **Maven Central** publication yet.
 
 ## Development

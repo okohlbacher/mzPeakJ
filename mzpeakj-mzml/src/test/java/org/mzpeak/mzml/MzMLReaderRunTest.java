@@ -506,11 +506,11 @@ class MzMLReaderRunTest {
         assertThat(survey.wavelengthSpectrumIds()).isUnmodifiable();
         assertThat(survey.spectrumArrays()).isUnmodifiable();
         List<String> warnings = reader.warnings();
-        assertThat(warnings).hasSize(9).startsWith(MzMLReader.LIMITS.toArray(String[]::new));
-        assertThat(MzMLReader.LIMITS).extracting(w -> w.substring(0, 4)).containsExactly("L-1 ", "L-3 ", "L-4 ",
-                "L-5 ", "L-6 ");
-        assertThat(warnings.subList(5, 9)).extracting(w -> w.substring(0, 4))
-                .containsExactlyInAnyOrder("B-1 ", "B-3 ", "B-5 ", "B-7 ");
+        assertThat(warnings).hasSize(10).startsWith(MzMLReader.LIMITS.toArray(String[]::new));
+        assertThat(MzMLReader.LIMITS).extracting(w -> w.substring(0, 4)).containsExactly("L-1 ", "L-2 ", "L-3 ",
+                "L-4 ", "L-5 ", "L-6 ");
+        assertThat(warnings.subList(6, 10)).extracting(w -> w.substring(0, 4))
+                .containsExactly("B-3 ", "B-1 ", "B-5 ", "B-7 ");
     }
 
     // ---- (e) rejected input --------------------------------------------------------------------------------------
@@ -710,26 +710,23 @@ class MzMLReaderRunTest {
     }
 
     /**
-     * A UTF-16 document cannot be indexed (xxindex reads it byte by byte): header() reads it, survey() fails while
-     * jmzML builds its index. A UTF-32 document fails in header() already: the JDK parser does not know that encoding.
+     * A UTF-16 or UTF-32 document cannot be indexed (xxindex reads it byte by byte): header() fails while jmzML builds
+     * its index, before any element.
      */
     @Test
-    void aUtf16DocumentIsRejectedBySurveyAndAUtf32OneByHeader(@TempDir Path dir) throws IOException {
+    void aUtf16OrUtf32DocumentIsRejectedWhileJmzmlBuildsItsIndex(@TempDir Path dir) throws IOException {
         String tiny = Files.readString(MzMLFixtures.extract(MzMLFixtures.TINY, dir), StandardCharsets.ISO_8859_1);
         Path utf16 = Files.writeString(dir.resolve("tiny-utf16.mzML"),
                 replaceOnce(tiny, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-16\""), StandardCharsets.UTF_16);
         Path utf32 = Files.writeString(dir.resolve("tiny-utf32.mzML"),
                 replaceOnce(tiny, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-32\""), Charset.forName("UTF-32"));
 
-        assertThat(new MzMLReader(utf16).header().fileMetadata().run().id()).isEqualTo("Experiment_x0020_1");
-        assertThatThrownBy(() -> new MzMLReader(utf16).survey())
-                .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("mzML " + utf16 + ": Invalid ID in xml: ")
-                .cause().isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> new MzMLReader(utf32).survey())
-                .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("mzML " + utf32 + " line 1 column ")
-                .hasMessageEndingWith(": Invalid encoding name \"UTF-32\".");
+        for (Path file : List.of(utf16, utf32)) {
+            assertThatThrownBy(() -> new MzMLReader(file).header())
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("mzML " + file + ": Invalid ID in xml: ")
+                    .cause().isInstanceOf(IllegalStateException.class);
+        }
     }
 
     /** A spectrum JAXB cannot parse (a duplicated attribute) is named by its position only: jmzML returned none. */

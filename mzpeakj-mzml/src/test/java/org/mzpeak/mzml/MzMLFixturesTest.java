@@ -7,7 +7,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.WavelengthSpectrum;
 
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
@@ -49,7 +52,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * with a message naming the line, count or element at fault; {@link MzMLAssert}, for plain mzML only (JZ-2), is run on
  * a plain copy of tiny and its mutations and rejects the indexed root of the vendored tiny. MJ-4 adds the hardening of
  * the MZ-12 notes (the chromatogram precursor control) and the count check. The facts of mzML design 12.1 that later
- * units rely on are pinned at the end.
+ * units rely on are pinned at the end; JZ-4 compares the spectra, points and chromatograms this class finds with its
+ * own StAX with those of {@link MzMLReader}'s model (f).
  */
 class MzMLFixturesTest {
 
@@ -58,6 +62,8 @@ class MzMLFixturesTest {
             "<cvParam cvRef=\"MS\" accession=\"MS:1000133\" name=\"collision-induced dissociation\" value=\"\"/>";
     private static final String NO_COMBINATION_PARAM =
             "<cvParam cvRef=\"MS\" accession=\"MS:1000795\" name=\"no combination\" value=\"\"/>";
+    private static final String MZ_ARRAY = "MS:1000514";
+    private static final String WAVELENGTH_ARRAY = "MS:1000617";
 
     static Stream<String> fixtures() {
         return MzMLFixtures.NAMES.stream();
@@ -556,16 +562,118 @@ class MzMLFixturesTest {
                 .doesNotContain("MS:1000528", "MS:1000527", "MS:1000504"));
     }
 
+    // ---- (f) the facts against MzMLReader's model (JZ-4) -----------------------------------------------------------
+
+    @Test
+    void tinyHasFourMsSpectraAndTwoChromatogramsInTheReadersModel(@TempDir Path dir) throws IOException {
+        Path file = MzMLFixtures.extract(TINY, dir);
+        Counts facts = Facts.of(file).counts();
+        Counts model = Counts.of(new MzMLReader(file));
+
+        assertThat(List.of(facts.msSpectra(), facts.wavelengthSpectra(), facts.chromatograms()))
+                .containsExactly(4, 0, 2);
+        assertThat(List.of(model.msSpectra(), model.wavelengthSpectra(), model.chromatograms()))
+                .isEqualTo(List.of(facts.msSpectra(), facts.wavelengthSpectra(), facts.chromatograms()));
+    }
+
+    @Test
+    void smallHas48SpectraWith305213PointsAndOneChromatogramInTheReadersModel(@TempDir Path dir)
+            throws IOException {
+        assertFactsOfTheReadersModel(MzMLFixtures.extract(MzMLFixtures.SMALL, dir),
+                new Counts(48, 305_213, 0, 0, 1));
+    }
+
+    @Test
+    void tofSulfasHas212MsAnd520WavelengthSpectraAndTwoChromatogramsInTheReadersModel(@TempDir Path dir)
+            throws IOException {
+        assertFactsOfTheReadersModel(MzMLFixtures.extract(MzMLFixtures.TOFSULFAS, dir),
+                new Counts(212, 24_310, 520, 49_920, 2));
+    }
+
+    @Test
+    void diaPasefHas9SpectraWith291453PointsAndTwoChromatogramsInTheReadersModel(@TempDir Path dir)
+            throws IOException {
+        assertFactsOfTheReadersModel(MzMLFixtures.extract(MzMLFixtures.DIAPASEF, dir),
+                new Counts(9, 291_453, 0, 0, 2));
+    }
+
+    /** {@code file}'s own StAX facts are {@code expected}, and {@link MzMLReader#read} gives the same. */
+    private static void assertFactsOfTheReadersModel(Path file, Counts expected) throws IOException {
+        Counts facts = Facts.of(file).counts();
+        Counts model = Counts.of(new MzMLReader(file));
+
+        assertThat(facts).isEqualTo(expected);
+        assertThat(model).isEqualTo(facts);
+    }
+
+    /**
+     * Spectra and points of one document: MS spectra (those with an m/z array), wavelength spectra (a wavelength array
+     * and no m/z array) and chromatograms; the points of a spectrum are its {@code defaultArrayLength} in the
+     * document and the length of its m/z (or wavelength) array in the model.
+     */
+    private record Counts(int msSpectra, long msPoints, int wavelengthSpectra, long wavelengthPoints,
+                          int chromatograms) {
+
+        /** What {@code reader.read} gives. */
+        static Counts of(MzMLReader reader) {
+            long[] counts = new long[5];
+            reader.read(new MzMLReader.Visitor() {
+                @Override
+                public void spectrum(Spectrum spectrum) {
+                    counts[0]++;
+                    counts[1] += spectrum.mz().length;
+                }
+
+                @Override
+                public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
+                    counts[2]++;
+                    counts[3] += spectrum.wavelength().length;
+                }
+
+                @Override
+                public void chromatogram(Chromatogram chromatogram) {
+                    counts[4]++;
+                }
+            });
+            return new Counts((int) counts[0], counts[1], (int) counts[2], counts[3], (int) counts[4]);
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------------------------
 
-    /** Counts of one document: spectra, binary data arrays, cvParams of scan lists and spectra, all accessions. */
+    /**
+     * Counts of one document: spectra, binary data arrays, cvParams of scan lists and spectra, all accessions; per
+     * spectrum its {@code defaultArrayLength} and whether it has an m/z or a wavelength array; chromatograms.
+     */
     private static final class Facts {
         int spectra;
         int spectrumArrays;
         int chromatogramArrays;
+        int chromatograms;
         final List<Set<String>> scanLists = new ArrayList<>();
         final List<Set<String>> spectrumParams = new ArrayList<>();
         final Map<String, Integer> occurrences = new HashMap<>();
+        final List<Integer> spectrumLengths = new ArrayList<>();
+        final List<Set<String>> spectrumArrayTypes = new ArrayList<>();
+
+        /** The spectra and points of the document, classified by their array types as the reader does. */
+        Counts counts() {
+            int ms = 0;
+            long msPoints = 0;
+            int wavelength = 0;
+            long wavelengthPoints = 0;
+            for (int i = 0; i < spectra; i++) {
+                Set<String> types = spectrumArrayTypes.get(i);
+                if (types.contains(MZ_ARRAY)) {
+                    ms++;
+                    msPoints += spectrumLengths.get(i);
+                } else if (types.contains(WAVELENGTH_ARRAY)) {
+                    wavelength++;
+                    wavelengthPoints += spectrumLengths.get(i);
+                }
+            }
+            return new Counts(ms, msPoints, wavelength, wavelengthPoints, chromatograms);
+        }
 
         static Facts of(Path file) throws IOException {
             Facts facts = new Facts();
@@ -597,6 +705,13 @@ class MzMLFixturesTest {
                     if ("spectrumList".equals(parent)) {
                         spectra++;
                         spectrumParams.add(new HashSet<>());
+                        spectrumLengths.add(Integer.parseInt(r.getAttributeValue(null, "defaultArrayLength")));
+                        spectrumArrayTypes.add(new HashSet<>());
+                    }
+                }
+                case "chromatogram" -> {
+                    if ("chromatogramList".equals(parent)) {
+                        chromatograms++;
                     }
                 }
                 case "scanList" -> scanLists.add(new HashSet<>());
@@ -615,6 +730,9 @@ class MzMLFixturesTest {
                         spectrumParams.get(spectrumParams.size() - 1).add(accession);
                     } else if ("scanList".equals(parent)) {
                         scanLists.get(scanLists.size() - 1).add(accession);
+                    } else if ("binaryDataArray".equals(parent)
+                            && "spectrum".equals(path.stream().skip(2).findFirst().orElse(""))) {
+                        spectrumArrayTypes.get(spectrumArrayTypes.size() - 1).add(accession);
                     }
                 }
                 default -> {

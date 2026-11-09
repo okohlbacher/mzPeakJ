@@ -31,26 +31,31 @@ import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 import uk.ac.ebi.jmzml.model.mzml.BinaryDataArray;
 import uk.ac.ebi.jmzml.model.mzml.BinaryDataArrayList;
+import uk.ac.ebi.jmzml.model.mzml.CVList;
 import uk.ac.ebi.jmzml.model.mzml.CVParam;
+import uk.ac.ebi.jmzml.model.mzml.ComponentList;
+import uk.ac.ebi.jmzml.model.mzml.DataProcessingList;
+import uk.ac.ebi.jmzml.model.mzml.InstrumentConfigurationList;
 import uk.ac.ebi.jmzml.model.mzml.MzMLObject;
 import uk.ac.ebi.jmzml.model.mzml.ParamGroup;
 import uk.ac.ebi.jmzml.model.mzml.PrecursorList;
+import uk.ac.ebi.jmzml.model.mzml.ReferenceableParamGroup;
+import uk.ac.ebi.jmzml.model.mzml.ReferenceableParamGroupList;
+import uk.ac.ebi.jmzml.model.mzml.SampleList;
 import uk.ac.ebi.jmzml.model.mzml.Scan;
 import uk.ac.ebi.jmzml.model.mzml.ScanList;
+import uk.ac.ebi.jmzml.model.mzml.ScanSettingsList;
 import uk.ac.ebi.jmzml.model.mzml.ScanWindowList;
 import uk.ac.ebi.jmzml.model.mzml.SelectedIonList;
+import uk.ac.ebi.jmzml.model.mzml.SoftwareList;
+import uk.ac.ebi.jmzml.model.mzml.SourceFileList;
+import uk.ac.ebi.jmzml.model.mzml.SourceFileRef;
+import uk.ac.ebi.jmzml.model.mzml.SourceFileRefList;
+import uk.ac.ebi.jmzml.model.mzml.TargetList;
 import uk.ac.ebi.jmzml.model.mzml.UserParam;
 import uk.ac.ebi.jmzml.xml.io.MzMLObjectIterator;
 import uk.ac.ebi.jmzml.xml.io.MzMLUnmarshaller;
 
-import javax.xml.stream.Location;
-import javax.xml.stream.XMLInputFactory;
-import javax.xml.stream.XMLStreamConstants;
-import javax.xml.stream.XMLStreamException;
-import javax.xml.stream.XMLStreamReader;
-import java.io.CharConversionException;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -61,6 +66,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -69,65 +75,64 @@ import java.util.function.DoubleUnaryOperator;
 import java.util.function.Function;
 
 /**
- * Reads an mzML 1.1 document, bare or wrapped in {@code indexedmzML}, into mzPeakJ's model (mzML design 3, 5, 8.1).
+ * Reads an mzML 1.1 document, bare or wrapped in {@code indexedmzML}, into mzPeakJ's model through jmzML 1.7.11 as is
+ * (mzML design 3, 5, 8.1): one {@code MzMLUnmarshaller} per reader, created by the first call of any method, indexes
+ * the whole file and notes the limit lines {@link #LIMITS} (design 6.0). Params come in jmzML's order: an element's
+ * cvParams, then those of its referenced groups, then its userParams and its groups' (design 5.3, Q41); values are
+ * typed by {@link MzMLTerms#value}. What the model cannot hold is counted in {@link #warnings()} (design 6.1). The
+ * input index and checksum are not read.
  *
- * <p>{@link #header()} reads the document with StAX up to the run's {@code spectrumList} or {@code chromatogramList},
- * or the end of the run: namespace-aware, elements matched by local name (so a document without the mzML namespace
- * reads the same), attributes without a namespace; DTDs and external entities are not supported, and a DTD is
- * rejected. It reads the cv list, the file description (contents, source files, contacts), samples, software, scan
- * settings, instrument configurations, data processings and the run (design 5.1). Ids and strings are kept verbatim;
- * param values are typed by {@link MzMLTerms#value}, and a {@code referenceableParamGroupRef} is replaced by the
- * group's params, before the element's own params (design 5.3). What the model cannot hold is counted in
- * {@link #warnings()} (design 6.1). The input index and checksum are not read.
+ * <p>{@link #header()} unmarshals the cv list, the file description (contents, source files, contacts), samples,
+ * software, scan settings, instrument configurations and data processings, and takes the attributes of the run and of
+ * its spectrumList and chromatogramList as written in their start tags (design 5.0, 5.1): a character or entity
+ * reference in them is not resolved, and a value containing {@code &} is counted (B-40); xxindex decodes them as
+ * US-ASCII whatever the declared encoding, so each byte of 0x80 or more becomes U+FFFD, and a value with one is counted
+ * too (B-40). A chromatogram without a data processing of its own takes the {@code chromatogramList}'s default. The
+ * run's params are not read (L-2). Ids are kept as jmzML gives them.
  *
- * <p>{@link #survey()} and {@link #read(Visitor)} read the run through jmzML 1.7.11 as is (design 3, 5.0, 5.4-5.9):
- * one {@code MzMLUnmarshaller} per reader, created by the first of them after the header, indexes the whole file and
- * hands out the spectra and then the chromatograms one at a time. {@code read} maps every spectrum, wavelength spectrum
- * and chromatogram to the model and hands it to a {@link Visitor}, with its arrays decoded by jmzML's codec;
- * {@code survey} runs the same mapping without decoding arrays. Both take every array through one classification by
- * its attributes and terms only, before any array of its element is decoded (design 8.1), so the extra array keys
- * {@code survey} declares are exactly those {@code read} emits. Params come in jmzML's order: an element's cvParams,
- * then those of its referenced groups, then its userParams and its groups' (design 5.3, Q41). The
- * {@code chromatogramList}'s default data processing, which a chromatogram without its own takes, is kept as written in
- * its start tag: a character or entity reference in it is not resolved, and a value containing {@code &} is counted
- * (B-40). Creating the unmarshaller notes the limit lines {@link #LIMITS} (design 6.0).
+ * <p>{@link #survey()} and {@link #read(Visitor)} take the spectra and then the chromatograms one at a time (design
+ * 5.4-5.9). {@code read} maps every spectrum, wavelength spectrum and chromatogram to the model and hands it to a
+ * {@link Visitor}, with its arrays decoded by jmzML's codec; {@code survey} runs the same mapping without decoding
+ * arrays. Both take every array through one classification by its attributes and terms only, before any array of its
+ * element is decoded (design 8.1), so the extra array keys {@code survey} declares are exactly those {@code read}
+ * emits.
  *
- * <p>Invalid input is rejected with an {@link MzPeakException} naming the file. The header names the line and column
- * where the parser found the fault: malformed XML, elements nested more than 100 deep, a DTD, a root that is neither
- * {@code mzML} nor {@code indexedmzML} around {@code mzML}, an mzML version that does not start with {@code 1.1}, no
- * {@code run}, a {@code referenceableParamGroupRef} naming no group, a missing required attribute this reader needs,
- * and an {@code order} that is not an integer. A file that cannot be read, a directory included, gives an
- * {@link MzPeakException} with the {@link IOException} as its cause. In the run (design 6.3, 10), what jmzML cannot
- * index (tags that do not match, no {@code mzML} root) fails with {@code mzML <file>: <message>}; so does a UTF-16
- * document, which {@code header} reads but jmzML cannot index: {@code survey} and {@code read} fail with jmzML's
- * "Invalid ID in xml" (a UTF-32 document fails in {@code header} already: the JDK parser does not know that encoding
- * name). Everything else is named by its element, {@code mzML <file>: spectrum #<n> (<id>): <message>} (or
- * {@code chromatogram}), with {@code n} its 0-based position and the id once jmzML returned the element, and an
- * exception of jmzML, JAXB or the model as its cause. {@code survey} also rejects what the model or jmzML cannot
- * carry: a non-standard data array (MS:1000786) whose name is the accession of an array type; an array compressed with
- * MS:1002746, MS:1002747 or MS:1002748 (MS-Numpress and zlib in one term, which jmzML cannot decode); a data type or
- * compression jmzML cannot decode (MS:1000520 16-bit float, zstd, none), unless a term jmzML knows is present too: then
- * jmzML decodes by that term, and the other is neither checked nor warned about (a second data type term counts as a
- * lost array param, B-21); in the first usable (typed, not ASCII) array of each main key of a
- * spectrum or chromatogram, the only one whose unit is checked, an m/z array in a unit other than MS:1000040, an
- * intensity array of a spectrum in a unit other than MS:1000131, a wavelength array in a unit other than UO:0000018
- * and a time array in a unit other than minute, second, millisecond or hour; a scan start time in a unit other than
- * those four; and m/z and intensity arrays (wavelength or time and intensity arrays) of different declared lengths. A
- * further array of a main key is dropped (B-29) without a unit check. The unit of an axis or intensity array is checked
- * even when the other one is missing and both would be dropped (B-9). {@code read} also rejects an array jmzML cannot
- * decode, among them an MS-Numpress linear array with an empty or header-only payload and an empty SLOF payload
- * (jmzML's decoder throws NegativeArraySizeException), an MS-Numpress PIC count of 2^31 or more (jmzML decodes it as a
- * negative number) and main arrays that decode to different lengths; declared lengths are not checked against the
- * decoded ones (L-6). An empty array under no compression, zlib or MS-Numpress PIC, or an SLOF payload that is its
- * header only, is read as an empty array.
+ * <p>Invalid input is rejected with an {@link MzPeakException} naming the file, without line or column (design 6.3,
+ * 10; L-6). Before jmzML is called: a file name ending in {@code .gz} in any case (jmzML 1.7.11 cannot read gzip) and
+ * a path that is not a readable regular file. What jmzML cannot index (tags that do not match, no {@code mzML} root,
+ * a UTF-16 or UTF-32 document, for which jmzML reports an "Invalid ID in xml") fails with
+ * {@code mzML <file>: <message>}. {@code header} rejects an mzML version that does not start with
+ * {@code 1.1}, a document without {@code run}, and a {@code spectrumList} or {@code chromatogramList} start tag longer
+ * than the 2,048 bytes xxindex reads ({@code mzML <file>: <list>: jmzML cannot read the attributes of its start tag});
+ * a failure while a header list is read or mapped (a {@code referenceableParamGroupRef} naming no group, an attribute
+ * that is no integer) is {@code mzML <file>: <list>: <message>}. In the run, everything is named by its element,
+ * {@code mzML <file>: spectrum #<n> (<id>): <message>} (or {@code chromatogram}), with {@code n} its 0-based position
+ * and the id once jmzML returned the element, and an exception of jmzML, JAXB or the model as its cause.
+ * {@code survey} also rejects what the model or jmzML cannot carry: a non-standard data array (MS:1000786) whose name
+ * is the accession of an array type; an array compressed with MS:1002746, MS:1002747 or MS:1002748 (MS-Numpress and
+ * zlib in one term, which jmzML cannot decode); a data type or compression jmzML cannot decode (MS:1000520 16-bit
+ * float, zstd, none), unless a term jmzML knows is present too: then jmzML decodes by that term, and the other is
+ * neither checked nor warned about (a second data type term counts as a lost array param, B-21); in the first usable
+ * (typed, not ASCII) array of each main key of a spectrum or chromatogram, the only one whose unit is checked, an m/z
+ * array in a unit other than MS:1000040, an intensity array of a spectrum in a unit other than MS:1000131, a
+ * wavelength array in a unit other than UO:0000018 and a time array in a unit other than minute, second, millisecond
+ * or hour; a scan start time in a unit other than those four; and m/z and intensity arrays (wavelength or time and
+ * intensity arrays) of different declared lengths. A further array of a main key is dropped (B-29) without a unit
+ * check. The unit of an axis or intensity array is checked even when the other one is missing and both would be
+ * dropped (B-9). {@code read} also rejects an array jmzML cannot decode, among them an MS-Numpress linear array with
+ * an empty or header-only payload and an empty SLOF payload (jmzML's decoder throws NegativeArraySizeException), an
+ * MS-Numpress PIC count of 2^31 or more (jmzML decodes it as a negative number) and main arrays that decode to
+ * different lengths; declared lengths are not checked against the decoded ones (L-6). An empty array under no
+ * compression, zlib or MS-Numpress PIC, or an SLOF payload that is its header only, is read as an empty array.
  */
 public final class MzMLReader {
 
     /**
-     * The limit lines every reader notes when it first reads the run (design 6.0), before its loss lines:
+     * The limit lines every reader notes when it opens the file (design 6.0), before its loss lines:
      * <ul>
      *   <li>L-1: the whole input is indexed before the first element is read, and the index stays in memory; two
      *       file handles stay open until the garbage collector finalizes jmzML's objects;
+     *   <li>L-2: run-level params are not read;
      *   <li>L-3: C1 control characters in the input are read as U+FFFD;
      *   <li>L-4: userParam units are not read;
      *   <li>L-5: a file whose XML declaration names no encoding is read as US-ASCII;
@@ -142,6 +147,7 @@ public final class MzMLReader {
                     + " the reader keeps two file handles on the input open until the garbage collector finalizes"
                     + " jmzML's objects (never with finalization disabled), so on Windows the input cannot be moved or"
                     + " deleted meanwhile",
+            "L-2 run-level params (cvParam, userParam, referenceableParamGroupRef directly under run) are not read",
             "L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD",
             "L-4 userParam units (unitAccession, unitName, unitCvRef) are not read",
             "L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD",
@@ -189,6 +195,8 @@ public final class MzMLReader {
     static final String B_39 = "B-39 instrument configuration refs that name no instrument configuration read as null";
     static final String B_40 = "B-40 run, spectrumList and chromatogramList attribute values containing & kept as"
             + " written";
+    static final String B_40_ASCII = "B-40 run, spectrumList and chromatogramList attribute values with bytes >= 0x80"
+            + " read as US-ASCII, each such byte as U+FFFD";
     // Warned by design 5.4 and 5.5, without a loss number.
     static final String BOTH_POLARITIES = "spectra and chromatograms with both scan polarities read as polarity"
             + " unknown, the terms kept as params";
@@ -198,8 +206,6 @@ public final class MzMLReader {
 
     private static final String CONTACT_NAME = "MS:1000586";
     private static final String CONTACT_AFFILIATION = "MS:1000590";
-    /** The component elements of a {@code componentList}, in the order the model lists them. */
-    private static final List<String> COMPONENTS = List.of("source", "analyzer", "detector");
 
     private static final String MZ_ARRAY = "MS:1000514";
     private static final String INTENSITY_ARRAY = "MS:1000515";
@@ -222,11 +228,6 @@ public final class MzMLReader {
     /** A conversion that leaves the values as they are. */
     private static final DoubleUnaryOperator AS_IS = v -> v;
     /**
-     * The deepest element nesting read (JAXP's {@code maxElementDepth}); valid mzML nests about 12 deep, and deeper
-     * nesting would overflow the stack of the recursive {@link #element} (JDK 17 and 21 set no limit by default).
-     */
-    private static final int MAX_ELEMENT_DEPTH = 100;
-    /**
      * Per model unit that values in other units are converted to (design 5.5, 5.7): times to minutes from seconds,
      * milliseconds and hours; drift times to milliseconds from seconds and minutes.
      */
@@ -238,14 +239,10 @@ public final class MzMLReader {
     private final Losses losses = new Losses();
     /** Where losses are noted: {@link #losses}, except while {@link #survey()} runs, which notes into a dropped one. */
     private Losses noted = losses;
-    /** The params of each referenceableParamGroup, by id; filled by {@link #header()}. */
-    private final Map<String, List<Param>> groups = new HashMap<>();
-    /** Each referenceableParamGroup, by id, for the value texts of its cvParams; filled by {@link #header()}. */
-    private final Map<String, Node> groupElements = new HashMap<>();
     private Header header;
     /** The model id of each instrument configuration id (rule IC); filled by {@link #header()}. */
     private Map<String, Integer> icIds = Collections.emptyMap();
-    /** jmzML's reader of the file and its index; created by the first pass over the run. */
+    /** jmzML's reader of the file and its index; created by the first call of any method. */
     private MzMLUnmarshaller unmarshaller;
     private Survey survey;
     /** The MS ordinal of each MS spectrum id, the first of repeated ids; filled by {@link #survey()}. */
@@ -254,8 +251,9 @@ public final class MzMLReader {
     private Set<String> wavelengthIds = Collections.emptySet();
     /** True while {@link #survey()} runs the mapping: arrays are not decoded. */
     private boolean surveying;
-    /** The spectrumList's default data processing, and the next MS, wavelength and chromatogram index of a pass. */
+    /** The list defaults of data processing, and the next MS, wavelength and chromatogram index of a pass. */
     private String spectrumListDefault;
+    private String chromatogramListDefault;
     private long msIndex;
     private long wavelengthIndex;
     private long chromatogramIndex;
@@ -274,11 +272,12 @@ public final class MzMLReader {
     /**
      * The file-level content of the document, read on the first call and cached.
      *
-     * @throws MzPeakException if the document is invalid as stated in the class description, or cannot be read
+     * @throws MzPeakException if the file cannot be opened or the document is invalid, as stated in the class
+     *                         description
      */
     public Header header() {
         if (header == null) {
-            header = parse(this::readHeader);
+            header = readHeader(unmarshaller());
         }
         return header;
     }
@@ -333,7 +332,7 @@ public final class MzMLReader {
     }
 
     /**
-     * What was lost so far: the limit lines {@link #LIMITS} once the run was first read (design 6.0), then one line per
+     * What was lost so far: the limit lines {@link #LIMITS} once the file was opened (design 6.0), then one line per
      * kind of loss, {@code <kind> (<count>)}, in first-seen order (design 6.1).
      */
     public List<String> warnings() {
@@ -377,198 +376,150 @@ public final class MzMLReader {
         void chromatogram(Chromatogram chromatogram);
     }
 
-    // ---- reading the header ----------------------------------------------------------------------------------------
+    // ---- opening the file and reading the header (design 5.0, 5.1, 6.3) --------------------------------------------
 
-    /** Reads the file through {@code body}; I/O and XML errors become {@link MzPeakException}s naming the file. */
-    private <T> T parse(Body<T> body) {
-        try (InputStream in = Files.newInputStream(mzml)) {
-            XMLStreamReader r = factory().createXMLStreamReader(in);
+    /**
+     * jmzML's reader of the file, created on the first call: a name ending in {@code .gz} and a path that is not a
+     * readable regular file are rejected first; then jmzML indexes the whole file (L-1), and a failure while it builds
+     * the index names the file only. Creating it notes the limit lines.
+     */
+    private MzMLUnmarshaller unmarshaller() {
+        if (unmarshaller == null) {
+            if (mzml.toString().toLowerCase(Locale.ROOT).endsWith(".gz")) {
+                throw new MzPeakException("mzML " + mzml
+                        + ": gzip-compressed mzML is not supported by jmzML 1.7.11 as is: gunzip it first");
+            }
+            if (!Files.isRegularFile(mzml) || !Files.isReadable(mzml)) {
+                throw new MzPeakException("mzML " + mzml + ": not a readable regular file");
+            }
             try {
-                return body.read(r);
-            } finally {
-                r.close();
+                unmarshaller = new MzMLUnmarshaller(mzml.toFile(), false, null);
+            } catch (RuntimeException e) {
+                throw new MzPeakException("mzML " + mzml + ": " + e.getMessage(), e);
             }
-        } catch (IOException e) {
-            throw cannotRead(mzml, e);
-        } catch (XMLStreamException e) {
-            throw failure(mzml, e);
+            LIMITS.forEach(losses::limit);
         }
-    }
-
-    /** What {@link #parse} does with the reader. */
-    private interface Body<T> {
-        T read(XMLStreamReader r) throws XMLStreamException;
-    }
-
-    private static XMLInputFactory factory() {
-        XMLInputFactory factory = XMLInputFactory.newDefaultFactory();
-        factory.setProperty(XMLInputFactory.IS_COALESCING, true);
-        factory.setProperty(XMLInputFactory.IS_NAMESPACE_AWARE, true);
-        factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
-        factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
-        factory.setProperty("http://www.oracle.com/xml/jaxp/properties/maxElementDepth", MAX_ELEMENT_DEPTH);
-        return factory;
-    }
-
-    private Header readHeader(XMLStreamReader r) throws XMLStreamException {
-        nextTag(r);
-        if (r.getLocalName().equals("indexedmzML")) {
-            nextTag(r);
-        }
-        if (!r.isStartElement() || !r.getLocalName().equals("mzML")) {
-            throw error(r.getLocation(), "not an mzML document: no <mzML> element at the root or inside <indexedmzML>");
-        }
-        Node mzML = startNode(r);
-        String version = mzML.attr("version");
-        if (!Objects.requireNonNullElse(version, "").startsWith("1.1")) {
-            throw error(mzML, "mzML version " + version + " is not supported; version 1.1 is required");
-        }
-        for (String lost : List.of("id", "accession")) {
-            if (mzML.attr(lost) != null) {
-                losses.note(B_3);
-            }
-        }
-        Map<String, Node> sections = new HashMap<>();
-        while (nextTag(r) == XMLStreamConstants.START_ELEMENT && !r.getLocalName().equals("run")) {
-            Node section = element(r, startNode(r));
-            sections.put(section.name, section);
-        }
-        if (!r.isStartElement()) {
-            throw error(r.getLocation(), "no <run> element");
-        }
-        Node run = startNode(r);
-        String defaultDataProcessing = runHead(r, run);
-        return map(sections, run, defaultDataProcessing);
+        return unmarshaller;
     }
 
     /**
-     * Reads the children of {@code run} up to its {@code spectrumList} or {@code chromatogramList}, or its end, and
-     * returns the {@code spectrumList}'s default data processing. The {@code chromatogramList}'s default is no run
-     * field: it applies per chromatogram (design 5.1).
+     * The header as jmzML gives it (design 5.0, 5.1): the version and the run checked, the header lists unmarshalled
+     * one by one, the run and list attributes as written in their start tags; the run's params are not read (L-2).
      */
-    private String runHead(XMLStreamReader r, Node run) throws XMLStreamException {
-        while (nextTag(r) == XMLStreamConstants.START_ELEMENT) {
-            Node child = startNode(r);
-            if (child.name.equals("spectrumList")) {
-                return child.attr("defaultDataProcessingRef");
-            }
-            if (child.name.equals("chromatogramList")) {
-                return null;
-            }
-            run.children.add(element(r, child));
+    private Header readHeader(MzMLUnmarshaller u) {
+        String version = u.getMzMLVersion();
+        if (!Objects.requireNonNullElse(version, "").startsWith("1.1")) {
+            throw new MzPeakException("mzML " + mzml + ": mzML version " + version
+                    + " is not supported; version 1.1 is required");
         }
-        return null;
+        if (u.getObjectCountForXpath("/run") < 1) {
+            throw new MzPeakException("mzML " + mzml + ": no run");
+        }
+        for (String lost : Arrays.asList(u.getMzMLId(), u.getMzMLAccession())) {
+            losses.note(B_3, lost == null ? 0 : 1);
+        }
+        losses.note(B_1, u.getObjectCountForXpath("/referenceableParamGroupList/referenceableParamGroup"));
+        // read for their losses only: jmzML copies each group's params into the elements that reference it
+        list("referenceableParamGroupList", ReferenceableParamGroupList.class, new ReferenceableParamGroupList(),
+                groups -> groups.getReferenceableParamGroup().stream().map(this::groupParams).toList());
+        List<MzPeakManifest.CvEntry> cvList = list("cvList", CVList.class, new CVList(), cvs -> cvs.getCv().stream()
+                .map(cv -> new MzPeakManifest.CvEntry(cv.getId(), cv.getFullName(), cv.getURI(), cv.getVersion()))
+                .toList());
+        FileDescription description = list("fileDescription", uk.ac.ebi.jmzml.model.mzml.FileDescription.class,
+                new uk.ac.ebi.jmzml.model.mzml.FileDescription(), this::fileDescription);
+        List<Sample> samples = list("sampleList", SampleList.class, new SampleList(), l -> l.getSample().stream()
+                .map(s -> new Sample(s.getId(), s.getName(), params(s))).toList());
+        List<Software> software = list("softwareList", SoftwareList.class, new SoftwareList(), l -> l.getSoftware()
+                .stream().map(s -> new Software(s.getId(), emptyToNull(s.getVersion()), params(s))).toList());
+        List<ScanSettings> scanSettings = list("scanSettingsList", ScanSettingsList.class, new ScanSettingsList(),
+                l -> l.getScanSettings().stream().map(this::scanSettings).toList());
+        List<InstrumentConfiguration> instruments = list("instrumentConfigurationList",
+                InstrumentConfigurationList.class, new InstrumentConfigurationList(), this::instrumentConfigurations);
+        List<DataProcessing> dataProcessing = list("dataProcessingList", DataProcessingList.class,
+                new DataProcessingList(), l -> l.getDataProcessing().stream().map(dp -> new DataProcessing(dp.getId(),
+                        dp.getProcessingMethod().stream()
+                                .map(m -> new ProcessingMethod(m.getOrder(), m.getSoftwareRef(), params(m)))
+                                .toList())).toList());
+
+        Map<String, String> run = attributes(u, "/run");
+        Map<String, String> spectrumList = attributes(u, "/run/spectrumList");
+        Map<String, String> chromatogramList = attributes(u, "/run/chromatogramList");
+        for (Map<String, String> attributes : List.of(run, spectrumList, chromatogramList)) {
+            losses.note(B_40, attributes.values().stream().filter(v -> v.contains("&")).count());
+            losses.note(B_40_ASCII, attributes.values().stream().filter(v -> v.indexOf('\uFFFD') >= 0).count());
+        }
+        losses.note(B_7, run.get("sampleRef") == null ? 0 : 1);
+        String defaultIc = run.get("defaultInstrumentConfigurationRef");
+        Integer defaultInstrument = icIds.get(defaultIc);
+        losses.note(B_39, defaultIc != null && defaultInstrument == null ? 1 : 0);
+        chromatogramListDefault = chromatogramList.get("defaultDataProcessingRef");
+        MsRun msRun = new MsRun(run.get("id"), defaultInstrument, spectrumList.get("defaultDataProcessingRef"),
+                run.get("defaultSourceFileRef"), run.get("startTimeStamp"), List.of());
+        return new Header(new FileMetadata(description, instruments, dataProcessing, samples, software, msRun),
+                scanSettings, cvList);
     }
 
-    /** Advances to the next start or end tag, skipping text, comments and processing instructions. */
-    private int nextTag(XMLStreamReader r) throws XMLStreamException {
-        int event;
-        do {
-            event = r.next();
-            if (event == XMLStreamConstants.DTD) {
-                throw error(r.getLocation(), "a DTD is not supported");
-            }
-        } while (event != XMLStreamConstants.START_ELEMENT && event != XMLStreamConstants.END_ELEMENT);
-        return event;
+    /**
+     * Maps jmzML's {@code type} at {@code /<name>} by {@code map}, or {@code empty} if the document has none; any
+     * exception of jmzML, JAXB or the mapping names the list (design 8.1).
+     */
+    private <L extends MzMLObject, R> R list(String name, Class<L> type, L empty, Function<L, R> map) {
+        try {
+            L found = unmarshaller.unmarshalFromXpath("/" + name, type);
+            return map.apply(found == null ? empty : found);
+        } catch (RuntimeException e) {
+            throw new MzPeakException("mzML " + mzml + ": " + name + ": " + e.getMessage(), e);
+        }
     }
 
-    /** The element at the current start tag, without its children. */
-    private static Node startNode(XMLStreamReader r) {
-        Map<String, String> attributes = new HashMap<>();
-        for (int i = 0; i < r.getAttributeCount(); i++) {
-            if (Objects.toString(r.getAttributeNamespace(i), "").isEmpty()) {
-                attributes.put(r.getAttributeLocalName(i), r.getAttributeValue(i));
-            }
-        }
-        Location at = r.getLocation();
-        return new Node(r.getLocalName(), attributes, new ArrayList<>(), at.getLineNumber(), at.getColumnNumber());
+    /** The items of {@code list}, none for no list. */
+    private static <L, E> List<E> items(L list, Function<L, List<E>> items) {
+        return list == null ? List.of() : items.apply(list);
     }
 
-    /** {@code node}, just started, with its child elements read up to its end tag; text is skipped. */
-    private Node element(XMLStreamReader r, Node node) throws XMLStreamException {
-        while (nextTag(r) == XMLStreamConstants.START_ELEMENT) {
-            node.children.add(element(r, startNode(r)));
+    /**
+     * The attributes of the element at {@code xpath} as written in its start tag, also of an empty list; none if the
+     * document has no such element, for which jmzML would throw. xxindex reads at most 2,048 bytes of a start tag, so
+     * jmzML gives null for a longer one, which is rejected naming the element.
+     */
+    private Map<String, String> attributes(MzMLUnmarshaller u, String xpath) {
+        if (u.getObjectCountForXpath(xpath) < 1) {
+            return Map.of();
         }
-        return node;
+        Map<String, String> attributes = u.getSingleElementAttributes(xpath);
+        if (attributes == null) {
+            throw new MzPeakException("mzML " + mzml + ": " + xpath.substring(xpath.lastIndexOf('/') + 1)
+                    + ": jmzML cannot read the attributes of its start tag");
+        }
+        return attributes;
     }
 
-    // ---- mapping (design 5.1) --------------------------------------------------------------------------------------
+    /**
+     * The params of a referenceableParamGroup, read once so that its aliases (B-30) and type mismatches (B-14) are
+     * noted once, not for each element jmzML copies them into.
+     */
+    private List<Param> groupParams(ReferenceableParamGroup group) {
+        ParamGroup params = new ParamGroup();
+        params.getCvParam().addAll(group.getCvParam());
+        params.getUserParam().addAll(group.getUserParam());
+        return params(params);
+    }
 
-    private Header map(Map<String, Node> sections, Node run, String defaultDataProcessing) {
-        List<Node> groupList = section(sections, "referenceableParamGroupList").children("referenceableParamGroup");
-        for (Node group : groupList) {
-            groups.put(group.attr("id"), params(group));
-            groupElements.put(group.attr("id"), group);
-        }
-        losses.note(B_1, groupList.size());
-
-        List<MzPeakManifest.CvEntry> cvList = section(sections, "cvList").children("cv").stream()
-                .map(cv -> new MzPeakManifest.CvEntry(cv.attr("id"), cv.attr("fullName"), cv.attr("URI"),
-                        cv.attr("version")))
+    /** The file description; an empty source file name or location is null (design 5.1), else verbatim. */
+    private FileDescription fileDescription(uk.ac.ebi.jmzml.model.mzml.FileDescription d) {
+        List<Param> contents = params(d.getFileContent());
+        List<SourceFile> sourceFiles = items(d.getSourceFileList(), SourceFileList::getSourceFile).stream()
+                .map(f -> new SourceFile(f.getId(), emptyToNull(f.getName()), emptyToNull(f.getLocation()), params(f)))
                 .toList();
-        Node fileDescription = section(sections, "fileDescription");
-        FileDescription description = new FileDescription(params(fileDescription.child("fileContent")),
-                fileDescription.child("sourceFileList").children("sourceFile").stream().map(this::sourceFile).toList(),
-                fileDescription.children("contact").stream().map(this::contact).toList());
-        List<Sample> samples = section(sections, "sampleList").children("sample").stream()
-                .map(s -> new Sample(s.attr("id"), s.attr("name"), params(s)))
-                .toList();
-        List<Software> software = section(sections, "softwareList").children("software").stream()
-                .map(s -> new Software(s.attr("id"), emptyToNull(s.attr("version")), params(s)))
-                .toList();
-        List<ScanSettings> scanSettings = section(sections, "scanSettingsList").children("scanSettings").stream()
-                .map(this::scanSettings)
-                .toList();
-
-        List<Node> icList = section(sections, "instrumentConfigurationList").children("instrumentConfiguration");
-        List<String> icNames = icList.stream().map(ic -> required(ic, "id")).toList();
-        MzMLTerms.IcIds icIds = MzMLTerms.icIds(icNames);
-        if (!icIds.exact()) {
-            losses.note(String.format(B_5, icNames));
-        }
-        this.icIds = icIds.map();
-        List<InstrumentConfiguration> instruments = new ArrayList<>();
-        for (int i = 0; i < icList.size(); i++) {
-            instruments.add(instrumentConfiguration(icList.get(i), icIds.ids().get(i)));
-        }
-        List<DataProcessing> dataProcessing = section(sections, "dataProcessingList").children("dataProcessing")
-                .stream()
-                .map(dp -> new DataProcessing(dp.attr("id"), dp.children("processingMethod").stream()
-                        .map(m -> new ProcessingMethod(integer(m, "order"), m.attr("softwareRef"), params(m)))
-                        .toList()))
-                .toList();
-
-        if (run.attr("sampleRef") != null) {
-            losses.note(B_7);
-        }
-        String defaultIc = run.attr("defaultInstrumentConfigurationRef");
-        Integer defaultInstrument = icIds.map().get(defaultIc);
-        if (defaultIc != null && defaultInstrument == null) {
-            losses.note(B_39);
-        }
-        MsRun msRun = new MsRun(run.attr("id"), defaultInstrument, defaultDataProcessing,
-                run.attr("defaultSourceFileRef"), run.attr("startTimeStamp"), params(run));
-        FileMetadata fileMetadata = new FileMetadata(description, List.copyOf(instruments), dataProcessing, samples,
-                software, msRun);
-        return new Header(fileMetadata, scanSettings, cvList);
-    }
-
-    private static Node section(Map<String, Node> sections, String name) {
-        return sections.getOrDefault(name, Node.NONE);
-    }
-
-    /** A source file; an empty name or location is null (design 5.1), else verbatim. */
-    private SourceFile sourceFile(Node sourceFile) {
-        return new SourceFile(sourceFile.attr("id"), emptyToNull(sourceFile.attr("name")),
-                emptyToNull(sourceFile.attr("location")), params(sourceFile));
+        return new FileDescription(contents, sourceFiles, d.getContact().stream().map(this::contact).toList());
     }
 
     /**
      * A contact: the first MS:1000586 (contact name) gives the name, the first MS:1000590 (whatever name the file gives
-     * it) the affiliation, first in the order of {@link #params(Node)}; each is its cvParam's value text, verbatim, an
-     * empty value null (design 2, 6.2). The other params stay params.
+     * it) the affiliation, each its cvParam's value text by {@link #text}, so the contact's own before its groups'
+     * (design 5.1, Q41). The other params stay params.
      */
-    private Contact contact(Node contact) {
+    private Contact contact(ParamGroup contact) {
         List<Param> params = params(contact);
         List<Param> others = new ArrayList<>(params);
         Param.find(params, CONTACT_NAME).ifPresent(others::remove);
@@ -576,92 +527,46 @@ public final class MzMLReader {
         return new Contact(text(contact, CONTACT_NAME), text(contact, CONTACT_AFFILIATION), others);
     }
 
-    /**
-     * The value text of the first cvParam of {@code owner} with {@code accession}, verbatim, in the order of
-     * {@link #params(Node)} (those of the referenced groups first); null if there is none or it is empty.
-     * {@link #params(Node)} must have read {@code owner}, which checks its group refs and accessions.
-     */
-    private String text(Node owner, String accession) {
-        List<Node> cvParams = new ArrayList<>();
-        for (Node ref : owner.children("referenceableParamGroupRef")) {
-            cvParams.addAll(groupElements.get(ref.attr("ref")).children("cvParam"));
-        }
-        cvParams.addAll(owner.children("cvParam"));
-        for (Node cvParam : cvParams) {
-            if (cvParam.attr("accession").equals(accession)) {
-                return emptyToNull(cvParam.attr("value"));
-            }
-        }
-        return null;
+    private ScanSettings scanSettings(uk.ac.ebi.jmzml.model.mzml.ScanSettings s) {
+        List<String> sourceFileRefs = items(s.getSourceFileRefList(), SourceFileRefList::getSourceFileRef).stream()
+                .map(SourceFileRef::getRef).toList();
+        List<List<Param>> targets = items(s.getTargetList(), TargetList::getTarget).stream().map(this::params).toList();
+        return new ScanSettings(s.getId(), params(s), sourceFileRefs, targets);
     }
 
-    private ScanSettings scanSettings(Node scanSettings) {
-        List<String> sourceFileRefs = scanSettings.child("sourceFileRefList").children("sourceFileRef").stream()
-                .map(ref -> required(ref, "ref"))
-                .toList();
-        List<List<Param>> targets = scanSettings.child("targetList").children("target").stream()
-                .map(this::params)
-                .toList();
-        return new ScanSettings(scanSettings.attr("id"), params(scanSettings), sourceFileRefs, targets);
+    /** The instrument configurations, their model ids by rule IC (design 5.2), which the run refs map through. */
+    private List<InstrumentConfiguration> instrumentConfigurations(InstrumentConfigurationList list) {
+        List<uk.ac.ebi.jmzml.model.mzml.InstrumentConfiguration> ics = list.getInstrumentConfiguration();
+        List<String> names = ics.stream().map(uk.ac.ebi.jmzml.model.mzml.InstrumentConfiguration::getId).toList();
+        MzMLTerms.IcIds ids = MzMLTerms.icIds(names);
+        if (!ids.exact()) {
+            losses.note(String.format(B_5, names));
+        }
+        icIds = ids.map();
+        List<InstrumentConfiguration> instruments = new ArrayList<>();
+        for (int i = 0; i < ics.size(); i++) {
+            uk.ac.ebi.jmzml.model.mzml.InstrumentConfiguration ic = ics.get(i);
+            losses.note(B_6, ic.getScanSettingsRef() == null ? 0 : 1);
+            ComponentList components = ic.getComponentList();
+            List<Component> model = new ArrayList<>();
+            components(model, ComponentType.ION_SOURCE, items(components, ComponentList::getSource));
+            components(model, ComponentType.ANALYZER, items(components, ComponentList::getAnalyzer));
+            components(model, ComponentType.DETECTOR, items(components, ComponentList::getDetector));
+            instruments.add(new InstrumentConfiguration(ids.ids().get(i), List.copyOf(model), ic.getSoftwareRef(),
+                    params(ic)));
+        }
+        return List.copyOf(instruments);
     }
 
-    /** An instrument configuration with model id {@code id} (rule IC); its components grouped by element. */
-    private InstrumentConfiguration instrumentConfiguration(Node ic, int id) {
-        if (ic.attr("scanSettingsRef") != null) {
-            losses.note(B_6);
+    /** Adds {@code components} as components of {@code type} to {@code model}: jmzML holds each kind in a list. */
+    private void components(List<Component> model, ComponentType type,
+                            List<? extends uk.ac.ebi.jmzml.model.mzml.Component> components) {
+        for (uk.ac.ebi.jmzml.model.mzml.Component component : components) {
+            model.add(new Component(type, component.getOrder(), params(component)));
         }
-        Node componentList = ic.child("componentList");
-        List<Component> components = new ArrayList<>();
-        for (String element : COMPONENTS) {
-            for (Node component : componentList.children(element)) {
-                components.add(new Component(ComponentType.parse(element), integer(component, "order"),
-                        params(component)));
-            }
-        }
-        return new InstrumentConfiguration(id, List.copyOf(components), ic.child("softwareRef").attr("ref"),
-                params(ic));
     }
 
     // ---- params (design 5.3) ---------------------------------------------------------------------------------------
-
-    /**
-     * The params of {@code owner}: the params of each referenced group, in reference order, then its own cvParams
-     * and userParams in document order. Other children are not params.
-     */
-    private List<Param> params(Node owner) {
-        List<Param> params = new ArrayList<>();
-        List<Param> own = new ArrayList<>();
-        for (Node child : owner.children) {
-            switch (child.name) {
-                case "referenceableParamGroupRef" -> params.addAll(group(child));
-                case "cvParam" -> own.add(cvParam(child));
-                case "userParam" -> own.add(new Param(child.attr("name"), null,
-                        value(child.attr("value"), child.attr("type")), child.attr("unitAccession")));
-                default -> {
-                }
-            }
-        }
-        params.addAll(own);
-        return List.copyOf(params);
-    }
-
-    private List<Param> group(Node ref) {
-        List<Param> params = groups.get(ref.attr("ref"));
-        if (params == null) {
-            throw error(ref, "referenceableParamGroupRef '" + ref.attr("ref") + "' names no referenceableParamGroup");
-        }
-        return params;
-    }
-
-    /** A cvParam; a {@code cvRef} other than the accession's prefix is an alias, lost (B-30). */
-    private Param cvParam(Node cvParam) {
-        String accession = required(cvParam, "accession");
-        if (!accession.startsWith(cvParam.attr("cvRef") + ":")) {
-            note(B_30);
-        }
-        return new Param(cvParam.attr("name"), accession, value(cvParam.attr("value"), null),
-                cvParam.attr("unitAccession"));
-    }
 
     /**
      * The params of {@code owner} as jmzML gives them (design 5.3, Q41): its cvParams, then those of its referenced
@@ -756,22 +661,6 @@ public final class MzMLReader {
     // ---- the run (design 5.0, 5.4-5.9) -----------------------------------------------------------------------------
 
     /**
-     * jmzML's reader of the file, created on the first call: it indexes the whole file (L-1) and notes the limit lines;
-     * a failure while it builds the index names the file only (design 6.3).
-     */
-    private MzMLUnmarshaller unmarshaller() {
-        if (unmarshaller == null) {
-            try {
-                unmarshaller = new MzMLUnmarshaller(mzml.toFile(), false, null);
-            } catch (RuntimeException e) {
-                throw new MzPeakException("mzML " + mzml + ": " + e.getMessage(), e);
-            }
-            LIMITS.forEach(losses::limit);
-        }
-        return unmarshaller;
-    }
-
-    /**
      * One pass over the run: the spectra, then the chromatograms, each mapped and handed to {@code visitor}, with its
      * arrays decoded unless {@link #surveying}. A list element jmzML did not index is skipped.
      */
@@ -786,10 +675,9 @@ public final class MzMLReader {
                     uk.ac.ebi.jmzml.model.mzml.Spectrum::getId, this::spectrum, visitor);
         }
         if (u.getObjectCountForXpath("/run/chromatogramList") > 0) {
-            String listDefault = u.getSingleElementAttributes("/run/chromatogramList").get("defaultDataProcessingRef");
-            note(B_40, Objects.toString(listDefault, "").contains("&") ? 1 : 0);
             each("/run/chromatogramList/chromatogram", uk.ac.ebi.jmzml.model.mzml.Chromatogram.class, "chromatogram",
-                    uk.ac.ebi.jmzml.model.mzml.Chromatogram::getId, c -> chromatogram(c, listDefault), visitor);
+                    uk.ac.ebi.jmzml.model.mzml.Chromatogram::getId, c -> chromatogram(c, chromatogramListDefault),
+                    visitor);
         }
     }
 
@@ -1301,25 +1189,6 @@ public final class MzMLReader {
         }
     }
 
-    // ---- attributes and errors -------------------------------------------------------------------------------------
-
-    private String required(Node node, String attribute) {
-        String value = node.attr(attribute);
-        if (value == null) {
-            throw error(node, "<" + node.name + "> has no " + attribute);
-        }
-        return value;
-    }
-
-    private int integer(Node node, String attribute) {
-        String text = required(node, attribute);
-        try {
-            return Integer.parseInt(text);
-        } catch (NumberFormatException e) {
-            throw error(node, "<" + node.name + "> " + attribute + " '" + text + "' is not an integer");
-        }
-    }
-
     private static String emptyToNull(String text) {
         return "".equals(text) ? null : text;
     }
@@ -1327,85 +1196,5 @@ public final class MzMLReader {
     /** The reader's own rejection of the element a pass is at. */
     private MzPeakException error(String message) {
         return new MzPeakException(elementName + ": " + message);
-    }
-
-    private MzPeakException error(Node node, String message) {
-        return new MzPeakException(place(mzml, node.line, node.column) + message);
-    }
-
-    private MzPeakException error(Location at, String message) {
-        return new MzPeakException(place(mzml, at.getLineNumber(), at.getColumnNumber()) + message);
-    }
-
-    private static String place(Path file, int line, int column) {
-        return "mzML " + file + " line " + line + " column " + column + ": ";
-    }
-
-    /** An I/O error reading {@code file}, with {@code e} as the cause. */
-    private static MzPeakException cannotRead(Path file, IOException e) {
-        return new MzPeakException("mzML " + file + ": cannot read: " + e.getMessage(), e);
-    }
-
-    /**
-     * The parser's error as an {@link MzPeakException}: as {@link #cannotRead} when an {@link IOException} caused it
-     * (its nested exception or cause; the parser reads the file as it goes, so a directory fails here), else as
-     * {@link #malformed}. A {@link CharConversionException}, through which the JDK parser reports a byte sequence
-     * that is invalid in the declared encoding, is a well-formedness error and so malformed.
-     */
-    static MzPeakException failure(Path file, XMLStreamException e) {
-        Throwable io = e.getNestedException() instanceof IOException ? e.getNestedException() : e.getCause();
-        return io instanceof IOException cause && !(cause instanceof CharConversionException)
-                ? cannotRead(file, cause) : malformed(file, e);
-    }
-
-    /**
-     * The parser's error as an {@link MzPeakException} naming the file and, when the parser gives it, the line and
-     * column; the JDK parser's own {@code ParseError at [row,col]} prefix is left out.
-     */
-    static MzPeakException malformed(Path file, XMLStreamException e) {
-        String message = String.valueOf(e.getMessage())
-                .replaceFirst("^ParseError at \\[row,col]:\\[-?\\d+,-?\\d+]\\s*Message: ", "");
-        Location at = e.getLocation();
-        String place = at == null ? "mzML " + file + ": " : place(file, at.getLineNumber(), at.getColumnNumber());
-        return new MzPeakException(place + message, e);
-    }
-
-    /** A header element read whole: its local name, attributes without a namespace, child elements and position. */
-    private static final class Node {
-        static final Node NONE = new Node("", Map.of(), List.of(), 0, 0);
-
-        final String name;
-        final Map<String, String> attributes;
-        final List<Node> children;
-        final int line;
-        final int column;
-
-        Node(String name, Map<String, String> attributes, List<Node> children, int line, int column) {
-            this.name = name;
-            this.attributes = attributes;
-            this.children = children;
-            this.line = line;
-            this.column = column;
-        }
-
-        String attr(String attribute) {
-            return attributes.get(attribute);
-        }
-
-        /** The first child element named {@code name}, else {@link #NONE}. */
-        Node child(String name) {
-            List<Node> named = children(name);
-            return named.isEmpty() ? NONE : named.get(0);
-        }
-
-        List<Node> children(String name) {
-            List<Node> named = new ArrayList<>();
-            for (Node child : children) {
-                if (child.name.equals(name)) {
-                    named.add(child);
-                }
-            }
-            return named;
-        }
     }
 }

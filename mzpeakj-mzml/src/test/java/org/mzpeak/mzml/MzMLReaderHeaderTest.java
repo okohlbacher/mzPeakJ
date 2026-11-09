@@ -2,11 +2,16 @@ package org.mzpeak.mzml;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.ComponentType;
@@ -23,18 +28,18 @@ import org.mzpeak.model.meta.ScanSettings;
 import org.mzpeak.mzml.ModelAssert.Mode;
 import org.mzpeak.mzml.ModelAssert.Model;
 
-import javax.xml.stream.XMLStreamException;
-import java.io.CharConversionException;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.UnaryOperator;
-import java.util.regex.Pattern;
+import java.util.zip.GZIPOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,7 +49,9 @@ import static org.assertj.core.api.Assertions.tuple;
  * MZ-16: {@link MzMLReader#header()} (mzML design 5.1-5.3, 6.1, 8.1, 10). The header of each vendored mzML fixture is
  * pinned: tiny in full (a), small (b), TOFsulfas and diaPASEF (c); the software, data processings, samples and source
  * files of small and TOFsulfas equal those of the mzPeak files the reference converter made from them (d). Branch
- * documents derived from tiny by string edits pin each rule and each rejection (e).
+ * documents derived from tiny by string edits pin each rule and each rejection (e). JZ-4 moved the header onto jmzML:
+ * the opening checks (a {@code .gz} name, a path that is no readable regular file), jmzML's own rejections without line
+ * or column, the group params after the element's own (Q41), and the run params not read (L-2) are pinned in (e).
  */
 class MzMLReaderHeaderTest {
 
@@ -127,11 +134,11 @@ class MzMLReaderHeaderTest {
         assertThat(m.run()).isEqualTo(new MsRun("Experiment_x0020_1", 0, "pwiz_processing", "tiny1.yep",
                 "2007-06-27T15:23:45.00035", List.of()));
 
-        assertThat(reader.warnings()).containsExactlyInAnyOrder(
+        assertThat(reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)",
                 "B-1 referenceableParamGroups expanded inline (2)",
                 "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
-                "B-7 run@sampleRef lost (1)");
+                "B-7 run@sampleRef lost (1)"));
     }
 
     @Test
@@ -143,7 +150,12 @@ class MzMLReaderHeaderTest {
         List<String> warnings = reader.warnings();
 
         assertThat(reader.header()).isSameAs(first);
-        assertThat(reader.warnings()).isEqualTo(warnings).hasSize(4);
+        assertThat(warnings).hasSize(10).startsWith(MzMLReader.LIMITS.toArray(String[]::new));
+        assertThat(MzMLReader.LIMITS).extracting(w -> w.substring(0, 4)).containsExactly("L-1 ", "L-2 ", "L-3 ",
+                "L-4 ", "L-5 ", "L-6 ");
+        assertThat(warnings.subList(6, 10)).extracting(w -> w.substring(0, 4))
+                .containsExactly("B-3 ", "B-1 ", "B-5 ", "B-7 ");
+        assertThat(reader.warnings()).isEqualTo(warnings);
         assertThat(first.scanSettings()).isUnmodifiable();
         assertThat(first.fileMetadata().software()).isUnmodifiable();
         assertThat(first.fileMetadata().software().get(0).parameters()).isUnmodifiable();
@@ -171,9 +183,9 @@ class MzMLReaderHeaderTest {
         assertThat(m.run()).isEqualTo(new MsRun("small", 0, "pwiz_Reader_Thermo_conversion", "RAW1",
                 "2005-07-20T19:44:22Z", List.of()));
         assertThat(reader.header().scanSettings()).isEmpty();
-        assertThat(reader.warnings()).containsExactly(
+        assertThat(reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)",
-                "B-1 referenceableParamGroups expanded inline (1)");
+                "B-1 referenceableParamGroups expanded inline (1)"));
     }
 
     // ---- (c) TOFsulfas and diaPASEF ------------------------------------------------------------------------------
@@ -201,8 +213,9 @@ class MzMLReaderHeaderTest {
         assertThat(m.samples()).isEmpty();
     }
 
+    /** jmzML puts the params of CommonInstrumentParams after the configuration's own serial number (Q41). */
     @Test
-    void diaPasefConfigurationIc1IsIdZeroWithTheGroupFirstAndATypedSerialNumber(@TempDir Path dir)
+    void diaPasefConfigurationIc1IsIdZeroWithTheGroupAfterItsOwnParamsAndATypedSerialNumber(@TempDir Path dir)
             throws IOException {
         MzMLReader reader = new MzMLReader(MzMLFixtures.extract(MzMLFixtures.DIAPASEF, dir));
         FileMetadata m = reader.header().fileMetadata();
@@ -210,9 +223,9 @@ class MzMLReaderHeaderTest {
         assertThat(m.instrumentConfigurations()).singleElement().satisfies(ic -> {
             assertThat(ic.id()).isZero();
             assertThat(ic.parameters()).containsExactly(
-                    new Param("Bruker Daltonics timsTOF series", "MS:1003123", null, null),
-                    new Param("instrument serial number", "MS:1000529", 1854399.63, null));
-            assertThat(ic.parameters().get(1).value()).isInstanceOf(Double.class);
+                    new Param("instrument serial number", "MS:1000529", 1854399.63, null),
+                    new Param("Bruker Daltonics timsTOF series", "MS:1003123", null, null));
+            assertThat(ic.parameters().get(0).value()).isInstanceOf(Double.class);
             assertThat(ic.components()).extracting(Component::componentType).containsExactly(
                     ComponentType.ION_SOURCE, ComponentType.ANALYZER, ComponentType.ANALYZER,
                     ComponentType.DETECTOR, ComponentType.DETECTOR);
@@ -272,8 +285,7 @@ class MzMLReaderHeaderTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("mzML " + file + " line 3 column " + endOfTag(file, "<mzML ")
-                        + ": mzML version 1.0.0 is not supported; version 1.1 is required");
+                .hasMessage("mzML " + file + ": mzML version 1.0.0 is not supported; version 1.1 is required");
     }
 
     @Test
@@ -285,46 +297,41 @@ class MzMLReaderHeaderTest {
                 .hasMessageEndingWith(": mzML version null is not supported; version 1.1 is required");
     }
 
+    /** jmzML unmarshals element snippets and never reads the prolog: a DTD whose entity no element uses is not seen. */
     @Test
-    void aDtdIsRejected(@TempDir Path dir) throws IOException {
+    void aDtdWithAnUnusedEntityReadsLikeTiny(@TempDir Path dir) throws IOException {
+        MzMLReader tiny = new MzMLReader(MzMLFixtures.extract(TINY, dir));
         String doctype = "<!DOCTYPE indexedmzML [<!ENTITY lab \"Higglesworth\">]>";
         Path file = tinyWith(dir, s -> replaceOnce(s, "?>\n<indexedmzML ", "?>\n" + doctype + "\n<indexedmzML "));
 
-        assertThatThrownBy(() -> new MzMLReader(file).header())
-                .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML " + Pattern.quote(file.toString())
-                        + " line 2 column \\d+: a DTD is not supported");
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThat(reader.header()).isEqualTo(tiny.header());
+        assertThat(reader.warnings()).isEqualTo(tiny.warnings());
     }
 
+    /** Tags that do not match fail while xxindex indexes the file: no element, no line or column (L-6). */
     @Test
-    void malformedXmlIsRejectedWithItsLineAndColumn(@TempDir Path dir) throws IOException {
+    void malformedXmlIsRejectedWhileJmzmlIndexesTheFile(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceOnce(s, "</cvList>", "</cvLis>"));
+        MzMLReader reader = new MzMLReader(file);
 
-        assertThatThrownBy(() -> new MzMLReader(file).header())
+        assertThatThrownBy(reader::header)
                 .isInstanceOf(MzPeakException.class)
-                .hasCauseInstanceOf(XMLStreamException.class)
-                .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line 7 column \\d+: "
-                        + "The element type \"cvList\" must be terminated by the matching end-tag \"</cvList>\".");
+                .hasMessage("mzML " + file + ": Internal stack of XML tags was corrupted!")
+                .cause().isExactlyInstanceOf(IllegalStateException.class)
+                .hasMessage("Internal stack of XML tags was corrupted!");
+        assertThat(reader.warnings()).isEmpty();
     }
 
     @Test
-    void anEmptyFileIsRejectedAsMalformed(@TempDir Path dir) throws IOException {
+    void anEmptyFileIsRejectedForItsMissingRoot(@TempDir Path dir) throws IOException {
         Path file = Files.writeString(dir.resolve("empty.mzML"), "");
 
         assertThatThrownBy(() -> new MzMLReader(file).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("mzML " + file + " line 1 column 1: Premature end of file.");
-    }
-
-    @Test
-    void aParserErrorWithoutLocationNamesTheFileOnly() {
-        Path file = Path.of("x.mzML");
-        XMLStreamException cause = new XMLStreamException("boom");
-
-        MzPeakException e = MzMLReader.malformed(file, cause);
-
-        assertThat(e).hasMessage("mzML x.mzML: boom").hasCause(cause);
-        assertThat(MzMLReader.malformed(file, new XMLStreamException())).hasMessage("mzML x.mzML: null");
+                .hasMessage("mzML " + file + ": Index does not contain mzML root!")
+                .hasCauseExactlyInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -368,9 +375,9 @@ class MzMLReaderHeaderTest {
         assertThat(header.fileMetadata().samples()).isEmpty();
         assertThat(header.scanSettings()).isEmpty();
         assertThat(header.fileMetadata().software()).hasSize(3);
-        assertThat(reader.warnings()).containsExactly(
+        assertThat(reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)",
-                "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)");
+                "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)"));
     }
 
     @Test
@@ -411,10 +418,12 @@ class MzMLReaderHeaderTest {
         Path file = tinyWith(dir, s -> replaceOnce(s,
                 "<cvParam cvRef=\"MS\" accession=\"MS:1000554\"", ref + "\n<cvParam cvRef=\"MS\" accession=\"MS:1000554\""));
 
+        // jmzML's message does not name the ref
         assertThatThrownBy(() -> new MzMLReader(file).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("mzML " + file + " line " + lineOf(file, ref) + " column " + endOfTag(file, ref)
-                        + ": referenceableParamGroupRef 'nope' names no referenceableParamGroup");
+                .hasMessage("mzML " + file + ": instrumentConfigurationList: Could not instantiate reference resolver:"
+                        + " uk.ac.ebi.jmzml.xml.jaxb.resolver.ReferenceableParamGroupRefResolver")
+                .hasCauseExactlyInstanceOf(IllegalStateException.class);
     }
 
     /**
@@ -459,13 +468,15 @@ class MzMLReaderHeaderTest {
         Path foo = Files.writeString(dir.resolve("foo.mzML"), "<?xml version=\"1.0\"?>\n<foo version=\"1.1.0\"/>\n");
         Path empty = Files.writeString(dir.resolve("empty-index.mzML"), "<?xml version=\"1.0\"?>\n<indexedmzML/>\n");
 
+        // both fail while jmzML builds its index, each with jmzML's own message
         assertThatThrownBy(() -> new MzMLReader(foo).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("mzML " + foo + " line 2 column 23: not an mzML document: no <mzML> element at the root "
-                        + "or inside <indexedmzML>");
+                .hasMessage("mzML " + foo + ": Index does not contain mzML root!")
+                .hasCauseExactlyInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> new MzMLReader(empty).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageContaining("not an mzML document");
+                .hasMessage("mzML " + empty + ": Index 0 out of bounds for length 0")
+                .hasCauseExactlyInstanceOf(IndexOutOfBoundsException.class);
     }
 
     @Test
@@ -474,11 +485,12 @@ class MzMLReaderHeaderTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+: no <run> element");
+                .hasMessage("mzML " + file + ": no run");
     }
 
+    /** The run's params are not read (L-2), so the type mismatch of its userParam is no B-14. */
     @Test
-    void aRunWithoutListsIsReadToItsEndWithItsParams(@TempDir Path dir) throws IOException {
+    void aRunWithoutListsHasNoDefaultAndItsParamsAreNotRead(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> s.replaceAll("(?s)<spectrumList .*</chromatogramList>",
                 "<userParam name=\"checked\" value=\"yes\" type=\"xsd:boolean\"/>"));
 
@@ -486,10 +498,9 @@ class MzMLReaderHeaderTest {
         MsRun run = reader.header().fileMetadata().run();
 
         assertThat(run.defaultDataProcessingId()).isNull();
-        assertThat(run.parameters()).containsExactly(new Param("checked", null, "yes", null));
+        assertThat(run.parameters()).isEmpty();
         assertThat(run.startTime()).isEqualTo("2007-06-27T15:23:45.00035");
-        assertThat(reader.warnings())
-                .contains("B-14 userParam values that do not match their type kept as text (1)");
+        assertThat(reader.warnings()).contains(MzMLReader.LIMITS.get(1)).noneMatch(w -> w.startsWith("B-14"));
     }
 
     @Test
@@ -504,85 +515,96 @@ class MzMLReaderHeaderTest {
         assertThat(run.id()).isEqualTo("Experiment_x0020_1");
     }
 
-    @Test
-    void aMissingFileIsAnMzPeakExceptionWithTheIoCause(@TempDir Path dir) {
-        Path missing = dir.resolve("missing.mzML");
+    /**
+     * An empty spectrumList, also self-closed, keeps its default data processing (design 5.1), against which the
+     * chromatograms keep their own: sic's equals it (null), tic's differs.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"<spectrumList count=\"0\" defaultDataProcessingRef=\"pwiz_processing\"></spectrumList>",
+            "<spectrumList count=\"0\" defaultDataProcessingRef=\"pwiz_processing\"/>"})
+    void anEmptySpectrumListKeepsItsDefault(String spectrumList, @TempDir Path dir) throws IOException {
+        Path file = plainTiny(dir, s -> s.replaceAll("(?s)<spectrumList .*</spectrumList>", spectrumList));
+        MzMLReader reader = new MzMLReader(file);
+        List<Chromatogram> chromatograms = new ArrayList<>();
 
-        assertThatThrownBy(() -> new MzMLReader(missing).header())
+        assertThat(reader.header().fileMetadata().run().defaultDataProcessingId()).isEqualTo("pwiz_processing");
+        assertThat(reader.survey()).isEqualTo(new MzMLReader.Survey(List.of(), List.of(), Set.of(), 2));
+        reader.read(new MzMLReader.Visitor() {
+            @Override
+            public void spectrum(Spectrum spectrum) {
+                throw new AssertionError(spectrum.description().id());
+            }
+
+            @Override
+            public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
+                throw new AssertionError(spectrum.id());
+            }
+
+            @Override
+            public void chromatogram(Chromatogram chromatogram) {
+                chromatograms.add(chromatogram);
+            }
+        });
+
+        assertThat(chromatograms).extracting(Chromatogram::id, Chromatogram::dataProcessingRef).containsExactly(
+                tuple("tic", "CompassXtract_x0020_processing"), tuple("sic", null));
+    }
+
+    /** A path that is no regular file is rejected before jmzML is called, which would throw without the cause. */
+    @Test
+    void aMissingFileIsRejectedBeforeJmzmlIsCalled(@TempDir Path dir) {
+        Path missing = dir.resolve("missing.mzML");
+        MzMLReader reader = new MzMLReader(missing);
+
+        assertThatThrownBy(reader::header)
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("mzML " + missing + ": cannot read: ")
-                .hasCauseInstanceOf(NoSuchFileException.class);
+                .hasMessage("mzML " + missing + ": not a readable regular file")
+                .hasNoCause();
+        assertThat(reader.warnings()).isEmpty();
         assertThatThrownBy(() -> new MzMLReader(null)).isInstanceOf(NullPointerException.class);
     }
 
-    /** A directory fails while the parser reads it, not when it is opened; it is still unreadable, not malformed. */
     @Test
-    void aDirectoryIsAnMzPeakExceptionWithTheIoCause(@TempDir Path dir) {
+    void aDirectoryIsRejectedBeforeJmzmlIsCalled(@TempDir Path dir) {
         assertThatThrownBy(() -> new MzMLReader(dir).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("mzML " + dir + ": cannot read: ")
-                .hasCauseInstanceOf(IOException.class);
+                .hasMessage("mzML " + dir + ": not a readable regular file")
+                .hasNoCause();
+    }
+
+    /** A file the process may not read is rejected before jmzML is called; root reads it all the same. */
+    @Test
+    void anUnreadableFileIsRejectedBeforeJmzmlIsCalled(@TempDir Path dir) throws IOException {
+        Path file = MzMLFixtures.extract(TINY, dir);
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("-w-------"));
+        try {
+            MzMLReader reader = new MzMLReader(file);
+            if (Files.isReadable(file)) {
+                assertThat(reader.header().fileMetadata().run().id()).isEqualTo("Experiment_x0020_1");
+            } else {
+                assertThatThrownBy(reader::header)
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("mzML " + file + ": not a readable regular file")
+                        .hasNoCause();
+                assertThat(reader.warnings()).isEmpty();
+            }
+        } finally {
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+        }
     }
 
     /**
-     * The parser reports a byte that is invalid in the declared encoding through an IOException (the JDK's
-     * MalformedByteSequenceException, a CharConversionException), but it is a well-formedness error: malformed, with
-     * its line and column, not unreadable.
+     * jmzML decodes a byte that is invalid in the declared encoding without complaint; in a comment it is not seen at
+     * all, so the document reads like tiny.
      */
     @Test
-    void anInvalidUtf8ByteIsMalformedWithItsLineAndColumn(@TempDir Path dir) throws IOException {
+    void anInvalidUtf8ByteInACommentReadsLikeTiny(@TempDir Path dir) throws IOException {
+        MzMLReader tiny = new MzMLReader(MzMLFixtures.extract(TINY, dir));
         Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-8\""),
                 "<fileContent>", "<!-- ÿ --><fileContent>"));
+        assertThat(Files.readAllBytes(file)).contains((byte) 0xff);
 
-        assertThatThrownBy(() -> new MzMLReader(file).header())
-                .isInstanceOf(MzPeakException.class)
-                .hasCauseInstanceOf(XMLStreamException.class)
-                .satisfies(e -> assertThat(((XMLStreamException) e.getCause()).getNestedException())
-                        .isInstanceOf(CharConversionException.class))
-                .hasMessage("mzML " + file + " line " + lineOf(file, "<!-- ") + " column 11: Invalid byte 1 of 1-byte"
-                        + " UTF-8 sequence.");
-    }
-
-    @Test
-    void aParserErrorThatAnIoErrorCausedIsUnreadableAndAnyOtherMalformed() {
-        Path file = Path.of("x.mzML");
-        IOException io = new IOException("disk gone");
-        XMLStreamException causeOnly = new XMLStreamException("wrapped");
-        causeOnly.initCause(io);
-        XMLStreamException other = new XMLStreamException("boom", new IllegalStateException("state"));
-        XMLStreamException badByte = new XMLStreamException("bad byte", new CharConversionException("invalid"));
-
-        assertThat(MzMLReader.failure(file, new XMLStreamException("wrapped", io)))
-                .hasMessage("mzML x.mzML: cannot read: disk gone").hasCause(io);
-        assertThat(MzMLReader.failure(file, causeOnly)).hasMessage("mzML x.mzML: cannot read: disk gone").hasCause(io);
-        assertThat(MzMLReader.failure(file, other)).hasMessage("mzML x.mzML: boom").hasCause(other);
-        assertThat(MzMLReader.failure(file, badByte)).hasMessage("mzML x.mzML: bad byte").hasCause(badByte);
-    }
-
-    /**
-     * JDK 17 and 21 set no element depth limit by default (set here as the system default), and the reader's
-     * recursion over nested elements ended in a StackOverflowError; the reader limits the depth to 100 itself.
-     */
-    @Test
-    void elementsNestedDeeperThan100AreRejectedWithTheirLineAndColumn(@TempDir Path dir) throws IOException {
-        String nested = "<x>".repeat(200_000) + "</x>".repeat(200_000);
-        Path file = tinyWith(dir, s -> replaceOnce(s, "<fileContent>", nested + "\n      <fileContent>"));
-        String property = "jdk.xml.maxElementDepth";
-        String previous = System.getProperty(property);
-        System.setProperty(property, "0");
-        try {
-            assertThatThrownBy(() -> new MzMLReader(file).header())
-                    .isInstanceOf(MzPeakException.class)
-                    .hasCauseInstanceOf(XMLStreamException.class)
-                    .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line " + lineOf(file, "<x>")
-                            + " column \\d+: JAXP00010006: .*\"101\".*\"100\".*");
-        } finally {
-            if (previous == null) {
-                System.clearProperty(property);
-            } else {
-                System.setProperty(property, previous);
-            }
-        }
+        assertThat(new MzMLReader(file).header()).isEqualTo(tiny.header());
     }
 
     @Test
@@ -604,28 +626,40 @@ class MzMLReaderHeaderTest {
         assertThat(noRef.warnings()).noneMatch(w -> w.startsWith("B-39"));
     }
 
+    /** JAXB rejects an order that is no integer; the failure names the list jmzML was reading. */
     @Test
     void anOrderThatIsNoIntegerIsRejected(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> replaceOnce(s, "<processingMethod order=\"2\"",
+        Path component = tinyWith(dir, s -> replaceOnce(s, "<source order=\"1\">", "<source order=\"first\">"));
+        Path method = tinyWith(dir, s -> replaceOnce(s, "<processingMethod order=\"2\"",
                 "<processingMethod order=\"second\""));
 
-        assertThatThrownBy(() -> new MzMLReader(file).header())
+        assertThatThrownBy(() -> new MzMLReader(component).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML " + Pattern.quote(file.toString())
-                        + " line \\d+ column \\d+: <processingMethod> order 'second' is not an integer");
+                .hasMessage("mzML " + component + ": instrumentConfigurationList: Not a number: first")
+                .hasCauseExactlyInstanceOf(NumberFormatException.class);
+        assertThatThrownBy(() -> new MzMLReader(method).header())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("mzML " + method + ": dataProcessingList: Not a number: second")
+                .hasCauseExactlyInstanceOf(NumberFormatException.class);
     }
 
+    /**
+     * jmzML gives a cvParam without accession a null accession, which the mapping cannot take: rejected, naming the
+     * list. A component without order has order 0, as jmzML reads a missing integer (L-6).
+     */
     @Test
-    void aMissingRequiredAttributeIsRejected(@TempDir Path dir) throws IOException {
+    void aMissingAccessionIsRejectedAndAMissingOrderReadsAsZero(@TempDir Path dir) throws IOException {
         Path noAccession = tinyWith(dir, s -> replaceOnce(s, "accession=\"MS:1000554\" ", ""));
         Path noOrder = tinyWith(dir, s -> replaceOnce(s, "<source order=\"1\">", "<source>"));
 
         assertThatThrownBy(() -> new MzMLReader(noAccession).header())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML .* line \\d+ column \\d+: <cvParam> has no accession");
-        assertThatThrownBy(() -> new MzMLReader(noOrder).header())
-                .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML .* line \\d+ column \\d+: <source> has no order");
+                .hasMessageStartingWith("mzML " + noAccession + ": instrumentConfigurationList: ")
+                .hasCauseExactlyInstanceOf(NullPointerException.class);
+        assertThat(new MzMLReader(noOrder).header().fileMetadata().instrumentConfigurations().get(0).components())
+                .extracting(Component::componentType, Component::order).containsExactly(
+                        tuple(ComponentType.ION_SOURCE, 0), tuple(ComponentType.ANALYZER, 2),
+                        tuple(ComponentType.DETECTOR, 3));
     }
 
     @Test
@@ -691,11 +725,190 @@ class MzMLReaderHeaderTest {
                         tuple("MS:1000589", "wpennington@higglesworth.edu"), tuple("MS:1000586", 1.5));
         // Name and affiliation are text, verbatim: no typing of numeric-looking values.
         assertThat(contacts.get(1)).isEqualTo(new Contact("007", "1e3", List.of()));
-        // The referenced group's params come first; its empty affiliation is null.
-        assertThat(contacts.get(2)).isEqualTo(new Contact("0.10", null,
-                List.of(new Param("contact name", "MS:1000586", "Own", null))));
+        // The contact's own params come before the group's (Q41): its own name wins, the group's empty affiliation
+        // is null, and the group's name stays a param, typed.
+        assertThat(contacts.get(2)).isEqualTo(new Contact("Own", null,
+                List.of(new Param("contact name", "MS:1000586", 0.1, null))));
         assertThat(contacts.get(3)).isEqualTo(new Contact(null, null,
                 List.of(new Param("contact email", "MS:1000589", "x@y", null))));
+    }
+
+    @Test
+    void aScanSettingsWithoutSourceFileRefsAndTargetsHasNone(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> s.replaceAll("(?s)\\s*<sourceFileRefList .*?</sourceFileRefList>", "")
+                .replaceAll("(?s)\\s*<targetList .*?</targetList>", ""));
+
+        assertThat(new MzMLReader(file).header().scanSettings()).containsExactly(
+                new ScanSettings("tiny_x0020_scan_x0020_settings", List.of(), List.of(), List.of()));
+    }
+
+    /** A run attribute is taken as written in the start tag: a character reference stays undecoded (B-40). */
+    @Test
+    void aRunIdWithACharacterReferenceIsKeptAsWritten(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(s, "<run id=\"Experiment_x0020_1\"",
+                "<run id=\"Experiment&#x2D;1\""));
+
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThat(reader.header().fileMetadata().run().id()).isEqualTo("Experiment&#x2D;1");
+        assertThat(reader.warnings()).contains(
+                "B-40 run, spectrumList and chromatogramList attribute values containing & kept as written (1)");
+    }
+
+    /** List attributes count for B-40 too: a spectrumList default and a chromatogramList count with a reference. */
+    @Test
+    void listAttributesWithACharacterReferenceAreCounted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s,
+                        "<spectrumList count=\"4\" defaultDataProcessingRef=\"pwiz_processing\">",
+                        "<spectrumList count=\"4\" defaultDataProcessingRef=\"pwiz&#x5F;processing\">"),
+                "<chromatogramList count=\"2\"", "<chromatogramList count=\"&#x32;\""));
+
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThat(reader.header().fileMetadata().run().defaultDataProcessingId()).isEqualTo("pwiz&#x5F;processing");
+        assertThat(reader.warnings()).contains(
+                "B-40 run, spectrumList and chromatogramList attribute values containing & kept as written (2)");
+    }
+
+    /**
+     * xxindex decodes the run, spectrumList and chromatogramList start tags as US-ASCII whatever the declared
+     * encoding, so each byte of 0x80 or more in their attribute values becomes U+FFFD (one for an ISO-8859-1 é, two for
+     * a UTF-8 é), and each such value is counted (B-40); the header lists, read through JAXB, keep the character, so a
+     * run default naming one of them names nothing (a configuration ref also gives B-39).
+     */
+    @Test
+    void nonAsciiRunAndListAttributesAreReadAsUsAsciiAndCounted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(s.replace("pwiz_processing", "pwiz_\u00e9_processing")
+                        .replace("LCQ_x0020_Deca", "LCQ_\u00e9_Deca"),
+                "<run id=\"Experiment_x0020_1\"", "<run id=\"Exp\u00e9riment_x0020_1\""));
+        MzMLReader reader = new MzMLReader(file);
+        FileMetadata m = reader.header().fileMetadata();
+
+        assertThat(m.run()).isEqualTo(new MsRun("Exp\uFFFDriment_x0020_1", null, "pwiz_\uFFFD_processing",
+                "tiny1.yep", "2007-06-27T15:23:45.00035", List.of()));
+        assertThat(m.dataProcessingMethods()).extracting(DataProcessing::id).contains("pwiz_\u00e9_processing");
+        assertThat(m.instrumentConfigurations()).extracting(InstrumentConfiguration::id).containsExactly(0);
+        assertThat(reader.warnings()).contains("B-40 run, spectrumList and chromatogramList attribute values with"
+                        + " bytes >= 0x80 read as US-ASCII, each such byte as U+FFFD (4)",
+                "B-39 instrument configuration refs that name no instrument configuration read as null (1)")
+                .noneMatch(w -> w.contains("containing &"));
+
+        // UTF-8: the two bytes of é become two U+FFFD; JAXB reads the data processing id as é
+        Path utf8 = tinyWith(dir, s -> replaceOnce(s, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-8\"")
+                .replace("pwiz_processing", "pwiz_\u00c3\u00a9_processing"));
+        MzMLReader utf8Reader = new MzMLReader(utf8);
+        FileMetadata u = utf8Reader.header().fileMetadata();
+
+        assertThat(u.run().defaultDataProcessingId()).isEqualTo("pwiz_\uFFFD\uFFFD_processing");
+        assertThat(u.dataProcessingMethods()).extracting(DataProcessing::id).contains("pwiz_\u00e9_processing");
+        assertThat(utf8Reader.warnings()).contains("B-40 run, spectrumList and chromatogramList attribute values with"
+                + " bytes >= 0x80 read as US-ASCII, each such byte as U+FFFD (2)");
+    }
+
+    /**
+     * xxindex reads at most 2,048 bytes of a start tag; for a longer list start tag, legal XML padded with whitespace,
+     * jmzML gives no attributes (null), which is rejected naming the element instead of failing without a message.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"spectrumList", "chromatogramList"})
+    void aListStartTagLongerThanXxindexReadsIsRejectedWithItsElement(String element, @TempDir Path dir)
+            throws IOException {
+        Path file = tinyWith(dir, s -> padStartTag(s, element));
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThatThrownBy(reader::header).isInstanceOf(MzPeakException.class)
+                .hasMessage("mzML " + file + ": " + element + ": jmzML cannot read the attributes of its start tag")
+                .hasNoCause();
+    }
+
+    /**
+     * A run start tag longer than xxindex reads fails earlier: jmzML's constructor matches the run id in the null start
+     * tag, and its NullPointerException is wrapped naming the file (design 6.3), before the run attributes are asked.
+     */
+    @Test
+    void aRunStartTagLongerThanXxindexReadsIsRejectedWhileJmzmlIndexesTheFile(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> padStartTag(s, "run"));
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThatThrownBy(reader::header).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("mzML " + file + ": ")
+                .hasCauseInstanceOf(NullPointerException.class);
+        assertThat(reader.warnings()).isEmpty();
+    }
+
+    /** A run cvParam is not read (L-2), in an indexedmzML, where jmzML cannot reach it, as in a plain mzML. */
+    @Test
+    void runParamsAreNotRead(@TempDir Path dir) throws IOException {
+        String param = "<cvParam cvRef=\"MS\" accession=\"MS:1000857\" name=\"run attribute\" value=\"\"/>";
+        String runStart = "defaultSourceFileRef=\"tiny1.yep\">";
+        Path indexed = tinyWith(dir, s -> replaceOnce(s, runStart, runStart + "\n      " + param));
+        Path plain = plainTiny(dir, s -> replaceOnce(s, runStart, runStart + "\n      " + param));
+
+        for (Path file : List.of(indexed, plain)) {
+            MzMLReader reader = new MzMLReader(file);
+            assertThat(reader.header().fileMetadata().run().parameters()).as("%s", file).isEmpty();
+            assertThat(reader.warnings()).contains("L-2 run-level params (cvParam, userParam,"
+                    + " referenceableParamGroupRef directly under run) are not read");
+        }
+    }
+
+    /** jmzML gives a contact's own cvParams before those of its group, so the own name wins (Q41). */
+    @Test
+    void aContactsOwnNameWinsOverItsGroups(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s, "</contact>",
+                        "</contact>\n      <contact>\n"
+                                + "        <referenceableParamGroupRef ref=\"ContactGroup\"/>\n"
+                                + "        <cvParam cvRef=\"MS\" accession=\"MS:1000586\" name=\"contact name\""
+                                + " value=\"own\"/>\n"
+                                + "      </contact>"),
+                "<referenceableParamGroupList count=\"2\">",
+                "<referenceableParamGroupList count=\"3\">\n"
+                        + "      <referenceableParamGroup id=\"ContactGroup\">\n"
+                        + "        <cvParam cvRef=\"MS\" accession=\"MS:1000586\" name=\"contact name\""
+                        + " value=\"group\"/>\n"
+                        + "      </referenceableParamGroup>"));
+
+        List<Contact> contacts = new MzMLReader(file).header().fileMetadata().fileDescription().contacts();
+
+        assertThat(contacts).hasSize(2);
+        assertThat(contacts.get(1).name()).isEqualTo("own");
+        assertThat(contacts.get(1).parameters()).containsExactly(
+                new Param("contact name", "MS:1000586", "group", null));
+    }
+
+    /**
+     * jmzML 1.7.11 cannot read gzip-compressed mzML (R4.3, Q60): a name ending in .gz, in any case, is rejected
+     * before jmzML is called, by each method, and nothing is noted.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"tiny.mzML.gz", "TINY.MZML.GZ"})
+    void gzipInputIsRejectedByName(String name, @TempDir Path dir) throws IOException {
+        byte[] tiny = Files.readAllBytes(MzMLFixtures.extract(TINY, dir));
+        ByteArrayOutputStream gzipped = new ByteArrayOutputStream();
+        try (GZIPOutputStream out = new GZIPOutputStream(gzipped)) {
+            out.write(tiny);
+        }
+        Path file = Files.write(dir.resolve(name), gzipped.toByteArray());
+        MzMLReader reader = new MzMLReader(file);
+        String message = "mzML " + file + ": gzip-compressed mzML is not supported by jmzML 1.7.11 as is: gunzip it"
+                + " first";
+
+        assertThatThrownBy(reader::header).isInstanceOf(MzPeakException.class).hasMessage(message).hasNoCause();
+        assertThatThrownBy(reader::survey).isInstanceOf(MzPeakException.class).hasMessage(message).hasNoCause();
+        assertThatThrownBy(() -> reader.read(new MzMLReader.Visitor() {
+            @Override
+            public void spectrum(Spectrum spectrum) {
+            }
+
+            @Override
+            public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
+            }
+
+            @Override
+            public void chromatogram(Chromatogram chromatogram) {
+            }
+        })).isInstanceOf(MzPeakException.class).hasMessage(message).hasNoCause();
+        assertThat(reader.warnings()).isEmpty();
     }
 
     @Test
@@ -711,6 +924,13 @@ class MzMLReaderHeaderTest {
     }
 
     // ---- helpers ---------------------------------------------------------------------------------------------------
+
+    /** The limit lines every reader notes, then {@code losses}. */
+    private static List<String> withLimits(String... losses) {
+        List<String> lines = new ArrayList<>(MzMLReader.LIMITS);
+        lines.addAll(List.of(losses));
+        return lines;
+    }
 
     /** tiny after {@code edit}, which must change it, in a new file in {@code dir}. */
     private static Path tinyWith(Path dir, UnaryOperator<String> edit) throws IOException {
@@ -738,6 +958,14 @@ class MzMLReaderHeaderTest {
         return s.substring(0, at) + replacement + s.substring(at + target.length());
     }
 
+    /** {@code s} with 2,048 spaces before the {@code >} of the first {@code element} start tag. */
+    private static String padStartTag(String s, String element) {
+        int start = s.indexOf("<" + element + " ");
+        assertThat(start).as("'<%s ' occurs", element).isNotNegative();
+        int end = s.indexOf('>', start);
+        return s.substring(0, end) + " ".repeat(2048) + s.substring(end);
+    }
+
     /** {@code s} with the first occurrence of {@code target} after {@code anchor} replaced. */
     private static String replaceAfter(String s, String anchor, String target, String replacement) {
         int from = s.indexOf(anchor);
@@ -745,19 +973,5 @@ class MzMLReaderHeaderTest {
         int at = s.indexOf(target, from);
         assertThat(at).as("'%s' occurs after '%s'", target, anchor).isNotNegative();
         return s.substring(0, at) + replacement + s.substring(at + target.length());
-    }
-
-    /** The 1-based line of the first occurrence of {@code text} in {@code file}. */
-    private static int lineOf(Path file, String text) throws IOException {
-        String s = Files.readString(file, StandardCharsets.ISO_8859_1);
-        return (int) s.substring(0, s.indexOf(text)).chars().filter(c -> c == '\n').count() + 1;
-    }
-
-    /** The 1-based column just after the end of the start tag that begins with {@code tagStart} (first occurrence). */
-    private static int endOfTag(Path file, String tagStart) throws IOException {
-        String s = Files.readString(file, StandardCharsets.ISO_8859_1);
-        int at = s.indexOf(tagStart);
-        int end = s.indexOf('>', at) + 1;
-        return end - (s.lastIndexOf('\n', at) + 1) + 1;
     }
 }
