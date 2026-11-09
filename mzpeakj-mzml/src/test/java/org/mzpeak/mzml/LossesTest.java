@@ -63,6 +63,41 @@ class LossesTest {
                 .hasMessageContaining("-1");
         assertThatThrownBy(() -> losses.note(null)).isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> losses.note(null, 2)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> losses.limit(null)).isInstanceOf(NullPointerException.class);
         assertThat(losses.lines()).isEmpty();
+    }
+
+    // ---- JZ-3: limit lines (mzML design 6.0, 8.1) ------------------------------------------------------------------
+
+    @Test
+    void limitLinesHaveNoCountAndKeepTheirOrder() {
+        Losses losses = new Losses();
+        losses.limit("L-3 second");
+        losses.limit("L-1 first");
+        losses.limit("L-5 third");
+
+        assertThat(losses.lines()).containsExactly("L-3 second", "L-1 first", "L-5 third");
+    }
+
+    @Test
+    void aRepeatedLimitIsKeptOnce() {
+        Losses losses = new Losses();
+        losses.limit("L-1 index");
+        losses.limit("L-4 units");
+        losses.limit("L-1 index");
+
+        assertThat(losses.lines()).containsExactly("L-1 index", "L-4 units");
+    }
+
+    @Test
+    void limitLinesComeBeforeTheCountedLinesEvenWhenAddedAfterThem() {
+        Losses losses = new Losses();
+        losses.note("B-3 lost", 2);
+        losses.limit("L-1 index");
+        losses.note("B-1 expanded");
+        losses.limit("L-6 lenient");
+        losses.note("B-3 lost");
+
+        assertThat(losses.lines()).containsExactly("L-1 index", "L-6 lenient", "B-3 lost (3)", "B-1 expanded (1)");
     }
 }

@@ -10,16 +10,21 @@ header|run|MsRun(id=String:Experiment_x0020_1, defaultInstrumentId=Integer:0, de
 header|scanSettings|ScanSettings(id=String:tiny_x0020_scan_x0020_settings, parameters=[], sourceFileRefs=[String:sf_parameters], targets=[[Param(name=String:selected ion m/z, accession=String:MS:1000744, value=Long:1000, unit=String:MS:1000040)], [Param(name=String:selected ion m/z, accession=String:MS:1000744, value=Long:1200, unit=String:MS:1000040)]])
 header|cvList|CvEntry(id=String:MS, fullName=String:Proteomics Standards Initiative Mass Spectrometry Ontology, uri=String:http://psidev.cvs.sourceforge.net/*checkout*/psidev/psi/psi-ms/mzML/controlledVocabulary/psi-ms.obo, version=String:2.26.0)
 header|cvList|CvEntry(id=String:UO, fullName=String:Unit Ontology, uri=String:http://obo.cvs.sourceforge.net/*checkout*/obo/obo/ontology/phenotype/unit.obo, version=String:14:07:2009)
-spectrum|0|String:scan=19|2dfacb8b4e1716d77164d4b4ebb5a078311a0bc54978dc7577c11a893e258500|mz=834648ceae9c31873542b1adbc0668fb21039ad43c50a7d45318910db18c1dce|intensity=a45984858876081b6ccc30a0c6cc2cc3d250e64c31ad9f365ad5e07069d522fe
-spectrum|1|String:scan=20|db2e4b72781dcbd3612948d7e77e5d4bc8da440294a0a5e1c8e17dd09f17d502|mz=f4bfecef8a2a062da5231b165518a2f3d15dfbbde37d5bf11e14d4dba7c3877c|intensity=984b770b675f8210b8a8cfb88e94ee8f6d9229b56f89c39b1768d2bb8d6cc3f1
+spectrum|0|String:scan=19|e6101f0c5cc605a3a6cecd0cbb6d3518caedb16b2f1a16015f12b4394d4fca79|mz=834648ceae9c31873542b1adbc0668fb21039ad43c50a7d45318910db18c1dce|intensity=a45984858876081b6ccc30a0c6cc2cc3d250e64c31ad9f365ad5e07069d522fe
+spectrum|1|String:scan=20|f8f77fbf4495cc52866570d66c72a6082bdcc1e6fdcf3cfe6ffcac40d81bfb30|mz=f4bfecef8a2a062da5231b165518a2f3d15dfbbde37d5bf11e14d4dba7c3877c|intensity=984b770b675f8210b8a8cfb88e94ee8f6d9229b56f89c39b1768d2bb8d6cc3f1
 spectrum|2|String:scan=21|23aee9ebf6d7a8d3266ccff09c3b95de9116daba3d7766edceaf85bcabd8bdf7|mz=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855|intensity=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-spectrum|3|String:sample=1 period=1 cycle=22 experiment=1|89c208ff037eb064f2dcf7f23d6082bc6ee73add9c659bffbcfc542a8ec060d7|mz=834648ceae9c31873542b1adbc0668fb21039ad43c50a7d45318910db18c1dce|intensity=a45984858876081b6ccc30a0c6cc2cc3d250e64c31ad9f365ad5e07069d522fe
+spectrum|3|String:sample=1 period=1 cycle=22 experiment=1|90955d8461f2df4e3422cf4101f1a33e966253a2d659eaddf1a61be814e3d491|mz=834648ceae9c31873542b1adbc0668fb21039ad43c50a7d45318910db18c1dce|intensity=a45984858876081b6ccc30a0c6cc2cc3d250e64c31ad9f365ad5e07069d522fe
 chromatogram|0|String:tic|8e61846aec3a2bbcf2e6904a3545f7b2b6863cb0860be1a4be03dbb9d51ec1f8|time=c0f262ad3bb26d99aab8415eb4ac02ea845dcbb6e33295fb8af4948d195cba75|intensity=a45984858876081b6ccc30a0c6cc2cc3d250e64c31ad9f365ad5e07069d522fe
 chromatogram|1|String:sic|4c862a280469e00f057b98d828e0eb1344646f7da7ac1f24ed65a3e2c75e7c18|time=edbaff352b388b1c468e7454dd04023b6db5bf1ecf1752f3afc5c6f7d62344b9|intensity=9583fdb2a9af7d9d53ac6f6261c677b78e812c257be1333954c1d643c5baf95f
 survey|spectrumIds|[String:scan=19, String:scan=20, String:scan=21, String:sample=1 period=1 cycle=22 experiment=1]
 survey|wavelengthSpectrumIds|[]
 survey|spectrumArrays|[]
 survey|chromatograms|Integer:2
+warning|L-1 the whole input is indexed before the first element is read, and the index stays in memory while the reader lives (about 0.3-0.5 KB per spectrum; a byte scan of the whole file at about 60 MB/s); the reader keeps two file handles on the input open until the garbage collector finalizes jmzML's objects (never with finalization disabled), so on Windows the input cannot be moved or deleted meanwhile
+warning|L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD
+warning|L-4 userParam units (unitAccession, unitName, unitCvRef) are not read
+warning|L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD
+warning|L-6 the input is taken as jmzML and JAXB read it: elements the schema does not allow are skipped; of two singleton children the last is kept; Base64 is decoded leniently (characters outside the alphabet skipped, an unpadded final group dropped, misplaced padding decoded into other bytes); a truncated zlib payload gives a shorter array; a zlib payload with a preset dictionary is never decoded (the conversion does not end) and a zlib payload is inflated without bound (a zip bomb ends in OutOfMemoryError); declared array lengths are not checked against the decoded ones; a missing integer attribute reads as 0; refs are not whitespace-collapsed; errors carry no line or column, and an error found while the index is built names no element; xxindex prints its tag stack to stdout when tags do not match
 warning|B-3 mzML@id and mzML@accession lost (1)
 warning|B-1 referenceableParamGroups expanded inline (2)
 warning|B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)

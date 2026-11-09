@@ -1,5 +1,6 @@
 package org.mzpeak.mzml;
 
+import ms.numpress.MSNumpress;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +25,7 @@ import org.mzpeak.mzml.ModelAssert.Exclusion;
 import org.mzpeak.mzml.ModelAssert.Mode;
 import org.mzpeak.mzml.ModelAssert.Model;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -40,6 +42,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
+import java.util.zip.Deflater;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -52,7 +55,9 @@ import static org.assertj.core.api.Assertions.within;
  * diaPASEF.ref.mzpeak (c), all three made from the same mzML by the reference converter; tiny is pinned in full (d);
  * documents derived from tiny, or from TOFsulfas for wavelength spectra, by string edits pin each rule, loss and
  * rejection (e). Every read that completes is checked against its survey (f): the keys of {@code arrays()} over the MS
- * spectra, in first-seen order, are {@code survey().spectrumArrays()}, and ids and counts agree.
+ * spectra, in first-seen order, are {@code survey().spectrumArrays()}, and ids and counts agree; its warnings start
+ * with the limit lines {@link MzMLReader#LIMITS}. JZ-3 moved the run region onto jmzML: errors name the element as
+ * {@code mzML <file>: spectrum #<n> (<id>)}, and the guards 2 and 3 and jmzML's codec are pinned in (e).
  */
 class MzMLReaderRunTest {
 
@@ -71,6 +76,11 @@ class MzMLReaderRunTest {
     private static final String TINY_MZ_UNIT = "accession=\"MS:1000514\" name=\"m/z array\" value=\"\" unitCvRef=\"MS\""
             + " unitAccession=\"MS:1000040\"";
     private static final String ARRAY_DP_LOST = "B-21 lost array dataProcessingRef";
+    /** The Base64 text of tiny's scan=19 intensity array: 15, 14, ..., 1 as 64-bit floats. */
+    private static final String TINY_INTENSITY_BINARY = "AAAAAAAALkAAAAAAAAAsQAAAAAAAACpAAAAAAAAAKEAAAAAAAAAmQAAAAAAAACRA"
+            + "AAAAAAAAIkAAAAAAAAAgQAAAAAAAABxAAAAAAAAAGEAAAAAAAAAUQAAAAAAAABBAAAAAAAAACEAAAAAAAAAAQAAAAAAAAPA/";
+    /** The combined terms of MS-Numpress followed by zlib, which jmzML cannot decode (guard 2). */
+    private static final List<String> NUMPRESS_ZLIB = List.of("MS:1002746", "MS:1002747", "MS:1002748");
 
     /** TOFsulfas, uncompressed, for the documents derived from it. */
     private static String tofSulfas;
@@ -139,8 +149,8 @@ class MzMLReaderRunTest {
                 .containsOnly(SignalContinuity.PROFILE, SignalContinuity.CENTROID)
                 .filteredOn(c -> c == SignalContinuity.PROFILE).hasSize(14);
         assertThat(run.reader.survey()).isEqualTo(new MzMLReader.Survey(ids(run.spectra), List.of(), Set.of(), 1));
-        assertThat(run.reader.warnings()).containsExactly("B-3 mzML@id and mzML@accession lost (1)",
-                "B-1 referenceableParamGroups expanded inline (1)");
+        assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
+                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)"));
 
         Spectrum s2 = run.spectra.get(2);
         Precursor precursor = s2.description().primaryPrecursor();
@@ -227,9 +237,9 @@ class MzMLReaderRunTest {
         assertThat(run.wavelengthSpectra).hasSize(520);
         assertThat(run.reader.survey().wavelengthSpectrumIds()).hasSize(520);
         assertThat(run.reader.survey().spectrumArrays()).isEmpty();
-        assertThat(run.reader.warnings()).containsExactly("B-3 mzML@id and mzML@accession lost (1)",
-                "B-1 referenceableParamGroups expanded inline (1)",
-                "B-17 scan window params other than the limits lost (212)");
+        assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
+                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
+                "B-17 scan window params other than the limits lost (212)"));
 
         WavelengthSpectrum uv = run.wavelengthSpectra.get(0);
         assertThat(uv.index()).isZero();
@@ -293,6 +303,11 @@ class MzMLReaderRunTest {
         assertThat(first.arrays()).containsOnlyKeys("MS:1003006");
         assertThat(first.arrays().get("MS:1003006")).hasSize(205_921);
         assertThat(run.reader.survey().spectrumArrays()).containsExactly("MS:1003006");
+        // jmzML reads userParams without their unit MS:1002814 (L-4)
+        assertThat(first.description().parameters()).filteredOn(p -> p.name().startsWith("ion mobility "))
+                .extracting(Param::name, Param::value, Param::unit).containsExactly(
+                        tuple("ion mobility lower limit", Double.parseDouble("0.60156745661641153"), null),
+                        tuple("ion mobility upper limit", 1.637221297889762, null));
 
         SpectrumDescription d = run.spectra.get(1).description();
         assertThat(d.scans().get(0).startTime()).isEqualTo(64.43997164823703);
@@ -343,7 +358,7 @@ class MzMLReaderRunTest {
     void tinyIsReadInFull(@TempDir Path dir) throws IOException {
         Run run = read(MzMLFixtures.extract(MzMLFixtures.TINY, dir));
 
-        assertThat(run.reader.warnings()).containsExactly(
+        assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)",
                 "B-1 referenceableParamGroups expanded inline (2)",
                 "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
@@ -352,7 +367,7 @@ class MzMLReaderRunTest {
                 "B-10 spectrum@spotID lost (1)",
                 "B-10 spectrum@sourceFileRef lost (1)",
                 "B-15 times converted to minutes and drift times to milliseconds (3)",
-                "B-27 chromatogram products dropped (1)");
+                "B-27 chromatogram products dropped (1)"));
         assertThat(run.reader.survey()).isEqualTo(new MzMLReader.Survey(
                 List.of("scan=19", "scan=20", "scan=21", "sample=1 period=1 cycle=22 experiment=1"), List.of(),
                 Set.of(), 2));
@@ -367,12 +382,12 @@ class MzMLReaderRunTest {
                 List.of(new ScanEvent(5.8905, null, "+ c NSI Full ms [ 400.00-1800.00]", 3, 0, null,
                         List.of(new ScanWindow(400, 1800)), List.of())),
                 List.of(),
-                List.of(new Param("MS1 spectrum", "MS:1000579", null, null),
-                        new Param("lowest observed m/z", "MS:1000528", 400.39, "MS:1000040"),
+                List.of(new Param("lowest observed m/z", "MS:1000528", 400.39, "MS:1000040"),
                         new Param("highest observed m/z", "MS:1000527", 1795.56, "MS:1000040"),
                         new Param("base peak m/z", "MS:1000504", 445.347, "MS:1000040"),
                         new Param("base peak intensity", "MS:1000505", 120053L, "MS:1000131"),
                         new Param("total ion current", "MS:1000285", 16675500L, null),
+                        new Param("MS1 spectrum", "MS:1000579", null, null),
                         new Param("no combination", "MS:1000795", null, null))));
 
         SpectrumDescription d1 = run.spectra.get(1).description();
@@ -476,8 +491,12 @@ class MzMLReaderRunTest {
         assertThat(survey.spectrumIds()).isUnmodifiable();
         assertThat(survey.wavelengthSpectrumIds()).isUnmodifiable();
         assertThat(survey.spectrumArrays()).isUnmodifiable();
-        assertThat(reader.warnings()).hasSize(4).allMatch(w -> w.startsWith("B-1 ") || w.startsWith("B-3 ")
-                || w.startsWith("B-5 ") || w.startsWith("B-7 "));
+        List<String> warnings = reader.warnings();
+        assertThat(warnings).hasSize(9).startsWith(MzMLReader.LIMITS.toArray(String[]::new));
+        assertThat(MzMLReader.LIMITS).extracting(w -> w.substring(0, 4)).containsExactly("L-1 ", "L-3 ", "L-4 ",
+                "L-5 ", "L-6 ");
+        assertThat(warnings.subList(5, 9)).extracting(w -> w.substring(0, 4))
+                .containsExactlyInAnyOrder("B-1 ", "B-3 ", "B-5 ", "B-7 ");
     }
 
     // ---- (e) rejected input --------------------------------------------------------------------------------------
@@ -489,8 +508,11 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("unsupported compression MS:1003780 in mzML " + Pattern.quote(file.toString())
-                        + " line \\d+ column \\d+, spectrum 'scan=19' array MS:1000514");
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000514 array with the terms [MS:1000523,"
+                        + " MS:1003780, MS:1000514] cannot be decoded by jmzML 1.7.11: Required compression CV"
+                        + " parameter not found in BinaryDataArray!")
+                .cause().isInstanceOf(IllegalStateException.class)
+                .hasMessage("Required compression CV parameter not found in BinaryDataArray!");
     }
 
     @Test
@@ -500,8 +522,11 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("16-bit float (MS:1000520) is not supported in mzML " + file)
-                .hasMessageEndingWith(", spectrum 'scan=20' array MS:1000514");
+                .hasMessageStartingWith(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000514 array with the terms"
+                        + " [MS:1000520, MS:1000576, MS:1000514] cannot be decoded by jmzML 1.7.11: Required precision"
+                        + " CV parameter")
+                .cause().isInstanceOf(IllegalStateException.class)
+                .hasMessageStartingWith("Required precision CV parameter");
     }
 
     @Test
@@ -511,8 +536,9 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+: spectrum"
-                        + " 'scan=19': its MS:1000514 array in unit UO:0000010 cannot be converted to MS:1000040");
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000514 array in unit UO:0000010 cannot be"
+                        + " converted to MS:1000040")
+                .hasNoCause();
     }
 
     @Test
@@ -523,7 +549,7 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": spectrum 'scan=20': its MS:1000515 array in unit MS:1000132 cannot be"
+                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000515 array in unit MS:1000132 cannot be"
                         + " converted to MS:1000131");
     }
 
@@ -535,8 +561,8 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": spectrum 'merged=212 row=0': its MS:1000617 array in unit UO:0000017 cannot"
-                        + " be converted to UO:0000018");
+                .hasMessage(prefix(file, "spectrum #212 (merged=212 row=0)") + "its MS:1000617 array in unit"
+                        + " UO:0000017 cannot be converted to UO:0000018");
     }
 
     // A main array's unit is checked before B-9 drops the arrays of an entity that lacks the other main array.
@@ -549,7 +575,7 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": spectrum 'scan=19': its MS:1000514 array in unit UO:0000010 cannot be"
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000514 array in unit UO:0000010 cannot be"
                         + " converted to MS:1000040");
     }
 
@@ -561,7 +587,7 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": spectrum 'scan=19': its MS:1000515 array in unit MS:1000132 cannot be"
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000515 array in unit MS:1000132 cannot be"
                         + " converted to MS:1000131");
     }
 
@@ -574,8 +600,8 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": spectrum 'merged=212 row=0': its MS:1000617 array in unit UO:0000017 cannot"
-                        + " be converted to UO:0000018");
+                .hasMessage(prefix(file, "spectrum #212 (merged=212 row=0)") + "its MS:1000617 array in unit"
+                        + " UO:0000017 cannot be converted to UO:0000018");
     }
 
     @Test
@@ -587,7 +613,7 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": chromatogram 'tic': its MS:1000595 array in unit UO:0000018 cannot be"
+                .hasMessage(prefix(file, "chromatogram #0 (tic)") + "its MS:1000595 array in unit UO:0000018 cannot be"
                         + " converted to UO:0000031");
     }
 
@@ -598,9 +624,8 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+: spectrum"
-                        + " 'scan=20': scan start time \\(MS:1000016\\) in unit UO:0000018 cannot be converted to"
-                        + " minutes \\(UO:0000031\\)");
+                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "scan start time (MS:1000016) in unit UO:0000018"
+                        + " cannot be converted to minutes (UO:0000031)");
     }
 
     @Test
@@ -610,22 +635,38 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": spectrum 'scan=20': its MS:1000514 and MS:1000515 arrays declare different"
-                        + " lengths, 9 and 10");
+                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000514 and MS:1000515 arrays declare"
+                        + " different lengths, 9 and 10");
     }
 
+    /** A declared length other than the decoded one is not checked (L-6): scan=19 declares 14 and holds 15 points. */
     @Test
-    void aDecodedLengthOtherThanTheDeclaredOneIsRejectedByRead(@TempDir Path dir) throws IOException {
+    void aDeclaredLengthOtherThanTheDecodedOneIsNotChecked(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
                 SCAN_19 + " defaultArrayLength=\"14\""));
+
+        Spectrum s0 = read(file).spectra.get(0);
+
+        assertThat(s0.mz()).hasSize(15);
+        assertThat(s0.intensity()).hasSize(15);
+    }
+
+    /** Main arrays that decode to different lengths: the model's constructor rejects them, wrapped by read(). */
+    @Test
+    void mainArraysThatDecodeToDifferentLengthsAreRejectedByRead(@TempDir Path dir) throws IOException {
+        double[] intensity = new double[14];
+        for (int i = 0; i < intensity.length; i++) {
+            intensity[i] = 15 - i;
+        }
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, TINY_INTENSITY_BINARY, floats(intensity)));
         MzMLReader reader = new MzMLReader(file);
 
         assertThat(reader.survey().spectrumIds()).hasSize(4);
         assertThatThrownBy(() -> reader.read(new Run(reader)))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageMatching("decoded length 15 differs from the declared length 14 in mzML "
-                        + Pattern.quote(file.toString()) + " line \\d+ column \\d+, spectrum 'scan=19' array"
-                        + " MS:1000514");
+                .hasMessageStartingWith(prefix(file, "spectrum #0 (scan=19)"))
+                .cause().isInstanceOf(IllegalArgumentException.class)
+                .satisfies(e -> assertThat(e.getStackTrace()[0].getClassName()).startsWith("org.mzpeak.model."));
     }
 
     @Test
@@ -635,9 +676,11 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageEndingWith(": <binaryDataArray> arrayLength 'ten' is not an integer");
+                .hasMessageStartingWith(prefix(file, "spectrum #1"))
+                .hasRootCauseInstanceOf(NumberFormatException.class);
     }
 
+    /** What xxindex cannot index fails while jmzML builds its index, before any element: no element is named. */
     @Test
     void malformedXmlInTheRunIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceOnce(s, "</scanList>\n          <precursorList",
@@ -645,7 +688,57 @@ class MzMLReaderRunTest {
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageContaining("must be terminated by the matching end-tag \"</scanList>\"");
+                .hasMessage("mzML " + file + ": Internal stack of XML tags was corrupted!")
+                .cause().isInstanceOf(IllegalStateException.class);
+    }
+
+    /** A spectrum JAXB cannot parse (a duplicated attribute) is named by its position only: jmzML returned none. */
+    @Test
+    void aSpectrumJaxbCannotParseIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        String msLevel2 = "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"2\"/>";
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20, msLevel2,
+                msLevel2.replace("cvRef=\"MS\"", "cvRef=\"MS\" cvRef=\"MS\"")));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("mzML " + file + ": spectrum #1: Could not unmarshal object at"
+                        + " xpath:/run/spectrumList/spectrum")
+                .cause().isInstanceOf(IllegalStateException.class);
+    }
+
+    /** Guard 2: MS-Numpress and zlib in one term, which jmzML cannot decode, in a spectrum and in a chromatogram. */
+    @Test
+    void numpressAndZlibInOneTermAreRejectedBySurvey(@TempDir Path dir) throws IOException {
+        String noCompression = "accession=\"MS:1000576\" name=\"no compression\"";
+        for (String term : NUMPRESS_ZLIB) {
+            String combined = "accession=\"" + term + "\" name=\"" + MzMLTerms.COMPRESSIONS.get(term) + "\"";
+            Path spectrum = tinyWith(dir, s -> replaceAfter(s, SCAN_19, noCompression, combined));
+            Path chromatogram = tinyWith(dir, s -> replaceAfter(s,
+                    "name=\"time array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000010\"", noCompression,
+                    combined));
+
+            assertThatThrownBy(() -> new MzMLReader(spectrum).survey()).as(term)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage(prefix(spectrum, "spectrum #0 (scan=19)") + "its MS:1000514 array is compressed with "
+                            + term + " (MS-Numpress and zlib in one term), which jmzML 1.7.11 cannot decode");
+            assertThatThrownBy(() -> new MzMLReader(chromatogram).survey()).as(term)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage(prefix(chromatogram, "chromatogram #0 (tic)") + "its MS:1000515 array is compressed"
+                            + " with " + term + " (MS-Numpress and zlib in one term), which jmzML 1.7.11 cannot decode");
+        }
+    }
+
+    @Test
+    void aChromatogramArrayInZstdIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, "id=\"tic\"", "accession=\"MS:1000576\" name=\"no compression\"",
+                "accession=\"MS:1003780\" name=\"zstd compression\""));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith(prefix(file, "chromatogram #0 (tic)") + "its MS:1000595 array with the terms"
+                        + " [MS:1000523, MS:1003780, MS:1000595] cannot be decoded by jmzML 1.7.11: ")
+                .cause().isInstanceOf(IllegalStateException.class)
+                .hasMessage("Required compression CV parameter not found in BinaryDataArray!");
     }
 
     // ---- (e) arrays ----------------------------------------------------------------------------------------------
@@ -768,9 +861,8 @@ class MzMLReaderRunTest {
             assertThatThrownBy(() -> new MzMLReader(file).survey())
                     .as(name)
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+:"
-                            + " spectrum 'scan=19': its non-standard data array \\(MS:1000786\\) is named '" + name
-                            + "', the accession of an array type");
+                    .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its non-standard data array (MS:1000786) is"
+                            + " named '" + name + "', the accession of an array type");
         }
     }
 
@@ -857,6 +949,25 @@ class MzMLReaderRunTest {
     }
 
     @Test
+    void int64ValuesRoundOnlyWhereTheirDoubleDiffers(@TempDir Path dir) throws IOException {
+        long[] counts = new long[15];
+        counts[0] = Long.MAX_VALUE;
+        counts[1] = Long.MIN_VALUE;
+        counts[2] = 9007199254740992L;
+        counts[3] = -9007199254740993L;
+        String big = "<binaryDataArray encodedLength=\"160\">\n" + I64 + "\n" + NO_COMPRESSION + "\n"
+                + cv("MS:1000786", "non-standard data array", "counts", null) + "\n<binary>" + longs(counts)
+                + "</binary>\n</binaryDataArray>\n";
+        Path file = tinyWith(dir, s -> withArray(s, SCAN_19, big));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).arrays().get("counts")).startsWith(0x1p63, -0x1p63, 0x1p53, -0x1p53);
+        assertThat(run.reader.warnings())
+                .contains("B-31 64-bit integer array values rounded to the nearest double (2)");
+    }
+
+    @Test
     void arrayParamsAndDataProcessingRefsOfKeptArraysAreLost(@TempDir Path dir) throws IOException {
         String sn = "<binaryDataArray encodedLength=\"160\" dataProcessingRef=\"pwiz_processing\">\n"
                 + cv("MS:9999999", "unknown term", "", null) + "\n" + F64 + "\n" + NO_COMPRESSION + "\n" + SN_TYPE
@@ -869,6 +980,159 @@ class MzMLReaderRunTest {
         assertThat(run.spectra.get(0).arrays()).containsOnlyKeys(SN);
         assertThat(run.reader.warnings()).contains(ARRAY_DP_LOST + " (11)",
                 "B-21 lost array params other than array type, data type and compression (2)");
+    }
+
+    /** The legacy pair: an MS-Numpress linear payload deflated with zlib, under MS:1002312 and MS:1000574. */
+    @Test
+    void aLegacyNumpressLinearAndZlibPairIsDecoded(@TempDir Path dir) throws IOException {
+        double[] mz = new double[15];
+        for (int i = 0; i < mz.length; i++) {
+            mz[i] = 400.123 + 13.371 * i;
+        }
+        double fixedPoint = MSNumpress.optimalLinearFixedPoint(mz, mz.length);
+        byte[] linear = linear(mz);
+        String terms = F64 + "\n" + cv("MS:1002312", "MS-Numpress linear prediction compression", "", null) + "\n"
+                + cv("MS:1000574", "zlib compression", "", null) + "\n"
+                + cv("MS:1000514", "m/z array", "", "MS:1000040");
+        Path file = tinyWith(dir, s -> spectrum19With(s, 15, binaryArray(terms, deflate(linear)),
+                array(cv("MS:1000515", "intensity array", "", "MS:1000131"), ramp(15))));
+
+        double[] read = read(file).spectra.get(0).mz();
+
+        assertThat(read).hasSize(15);
+        for (int i = 0; i < mz.length; i++) {
+            assertThat(read[i]).as("m/z %d", i).isCloseTo(mz[i], within(0.5 / fixedPoint));
+        }
+    }
+
+    /** MS-Numpress PIC counts up to 2147483647 (2^31 - 1) read exactly. */
+    @Test
+    void picCountsUpTo2147483647AreReadExactly(@TempDir Path dir) throws IOException {
+        double[] counts = picCounts(2147483647.0);
+        Path file = tinyWith(dir, s -> spectrum19With(s, 15, array(cv("MS:1000514", "m/z array", "", "MS:1000040"),
+                ramp(15)), picArray(counts)));
+
+        assertThat(read(file).spectra.get(0).intensity()).containsExactly(counts);
+    }
+
+    /** Guard 3: jmzML decodes a PIC count of 2^31 or more as a negative number; read() rejects it, survey() cannot. */
+    @Test
+    void picCountsOf2To31AndAboveAreRejectedByRead(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> spectrum19With(s, 15, array(cv("MS:1000514", "m/z array", "", "MS:1000040"),
+                ramp(15)), picArray(picCounts(3e9))));
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThat(reader.survey().spectrumIds()).hasSize(4);
+        assertThatThrownBy(() -> reader.read(new Run(reader)))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith(prefix(file, "spectrum #0 (scan=19)"))
+                .hasMessageContainingAll("MS:1000515", "-1294967296", "3000000000")
+                .hasNoCause();
+    }
+
+    /**
+     * jmzML's MS-Numpress decoding overwrites an array's declared length with the decoded one: every array of a
+     * spectrum is classified before any is decoded, so the charge array, declared 14 like the m/z array that decodes to
+     * 15 values, is kept by read() as survey() declared it.
+     */
+    @Test
+    void arraysAreClassifiedBeforeNumpressDecodingRewritesTheirLength(@TempDir Path dir) throws IOException {
+        double[] mz = ramp(15);
+        double[] intensity = picCounts(1);
+        String linear = cv("MS:1002312", "MS-Numpress linear prediction compression", "", null);
+        Path file = tinyWith(dir, s -> spectrum19With(s, 14,
+                binaryArray(F64 + "\n" + linear + "\n" + cv("MS:1000514", "m/z array", "", "MS:1000040"), linear(mz)),
+                binaryArray(F64 + "\n" + linear + "\n" + cv("MS:1000515", "intensity array", "", "MS:1000131"),
+                        linear(intensity)),
+                array(cv("MS:1000516", "charge array", "", null), ramp(15))));
+
+        Run run = read(file);
+
+        Spectrum s0 = run.spectra.get(0);
+        assertThat(run.reader.survey().spectrumArrays()).containsExactly("MS:1000516");
+        assertThat(s0.arrays().get("MS:1000516")).containsExactly(ramp(15));
+        assertThat(s0.mz()).hasSize(15);
+        assertThat(s0.intensity()).hasSize(15);
+        for (int i = 0; i < 15; i++) {
+            assertThat(s0.mz()[i]).isCloseTo(mz[i], within(0.5 / MSNumpress.optimalLinearFixedPoint(mz, 15)));
+            assertThat(s0.intensity()[i])
+                    .isCloseTo(intensity[i], within(0.5 / MSNumpress.optimalLinearFixedPoint(intensity, 15)));
+        }
+    }
+
+    /** An array jmzML cannot decode (zlib declared, raw bytes given) passes survey() and fails read(), named. */
+    @Test
+    void anArrayJmzmlCannotDecodeIsRejectedByRead(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> spectrum19With(s, 15, array(cv("MS:1000514", "m/z array", "", "MS:1000040"),
+                ramp(15)), binaryArray(F64 + "\n" + cv("MS:1000574", "zlib compression", "", null) + "\n"
+                + cv("MS:1000515", "intensity array", "", "MS:1000131"), Base64.getDecoder().decode(floats(ramp(15))))));
+        MzMLReader reader = new MzMLReader(file);
+
+        assertThat(reader.survey().spectrumIds()).hasSize(4);
+        assertThatThrownBy(() -> reader.read(new Run(reader)))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000515 array with the terms [MS:1000523,"
+                        + " MS:1000574, MS:1000515] cannot be decoded by jmzML 1.7.11: Encountered wrong data format"
+                        + " while trying to decompress binary data!")
+                .cause().isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void theSurveyCountsTheChromatogramsOfEachFixture(@TempDir Path dir) throws IOException {
+        Map<String, Integer> chromatograms = Map.of(MzMLFixtures.TINY, 2, MzMLFixtures.SMALL, 1,
+                MzMLFixtures.TOFSULFAS, 2, MzMLFixtures.DIAPASEF, 2);
+        for (String fixture : MzMLFixtures.NAMES) {
+            MzMLReader reader = new MzMLReader(MzMLFixtures.extract(fixture, dir));
+
+            assertThat(reader.survey().chromatograms()).as(fixture).isEqualTo(chromatograms.get(fixture));
+        }
+    }
+
+    @Test
+    void aRunWithoutChromatogramListHasSpectraOnly(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> cut(s, "<chromatogramList ", "</chromatogramList>"));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).hasSize(4);
+        assertThat(run.chromatograms).isEmpty();
+        assertThat(run.reader.survey().chromatograms()).isZero();
+    }
+
+    @Test
+    void aRunWithoutSpectrumListHasChromatogramsOnly(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> cut(s, "<spectrumList ", "</spectrumList>"));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).isEmpty();
+        assertThat(run.reader.survey().spectrumIds()).isEmpty();
+        assertThat(run.chromatograms).extracting(Chromatogram::id).containsExactly("tic", "sic");
+    }
+
+    @Test
+    void anEmptySpectrumListHasNoSpectra(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceRegion(s, "<spectrumList ", "</spectrumList>",
+                "<spectrumList count=\"0\" defaultDataProcessingRef=\"pwiz_processing\">\n</spectrumList>"));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).isEmpty();
+        assertThat(run.chromatograms).hasSize(2);
+        assertThat(run.chromatograms.get(1).dataProcessingRef()).isNull();
+    }
+
+    /** The first array type term keys an array; a second one is an array param like any other, lost (B-21). */
+    @Test
+    void anArrayWithTwoArrayTypesIsKeyedByTheFirst(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> withArray(s, SCAN_19,
+                array(SN_TYPE + "\n" + cv("MS:1000516", "charge array", "", null), ramp(15))));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).arrays()).containsOnlyKeys(SN);
+        assertThat(run.reader.warnings())
+                .contains("B-21 lost array params other than array type, data type and compression (1)");
     }
 
     @Test
@@ -912,6 +1176,102 @@ class MzMLReaderRunTest {
         assertThat(d.numberOfDataPoints()).isEqualTo(15);
         assertThat(d.numberOfPeaks()).isZero();
         assertThat(run.reader.warnings()).contains(MzMLReader.BOTH_REPRESENTATIONS + " (1)");
+    }
+
+    /**
+     * jmzML puts a referenced group's params after the element's own (Q41): scan=19's params end with its group's
+     * MS:1000579 and MS:1000130 (kept as a param here, since a second polarity makes the polarity unknown), followed
+     * only by its scanList's MS:1000795.
+     */
+    @Test
+    void groupParamsComeAfterTheSpectrumsOwn(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<cvParam cvRef=\"MS\" accession=\"MS:1000511\"",
+                cv("MS:1000129", "negative scan", "", null) + "\n<cvParam cvRef=\"MS\" accession=\"MS:1000511\""));
+
+        assertThat(read(file).spectra.get(0).description().parameters()).extracting(Param::accession)
+                .containsExactly("MS:1000129", "MS:1000528", "MS:1000527", "MS:1000504", "MS:1000505", "MS:1000285",
+                        "MS:1000579", "MS:1000130", "MS:1000795");
+    }
+
+    @Test
+    void aCvRefAliasInTheRunIsNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<cvParam cvRef=\"MS\" accession=\"MS:1000511\"",
+                "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000511\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).msLevel()).isEqualTo(1);
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)");
+    }
+
+    /** An array's params are read as every element's: a cvRef alias on its array type term is noted (B-30). */
+    @Test
+    void aCvRefAliasOnAnArrayTermIsNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<cvParam cvRef=\"MS\" accession=\"MS:1000514\"",
+                "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000514\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).hasSize(15);
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)");
+    }
+
+    /** An array's params are read as every element's: a userParam value that does not fit its type is noted (B-14). */
+    @Test
+    void anArrayUserParamOfAnotherTypeIsNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<binary>",
+                "<userParam name=\"note\" type=\"xsd:int\" value=\"abc\"/>\n<binary>")); // on its m/z array
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).hasSize(15);
+        assertThat(run.reader.warnings()).contains(
+                "B-14 userParam values that do not match their type kept as text (1)",
+                "B-21 lost array params other than array type, data type and compression (1)");
+    }
+
+    /**
+     * A group's cvRef alias (B-30) and userParam type mismatch (B-14) are noted once, when {@code header()} reads the
+     * group, not again for each of the 3 spectra jmzML copies CommonMS1SpectrumParams into; each still carries them.
+     */
+    @Test
+    void aSpectrumGroupsAliasAndTypeMismatchAreNotedOnce(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, "<cvParam cvRef=\"MS\" accession=\"MS:1000579\"",
+                "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000579\""), "id=\"CommonMS1SpectrumParams\"",
+                "</referenceableParamGroup>",
+                "<userParam name=\"note\" type=\"xsd:int\" value=\"abc\"/>\n</referenceableParamGroup>"));
+
+        Run run = read(file);
+
+        assertThat(ids(run.spectra)).containsExactly("scan=19", "scan=20", "scan=21",
+                "sample=1 period=1 cycle=22 experiment=1");
+        for (int i : new int[] {0, 2, 3}) {
+            assertThat(run.spectra.get(i).description().parameters()).as(ids(run.spectra).get(i))
+                    .contains(new Param("MS1 spectrum", "MS:1000579", null, null), new Param("note", null, "abc", null));
+        }
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)",
+                "B-14 userParam values that do not match their type kept as text (1)");
+    }
+
+    /**
+     * A group a binaryDataArray references is noted once too: its cvRef alias (on the m/z array's data type, which
+     * the array takes from it) and its userParam type mismatch, each once; the userParam is a lost array param (B-21).
+     */
+    @Test
+    void anArrayGroupsAliasAndTypeMismatchAreNotedOnce(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, "</referenceableParamGroupList>",
+                "<referenceableParamGroup id=\"MzArrayParams\">\n"
+                        + "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000523\" name=\"64-bit float\" value=\"\"/>\n"
+                        + "<userParam name=\"note\" type=\"xsd:int\" value=\"abc\"/>\n"
+                        + "</referenceableParamGroup>\n</referenceableParamGroupList>"),
+                SCAN_19, F64, "<referenceableParamGroupRef ref=\"MzArrayParams\"/>")); // in its m/z array
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)",
+                "B-14 userParam values that do not match their type kept as text (1)",
+                "B-21 lost array params other than array type, data type and compression (1)");
     }
 
     @Test
@@ -1437,7 +1797,20 @@ class MzMLReaderRunTest {
         assertThat(run.wavelengthSpectra).extracting(WavelengthSpectrum::index)
                 .isEqualTo(indices(run.wavelengthSpectra.size()));
         assertThat(run.chromatograms).extracting(Chromatogram::index).isEqualTo(indices(run.chromatograms.size()));
+        assertThat(reader.warnings()).startsWith(MzMLReader.LIMITS.toArray(String[]::new));
         return run;
+    }
+
+    /** How an error of {@code file} names {@code element}: {@code mzML <file>: <element>: }. */
+    private static String prefix(Path file, String element) {
+        return "mzML " + file + ": " + element + ": ";
+    }
+
+    /** The limit lines every reader notes, then {@code losses}. */
+    private static List<String> withLimits(String... losses) {
+        List<String> lines = new ArrayList<>(MzMLReader.LIMITS);
+        lines.addAll(List.of(losses));
+        return lines;
     }
 
     private static List<Long> indices(int n) {
@@ -1546,11 +1919,71 @@ class MzMLReaderRunTest {
                 + String.join("", arrays) + "</binaryDataArrayList>" + s.substring(end);
     }
 
+    /** {@code s} with the region from the first {@code start} to the next {@code end}, inclusive, replaced. */
+    private static String replaceRegion(String s, String start, String end, String by) {
+        int from = s.indexOf(start);
+        assertThat(from).as("'%s' occurs", start).isNotNegative();
+        int to = s.indexOf(end, from);
+        assertThat(to).as("'%s' occurs after '%s'", end, start).isNotNegative();
+        return s.substring(0, from) + by + s.substring(to + end.length());
+    }
+
+    /** {@code s} without the region from the first {@code start} to the next {@code end}, inclusive. */
+    private static String cut(String s, String start, String end) {
+        return replaceRegion(s, start, end, "");
+    }
+
     /** A binaryDataArray of 64-bit floats without compression, with the array type term {@code type}. */
     private static String array(String type, double... values) {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /** A binaryDataArray with the cvParam elements {@code terms} and {@code binary} as its Base64 text. */
+    private static String binaryArray(String terms, byte[] binary) {
+        String base64 = Base64.getEncoder().encodeToString(binary);
+        return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + terms + "\n<binary>" + base64
+                + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /** An intensity array of 64-bit floats holding {@code counts} as an MS-Numpress PIC payload (MS:1002313). */
+    private static String picArray(double[] counts) {
+        byte[] buffer = new byte[5 * counts.length];
+        byte[] pic = Arrays.copyOf(buffer, MSNumpress.encodePic(counts, counts.length, buffer));
+        return binaryArray(F64 + "\n" + cv("MS:1002313", "MS-Numpress positive integer compression", "", null) + "\n"
+                + cv("MS:1000515", "intensity array", "", "MS:1000131"), pic);
+    }
+
+    /** 15 counts: 15, 14, ..., 2 and {@code last}. */
+    private static double[] picCounts(double last) {
+        double[] counts = new double[15];
+        for (int i = 0; i < 14; i++) {
+            counts[i] = 15 - i;
+        }
+        counts[14] = last;
+        return counts;
+    }
+
+    /** {@code values} as an MS-Numpress linear payload at the optimal fixed point. */
+    private static byte[] linear(double[] values) {
+        byte[] buffer = new byte[8 + 5 * values.length];
+        return Arrays.copyOf(buffer, MSNumpress.encodeLinear(values, values.length, buffer,
+                MSNumpress.optimalLinearFixedPoint(values, values.length)));
+    }
+
+    /** {@code bytes} as a zlib stream. */
+    private static byte[] deflate(byte[] bytes) {
+        Deflater deflater = new Deflater();
+        deflater.setInput(bytes);
+        deflater.finish();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] chunk = new byte[256];
+        while (!deflater.finished()) {
+            out.write(chunk, 0, deflater.deflate(chunk));
+        }
+        deflater.end();
+        return out.toByteArray();
     }
 
     /**
