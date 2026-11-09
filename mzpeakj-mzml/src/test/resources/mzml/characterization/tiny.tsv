@@ -21,6 +21,7 @@ survey|wavelengthSpectrumIds|[]
 survey|spectrumArrays|[]
 survey|chromatograms|Integer:2
 warning|L-1 the whole input is indexed before the first element is read, and the index stays in memory while the reader lives (about 0.3-0.5 KB per spectrum; a byte scan of the whole file at about 60 MB/s); the reader keeps two file handles on the input open until the garbage collector finalizes jmzML's objects (never with finalization disabled), so on Windows the input cannot be moved or deleted meanwhile
+warning|L-2 run-level params (cvParam, userParam, referenceableParamGroupRef directly under run) are not read
 warning|L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD
 warning|L-4 userParam units (unitAccession, unitName, unitCvRef) are not read
 warning|L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD

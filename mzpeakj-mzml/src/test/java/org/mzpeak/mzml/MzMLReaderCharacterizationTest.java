@@ -7,7 +7,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mzpeak.io.MzPeakManifest;
 import org.mzpeak.model.Chromatogram;
-import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -416,27 +415,13 @@ class MzMLReaderCharacterizationTest {
         assertThat(MzMLSchema.validate(compact)).isEmpty();
     }
 
+    /** JZ-4: the two run params of compactTiny are not read (L-2), so it reads exactly as tiny. */
     @Test
-    void compactTinyReadsAsTinyApartFromTheTwoRunParams(@TempDir Path dir) throws IOException {
-        List<String> tiny = committed(Input.TINY);
-        List<String> compact = committed(Input.TINY_COMPACT);
-        MsRun run = new MzMLReader(Input.TINY.make(dir)).header().fileMetadata().run();
-        int runLine = tiny.indexOf("header|run|" + Canonical.render(run));
-        List<Param> added = List.of(new Param("run attribute", "MS:1000857", null, null),
-                new Param("ms level", "MS:1000511", 2L, null));
-        MsRun compactRun = new MsRun(run.id(), run.defaultInstrumentId(), run.defaultDataProcessingId(),
-                run.defaultSourceFileId(), run.startTime(), added);
+    void compactTinyReadsAsTiny(@TempDir Path dir) throws IOException {
+        MsRun run = new MzMLReader(Input.TINY_COMPACT.make(dir)).header().fileMetadata().run();
 
         assertThat(run.parameters()).isEmpty();
-        assertThat(runLine).isPositive();
-        assertThat(compact).hasSameSizeAs(tiny);
-        for (int i = 0; i < tiny.size(); i++) {
-            assertThat(compact.get(i)).as("line %d", i + 1)
-                    .isEqualTo(i == runLine ? "header|run|" + Canonical.render(compactRun) : tiny.get(i));
-        }
-        assertThat(compact.get(runLine)).contains("parameters=[Param(name=String:run attribute,"
-                + " accession=String:MS:1000857, value=null, unit=null), Param(name=String:ms level,"
-                + " accession=String:MS:1000511, value=Long:2, unit=null)])");
+        assertThat(committed(Input.TINY_COMPACT)).isEqualTo(committed(Input.TINY));
     }
 
     @Test

@@ -6,7 +6,7 @@ header|samples|Sample(id=String:_x0032_0090101_x0020_-_x0020_Sample_x0020_1, nam
 header|software|Software(id=String:Bioworks, version=String:3.3.1 sp1, parameters=[Param(name=String:Bioworks, accession=String:MS:1000533, value=null, unit=null)])
 header|software|Software(id=String:pwiz, version=String:1.0, parameters=[Param(name=String:ProteoWizard, accession=String:MS:1000615, value=null, unit=null)])
 header|software|Software(id=String:CompassXtract, version=String:2.0.5, parameters=[Param(name=String:CompassXtract, accession=String:MS:1000718, value=null, unit=null)])
-header|run|MsRun(id=String:Experiment_x0020_1, defaultInstrumentId=Integer:0, defaultDataProcessingId=String:pwiz_processing, defaultSourceFileId=String:tiny1.yep, startTime=String:2007-06-27T15:23:45.00035, parameters=[Param(name=String:run attribute, accession=String:MS:1000857, value=null, unit=null), Param(name=String:ms level, accession=String:MS:1000511, value=Long:2, unit=null)])
+header|run|MsRun(id=String:Experiment_x0020_1, defaultInstrumentId=Integer:0, defaultDataProcessingId=String:pwiz_processing, defaultSourceFileId=String:tiny1.yep, startTime=String:2007-06-27T15:23:45.00035, parameters=[])
 header|scanSettings|ScanSettings(id=String:tiny_x0020_scan_x0020_settings, parameters=[], sourceFileRefs=[String:sf_parameters], targets=[[Param(name=String:selected ion m/z, accession=String:MS:1000744, value=Long:1000, unit=String:MS:1000040)], [Param(name=String:selected ion m/z, accession=String:MS:1000744, value=Long:1200, unit=String:MS:1000040)]])
 header|cvList|CvEntry(id=String:MS, fullName=String:Proteomics Standards Initiative Mass Spectrometry Ontology, uri=String:http://psidev.cvs.sourceforge.net/*checkout*/psidev/psi/psi-ms/mzML/controlledVocabulary/psi-ms.obo, version=String:2.26.0)
 header|cvList|CvEntry(id=String:UO, fullName=String:Unit Ontology, uri=String:http://obo.cvs.sourceforge.net/*checkout*/obo/obo/ontology/phenotype/unit.obo, version=String:14:07:2009)
@@ -21,6 +21,7 @@ survey|wavelengthSpectrumIds|[]
 survey|spectrumArrays|[]
 survey|chromatograms|Integer:2
 warning|L-1 the whole input is indexed before the first element is read, and the index stays in memory while the reader lives (about 0.3-0.5 KB per spectrum; a byte scan of the whole file at about 60 MB/s); the reader keeps two file handles on the input open until the garbage collector finalizes jmzML's objects (never with finalization disabled), so on Windows the input cannot be moved or deleted meanwhile
+warning|L-2 run-level params (cvParam, userParam, referenceableParamGroupRef directly under run) are not read
 warning|L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD
 warning|L-4 userParam units (unitAccession, unitName, unitCvRef) are not read
 warning|L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD
