@@ -8,6 +8,7 @@ import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
@@ -58,6 +59,7 @@ class MzMLReaderRunTest {
     private static final String SCAN_19 = "id=\"scan=19\"";
     private static final String SCAN_20 = "id=\"scan=20\"";
     private static final String SCAN_21 = "id=\"scan=21\"";
+    private static final String CYCLE_22 = "id=\"sample=1 period=1 cycle=22 experiment=1\"";
     private static final String UV_0 = "id=\"merged=212 row=0\"";
     private static final String UV_1 = "id=\"merged=213 row=1\"";
     private static final String UV_2 = "id=\"merged=214 row=2\"";
@@ -769,6 +771,34 @@ class MzMLReaderRunTest {
                     .hasMessageMatching("mzML " + Pattern.quote(file.toString()) + " line \\d+ column \\d+:"
                             + " spectrum 'scan=19': its non-standard data array \\(MS:1000786\\) is named '" + name
                             + "', the accession of an array type");
+        }
+    }
+
+    /**
+     * Three extra keys first seen in three different spectra, in an order that is neither sorted nor that of a hash
+     * set, and in the reverse order: {@code survey()} declares them in first-seen order, as {@code read()} emits them
+     * (the {@link #read} helper compares the two). A copy into a hash-ordered set iterates the same three keys in one
+     * order in a JVM, so it cannot give both.
+     */
+    @Test
+    void theSurveyDeclaresExtraKeysOfDifferentSpectraInFirstSeenOrder(@TempDir Path dir) throws IOException {
+        List<String> anchors = List.of(SCAN_19, SCAN_20, CYCLE_22);
+        int[] lengths = {15, 10, 15};
+        List<String> keys = List.of("ms level", "MS:1003006", "MS:1000516");
+        for (List<String> order : List.of(keys, List.of(keys.get(2), keys.get(1), keys.get(0)))) {
+            Path file = tinyWith(dir, s -> {
+                for (int i = 0; i < anchors.size(); i++) {
+                    s = withArray(s, anchors.get(i), extraArray(order.get(i), lengths[i]));
+                }
+                return s;
+            });
+
+            Run run = read(file);
+
+            assertThat(run.reader.survey().spectrumArrays()).containsExactlyElementsOf(order);
+            assertThat(run.spectra.get(0).arrays().keySet()).containsExactly(order.get(0));
+            assertThat(run.spectra.get(1).arrays().keySet()).containsExactly(order.get(1));
+            assertThat(run.spectra.get(3).arrays().keySet()).containsExactly(order.get(2));
         }
     }
 
@@ -1521,6 +1551,15 @@ class MzMLReaderRunTest {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /**
+     * An extra binaryDataArray of {@code n} values 1, 2, ..., n: of the array type {@code key} when it is a CURIE,
+     * else a non-standard data array named {@code key}.
+     */
+    private static String extraArray(String key, int n) {
+        return array(key.startsWith("MS:") ? cv(key, CvTerms.ARRAY_TYPES.get(key), "", null)
+                : cv("MS:1000786", "non-standard data array", key, null), ramp(n));
     }
 
     /** A cvParam element; the cvRef and unitCvRef are the prefixes of the accessions. */

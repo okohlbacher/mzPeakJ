@@ -416,12 +416,19 @@ class MzMLReaderHeaderTest {
                         + ": referenceableParamGroupRef 'nope' names no referenceableParamGroup");
     }
 
+    /**
+     * Each cvParam whose cvRef is not its accession's prefix counts once, a cvRef that is the start of the prefix
+     * without its colon ('M') or empty included.
+     */
     @Test
     void aCvRefAliasIsCountedOnce(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, "<cvList count=\"2\">",
                         "<cvList count=\"3\">\n      <cv id=\"FOO\" fullName=\"Foo\" version=\"1\" URI=\"http://example.org/foo\"/>"),
                 "<fileContent>", "</fileContent>",
-                "  <cvParam cvRef=\"FOO\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>\n      </fileContent>"));
+                "  <cvParam cvRef=\"FOO\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>\n"
+                        + "      <cvParam cvRef=\"M\" accession=\"MS:1000580\" name=\"MSn spectrum\" value=\"\"/>\n"
+                        + "      <cvParam cvRef=\"\" accession=\"MS:1000128\" name=\"profile spectrum\" value=\"\"/>\n"
+                        + "      </fileContent>"));
 
         MzMLReader reader = new MzMLReader(file);
         MzMLReader.Header header = reader.header();
@@ -429,7 +436,9 @@ class MzMLReaderHeaderTest {
         assertThat(header.cvList()).extracting(CvEntry::id).containsExactly("FOO", "MS", "UO");
         assertThat(header.fileMetadata().fileDescription().contents())
                 .contains(new Param("ms level", "MS:1000511", 1L, null));
-        assertThat(reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)");
+        assertThat(header.fileMetadata().fileDescription().contents()).extracting(Param::accession)
+                .contains("MS:1000580", "MS:1000128");
+        assertThat(reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (3)");
     }
 
     @Test
