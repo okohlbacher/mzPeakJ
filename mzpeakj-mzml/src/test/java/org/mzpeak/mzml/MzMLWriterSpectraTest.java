@@ -259,10 +259,12 @@ class MzMLWriterSpectraTest {
                 spectrum(withTime(description("scan=4", 1, List.of(), List.of(), List.of(sum)), Double.NaN)),
                 spectrum(description("scan=5", 1, List.of(scan(1.0), scan(1.1)), List.of(), List.of(mean))),
                 spectrum(withTime(description("scan=6", 1, List.of(), List.of(), List.of()),
-                        Double.POSITIVE_INFINITY)));
+                        Double.POSITIVE_INFINITY)),
+                spectrum(description("scan=7", 1, List.of(scan(4.0)), List.of(), List.of(sum))));
         WavelengthSpectrum uv = new WavelengthSpectrum(0, "uv=1", 0.5, null, new double[]{200}, new double[]{0.1});
         Contents contents = new Contents(metadata(), List.of(), List.of(),
-                List.of("scan=1", "scan=2", "scan=3", "scan=4", "scan=5", "scan=6"), List.of("uv=1"), List.of());
+                List.of("scan=1", "scan=2", "scan=3", "scan=4", "scan=5", "scan=6", "scan=7"), List.of("uv=1"),
+                List.of());
 
         for (Written w : write("scans", contents, writer -> {
             spectra.forEach(writer::write);
@@ -283,6 +285,8 @@ class MzMLWriterSpectraTest {
             assertThat(back.get(4).parameters()).containsExactly(ms1, mean);
             assertThat(back.get(5).scans()).isEmpty();
             assertThat(back.get(5).retentionTime()).isNaN();
+            assertThat(back.get(6).scans()).containsExactly(scan(4.0));
+            assertThat(back.get(6).parameters()).containsExactly(ms1, sum); // its own term, no MS:1000795 added
 
             List<uk.ac.ebi.jmzml.model.mzml.Spectrum> raw = jmzmlSpectra(w.file());
             Scan first = raw.get(0).getScanList().getScan().get(0);
@@ -303,7 +307,7 @@ class MzMLWriterSpectraTest {
             assertThat(second.getSourceFileRef()).isEqualTo("sf");
             assertThat(raw).extracting(s -> s.getScanList() == null ? null : accessions(s.getScanList()))
                     .containsExactly(List.of(NO_COMBINATION), List.of(), List.of(NO_COMBINATION), null,
-                            List.of("MS:1000575"), null, List.of(NO_COMBINATION));
+                            List.of("MS:1000575"), null, List.of("MS:1000571"), List.of(NO_COMBINATION));
             assertThat(accessions(raw.get(3))).contains("MS:1000571");
             assertThat(w.warnings()).contains(MzMLWriter.A_7 + " (3)", MzMLWriter.A_9 + " (2)",
                     String.format(MzMLWriter.A_8, "scan holding the retention time of a spectrum without scans")
