@@ -1204,6 +1204,32 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)");
     }
 
+    /** An array's params are read as every element's: a cvRef alias on its array type term is noted (B-30). */
+    @Test
+    void aCvRefAliasOnAnArrayTermIsNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<cvParam cvRef=\"MS\" accession=\"MS:1000514\"",
+                "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000514\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).hasSize(15);
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)");
+    }
+
+    /** An array's params are read as every element's: a userParam value that does not fit its type is noted (B-14). */
+    @Test
+    void anArrayUserParamOfAnotherTypeIsNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<binary>",
+                "<userParam name=\"note\" type=\"xsd:int\" value=\"abc\"/>\n<binary>")); // on its m/z array
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).hasSize(15);
+        assertThat(run.reader.warnings()).contains(
+                "B-14 userParam values that do not match their type kept as text (1)",
+                "B-21 lost array params other than array type, data type and compression (1)");
+    }
+
     @Test
     void aRepeatedSpectrumIdResolvesToItsFirstOccurrence(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceOnce(s, "<spectrum index=\"2\" id=\"scan=21\"",

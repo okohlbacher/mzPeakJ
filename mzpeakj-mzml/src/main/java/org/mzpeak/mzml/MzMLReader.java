@@ -1043,19 +1043,20 @@ public final class MzMLReader {
 
     /**
      * The arrays of {@code list} (none for no list), each with its declared length, {@code arrayLength} or else
-     * {@code defaultLength}. Rejected here, for every array, before any is decoded: a non-standard data array whose
-     * name is the accession of an array type, under whose key it would replace or displace that array; an array
+     * {@code defaultLength}. Its params are read as every element's, so cvRef aliases (B-30) and userParam type
+     * mismatches (B-14) are noted. Rejected here, for every array, before any is decoded: a non-standard data array
+     * whose name is the accession of an array type, under whose key it would replace or displace that array; an array
      * compressed with MS-Numpress and zlib in one term (guard 2); a data type or compression jmzML cannot decode
      * (its {@code getPrecision()} or {@code needsUncompressing()} throws).
      */
     private List<Array> arrays(BinaryDataArrayList list, int defaultLength) {
         List<Array> arrays = new ArrayList<>();
         for (BinaryDataArray a : list == null ? List.<BinaryDataArray>of() : list.getBinaryDataArray()) {
-            CVParam type = null;
+            Param type = null;
             boolean typed = false;
-            int other = a.getUserParam().size();
-            for (CVParam p : a.getCvParam()) {
-                String accession = p.getAccession();
+            int other = 0;
+            for (Param p : params(a)) {
+                String accession = p.accession();
                 if (type == null && CvTerms.ARRAY_TYPES.containsKey(accession)) {
                     type = p;
                 } else if (!typed && (MzMLTerms.DATA_TYPES.containsKey(accession) || FLOAT16.equals(accession))) {
@@ -1064,9 +1065,9 @@ public final class MzMLReader {
                     other++;
                 }
             }
-            String key = type == null ? null : type.getAccession();
+            String key = type == null ? null : type.accession();
             if (NON_STANDARD_ARRAY.equals(key)) {
-                key = emptyToNull(type.getValue());
+                key = text(a, NON_STANDARD_ARRAY); // the name as written, not as params(a) typed it
                 if (CvTerms.ARRAY_TYPES.containsKey(key)) {
                     throw error("its non-standard data array (" + NON_STANDARD_ARRAY + ") is named '" + key
                             + "', the accession of an array type");
@@ -1086,7 +1087,7 @@ public final class MzMLReader {
                 throw undecodable(a, key, e);
             }
             int length = a.getArrayLength() != null ? a.getArrayLength() : defaultLength;
-            arrays.add(new Array(a, key, type == null ? null : type.getUnitAccession(), ascii, length, other));
+            arrays.add(new Array(a, key, type == null ? null : type.unit(), ascii, length, other));
         }
         return arrays;
     }
