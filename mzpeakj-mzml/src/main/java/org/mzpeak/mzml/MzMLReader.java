@@ -655,19 +655,23 @@ public final class MzMLReader {
     /**
      * The params of {@code owner} as jmzML gives them (design 5.3, Q41): its cvParams, then those of its referenced
      * groups, then its userParams and its groups'; none for no {@code owner}. A {@code cvRef} other than the
-     * accession's prefix is an alias, lost (B-30).
+     * accession's prefix is an alias, lost (B-30). A group's params were noted once, when {@link #header()} read the
+     * group, so an alias (B-30) or type mismatch (B-14) among the copies jmzML puts into each referencing element is
+     * not noted again.
      */
     private List<Param> params(ParamGroup owner) {
         List<Param> params = new ArrayList<>();
         if (owner != null) {
             for (CVParam p : owner.getCvParam()) {
-                if (!p.getAccession().startsWith(p.getCvRef() + ":")) {
+                if (!p.isInferredFromReferenceableParamGroupRef() && !p.getAccession().startsWith(p.getCvRef() + ":")) {
                     note(B_30);
                 }
                 params.add(new Param(p.getName(), p.getAccession(), value(p.getValue(), null), p.getUnitAccession()));
             }
             for (UserParam p : owner.getUserParam()) {
-                params.add(new Param(p.getName(), null, value(p.getValue(), p.getType()), p.getUnitAccession()));
+                Object value = p.isInferredFromReferenceableParamGroupRef()
+                        ? MzMLTerms.value(p.getValue(), p.getType()).value() : value(p.getValue(), p.getType());
+                params.add(new Param(p.getName(), null, value, p.getUnitAccession()));
             }
         }
         return List.copyOf(params);

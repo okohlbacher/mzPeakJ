@@ -1230,6 +1230,50 @@ class MzMLReaderRunTest {
                 "B-21 lost array params other than array type, data type and compression (1)");
     }
 
+    /**
+     * A group's cvRef alias (B-30) and userParam type mismatch (B-14) are noted once, when {@code header()} reads the
+     * group, not again for each of the 3 spectra jmzML copies CommonMS1SpectrumParams into; each still carries them.
+     */
+    @Test
+    void aSpectrumGroupsAliasAndTypeMismatchAreNotedOnce(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, "<cvParam cvRef=\"MS\" accession=\"MS:1000579\"",
+                "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000579\""), "id=\"CommonMS1SpectrumParams\"",
+                "</referenceableParamGroup>",
+                "<userParam name=\"note\" type=\"xsd:int\" value=\"abc\"/>\n</referenceableParamGroup>"));
+
+        Run run = read(file);
+
+        assertThat(ids(run.spectra)).containsExactly("scan=19", "scan=20", "scan=21",
+                "sample=1 period=1 cycle=22 experiment=1");
+        for (int i : new int[] {0, 2, 3}) {
+            assertThat(run.spectra.get(i).description().parameters()).as(ids(run.spectra).get(i))
+                    .contains(new Param("MS1 spectrum", "MS:1000579", null, null), new Param("note", null, "abc", null));
+        }
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)",
+                "B-14 userParam values that do not match their type kept as text (1)");
+    }
+
+    /**
+     * A group a binaryDataArray references is noted once too: its cvRef alias (on the m/z array's data type, which
+     * the array takes from it) and its userParam type mismatch, each once; the userParam is a lost array param (B-21).
+     */
+    @Test
+    void anArrayGroupsAliasAndTypeMismatchAreNotedOnce(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, "</referenceableParamGroupList>",
+                "<referenceableParamGroup id=\"MzArrayParams\">\n"
+                        + "<cvParam cvRef=\"PSI-MS\" accession=\"MS:1000523\" name=\"64-bit float\" value=\"\"/>\n"
+                        + "<userParam name=\"note\" type=\"xsd:int\" value=\"abc\"/>\n"
+                        + "</referenceableParamGroup>\n</referenceableParamGroupList>"),
+                SCAN_19, F64, "<referenceableParamGroupRef ref=\"MzArrayParams\"/>")); // in its m/z array
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+        assertThat(run.reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (1)",
+                "B-14 userParam values that do not match their type kept as text (1)",
+                "B-21 lost array params other than array type, data type and compression (1)");
+    }
+
     @Test
     void aRepeatedSpectrumIdResolvesToItsFirstOccurrence(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceOnce(s, "<spectrum index=\"2\" id=\"scan=21\"",
