@@ -10,6 +10,7 @@ import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.ScanSettings;
 
+import javax.xml.bind.DatatypeConverter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
@@ -873,6 +874,7 @@ public final class ModelAssert {
     private static final Pattern RETENTION_TIME = Pattern.compile("spectrum\\[\\d+]\\.retentionTime");
     private static final Pattern SPECTRUM_PARAM = Pattern.compile("spectrum\\[\\d+]\\.parameters\\[(.*)]");
     private static final Pattern RUN_DEFAULT_IC = Pattern.compile("fileMetadata\\.run\\.defaultInstrumentId");
+    private static final Pattern RUN_START_TIME = Pattern.compile("fileMetadata\\.run\\.startTime");
     private static final Pattern SIGNAL = Pattern.compile("spectrum\\[\\d+]\\.(mz|intensity|arrays(\\[.*)?)");
     private static final Pattern MZ = Pattern.compile("spectrum\\[\\d+]\\.mz");
 
@@ -958,6 +960,16 @@ public final class ModelAssert {
                     && d.actualRoot() instanceof FileMetadata am && !am.instrumentConfigurations().isEmpty()
                     && Integer.valueOf(am.instrumentConfigurations().get(0).id()).equals(d.actual()));
 
+    /** A-26: a run start time rewritten by jmzML's CalendarAdapter. */
+    public static final Exclusion A_26 = new Exclusion("A_26",
+            "A-26: a run start time that is a String e in expected and in actual"
+                    + " DatatypeConverter.printDateTime(DatatypeConverter.parseDateTime(e)), as jmzML's CalendarAdapter"
+                    + " writes it in the JVM's default time zone, which differs from e: tiny in B, run start time"
+                    + " 2007-06-27T15:23:45.00035 -> 2007-06-27T15:23:45Z under UTC; the JZ-7 branch document"
+                    + " 2005-07-20T19:44:22.1234Z -> 2005-07-20T19:44:22.123Z",
+            d -> RUN_START_TIME.matcher(d.path()).matches() && d.expected() instanceof String e
+                    && rewrittenByJmzml(e, d.actual()));
+
     /** B-22: arrays written sorted by m/z. */
     public static final Exclusion B_22 = new Exclusion("B_22",
             "B-22: the m/z, intensity and extra arrays of a spectrum that are equal as m/z-sorted parallel tuples"
@@ -977,7 +989,22 @@ public final class ModelAssert {
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
     /** Every exclusion above. */
-    public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, B_22, B_34);
+    public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, A_26, B_22,
+            B_34);
+
+    /**
+     * A-26: {@code actual} is {@code expected} as jmzML's {@code CalendarAdapter} writes it, in the JVM's default time
+     * zone, and that differs from {@code expected}; never for text that is no xs:dateTime.
+     */
+    private static boolean rewrittenByJmzml(String expected, Object actual) {
+        String written;
+        try {
+            written = DatatypeConverter.printDateTime(DatatypeConverter.parseDateTime(expected));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        return !written.equals(expected) && written.equals(actual);
+    }
 
     /** {@code s} has peaks that are not a row copy of its arrays, and {@code other} none or a row copy. */
     private static boolean notACopy(Spectrum s, Spectrum other) {

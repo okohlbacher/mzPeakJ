@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 import java.util.TreeMap;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
@@ -642,6 +643,52 @@ class ModelAssertTest {
         assertThat(kept.stale()).containsExactly("A_2", "A_8", "A_18");
     }
 
+    /**
+     * A_26 hides a run start time exactly as jmzML's CalendarAdapter rewrites it in the default time zone (JZ-7): under
+     * UTC a time without zone gains Z and a fraction is cut to milliseconds; another change, another zone, no expected
+     * time, text that is no xs:dateTime and another path are not hidden.
+     */
+    @Test
+    void a26HidesARunStartTimeAsJmzmlRewritesItInTheDefaultTimeZone() {
+        TimeZone zone = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            for (List<String> rewritten : List.of(List.of("2007-06-27T15:23:45.00035", "2007-06-27T15:23:45Z"),
+                    List.of("2005-07-20T19:44:22.1234Z", "2005-07-20T19:44:22.123Z"))) {
+                Model expected = withRun(dia, r -> with(r, "startTime", rewritten.get(0)));
+                Model actual = withRun(dia, r -> with(r, "startTime", rewritten.get(1)));
+                assertThat(ModelAssert.compare(expected, actual, STRICT).paths())
+                        .containsExactly("fileMetadata.run.startTime");
+                assertThat(ModelAssert.assertEqual("A_26 " + rewritten, expected, actual, STRICT, ModelAssert.A_26)
+                        .hidden()).containsExactly(Map.entry("A_26", 1));
+            }
+
+            for (List<String> kept : Arrays.asList(Arrays.asList("2005-07-20T19:44:22Z", "2005-07-20T19:44:23Z"),
+                    Arrays.asList(null, "2007-06-27T15:23:45Z"), Arrays.asList("no time", "2007-06-27T15:23:45Z"))) {
+                Result result = ModelAssert.compare(withRun(dia, r -> with(r, "startTime", kept.get(0))),
+                        withRun(dia, r -> with(r, "startTime", kept.get(1))), STRICT, ModelAssert.A_26);
+                assertThat(result.paths()).as("%s", kept).containsExactly("fileMetadata.run.startTime");
+                assertThat(result.stale()).containsExactly("A_26");
+            }
+            Result otherPath = ModelAssert.compare(withRun(dia, r -> with(r, "id", "2007-06-27T15:23:45.00035")),
+                    withRun(dia, r -> with(r, "id", "2007-06-27T15:23:45Z")), STRICT, ModelAssert.A_26);
+            assertThat(otherPath.paths()).containsExactly("fileMetadata.run.id");
+            assertThat(otherPath.stale()).containsExactly("A_26");
+
+            TimeZone.setDefault(TimeZone.getTimeZone("America/Chicago"));
+            Result otherZone = ModelAssert.compare(withRun(dia, r -> with(r, "startTime", "2007-06-27T15:23:45.00035")),
+                    withRun(dia, r -> with(r, "startTime", "2007-06-27T15:23:45Z")), STRICT, ModelAssert.A_26);
+            assertThat(otherZone.paths()).containsExactly("fileMetadata.run.startTime");
+            assertThat(otherZone.stale()).containsExactly("A_26");
+            assertThat(ModelAssert.assertEqual("A_26 Chicago",
+                    withRun(dia, r -> with(r, "startTime", "2007-06-27T15:23:45.00035")),
+                    withRun(dia, r -> with(r, "startTime", "2007-06-27T15:23:45-05:00")), STRICT, ModelAssert.A_26)
+                    .hidden()).containsExactly(Map.entry("A_26", 1));
+        } finally {
+            TimeZone.setDefault(zone);
+        }
+    }
+
     @Test
     void a17HidesOnlyAFilledEmptyCvList() {
         Model empty = with(small, "cvList", List.of());
@@ -879,7 +926,7 @@ class ModelAssertTest {
     @Test
     void exclusionsHaveTheirDesignIdsAndCannotBePassedTwice() {
         assertThat(ModelAssert.EXCLUSIONS).extracting(Exclusion::id).containsExactly("A_1", "A_2", "A_7", "A_8",
-                "A_9", "A_16", "A_17", "A_18", "B_22", "B_34");
+                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34");
         assertThat(ModelAssert.EXCLUSIONS).allSatisfy(e -> {
             assertThat(e.description()).startsWith(e.id().replace('_', '-') + ": ");
             assertThat(e).hasToString(e.id());
