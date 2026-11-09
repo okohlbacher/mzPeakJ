@@ -27,7 +27,11 @@ import java.util.Map;
  *                          with
  * @param arrays            the other per-point arrays, parallel to {@link #time}, keyed by array type CURIE, or by
  *                          array name for non-standard data arrays (MS:1000786, e.g. {@code "ms level"}); a further
- *                          array of a key is keyed {@code <key>@<column name>}. Missing cells are NaN. Unmodifiable,
+ *                          array of a key is keyed {@code <key>@<column name>}. Missing cells are NaN. A drift-time
+ *                          ion mobility array (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154 or
+ *                          MS:1003156, also under a {@code <key>@<column name>} key) is in milliseconds, its unit in
+ *                          {@link CvTerms#DEFAULT_ARRAY_UNITS}: the reader converts one stored in seconds or minutes
+ *                          and drops one in another unit; it keeps every other array as stored. Unmodifiable,
  *                          in the iteration order of the given map (the file's array index order when read); the
  *                          {@code double[]} values are not copied
  * @param polarity          scan polarity (MS:1000465); never {@code null}: {@link Polarity#UNKNOWN} when the file

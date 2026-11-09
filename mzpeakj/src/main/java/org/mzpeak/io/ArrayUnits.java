@@ -6,9 +6,9 @@ import java.util.function.DoubleUnaryOperator;
 /**
  * Converts the time-like signal arrays into the unit the model documents for them,
  * {@link org.mzpeak.model.CvTerms#DEFAULT_ARRAY_UNITS}, from the unit of their array-index entry (mzML design §5.7,
- * §6.2 A-13): a chromatogram time axis to minutes, a drift-time ion mobility array of a spectrum to milliseconds. An
- * entry without a unit, as in an {@link ArrayIndex.Source#INFERRED INFERRED} index, is taken to be in the model's
- * unit. Every other array keeps its stored values, and column statistics are not converted.
+ * §6.2 A-13): a chromatogram time axis to minutes, a drift-time ion mobility array of a spectrum or chromatogram to
+ * milliseconds. An entry without a unit, as in an {@link ArrayIndex.Source#INFERRED INFERRED} index, is taken to be
+ * in the model's unit. Every other array keeps its stored values, and column statistics are not converted.
  */
 final class ArrayUnits {
 
