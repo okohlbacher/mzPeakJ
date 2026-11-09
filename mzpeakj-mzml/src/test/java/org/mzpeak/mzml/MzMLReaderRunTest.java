@@ -1,5 +1,6 @@
 package org.mzpeak.mzml;
 
+import ms.numpress.MSNumpress;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +25,7 @@ import org.mzpeak.mzml.ModelAssert.Exclusion;
 import org.mzpeak.mzml.ModelAssert.Mode;
 import org.mzpeak.mzml.ModelAssert.Model;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -40,6 +42,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
+import java.util.zip.Deflater;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -857,6 +860,24 @@ class MzMLReaderRunTest {
     }
 
     @Test
+    void int64ValuesRoundOnlyWhereTheirDoubleDiffers(@TempDir Path dir) throws IOException {
+        long[] counts = new long[15];
+        counts[0] = Long.MAX_VALUE;
+        counts[1] = Long.MIN_VALUE;
+        counts[2] = 9007199254740992L;
+        counts[3] = -9007199254740993L;
+        String big = "<binaryDataArray encodedLength=\"160\">\n" + I64 + "\n" + NO_COMPRESSION + "\n"
+                + cv("MS:1000786", "non-standard data array", "counts", null) + "\n<binary>" + longs(counts)
+                + "</binary>\n</binaryDataArray>\n";
+        Path file = tinyWith(dir, s -> withArray(s, SCAN_19, big));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).arrays().get("counts")).startsWith(0x1p63, -0x1p63, 0x1p53, -0x1p53);
+        assertThat(run.reader.warnings()).contains("B-31 64-bit integer array values rounded to the nearest double (2)");
+    }
+
+    @Test
     void arrayParamsAndDataProcessingRefsOfKeptArraysAreLost(@TempDir Path dir) throws IOException {
         String sn = "<binaryDataArray encodedLength=\"160\" dataProcessingRef=\"pwiz_processing\">\n"
                 + cv("MS:9999999", "unknown term", "", null) + "\n" + F64 + "\n" + NO_COMPRESSION + "\n" + SN_TYPE
@@ -869,6 +890,84 @@ class MzMLReaderRunTest {
         assertThat(run.spectra.get(0).arrays()).containsOnlyKeys(SN);
         assertThat(run.reader.warnings()).contains(ARRAY_DP_LOST + " (11)",
                 "B-21 lost array params other than array type, data type and compression (2)");
+    }
+
+    /** The legacy pair: an MS-Numpress linear payload deflated with zlib, under MS:1002312 and MS:1000574. */
+    @Test
+    void aLegacyNumpressLinearAndZlibPairIsDecoded(@TempDir Path dir) throws IOException {
+        double[] mz = new double[15];
+        for (int i = 0; i < mz.length; i++) {
+            mz[i] = 400.123 + 13.371 * i;
+        }
+        double fixedPoint = MSNumpress.optimalLinearFixedPoint(mz, mz.length);
+        byte[] buffer = new byte[8 + 5 * mz.length];
+        byte[] linear = Arrays.copyOf(buffer, MSNumpress.encodeLinear(mz, mz.length, buffer, fixedPoint));
+        String terms = F64 + "\n" + cv("MS:1002312", "MS-Numpress linear prediction compression", "", null) + "\n"
+                + cv("MS:1000574", "zlib compression", "", null) + "\n" + cv("MS:1000514", "m/z array", "", "MS:1000040");
+        Path file = tinyWith(dir, s -> spectrum19With(s, 15, binaryArray(terms, deflate(linear)),
+                array(cv("MS:1000515", "intensity array", "", "MS:1000131"), ramp(15))));
+
+        double[] read = read(file).spectra.get(0).mz();
+
+        assertThat(read).hasSize(15);
+        for (int i = 0; i < mz.length; i++) {
+            assertThat(read[i]).as("m/z %d", i).isCloseTo(mz[i], within(0.5 / fixedPoint));
+        }
+    }
+
+    /** MS-Numpress PIC counts up to 2147483647 (2^31 - 1) read exactly. */
+    @Test
+    void picCountsUpTo2147483647AreReadExactly(@TempDir Path dir) throws IOException {
+        double[] counts = picCounts(2147483647.0);
+        Path file = tinyWith(dir, s -> spectrum19With(s, 15, array(cv("MS:1000514", "m/z array", "", "MS:1000040"),
+                ramp(15)), picArray(counts)));
+
+        assertThat(read(file).spectra.get(0).intensity()).containsExactly(counts);
+    }
+
+    @Test
+    void theSurveyCountsTheChromatogramsOfEachFixture(@TempDir Path dir) throws IOException {
+        Map<String, Integer> chromatograms = Map.of(MzMLFixtures.TINY, 2, MzMLFixtures.SMALL, 1,
+                MzMLFixtures.TOFSULFAS, 2, MzMLFixtures.DIAPASEF, 2);
+        for (String fixture : MzMLFixtures.NAMES) {
+            MzMLReader reader = new MzMLReader(MzMLFixtures.extract(fixture, dir));
+
+            assertThat(reader.survey().chromatograms()).as(fixture).isEqualTo(chromatograms.get(fixture));
+        }
+    }
+
+    @Test
+    void aRunWithoutChromatogramListHasSpectraOnly(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> cut(s, "<chromatogramList ", "</chromatogramList>"));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).hasSize(4);
+        assertThat(run.chromatograms).isEmpty();
+        assertThat(run.reader.survey().chromatograms()).isZero();
+    }
+
+    @Test
+    void aRunWithoutSpectrumListHasChromatogramsOnly(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> cut(s, "<spectrumList ", "</spectrumList>"));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).isEmpty();
+        assertThat(run.reader.survey().spectrumIds()).isEmpty();
+        assertThat(run.chromatograms).extracting(Chromatogram::id).containsExactly("tic", "sic");
+    }
+
+    @Test
+    void anEmptySpectrumListHasNoSpectra(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceRegion(s, "<spectrumList ", "</spectrumList>",
+                "<spectrumList count=\"0\" defaultDataProcessingRef=\"pwiz_processing\">\n</spectrumList>"));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).isEmpty();
+        assertThat(run.chromatograms).hasSize(2);
+        assertThat(run.chromatograms.get(1).dataProcessingRef()).isNull();
     }
 
     @Test
@@ -1546,11 +1645,64 @@ class MzMLReaderRunTest {
                 + String.join("", arrays) + "</binaryDataArrayList>" + s.substring(end);
     }
 
+    /** {@code s} with the region from the first {@code start} to the next {@code end}, inclusive, replaced. */
+    private static String replaceRegion(String s, String start, String end, String by) {
+        int from = s.indexOf(start);
+        assertThat(from).as("'%s' occurs", start).isNotNegative();
+        int to = s.indexOf(end, from);
+        assertThat(to).as("'%s' occurs after '%s'", end, start).isNotNegative();
+        return s.substring(0, from) + by + s.substring(to + end.length());
+    }
+
+    /** {@code s} without the region from the first {@code start} to the next {@code end}, inclusive. */
+    private static String cut(String s, String start, String end) {
+        return replaceRegion(s, start, end, "");
+    }
+
     /** A binaryDataArray of 64-bit floats without compression, with the array type term {@code type}. */
     private static String array(String type, double... values) {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /** A binaryDataArray with the cvParam elements {@code terms} and {@code binary} as its Base64 text. */
+    private static String binaryArray(String terms, byte[] binary) {
+        String base64 = Base64.getEncoder().encodeToString(binary);
+        return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + terms + "\n<binary>" + base64
+                + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /** An intensity array of 64-bit floats holding {@code counts} as an MS-Numpress PIC payload (MS:1002313). */
+    private static String picArray(double[] counts) {
+        byte[] buffer = new byte[5 * counts.length];
+        byte[] pic = Arrays.copyOf(buffer, MSNumpress.encodePic(counts, counts.length, buffer));
+        return binaryArray(F64 + "\n" + cv("MS:1002313", "MS-Numpress positive integer compression", "", null) + "\n"
+                + cv("MS:1000515", "intensity array", "", "MS:1000131"), pic);
+    }
+
+    /** 15 counts: 15, 14, ..., 2 and {@code last}. */
+    private static double[] picCounts(double last) {
+        double[] counts = new double[15];
+        for (int i = 0; i < 14; i++) {
+            counts[i] = 15 - i;
+        }
+        counts[14] = last;
+        return counts;
+    }
+
+    /** {@code bytes} as a zlib stream. */
+    private static byte[] deflate(byte[] bytes) {
+        Deflater deflater = new Deflater();
+        deflater.setInput(bytes);
+        deflater.finish();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] chunk = new byte[256];
+        while (!deflater.finished()) {
+            out.write(chunk, 0, deflater.deflate(chunk));
+        }
+        deflater.end();
+        return out.toByteArray();
     }
 
     /**
