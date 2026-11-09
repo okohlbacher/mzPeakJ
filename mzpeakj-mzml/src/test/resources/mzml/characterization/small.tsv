@@ -61,5 +61,10 @@ survey|spectrumIds|[String:controllerType=0 controllerNumber=1 scan=1, String:co
 survey|wavelengthSpectrumIds|[]
 survey|spectrumArrays|[]
 survey|chromatograms|Integer:1
+warning|L-1 the whole input is indexed before the first element is read, and the index stays in memory while the reader lives (about 0.3-0.5 KB per spectrum; a byte scan of the whole file at about 60 MB/s); the reader keeps two file handles on the input open until the garbage collector finalizes jmzML's objects (never with finalization disabled), so on Windows the input cannot be moved or deleted meanwhile
+warning|L-3 C1 control characters U+0080-U+009F in the input are read as U+FFFD
+warning|L-4 userParam units (unitAccession, unitName, unitCvRef) are not read
+warning|L-5 a file whose XML declaration names no encoding is read as US-ASCII: each byte >= 0x80 becomes U+FFFD
+warning|L-6 the input is taken as jmzML and JAXB read it: elements the schema does not allow are skipped; of two singleton children the last is kept; Base64 is decoded leniently (characters outside the alphabet skipped, an unpadded final group dropped, misplaced padding decoded into other bytes); a truncated zlib payload gives a shorter array; a zlib payload with a preset dictionary is never decoded (the conversion does not end) and a zlib payload is inflated without bound (a zip bomb ends in OutOfMemoryError); declared array lengths are not checked against the decoded ones; a missing integer attribute reads as 0; refs are not whitespace-collapsed; errors carry no line or column, and an error found while the index is built names no element; xxindex prints its tag stack to stdout when tags do not match
 warning|B-3 mzML@id and mzML@accession lost (1)
 warning|B-1 referenceableParamGroups expanded inline (1)
