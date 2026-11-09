@@ -495,6 +495,19 @@ class MzMLFixturesTest {
                         + "[^\n]*KEY_SPECTRUM_ID[^\n]*");
     }
 
+    /** Problems of two categories are both listed: the indexed root, then the count. */
+    @Test
+    void mzMLAssertListsTheRootAndTheCountProblemOfIndexedTiny(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, "id=\"scan=19\"", "<scanList count=\"1\">",
+                "<scanList count=\"2\">"));
+
+        assertThat(MzMLSchema.validate(file)).isEmpty();
+        assertThatThrownBy(() -> MzMLAssert.valid(file)).isInstanceOf(AssertionError.class)
+                .hasMessage(file + " is not valid mzML; 2 problem(s):\n"
+                        + "  root indexedmzML: the converter writes plain mzML only\n"
+                        + "  count: count 2 but 1 children @ scanList [scan=19]");
+    }
+
     @Test
     void mzMLAssertReportsADocumentThatIsNotWellFormed(@TempDir Path dir) throws IOException {
         Path file = Files.writeString(dir.resolve("broken.mzML"), "not xml");

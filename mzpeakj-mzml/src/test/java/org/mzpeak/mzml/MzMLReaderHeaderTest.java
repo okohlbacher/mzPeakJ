@@ -537,7 +537,8 @@ class MzMLReaderHeaderTest {
         assertThatThrownBy(() -> new MzMLReader(file).header())
                 .isInstanceOf(MzPeakException.class)
                 .hasCauseInstanceOf(XMLStreamException.class)
-                .hasRootCauseInstanceOf(CharConversionException.class)
+                .satisfies(e -> assertThat(((XMLStreamException) e.getCause()).getNestedException())
+                        .isInstanceOf(CharConversionException.class))
                 .hasMessage("mzML " + file + " line " + lineOf(file, "<!-- ") + " column 11: Invalid byte 1 of 1-byte"
                         + " UTF-8 sequence.");
     }

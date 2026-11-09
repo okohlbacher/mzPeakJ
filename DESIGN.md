@@ -704,9 +704,13 @@ members lazily on first use. The decoders take `(MzPeakSource, MzPeakManifest)` 
 role.
 
 **Modules.** The library above is the reactor module `mzpeakj/`. The second module, `mzpeakj-mzml/`
-(`org.mzpeak.mzml`), is an mzML reader (mzML → mzPeakJ model, read-only, own StAX code: `MzMLReader`,
-`BinaryCodec`, `MzMLTerms`, `Losses`); the jmzML-based converter and the `MzPeakConvert` CLI are not built yet
-(maintainer gates GATE-Q28..Q31, Q33), and its `-all` jar has no entry point.
+(`org.mzpeak.mzml`), is an mzML reader (mzML → mzPeakJ model, read-only: `MzMLReader`, `MzMLTerms`, `Losses`).
+It reads the run region (spectra, chromatograms and their arrays) through jmzML 1.7.11 as is, the arrays decoded
+by jmzML's codec (the own `BinaryCodec` is gone), and the header through own StAX code until JZ-4 moves it onto
+jmzML. There is no mzML writer, `MzMLConversion` or `MzPeakConvert` CLI yet, and the module's `-all` jar has no
+entry point. The maintainer gates GATE-Q28..Q31 and Q33 were answered by the decisions of 2026-11-09: jmzML as is
+(plain mzML output written as a whole document, jmzML's codec with three own guards, lenient input), resolved from
+the EBI repository, and the CLI in `org.mzpeak.mzml.cli`.
 
 ### 8.1 Writer
 

@@ -4,6 +4,10 @@ import ms.numpress.MSNumpress;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakReader;
@@ -42,12 +46,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.zip.Deflater;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.assertj.core.api.Assertions.within;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
  * MZ-17: {@link MzMLReader#survey()} and {@link MzMLReader#read(MzMLReader.Visitor)} (mzML design 5.2, 5.4-5.9, 6.1,
@@ -81,6 +87,14 @@ class MzMLReaderRunTest {
             + "AAAAAAAAIkAAAAAAAAAgQAAAAAAAABxAAAAAAAAAGEAAAAAAAAAUQAAAAAAAABBAAAAAAAAACEAAAAAAAAAAQAAAAAAAAPA/";
     /** The combined terms of MS-Numpress followed by zlib, which jmzML cannot decode (guard 2). */
     private static final List<String> NUMPRESS_ZLIB = List.of("MS:1002746", "MS:1002747", "MS:1002748");
+    private static final String NONE = "MS:1000576";
+    private static final String ZLIB = "MS:1000574";
+    private static final String LINEAR = "MS:1002312";
+    private static final String PIC = "MS:1002313";
+    private static final String SLOF = "MS:1002314";
+    /** The data types jmzML decodes: 32-bit integer, 32-bit float, 64-bit integer, 64-bit float. */
+    private static final List<String> NUMERIC_DATA_TYPES = List.of("MS:1000519", "MS:1000521", "MS:1000522",
+            "MS:1000523");
 
     /** TOFsulfas, uncompressed, for the documents derived from it. */
     private static String tofSulfas;
@@ -628,15 +642,18 @@ class MzMLReaderRunTest {
                         + " cannot be converted to minutes (UO:0000031)");
     }
 
+    /** The m/z array declared shorter, then longer, than the intensity array's 10. */
     @Test
     void mzAndIntensityArraysOfDifferentDeclaredLengthsAreRejectedBySurvey(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20, "<binaryDataArray encodedLength=\"108\"",
-                "<binaryDataArray arrayLength=\"9\" encodedLength=\"108\""));
+        for (int length : new int[] {9, 11}) {
+            Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20, "<binaryDataArray encodedLength=\"108\"",
+                    "<binaryDataArray arrayLength=\"" + length + "\" encodedLength=\"108\""));
 
-        assertThatThrownBy(() -> new MzMLReader(file).survey())
-                .isInstanceOf(MzPeakException.class)
-                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000514 and MS:1000515 arrays declare"
-                        + " different lengths, 9 and 10");
+            assertThatThrownBy(() -> new MzMLReader(file).survey())
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000514 and MS:1000515 arrays declare"
+                            + " different lengths, " + length + " and 10");
+        }
     }
 
     /** A declared length other than the decoded one is not checked (L-6): scan=19 declares 14 and holds 15 points. */
@@ -692,6 +709,29 @@ class MzMLReaderRunTest {
                 .cause().isInstanceOf(IllegalStateException.class);
     }
 
+    /**
+     * A UTF-16 document cannot be indexed (xxindex reads it byte by byte): header() reads it, survey() fails while
+     * jmzML builds its index. A UTF-32 document fails in header() already: the JDK parser does not know that encoding.
+     */
+    @Test
+    void aUtf16DocumentIsRejectedBySurveyAndAUtf32OneByHeader(@TempDir Path dir) throws IOException {
+        String tiny = Files.readString(MzMLFixtures.extract(MzMLFixtures.TINY, dir), StandardCharsets.ISO_8859_1);
+        Path utf16 = Files.writeString(dir.resolve("tiny-utf16.mzML"),
+                replaceOnce(tiny, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-16\""), StandardCharsets.UTF_16);
+        Path utf32 = Files.writeString(dir.resolve("tiny-utf32.mzML"),
+                replaceOnce(tiny, "encoding=\"ISO-8859-1\"", "encoding=\"UTF-32\""), Charset.forName("UTF-32"));
+
+        assertThat(new MzMLReader(utf16).header().fileMetadata().run().id()).isEqualTo("Experiment_x0020_1");
+        assertThatThrownBy(() -> new MzMLReader(utf16).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("mzML " + utf16 + ": Invalid ID in xml: ")
+                .cause().isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> new MzMLReader(utf32).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("mzML " + utf32 + " line 1 column ")
+                .hasMessageEndingWith(": Invalid encoding name \"UTF-32\".");
+    }
+
     /** A spectrum JAXB cannot parse (a duplicated attribute) is named by its position only: jmzML returned none. */
     @Test
     void aSpectrumJaxbCannotParseIsRejectedBySurvey(@TempDir Path dir) throws IOException {
@@ -743,16 +783,118 @@ class MzMLReaderRunTest {
 
     // ---- (e) arrays ----------------------------------------------------------------------------------------------
 
+    /**
+     * The empty arrays jmzML 1.7.11 decodes to 0 values (design 5.7): no compression, zlib (an empty or a deflated
+     * empty payload), MS-Numpress PIC (alone or with zlib) and an MS-Numpress SLOF payload that is its 8-byte header
+     * only (alone or deflated).
+     */
+    static Stream<Arguments> emptyArraysJmzmlDecodes() {
+        byte[] empty = new byte[0];
+        byte[] slofHeader = slof(new double[0]);
+        return Stream.of(
+                arguments("no compression", List.of(NONE), empty),
+                arguments("zlib, empty payload", List.of(ZLIB), empty),
+                arguments("zlib, deflated empty payload", List.of(ZLIB), deflate(empty)),
+                arguments("PIC, empty payload", List.of(PIC), empty),
+                arguments("PIC and zlib, empty payload", List.of(PIC, ZLIB), empty),
+                arguments("PIC and zlib, deflated empty payload", List.of(PIC, ZLIB), deflate(empty)),
+                arguments("SLOF, header-only payload", List.of(SLOF), slofHeader),
+                arguments("SLOF and zlib, deflated header-only payload", List.of(SLOF, ZLIB), deflate(slofHeader)));
+    }
+
+    /** tiny's scan=21 (defaultArrayLength 0) with both arrays empty as below, under every data type jmzML decodes. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("emptyArraysJmzmlDecodes")
+    void anEmptyArrayIsReadAsAnEmptyArray(String name, List<String> compression, byte[] payload, @TempDir Path dir)
+            throws IOException {
+        for (String dataType : NUMERIC_DATA_TYPES) {
+            Path file = tinyWith(dir, s -> spectrum21With(s, terms(dataType, compression), payload));
+
+            Spectrum s2 = read(file).spectra.get(2);
+
+            assertThat(s2.mz()).as(dataType).isEmpty();
+            assertThat(s2.intensity()).as(dataType).isEmpty();
+        }
+    }
+
+    /**
+     * The empty arrays jmzML 1.7.11 cannot decode (its decoder throws NegativeArraySizeException): an MS-Numpress
+     * linear payload that is empty or its 8-byte header only, and an empty MS-Numpress SLOF payload, each alone or
+     * with zlib.
+     */
+    static Stream<Arguments> emptyArraysJmzmlCannotDecode() {
+        byte[] empty = new byte[0];
+        byte[] linearHeader = linear(new double[0]);
+        return Stream.of(
+                arguments("linear, empty payload", List.of(LINEAR), empty),
+                arguments("linear, header-only payload", List.of(LINEAR), linearHeader),
+                arguments("linear and zlib, empty payload", List.of(LINEAR, ZLIB), empty),
+                arguments("linear and zlib, deflated empty payload", List.of(LINEAR, ZLIB), deflate(empty)),
+                arguments("linear and zlib, deflated header-only payload", List.of(LINEAR, ZLIB),
+                        deflate(linearHeader)),
+                arguments("SLOF, empty payload", List.of(SLOF), empty),
+                arguments("SLOF and zlib, empty payload", List.of(SLOF, ZLIB), empty),
+                arguments("SLOF and zlib, deflated empty payload", List.of(SLOF, ZLIB), deflate(empty)));
+    }
+
+    /**
+     * tiny's scan=21 with both arrays empty as below, under every data type jmzML decodes: survey() passes, read()
+     * rejects the m/z array, which it decodes first, with jmzML's exception as the cause.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("emptyArraysJmzmlCannotDecode")
+    void anEmptyArrayJmzmlCannotDecodeIsRejectedByRead(String name, List<String> compression, byte[] payload,
+                                                        @TempDir Path dir) throws IOException {
+        for (String dataType : NUMERIC_DATA_TYPES) {
+            List<String> terms = terms(dataType, compression);
+            Path file = tinyWith(dir, s -> spectrum21With(s, terms, payload));
+            MzMLReader reader = new MzMLReader(file);
+            List<String> mzTerms = new ArrayList<>(terms);
+            mzTerms.add("MS:1000514");
+
+            assertThat(reader.survey().spectrumIds()).as(dataType).hasSize(4);
+            assertThatThrownBy(() -> reader.read(new Run(reader))).as(dataType)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage(prefix(file, "spectrum #2 (scan=21)") + "its MS:1000514 array with the terms "
+                            + mzTerms + " cannot be decoded by jmzML 1.7.11: -1")
+                    .cause().isInstanceOf(NegativeArraySizeException.class);
+        }
+    }
+
+    /**
+     * Of two compression terms, or two data type terms, jmzML decodes by the one it knows; the reader neither checks
+     * nor warns about the other (design 5.7, 6.3). zstd is a compression term, so next to no compression it is not even
+     * counted; of 16-bit and 64-bit float, the second data type term, the 64-bit one jmzML decodes by, counts as a lost
+     * array param (B-21). Pinned on scan=19's m/z array, so that a later guard has to change this test on purpose.
+     */
     @Test
-    void anEmptyBinaryUnderZlibIsAnEmptyArray(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> replaceAfter(replaceAfter(s, SCAN_21, "MS:1000576\" name=\"no compression\"",
-                "MS:1000574\" name=\"zlib compression\""), SCAN_21, "MS:1000576\" name=\"no compression\"",
-                "MS:1000574\" name=\"zlib compression\""));
+    void ofTwoCompressionOrDataTypeTermsJmzmlDecodesByTheOneItKnows(@TempDir Path dir) throws IOException {
+        Path zstd = tinyWith(dir, s -> replaceAfter(s, SCAN_19, NO_COMPRESSION,
+                cv("MS:1003780", "zstd compression", "", null) + "\n" + NO_COMPRESSION));
+        Path float16 = tinyWith(dir, s -> replaceAfter(s, SCAN_19, F64,
+                cv("MS:1000520", "16-bit float", "", null) + "\n" + F64));
+        List<String> tinyWarnings = read(MzMLFixtures.extract(MzMLFixtures.TINY, dir)).reader.warnings();
 
-        Spectrum s2 = read(file).spectra.get(2);
+        Run zstdRun = read(zstd);
+        Run float16Run = read(float16);
 
-        assertThat(s2.mz()).isEmpty();
-        assertThat(s2.intensity()).isEmpty();
+        for (Run run : List.of(zstdRun, float16Run)) {
+            assertThat(run.spectra.get(0).mz()).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+            assertThat(run.spectra.get(0).intensity()).containsExactly(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
+                    1);
+        }
+        assertThat(zstdRun.reader.warnings()).isEqualTo(tinyWarnings);
+        assertThat(float16Run.reader.warnings()).containsExactlyElementsOf(withLimits(
+                "B-3 mzML@id and mzML@accession lost (1)",
+                "B-1 referenceableParamGroups expanded inline (2)",
+                "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
+                "B-7 run@sampleRef lost (1)",
+                ARRAY_DP_LOST + " (10)",
+                "B-21 lost array params other than array type, data type and compression (1)",
+                "B-10 spectrum@spotID lost (1)",
+                "B-10 spectrum@sourceFileRef lost (1)",
+                "B-15 times converted to minutes and drift times to milliseconds (3)",
+                "B-27 chromatogram products dropped (1)"));
     }
 
     @Test
@@ -770,9 +912,15 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-21 dropped null-terminated ASCII array (1)");
     }
 
+    /**
+     * scan=19 without its m/z array: its intensity array, with a dataProcessingRef and an extra param, is dropped as
+     * B-9 and noted only so; the B-21 notes of kept arrays are not made for it (tiny's 10 array dataProcessingRefs
+     * become 8, those of the other spectra and the chromatograms).
+     */
     @Test
     void anIntensityOnlySpectrumLosesItsArrays(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> removeFirstArray(s, SCAN_19));
+        Path file = tinyWith(dir, s -> replaceAfter(removeFirstArray(s, SCAN_19), SCAN_19, "<binary>",
+                "<userParam name=\"note\" value=\"x\"/>\n<binary>"));
 
         Run run = read(file);
 
@@ -782,6 +930,8 @@ class MzMLReaderRunTest {
         assertThat(s0.description().numberOfPeaks()).isZero();
         assertThat(run.reader.warnings())
                 .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
+        assertThat(run.reader.warnings()).filteredOn(w -> w.startsWith("B-21"))
+                .containsExactly(ARRAY_DP_LOST + " (8)");
     }
 
     @Test
@@ -907,18 +1057,23 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-29 second arrays of a type already present dropped (2)");
     }
 
+    /** An extra array declared shorter (3), then longer (16), than scan=19's m/z array (15). */
     @Test
     void anExtraArrayOfAnotherDeclaredLengthIsDropped(@TempDir Path dir) throws IOException {
-        String sn = "<binaryDataArray arrayLength=\"3\" encodedLength=\"32\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
-                + SN_TYPE + "\n<binary>" + floats(1, 2, 3) + "</binary>\n</binaryDataArray>\n";
-        Path file = tinyWith(dir, s -> withArray(s, SCAN_19, sn));
+        for (int length : new int[] {3, 16}) {
+            String values = floats(ramp(length));
+            String sn = "<binaryDataArray arrayLength=\"" + length + "\" encodedLength=\"" + values.length() + "\">\n"
+                    + F64 + "\n" + NO_COMPRESSION + "\n" + SN_TYPE + "\n<binary>" + values
+                    + "</binary>\n</binaryDataArray>\n";
+            Path file = tinyWith(dir, s -> withArray(s, SCAN_19, sn));
 
-        Run run = read(file);
+            Run run = read(file);
 
-        assertThat(run.spectra.get(0).arrays()).isEmpty();
-        assertThat(run.reader.survey().spectrumArrays()).isEmpty();
-        assertThat(run.reader.warnings())
-                .contains("B-21 dropped array whose declared length differs from its axis array's (1)");
+            assertThat(run.spectra.get(0).arrays()).as("length %d", length).isEmpty();
+            assertThat(run.reader.survey().spectrumArrays()).as("length %d", length).isEmpty();
+            assertThat(run.reader.warnings()).as("length %d", length)
+                    .contains("B-21 dropped array whose declared length differs from its axis array's (1)");
+        }
     }
 
     @Test
@@ -1005,10 +1160,14 @@ class MzMLReaderRunTest {
         }
     }
 
-    /** MS-Numpress PIC counts up to 2147483647 (2^31 - 1) read exactly. */
+    /** MS-Numpress PIC counts from 0 up to 2147483647 (2^31 - 1) read exactly. */
     @Test
     void picCountsUpTo2147483647AreReadExactly(@TempDir Path dir) throws IOException {
-        double[] counts = picCounts(2147483647.0);
+        double[] counts = new double[15];
+        for (int i = 0; i < 14; i++) {
+            counts[i] = i;
+        }
+        counts[14] = 2147483647.0;
         Path file = tinyWith(dir, s -> spectrum19With(s, 15, array(cv("MS:1000514", "m/z array", "", "MS:1000040"),
                 ramp(15)), picArray(counts)));
 
@@ -1633,19 +1792,26 @@ class MzMLReaderRunTest {
                 "B-23 wavelength spectrum content other than the first scan's start time lost (3)");
     }
 
-    @Test
-    void aSpectrumWithoutArraysAndAWavelengthTypeIsAWavelengthSpectrum(@TempDir Path dir) throws IOException {
+    /** Each of the three wavelength spectrum types makes a spectrum without arrays a wavelength spectrum. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"MS:1000804", "MS:1000805", "MS:1000806"})
+    void aSpectrumWithoutArraysAndAWavelengthTypeIsAWavelengthSpectrum(String type, @TempDir Path dir)
+            throws IOException {
         Path file = tofWith(dir, s -> {
             int start = s.indexOf(UV_0);
             int end = s.indexOf("</spectrum>", start);
             return s.substring(0, start) + s.substring(start, end)
+                    .replace("accession=\"MS:1000804\" name=\"electromagnetic radiation spectrum\"",
+                            "accession=\"" + type + "\" name=\"" + MzMLTerms.SPECTRUM_TYPES.get(type) + "\"")
                     .replaceAll("(?s)\\s*<binaryDataArrayList .*</binaryDataArrayList>", "") + s.substring(end);
         });
 
         Run run = read(file);
 
         assertThat(run.wavelengthSpectra).hasSize(520);
+        assertThat(run.wavelengthSpectra.get(0).id()).isEqualTo("merged=212 row=0");
         assertThat(run.wavelengthSpectra.get(0).size()).isZero();
+        assertThat(run.wavelengthSpectra.get(0).parameters()).extracting(Param::accession).contains(type);
         assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-9"));
     }
 
@@ -1713,6 +1879,37 @@ class MzMLReaderRunTest {
         assertThat(sic.intensityUnit()).isNull();
     }
 
+    /**
+     * A chromatogram's params in jmzML's order, cvParams then userParams, without its type and polarity, which are
+     * promoted: sic gets a dwell time with a unit, a positive scan term and a userParam. tic, with both polarity terms,
+     * is of unknown polarity and keeps both terms as params, warned (spectra: bothPolaritiesGiveUnknownAndAWarning).
+     */
+    @Test
+    void chromatogramParamsAreKeptWithoutTypeAndPolarity(@TempDir Path dir) throws IOException {
+        String sicType = "accession=\"MS:1000627\" name=\"selected ion current chromatogram\" value=\"\"/>";
+        String ticType = "accession=\"MS:1000235\" name=\"total ion current chromatogram\" value=\"\"/>";
+        Path file = tinyWith(dir, s -> replaceAfter(replaceAfter(s, "id=\"sic\"", sicType, sicType + "\n"
+                                + cv("MS:1000502", "dwell time", "0.5", "UO:0000010") + "\n"
+                                + cv("MS:1000130", "positive scan", "", null) + "\n"
+                                + "<userParam name=\"note\" value=\"x\"/>"),
+                "id=\"tic\"", ticType, ticType + "\n" + cv("MS:1000129", "negative scan", "", null) + "\n"
+                        + cv("MS:1000130", "positive scan", "", null)));
+
+        Run run = read(file);
+
+        Chromatogram sic = run.chromatograms.get(1);
+        assertThat(sic.typeCurie()).isEqualTo("MS:1000627");
+        assertThat(sic.polarity()).isEqualTo(Polarity.POSITIVE);
+        assertThat(sic.parameters()).containsExactly(new Param("dwell time", "MS:1000502", 0.5, "UO:0000010"),
+                new Param("note", null, "x", null));
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.typeCurie()).isEqualTo("MS:1000235");
+        assertThat(tic.polarity()).isEqualTo(Polarity.UNKNOWN);
+        assertThat(tic.parameters()).containsExactly(new Param("negative scan", "MS:1000129", null, null),
+                new Param("positive scan", "MS:1000130", null, null));
+        assertThat(run.reader.warnings()).contains(MzMLReader.BOTH_POLARITIES + " (1)");
+    }
+
     @Test
     void aChromatogramWithoutTimeArrayLosesItsArrays(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> removeFirstArray(s, "id=\"tic\""));
@@ -1737,6 +1934,30 @@ class MzMLReaderRunTest {
 
         assertThat(run.chromatograms).extracting(Chromatogram::dataProcessingRef)
                 .containsExactly("CompassXtract_x0020_processing", null);
+    }
+
+    /**
+     * B-40: the chromatogramList's default data processing is kept as written in its start tag, a character reference
+     * included, and noted once per read (survey() notes nothing); sic, given no ref of its own, takes it.
+     */
+    @Test
+    void aChromatogramListDefaultWithAnAmpersandIsKeptAsWrittenAndNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s,
+                        "<chromatogramList count=\"2\" defaultDataProcessingRef=\"pwiz_processing\">",
+                        "<chromatogramList count=\"2\" defaultDataProcessingRef=\"pwiz&#x5F;processing\">"),
+                "id=\"sic\" defaultArrayLength=\"10\" dataProcessingRef=\"pwiz_processing\"",
+                "id=\"sic\" defaultArrayLength=\"10\""));
+        MzMLReader reader = new MzMLReader(file);
+        Run run = new Run(reader);
+
+        reader.survey();
+        reader.read(run);
+
+        assertThat(run.chromatograms.get(1).dataProcessingRef()).isEqualTo("pwiz&#x5F;processing");
+        assertThat(reader.warnings()).filteredOn(w -> w.startsWith("B-40")).containsExactly(
+                "B-40 run, spectrumList and chromatogramList attribute values containing & kept as written (1)");
+        assertThat(read(MzMLFixtures.extract(MzMLFixtures.TINY, dir)).reader.warnings())
+                .noneMatch(w -> w.startsWith("B-40"));
     }
 
     // ---- helpers ---------------------------------------------------------------------------------------------------
@@ -1919,6 +2140,31 @@ class MzMLReaderRunTest {
                 + String.join("", arrays) + "</binaryDataArrayList>" + s.substring(end);
     }
 
+    /**
+     * {@code s} with scan=21 holding an m/z and an intensity array, each with the cvParam elements of {@code terms}
+     * (named as {@link MzMLTerms#name} names them) before its array type, and {@code payload} as its binary.
+     */
+    private static String spectrum21With(String s, List<String> terms, byte[] payload) {
+        StringBuilder cvParams = new StringBuilder();
+        for (String term : terms) {
+            cvParams.append(cv(term, MzMLTerms.name(term), "", null)).append('\n');
+        }
+        int start = s.indexOf(SCAN_21);
+        int from = s.indexOf("<binaryDataArrayList", start);
+        int end = s.indexOf("</binaryDataArrayList>", from) + "</binaryDataArrayList>".length();
+        return s.substring(0, from) + "<binaryDataArrayList count=\"2\">\n"
+                + binaryArray(cvParams + cv("MS:1000514", "m/z array", "", "MS:1000040"), payload)
+                + binaryArray(cvParams + cv("MS:1000515", "intensity array", "", "MS:1000131"), payload)
+                + "</binaryDataArrayList>" + s.substring(end);
+    }
+
+    /** {@code dataType}, then {@code compression}. */
+    private static List<String> terms(String dataType, List<String> compression) {
+        List<String> terms = new ArrayList<>(List.of(dataType));
+        terms.addAll(compression);
+        return terms;
+    }
+
     /** {@code s} with the region from the first {@code start} to the next {@code end}, inclusive, replaced. */
     private static String replaceRegion(String s, String start, String end, String by) {
         int from = s.indexOf(start);
@@ -1970,6 +2216,13 @@ class MzMLReaderRunTest {
         byte[] buffer = new byte[8 + 5 * values.length];
         return Arrays.copyOf(buffer, MSNumpress.encodeLinear(values, values.length, buffer,
                 MSNumpress.optimalLinearFixedPoint(values, values.length)));
+    }
+
+    /** {@code values} as an MS-Numpress SLOF payload at the optimal fixed point. */
+    private static byte[] slof(double[] values) {
+        byte[] buffer = new byte[8 + 2 * values.length];
+        return Arrays.copyOf(buffer, MSNumpress.encodeSlof(values, values.length, buffer,
+                MSNumpress.optimalSlofFixedPoint(values, values.length)));
     }
 
     /** {@code bytes} as a zlib stream. */
