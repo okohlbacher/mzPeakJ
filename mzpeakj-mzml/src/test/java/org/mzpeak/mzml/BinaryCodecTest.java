@@ -29,6 +29,8 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
@@ -37,6 +39,7 @@ import java.util.zip.Inflater;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.data.Offset.offset;
 import static org.mzpeak.mzml.BinaryCodec.ASCII;
@@ -770,6 +773,88 @@ class BinaryCodecTest {
                 .hasMessage("corrupt MS-Numpress linear payload in " + CTX);
     }
 
+    /**
+     * A zlib stream is inflated only up to the bytes its declared length allows: the length times the width for a
+     * data type, 16 + 5 bytes per value for an MS-Numpress payload. A few KB of zlib zeros stop after the first
+     * buffer, not after 8 MiB (or with an OutOfMemoryError for a larger stream).
+     */
+    @Test
+    void aZlibStreamThatInflatesBeyondWhatTheDeclaredLengthAllowsIsRejectedEarly() {
+        int zeros = 8 << 20;
+        String bomb = base64(deflate(new byte[zeros]));
+        assertThat(bomb.length()).isLessThan(16 << 10);
+
+        Throwable raw = catchThrowable(() -> BinaryCodec.decode(bomb, FLOAT64, List.of(ZLIB), 1, CTX));
+        assertThat(raw).isExactlyInstanceOf(MzPeakException.class)
+                .hasMessageMatching("zlib stream inflates to at least \\d+ bytes, more than the 8 bytes the declared"
+                        + " length 1 allows, in " + Pattern.quote(CTX));
+        assertThat(inflatedSoFar(raw)).isGreaterThan(8).isLessThan(zeros);
+
+        for (List<String> terms : List.of(List.of(LINEAR_ZLIB), List.of(SLOF, ZLIB), List.of(PIC_ZLIB))) {
+            Throwable numpress = catchThrowable(() -> BinaryCodec.decode(bomb, FLOAT64, terms, 1, CTX));
+            assertThat(numpress).as("%s", terms).isExactlyInstanceOf(MzPeakException.class)
+                    .hasMessageMatching("zlib stream inflates to at least \\d+ bytes, more than the 21 bytes the"
+                            + " declared length 1 allows, in " + Pattern.quote(CTX));
+            assertThat(inflatedSoFar(numpress)).isGreaterThan(21).isLessThan(zeros);
+        }
+    }
+
+    @Test
+    void aDeclaredLengthWhoseInflatedBytesNoArrayCanHoldIsRejectedBeforeInflating() {
+        String stream = base64(deflate(new byte[8]));
+        assertThatThrownBy(() -> BinaryCodec.decode(stream, INT32, List.of(ZLIB), 536_870_910, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("declared length 536870910 allows 2147483640 inflated bytes, more than a byte array can"
+                        + " hold, in " + CTX);
+        assertThatThrownBy(() -> BinaryCodec.decode(stream, INT32, List.of(ZLIB), 536_870_909, CTX))
+                .hasMessage("decoded length 2 differs from the declared length 536870909 in " + CTX);
+        assertThatThrownBy(() -> BinaryCodec.decode(stream, FLOAT64, List.of(LINEAR_ZLIB), 429_496_726, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("declared length 429496726 allows 2147483646 inflated bytes, more than a byte array can"
+                        + " hold, in " + CTX);
+    }
+
+    @Test
+    void bytesAfterTheEndOfTheZlibStreamAreRejected() {
+        byte[] stream = deflate(ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putDouble(1.0).array());
+        byte[] trailing = Arrays.copyOf(stream, stream.length + 5);
+        System.arraycopy(new byte[] {1, 2, 3, 4, 5}, 0, trailing, stream.length, 5);
+        assertThat(BinaryCodec.decode(base64(stream), FLOAT64, List.of(ZLIB), 1, CTX).values()).containsExactly(1.0);
+
+        assertThatThrownBy(() -> BinaryCodec.decode(base64(trailing), FLOAT64, List.of(ZLIB), 1, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("bytes after the end of the zlib stream in " + CTX);
+    }
+
+    /**
+     * A linear or SLOF fixed point that is not finite or not above 0 is rejected (the reference decoders return NaN
+     * or Infinity for it), once the payload holds a value; a header without values decodes to none.
+     */
+    @Test
+    void aLinearOrSlofFixedPointThatIsNotFiniteOrNotAbove0IsRejected() {
+        assertThatThrownBy(() -> BinaryCodec.decode(base64(new byte[16]), FLOAT64, List.of(LINEAR), 2, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("MS-Numpress linear fixed point 0.0 is not a finite number above 0 in " + CTX);
+        assertThatThrownBy(() -> BinaryCodec.decode(base64(new byte[10]), FLOAT64, List.of(SLOF), 1, CTX))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("MS-Numpress SLOF fixed point 0.0 is not a finite number above 0 in " + CTX);
+        for (double fixedPoint : new double[] {-100.0, Double.NaN, Double.POSITIVE_INFINITY}) {
+            byte[] linear = new byte[16];
+            MSNumpress.encodeFixedPoint(fixedPoint, linear);
+            linear[8] = 10;
+            assertThatThrownBy(() -> BinaryCodec.decode(base64(deflate(linear)), FLOAT64, List.of(LINEAR_ZLIB), 2,
+                    CTX)).isExactlyInstanceOf(MzPeakException.class)
+                    .hasMessage("MS-Numpress linear fixed point " + fixedPoint + " is not a finite number above 0 in "
+                            + CTX);
+            byte[] slof = Arrays.copyOf(linear, 10);
+            assertThatThrownBy(() -> BinaryCodec.decode(base64(slof), FLOAT64, List.of(SLOF), 1, CTX))
+                    .hasMessage("MS-Numpress SLOF fixed point " + fixedPoint + " is not a finite number above 0 in "
+                            + CTX);
+        }
+        assertThat(BinaryCodec.decode(base64(new byte[8]), FLOAT64, List.of(LINEAR), 0, CTX).values()).isEmpty();
+        assertThat(BinaryCodec.decode(base64(new byte[8]), FLOAT64, List.of(SLOF), 0, CTX).values()).isEmpty();
+    }
+
     @Test
     void aDecodedLengthOtherThanTheDeclaredOneIsRejected() {
         Array a = tiny.get(0);
@@ -828,6 +913,13 @@ class BinaryCodecTest {
     private static byte[] payload(Encoded encoded) {
         byte[] bytes = Base64.getDecoder().decode(encoded.base64());
         return List.of(LINEAR_ZLIB, PIC_ZLIB, SLOF_ZLIB).contains(encoded.compressionTerm()) ? inflate(bytes) : bytes;
+    }
+
+    /** The inflated byte count the message of a rejected zlib stream gives. */
+    private static long inflatedSoFar(Throwable e) {
+        Matcher m = Pattern.compile("zlib stream inflates to at least (\\d+) bytes, .*").matcher(e.getMessage());
+        assertThat(m.matches()).as(e.getMessage()).isTrue();
+        return Long.parseLong(m.group(1));
     }
 
     private static String combined(String codec) {
