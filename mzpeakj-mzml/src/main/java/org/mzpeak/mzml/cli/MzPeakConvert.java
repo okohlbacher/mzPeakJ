@@ -35,9 +35,10 @@ import java.util.function.IntConsumer;
  * The direction comes from the names, case-insensitive: an input ending in {@code .mzML} is written to an output
  * ending in {@code .mzpeak}, a ZIP archive or with {@code --directory} an unpacked directory, with the
  * {@link MzPeakWriter.Options} that {@code --layout split|packed}, {@code --numpress-slof} or {@code --numpress-pic}
- * and {@code --row-group-size <bytes>} set; an input ending in {@code .mzpeak}, or a directory, is written to an
- * output ending in {@code .mzML}, its arrays zlib-compressed unless {@code --no-zlib}. {@code --help} prints the
- * options, the limit lines {@link MzMLReader#LIMITS} and {@link MzMLWriter#LIMITS} and the memory rule of design 7.
+ * and {@code --row-group-size <bytes>} set; an input ending in {@code .mzpeak}, or a directory (whatever its name), is
+ * written to an output ending in {@code .mzML}, its arrays zlib-compressed unless {@code --no-zlib}. {@code --help}
+ * prints the options, the limit lines {@link MzMLReader#LIMITS} and {@link MzMLWriter#LIMITS} and the memory rule of
+ * design 7.
  *
  * <p>Exit codes. 0: the output was written; stdout gets {@code wrote <output>: N spectra, M wavelength spectra,
  * K chromatograms}, stderr a {@code warning: } line for each warning of the conversion (its limit lines first).
@@ -213,7 +214,7 @@ public final class MzPeakConvert {
             if (in.endsWith(".mzml.gz")) {
                 throw new UsageError(input + ": " + GZIP);
             }
-            boolean toMzML = !in.endsWith(".mzml");
+            boolean toMzML = Files.isDirectory(input) || !in.endsWith(".mzml");
             if (toMzML && !in.endsWith(".mzpeak") && !Files.isDirectory(input)) {
                 throw new UsageError(input + ": unknown input type: expected a name ending in .mzML or .mzpeak,"
                         + " or a directory");

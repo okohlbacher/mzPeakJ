@@ -237,6 +237,16 @@ class MzPeakConvertTest {
                 "wrote " + back + ": 4 spectra, 0 wavelength spectra, 2 chromatograms");
         assertThat(toMzML.errLines()).startsWith(warnings(MzMLWriter.LIMITS).toArray(String[]::new));
         MzMLAssert.valid(back);
+
+        // a directory is an mzPeak input whatever its name, also one ending in .mzML
+        Path named = Files.move(renamed, dir.resolve("dataset.mzML"));
+        Path again = dir.resolve("again.mzML");
+        Run fromNamed = run(named.toString(), again.toString());
+
+        assertThat(fromNamed.code()).as(fromNamed.err()).isZero();
+        assertThat(fromNamed.out().lines()).containsExactly(
+                "wrote " + again + ": 4 spectra, 0 wavelength spectra, 2 chromatograms");
+        assertThat(Files.readAllBytes(again)).isEqualTo(Files.readAllBytes(back));
     }
 
     @Test
