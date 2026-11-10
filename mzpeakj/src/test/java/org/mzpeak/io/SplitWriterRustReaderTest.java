@@ -12,6 +12,7 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakManifest.ColumnMapping;
@@ -19,17 +20,25 @@ import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.Precursor;
+import org.mzpeak.model.SelectedIon;
+import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * What the Rust reference reader (mzPeak-reference 2ee2589) needs from a split write, beyond the spectra it already
@@ -42,9 +51,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>the wavelength columns of the reference: the representation, base peak intensity and TIC move to their
  *       columns, the spectrum type and the observed wavelength range are copied to theirs and stay in the list,
  *       where the Rust reader takes them from, so a read, write and read of has_uv keeps every Param in its order;
- *   <li>no {@code parameters} item has an accession but no name (Rust unwraps the name and panics): a nameless Param
- *       that stays in a list is written with its term's name, or its accession where the writer does not know the
- *       term.
+ *   <li>no {@code parameters} item lacks a name (Rust unwraps every name and panics): a nameless Param that stays in
+ *       a list is written with its term's name, or its accession where the writer does not know the term, and a
+ *       Param with neither name nor accession is refused, in both layouts, before anything is written.
  * </ul>
  */
 class SplitWriterRustReaderTest {
@@ -135,8 +144,7 @@ class SplitWriterRustReaderTest {
      * spectrum type and a wavelength range in nanometres are copied to their columns and stay in the list. A
      * representation with a value, a base peak intensity without unit, a non-finite TIC and a wavelength in another
      * unit stay in the list only. Every nameless Param left in a list is written with a name: its term's (spectrum
-     * type, representation, dissociation method), else its accession; one without accession, which names no term, is
-     * written as it is. Reading back gives the list, then the columns
+     * type, representation, dissociation method), else its accession. Reading back gives the list, then the columns
      * whose accession the list does not repeat.
      */
     @Test
@@ -154,13 +162,12 @@ class SplitWriterRustReaderTest {
         Param lowestInMetres = new Param("lowest observed wavelength", "MS:1000619", 1.9e-7, "UO:0000008");
         Param unknownTerm = new Param(null, "MS:4999999", 1L, null);
         Param namelessCid = new Param(null, "MS:1000133", null, null);
-        Param bare = new Param(null, null, "neither name nor accession", null);
         List<WavelengthSpectrum> waves = List.of(
                 wave(0, List.of(centroid, TITLE)),
                 wave(1, List.of(tic, profile, bpi)),
                 wave(2, List.of(valuedRepresentation, unitlessBpi, nanTic, namelessType)),
                 wave(3, List.of(unknownTerm, lowest, namelessCid, highest)),
-                wave(4, List.of(lowestInMetres, bare)));
+                wave(4, List.of(lowestInMetres)));
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Path out = write(waves, source, tmp.resolve("out.mzpeak"));
 
@@ -175,7 +182,7 @@ class SplitWriterRustReaderTest {
         assertRow(rows.get(2), "MS:1000804", null, null, null, null, null,
                 List.of(namedValuedRepresentation, unitlessBpi, nanTic, namedType));
         assertRow(rows.get(3), null, null, 190.0, 400.0, null, null, List.of(namedUnknown, lowest, namedCid, highest));
-        assertRow(rows.get(4), null, null, null, null, null, null, List.of(lowestInMetres, bare));
+        assertRow(rows.get(4), null, null, null, null, null, null, List.of(lowestInMetres));
         assertThat(nameless(out)).isEmpty();
 
         List<WavelengthSpectrum> back = ForwardBackwardCorpusTest.readSource(out).wavelengthSpectra;
@@ -184,7 +191,7 @@ class SplitWriterRustReaderTest {
         assertThat(back.get(2).parameters()).containsExactly(namedValuedRepresentation, unitlessBpi, nanTic,
                 namedType);
         assertThat(back.get(3).parameters()).containsExactly(namedUnknown, lowest, namedCid, highest);
-        assertThat(back.get(4).parameters()).containsExactly(lowestInMetres, bare);
+        assertThat(back.get(4).parameters()).containsExactly(lowestInMetres);
     }
 
     /**
@@ -233,11 +240,74 @@ class SplitWriterRustReaderTest {
                 .isEqualTo(back);
     }
 
+    /**
+     * A Param with neither name nor accession names nothing, and the Rust reader cannot read a list holding it: the
+     * write is refused before anything is written, in both layouts, with the entity named, whether the Param belongs
+     * to a spectrum (here a selected ion of its precursor), a chromatogram or a wavelength spectrum (without id).
+     */
+    @ParameterizedTest
+    @EnumSource(MetadataLayout.class)
+    void aParamWithNeitherNameNorAccessionIsRefused(MetadataLayout layout) {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        Options options = Options.defaults().withMetadataLayout(layout);
+        Param bare = new Param(null, null, "bare", null);
+        String expected = ": a parameter needs a name or an accession: " + bare;
+
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        int msn = 0;
+        while (spectra.get(msn).description().precursors().isEmpty()) {
+            msn++;
+        }
+        Spectrum s = spectra.get(msn);
+        spectra.set(msn, withIonParam(s, bare));
+        Path spectrumOut = tmp.resolve("spectrum.mzpeak");
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(spectrumOut, spectra, small.chromatograms, List.of(),
+                small.scanSettings, small.fileMetadata, options)).isInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum " + s.index() + " (" + s.description().id() + ")" + expected);
+        assertThat(spectrumOut).doesNotExist();
+
+        Chromatogram c = small.chromatograms.get(0);
+        Chromatogram bad = new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(),
+                c.intensityUnit(), c.arrays(), c.polarity(), c.dataProcessingRef(), List.of(bare), c.precursors());
+        Path chromatogramOut = tmp.resolve("chromatogram.mzpeak");
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(chromatogramOut, small.spectra, List.of(bad), List.of(),
+                small.scanSettings, small.fileMetadata, options)).isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram " + c.index() + " (" + c.id() + ")" + expected);
+        assertThat(chromatogramOut).doesNotExist();
+
+        WavelengthSpectrum w = new WavelengthSpectrum(7, null, 0.5, null, new double[] {200.0}, new double[] {1.0},
+                List.of(TITLE, bare));
+        Path wavelengthOut = tmp.resolve("wavelength.mzpeak");
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(wavelengthOut, small.spectra, small.chromatograms,
+                List.of(w), small.scanSettings, small.fileMetadata, options)).isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum 7" + expected);
+        assertThat(wavelengthOut).doesNotExist();
+    }
+
+    /** A session refuses such a spectrum when it is added, before any of it is written. */
+    @Test
+    void aSessionRefusesASpectrumWithAParamWithNeitherNameNorAccession() {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        Spectrum s = small.spectra.get(0);
+        Param bare = new Param(null, null, 1L, null);
+        SpectrumDescription d = s.description();
+        Spectrum bad = new Spectrum(new SpectrumDescription(d.index(), null, d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                d.precursors(), List.of(bare)), s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+        Set<String> keys = new LinkedHashSet<>(s.arrays().keySet());
+        keys.addAll(s.peakArrays().keySet());
+        try (MzPeakWriter.Session session = MzPeakWriter.openDirectory(tmp.resolve("session.mzpeak"),
+                small.fileMetadata, small.scanSettings, keys, SPLIT)) {
+            assertThatThrownBy(() -> session.addSpectrum(bad)).isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectrum " + d.index() + ": a parameter needs a name or an accession: " + bare);
+        }
+    }
+
     // ---- no nameless parameters ---------------------------------------------------------------------------------
 
     /**
-     * Every fixture, read and written split: no Param item of any metadata member, in any {@code parameters} list
-     * or struct, has an accession without a name.
+     * Every fixture, read and written split: every Param item of every metadata member, in any {@code parameters}
+     * list or struct, has a name.
      */
     @ParameterizedTest
     @MethodSource("fixtures")
@@ -264,15 +334,14 @@ class SplitWriterRustReaderTest {
 
     /**
      * Counts the Param items (structs with {@code value}, {@code accession} and {@code name}) below {@code g} in
-     * {@code items}, and adds each that has an accession but no name to {@code nameless}.
+     * {@code items}, and adds each without a name, with or without an accession, to {@code nameless}.
      */
     private static void visitParams(Group g, String where, List<String> nameless, int[] items) {
         GroupType type = g.getType();
         if (type.containsField("value") && type.containsField("accession") && type.containsField("name")) {
             items[0]++;
-            String accession = ParquetGroups.optString(g, "accession");
-            if (accession != null && !ParquetGroups.has(g, "name")) {
-                nameless.add(where + ": " + accession);
+            if (!ParquetGroups.has(g, "name")) {
+                nameless.add(where + ": " + ParquetGroups.optString(g, "accession"));
             }
         }
         for (int i = 0; i < type.getFieldCount(); i++) {
@@ -284,7 +353,7 @@ class SplitWriterRustReaderTest {
         }
     }
 
-    /** The Param items with an accession but no name in the metadata members of the split dataset {@code out}. */
+    /** The Param items without a name in the metadata members of the split dataset {@code out}. */
     private static List<String> nameless(Path out) throws IOException {
         return nameless(out, new int[1]);
     }
@@ -306,6 +375,23 @@ class SplitWriterRustReaderTest {
         try (MzPeakSource source = MzPeakSource.open(dataset)) {
             return ParquetFooter.read(source.inputFile(member)).keyValue();
         }
+    }
+
+    /** {@code s} with {@code extra} appended to the Params of the first selected ion of its first precursor. */
+    private static Spectrum withIonParam(Spectrum s, Param extra) {
+        SpectrumDescription d = s.description();
+        Precursor p = d.precursors().get(0);
+        SelectedIon ion = p.selectedIons().get(0);
+        List<Param> params = new ArrayList<>(ion.parameters());
+        params.add(extra);
+        List<SelectedIon> ions = new ArrayList<>(p.selectedIons());
+        ions.set(0, new SelectedIon(ion.mz(), ion.charge(), ion.intensity(), params));
+        List<Precursor> precursors = new ArrayList<>(d.precursors());
+        precursors.set(0, new Precursor(p.precursorIndex(), p.precursorId(), p.isolationWindow(), ions,
+                p.activation()));
+        return new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(), d.polarity(),
+                d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(), precursors,
+                d.parameters()), s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
     }
 
     private static WavelengthSpectrum wave(int index, List<Param> params) {

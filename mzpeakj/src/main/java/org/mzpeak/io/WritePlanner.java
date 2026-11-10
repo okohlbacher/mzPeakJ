@@ -13,8 +13,11 @@ import org.mzpeak.io.WritePlan.SpectrumSignal;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -275,6 +278,7 @@ final class WritePlanner {
             }
         }
         List<Precursor> precursors = s.description().precursors();
+        requireNamedParams(s);
         boolean split = options.metadataLayout() == MetadataLayout.SPLIT;
         if (split) {
             for (Precursor p : precursors) {
@@ -978,6 +982,7 @@ final class WritePlanner {
         long previous = -1;
         for (Spectrum s : spectra) {
             requireNonNegative(s.index(), "spectrum index");
+            requireNamedParams(s);
             if (layout == MetadataLayout.SPLIT) {
                 for (Precursor p : s.description().precursors()) {
                     requireNonNegativePrecursorIndex(p);
@@ -1015,6 +1020,9 @@ final class WritePlanner {
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
             requireUnique(seen, c.index(), "chromatogram index");
+            List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
+            addPrecursorParams(c.precursors(), lists);
+            requireNamedParams(owner("chromatogram", c.index(), c.id()), lists);
             if (layout == MetadataLayout.SPLIT) {
                 for (Precursor p : c.precursors()) {
                     requireNonNegativePrecursorIndex(p);
@@ -1025,7 +1033,53 @@ final class WritePlanner {
         for (WavelengthSpectrum w : wavelengthSpectra) {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
+            requireNamedParams(owner("wavelength spectrum", w.index(), w.id()), List.of(w.parameters()));
         }
+    }
+
+    /**
+     * Throws {@link MzPeakException} when a Param of {@code s}, its own, its scans', its precursors' (isolation window,
+     * activation) or its selected ions', has neither a name nor an accession. Such a Param names nothing: mzML
+     * requires a userParam's name, and the Rust reference reader requires every Param of a {@code parameters} list to
+     * have a name, so a spectrum with one would be unreadable there. Checked in both metadata layouts, before
+     * anything is written.
+     */
+    private static void requireNamedParams(Spectrum s) {
+        List<List<Param>> lists = new ArrayList<>(List.of(s.description().parameters()));
+        for (ScanEvent scan : s.description().scans()) {
+            lists.add(scan.parameters());
+        }
+        addPrecursorParams(s.description().precursors(), lists);
+        requireNamedParams(owner("spectrum", s.index(), s.description().id()), lists);
+    }
+
+    /** Adds to {@code lists} the Params of each of {@code precursors}: isolation window, activation, ions. */
+    private static void addPrecursorParams(List<Precursor> precursors, List<List<Param>> lists) {
+        for (Precursor p : precursors) {
+            if (p.isolationWindow() != null) {
+                lists.add(p.isolationWindow().parameters());
+            }
+            lists.add(p.activation().parameters());
+            for (SelectedIon ion : p.selectedIons()) {
+                lists.add(ion.parameters());
+            }
+        }
+    }
+
+    /** See {@link #requireNamedParams(Spectrum)}; {@code owner} names the entity in the message. */
+    private static void requireNamedParams(String owner, List<List<Param>> lists) {
+        for (List<Param> params : lists) {
+            for (Param p : params) {
+                if (p.name() == null && p.accession() == null) {
+                    throw new MzPeakException(owner + ": a parameter needs a name or an accession: " + p);
+                }
+            }
+        }
+    }
+
+    /** {@code kind index}, followed by {@code (id)} when the entity has an id. */
+    private static String owner(String kind, long index, String id) {
+        return kind + " " + index + (id == null ? "" : " (" + id + ")");
     }
 
     private static void requireNonNegative(long value, String what) {

@@ -132,7 +132,7 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * <p>No {@code parameters} item is written with an accession but no name, which the Rust reader cannot read: such a
  * Param that no column takes, as a term-marker cell the reader gives as {@code Param(null, CURIE)}, is written with
  * the name of its term ({@link #params}), or its accession where the writer does not know the term, and reads back
- * with that name.
+ * with that name. A Param with neither name nor accession is refused before anything is written, in both layouts.
  */
 final class SplitMetadataWriter implements MetadataTablesWriter {
 
@@ -942,7 +942,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * Writes {@code params} as the row's {@code parameters} list, an empty list when there are none. A Param with an
      * accession but no name, such as a term-marker cell the reader gives as {@code Param(null, CURIE)} when no column
      * takes it, is written with a name, since the Rust reader requires one there: the term's name where
-     * {@link #TERM_NAMES} knows it, else its accession.
+     * {@link #TERM_NAMES} knows it, else its accession. A Param with neither name nor accession never gets here: the
+     * planner refuses it before anything is written ({@code WritePlanner.requireNamedParams}).
      */
     private static void params(Group row, List<Param> params) {
         if (params.isEmpty()) {
@@ -951,7 +952,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
         List<Param> named = new ArrayList<>(params.size());
         for (Param p : params) {
-            named.add(p.name() == null && p.accession() != null
+            named.add(p.name() == null
                     ? new Param(TERM_NAMES.getOrDefault(p.accession(), p.accession()), p.accession(), p.value(),
                     p.unit())
                     : p);
