@@ -192,6 +192,7 @@ public final class MzMLReader {
     static final String B_28 = "B-28 extra arrays of wavelength spectra dropped";
     static final String B_29 = "B-29 second arrays of a type already present dropped";
     static final String B_30 = "B-30 cvRef aliases replaced by the accession prefix";
+    static final String B_30_UNIT = "B-30 unitCvRef aliases replaced by the unit accession prefix";
     static final String B_31 = "B-31 64-bit integer array values rounded to the nearest double";
     static final String B_33 = "B-33 spectrum references whose kind (local or external) changes on the way back";
     static final String B_39 = "B-39 instrument configuration refs that name no instrument configuration read as null";
@@ -574,7 +575,7 @@ public final class MzMLReader {
     /**
      * The params of {@code owner} as jmzML gives them (design 5.3, Q41): its cvParams, then those of its referenced
      * groups, then its userParams and its groups'; none for no {@code owner}. A {@code cvRef} other than the
-     * accession's prefix is an alias, lost (B-30). A group's params were noted once, when {@link #header()} read the
+     * accession's prefix, and a {@code unitCvRef} other than the unit accession's prefix, is an alias, lost (B-30). A group's params were noted once, when {@link #header()} read the
      * group, so an alias (B-30) or type mismatch (B-14) among the copies jmzML puts into each referencing element is
      * not noted again.
      */
@@ -582,8 +583,10 @@ public final class MzMLReader {
         List<Param> params = new ArrayList<>();
         if (owner != null) {
             for (CVParam p : owner.getCvParam()) {
-                if (!p.isInferredFromReferenceableParamGroupRef() && !p.getAccession().startsWith(p.getCvRef() + ":")) {
-                    note(B_30);
+                if (!p.isInferredFromReferenceableParamGroupRef()) {
+                    note(B_30, p.getAccession().startsWith(p.getCvRef() + ":") ? 0 : 1);
+                    note(B_30_UNIT, p.getUnitAccession() != null && p.getUnitCvRef() != null
+                            && !p.getUnitAccession().startsWith(p.getUnitCvRef() + ":") ? 1 : 0);
                 }
                 params.add(new Param(p.getName(), p.getAccession(), value(p.getValue(), null), p.getUnitAccession()));
             }
