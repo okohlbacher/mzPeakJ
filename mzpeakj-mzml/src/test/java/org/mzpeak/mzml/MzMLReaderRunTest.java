@@ -1607,7 +1607,8 @@ class MzMLReaderRunTest {
         assertThat(run.spectra.get(0).description().scans().get(0).spectrumReference()).isEqualTo("scan=21");
         assertThat(run.spectra.get(1).description().scans().get(0).spectrumReference()).isEqualTo("elsewhere");
         assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33"))
-                .contains("B-16 sourceFileRef of scans and precursors lost (1)");
+                .contains("B-16 sourceFileRef of scans and precursors lost (1)")
+                .contains(MzMLReader.B_41 + " (1)");
     }
 
     @Test

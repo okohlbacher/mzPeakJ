@@ -199,6 +199,7 @@ public final class MzMLReader {
             + " written";
     static final String B_40_ASCII = "B-40 run, spectrumList and chromatogramList attribute values with bytes >= 0x80"
             + " read as US-ASCII, each such byte as U+FFFD";
+    static final String B_41 = "B-41 externalSpectrumIDs next to a spectrumRef lost";
     // Warned by design 5.4 and 5.5, without a loss number.
     static final String BOTH_POLARITIES = "spectra and chromatograms with both scan polarities read as polarity"
             + " unknown, the terms kept as params";
@@ -904,11 +905,12 @@ public final class MzMLReader {
 
     /**
      * The {@code ref} ({@code spectrumRef}), else the {@code external} id (design 5.2); a {@code sourceFileRef} is
-     * lost (B-16). With {@code locality}, an external id equal to a local spectrum id is noted: it comes back as a
+     * lost (B-16), and so is an {@code external} id next to a {@code ref} (B-41). With {@code locality}, an external id equal to a local spectrum id is noted: it comes back as a
      * {@code spectrumRef} (B-33).
      */
     private String reference(String ref, String external, String sourceFileRef, boolean locality) {
         note(B_16, sourceFileRef == null ? 0 : 1);
+        note(B_41, ref != null && external != null ? 1 : 0);
         if (locality && ref == null && (msOrdinals.containsKey(external) || wavelengthIds.contains(external))) {
             note(B_33);
         }
