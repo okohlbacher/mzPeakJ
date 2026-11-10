@@ -512,9 +512,13 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
 kind with its count: B-1 … B-40 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
-converted to minutes or lost array data processing refs, and A-1 … A-30 for mzPeak → mzML, such as required content
+converted to minutes or lost array data processing refs, and A-1 … A-31 for mzPeak → mzML, such as required content
 synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
 lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
+Added after the design's tables:
+
+- A-31: a chromatogram carries one chromatogram type (its type, else the first type among its params); further
+  type params that name another type are dropped and counted.
 
 ## Architecture
 

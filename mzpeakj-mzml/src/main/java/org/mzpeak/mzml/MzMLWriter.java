@@ -156,8 +156,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * the order spectrum types, representation, MS:1000619, MS:1000618, MS:1000505, MS:1000285, lambda max (MS:1003812 in
  * nanometers), the others.
  *
- * <p><b>Chromatograms</b> (design 5.8) keep their first precursor (A-11), whose {@code precursorIndex} is not written
- * (A-19). The chromatogramList's default data processing is that of every chromatogram when they all name the same,
+ * <p><b>Chromatograms</b> (design 5.8) carry one chromatogram type, their {@code typeCurie}, else the first type among
+ * their params; a further type param is dropped, counted when it names another type (A-31). They keep their first
+ * precursor (A-11), whose {@code precursorIndex} is not written (A-19). The chromatogramList's default data processing is that of every chromatogram when they all name the same,
  * else the spectrumList's; a chromatogram names its own when it differs from the list's.
  *
  * <p><b>Side effect of jmzML.</b> Every call of {@code MzMLMarshaller.marshall}, so every {@link #finish()} that
@@ -203,6 +204,7 @@ public final class MzMLWriter implements AutoCloseable {
     static final String A_27 = "A-27 values with tab, LF or CR, which XML readers read back as spaces";
     static final String A_28 = "A-28 values with characters XML cannot carry or C1 controls, replaced by U+FFFD";
     static final String A_29 = "A-29 values with characters outside ASCII, which jmzML-based readers read as U+FFFD";
+    static final String A_31 = "A-31 chromatogram type params other than the chromatogram type dropped";
     // Warned by design 5.2 and 5.3, without a loss number.
     static final String CV_WITHOUT_ID = "cv list entries without id dropped";
     static final String CV_COMPLETED = "CVs without fullName or URI completed from the known CVs, else with the prefix"
@@ -1010,11 +1012,16 @@ public final class MzMLWriter implements AutoCloseable {
         if (!processing.equals(listDefault)) {
             x.setDataProcessingRef(text(processing));
         }
-        if (c.typeCurie() != null) {
-            param(x, new Param(null, c.typeCurie(), null, null));
+        List<Param> rest = new ArrayList<>(c.parameters());
+        List<Param> types = take(rest, p -> MzMLTerms.CHROMATOGRAM_TYPES.containsKey(p.accession()));
+        Param type = c.typeCurie() != null ? new Param(null, c.typeCurie(), null, null)
+                : types.isEmpty() ? null : types.remove(0);
+        if (type != null) {
+            param(x, type);
+            types.forEach(t -> note(A_31, t.accession().equals(type.accession()) ? 0 : 1));
         }
         term(x, POLARITY_TERMS.get(c.polarity()));
-        params(x, c.parameters());
+        params(x, rest);
         if (!c.precursors().isEmpty()) {
             note(A_11, c.precursors().size() > 1 ? 1 : 0);
             Precursor p = c.precursors().get(0);

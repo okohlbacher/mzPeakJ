@@ -711,6 +711,43 @@ class MzMLWriterTest {
         }
     }
 
+    /**
+     * A chromatogram carries exactly one type (chromatogram_must): a param repeating its typeCurie is dropped without
+     * a count, one naming another type is dropped and counted (A-31), and without typeCurie the first type param is
+     * the type.
+     */
+    @Test
+    void aChromatogramCarriesExactlyOneType() throws IOException {
+        Param tic = new Param("total ion current chromatogram", "MS:1000235", null, null);
+        Param bpc = new Param("basepeak chromatogram", "MS:1000628", null, null);
+        Param note = new Param("note", null, "n", null);
+        FileMetadata m = metadata(List.of(software("sw")), List.of(new InstrumentConfiguration(0, List.of(),
+                "sw", List.of(new Param("LTQ", "MS:1000447", null, null)))), List.of(processing("dp", "sw")),
+                run("run"));
+        Chromatogram repeated = new Chromatogram(0, "repeated", "MS:1000235", new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(tic, note), List.of());
+
+        for (Written w : write("repeated-type", contents(m, repeated))) {
+            assertThat(MzMLMappingCheck.violations(w.file())).isEmpty();
+            assertThat(Files.readString(w.file(), UTF_8)).containsOnlyOnce("accession=\"MS:1000235\"");
+            List<Chromatogram> back = read(w.file()).chromatograms();
+            assertThat(back.get(0).typeCurie()).isEqualTo("MS:1000235");
+            assertThat(back.get(0).parameters()).containsExactly(note);
+            assertThat(w.warnings()).noneMatch(l -> l.startsWith("A-31"));
+        }
+        Chromatogram other = new Chromatogram(0, "other", "MS:1000235", new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(bpc, tic), List.of());
+        Chromatogram fromParams = new Chromatogram(1, "params", null, new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(note, bpc, tic), List.of());
+        for (Written w : write("other-type", contents(m, other, fromParams))) {
+            assertThat(MzMLMappingCheck.violations(w.file())).isEmpty();
+            List<Chromatogram> back = read(w.file()).chromatograms();
+            assertThat(back).extracting(Chromatogram::typeCurie).containsExactly("MS:1000235", "MS:1000628");
+            assertThat(back).extracting(Chromatogram::parameters).containsExactly(List.of(), List.of(note));
+            assertThat(w.warnings()).contains(MzMLWriter.A_31 + " (2)");
+        }
+    }
+
     @Test
     void aChromatogramKeepsItsFirstPrecursorAsAnExternalReference() {
         Precursor first = new Precursor(5L, "scan=9",
