@@ -417,6 +417,25 @@ class MzMLWriterTest {
         assertThat(listing()).containsExactly("late.mzML");
     }
 
+    /** An Error or RuntimeException while the document is marshalled leaves no temp file and no target. */
+    @Test
+    void aFailureWhileMarshallingLeavesNoTempFile() throws IOException {
+        Path target = dir.resolve("failed.mzML");
+        MzMLWriter oom = MzMLWriter.open(target, contents(metadata()), true);
+
+        assertThatThrownBy(() -> oom.finishWith((document, w) -> {
+            throw new OutOfMemoryError("Java heap space");
+        })).isInstanceOf(OutOfMemoryError.class).hasMessage("Java heap space");
+        assertThat(listing()).isEmpty();
+
+        MzMLWriter failing = MzMLWriter.open(target, contents(metadata()), true);
+        assertThatThrownBy(() -> failing.finishWith((document, w) -> {
+            throw new IllegalArgumentException("boom");
+        })).isInstanceOf(MzPeakException.class).hasMessage("mzML " + target
+                + ": cannot be written: java.lang.IllegalArgumentException: boom");
+        assertThat(listing()).isEmpty();
+    }
+
     @Test
     void closeWithoutFinishWritesNothingAndCanBeRepeated() throws IOException {
         Path target = dir.resolve("closed.mzML");

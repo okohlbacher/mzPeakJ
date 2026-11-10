@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.function.IntConsumer;
 
 /**
@@ -40,10 +41,12 @@ import java.util.function.IntConsumer;
  *
  * <p>Exit codes. 0: the output was written; stdout gets {@code wrote <output>: N spectra, M wavelength spectra,
  * K chromatograms}, stderr a {@code warning: } line for each warning of the conversion (its limit lines first).
- * 1: the conversion failed ({@link MzPeakException}, {@link UncheckedIOException}); stderr gets {@code error: } and
- * the message, and the conversion leaves no output. 2: a usage error; stderr gets {@code error: } with the problem and
- * the usage line, and nothing is written: an unknown option, an option given twice or without its value, a missing or
- * extra argument, an option that does not apply to the direction, both Numpress options, a layout other than
+ * 1: the conversion failed; stderr gets {@code error: } and the message of an {@link MzPeakException} or
+ * {@link UncheckedIOException}, the class and message of any other {@link RuntimeException}, or for an
+ * {@link OutOfMemoryError} the advice to rerun with a larger {@code -Xmx}; the conversion leaves no output. 2: a
+ * usage error; stderr gets {@code error: } with the problem and the usage line, and nothing is written: an unknown
+ * option, an option given twice or without its value, a missing or extra argument, an option that does not apply to
+ * the direction, both Numpress options, a layout other than
  * {@code split} or {@code packed}, a row-group size that is no positive number, an input ending in {@code .mzML.gz}
  * (jmzML 1.7.11 cannot read gzip), an input of another type, an output with the wrong extension, an existing output.
  *
@@ -58,6 +61,8 @@ public final class MzPeakConvert {
             + " org.mzpeak.mzml.cli.MzPeakConvert [--help] [options] <input> <output>";
     /** The memory rule of design 7 for mzML output, which holds the whole document in memory (L-9). */
     private static final String MEMORY = "-Xmx >= expected mzML size + 13 KB per spectrum + 1 GB";
+    /** The memory rule of design 7 for mzPeak output: jmzML's index and the mzPeak writer's entries per spectrum. */
+    private static final String MEMORY_MZPEAK = "about 2.5 KB per spectrum: -Xmx2g per 300,000 spectra";
     private static final String GZIP = "gunzip it first: jmzML 1.7.11 cannot read gzip-compressed mzML";
 
     private static final String FORMAT = "java.util.logging.SimpleFormatter.format";
@@ -112,6 +117,11 @@ public final class MzPeakConvert {
 
     /** Converts as {@code args} ask, prints to {@code out} and {@code err} as the class comment says; the exit code. */
     static int run(String[] args, PrintStream out, PrintStream err) {
+        return run(args, out, err, MzPeakConvert::convert);
+    }
+
+    /** {@link #run(String[], PrintStream, PrintStream)} with {@code convert} in place of {@link #convert}; a seam. */
+    static int run(String[] args, PrintStream out, PrintStream err, Function<Command, MzMLConversion.Result> convert) {
         if (Arrays.asList(args).contains("--help")) {
             out.println(USAGE);
             out.println();
@@ -122,6 +132,8 @@ public final class MzPeakConvert {
             out.println();
             out.println("Memory: mzML output is held in memory until it is written; run with");
             out.println("  " + MEMORY);
+            out.println("mzPeak output reads one spectrum at a time and keeps");
+            out.println("  " + MEMORY_MZPEAK);
             return 0;
         }
         Command command;
@@ -134,18 +146,29 @@ public final class MzPeakConvert {
         }
         MzMLConversion.Result result;
         try {
-            result = command.toMzML()
-                    ? MzMLConversion.toMzML(command.input(), command.output(), command.zlib())
-                    : MzMLConversion.toMzPeak(command.input(), command.output(), command.directory(),
-                    command.options());
+            result = convert.apply(command);
         } catch (MzPeakException | UncheckedIOException e) {
             err.println("error: " + e.getMessage());
+            return 1;
+        } catch (RuntimeException e) {
+            err.println("error: " + e.getClass().getName() + ": " + e.getMessage());
+            return 1;
+        } catch (OutOfMemoryError e) {
+            err.println("error: out of memory converting " + command.input()
+                    + "; rerun with a larger -Xmx (see --help)");
             return 1;
         }
         result.warnings().forEach(warning -> err.println("warning: " + warning));
         out.println("wrote " + command.output() + ": " + result.spectra() + " spectra, " + result.wavelengthSpectra()
                 + " wavelength spectra, " + result.chromatograms() + " chromatograms");
         return 0;
+    }
+
+    /** Runs the conversion {@code command} asks for. */
+    private static MzMLConversion.Result convert(Command command) {
+        return command.toMzML()
+                ? MzMLConversion.toMzML(command.input(), command.output(), command.zlib())
+                : MzMLConversion.toMzPeak(command.input(), command.output(), command.directory(), command.options());
     }
 
     /** A usage error; its message says what is wrong. */
@@ -158,7 +181,7 @@ public final class MzPeakConvert {
     }
 
     /** What the arguments ask for; {@code options} is null for mzML output. */
-    private record Command(Path input, Path output, boolean toMzML, boolean zlib, boolean directory,
+    record Command(Path input, Path output, boolean toMzML, boolean zlib, boolean directory,
                            MzPeakWriter.Options options) {
 
         static Command parse(String[] args) throws UsageError {

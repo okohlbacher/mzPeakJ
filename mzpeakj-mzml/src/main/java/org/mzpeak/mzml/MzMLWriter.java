@@ -83,6 +83,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -441,9 +442,15 @@ public final class MzMLWriter implements AutoCloseable {
      * @throws IllegalStateException if fewer spectra and wavelength spectra were written than the contents announced
      *                               (nothing is written then), or the writer is finished or closed
      * @throws MzPeakException       naming the target, if the document cannot be written or moved there, among others
-     *                               when the target exists by now; the temp file is deleted
+     *                               when the target exists by now; the temp file is deleted, also when an
+     *                               {@link Error} such as {@link OutOfMemoryError} ends the writing (it propagates)
      */
     public void finish() {
+        finishWith((document, w) -> new MzMLMarshaller().marshall(document, w));
+    }
+
+    /** {@link #finish()} with {@code marshaller} in place of jmzML's {@code MzMLMarshaller}; a seam for tests. */
+    void finishWith(BiConsumer<MzML, Writer> marshaller) {
         MzML document = document();
         mzml = null;
         int announced = contents.spectrumIds().size() + contents.wavelengthSpectrumIds().size();
@@ -455,15 +462,20 @@ public final class MzMLWriter implements AutoCloseable {
         chromatograms(document.getRun());
         Path temp = target.toAbsolutePath().resolveSibling("." + target.getFileName() + "." + UUID.randomUUID()
                 + ".tmp");
+        boolean moved = false;
         try {
             try (Writer w = new BufferedWriter(new OutputStreamWriter(
                     Files.newOutputStream(temp, StandardOpenOption.CREATE_NEW), UTF_8))) {
-                new MzMLMarshaller().marshall(document, w);
+                marshaller.accept(document, w);
             }
             Files.move(temp, target);
-        } catch (IllegalStateException | IOException e) {
-            temp.toFile().delete(); // best effort; it does not exist when it could not be created
+            moved = true;
+        } catch (RuntimeException | IOException e) {
             throw new MzPeakException("mzML " + target + ": cannot be written: " + e, e);
+        } finally {
+            if (!moved) {
+                temp.toFile().delete(); // best effort; it does not exist when it could not be created
+            }
         }
     }
 

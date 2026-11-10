@@ -427,7 +427,9 @@ the run one for each limit of the direction and one for each kind of loss, with 
 
 - `0`: the output was written (warnings allowed).
 - `1`: the conversion failed, with `error: <message>` on stderr: the input cannot be read or holds what the
-  converter rejects (below), or the output cannot be written. No output and no temp file is left. For input whose
+  converter rejects (below), or the output cannot be written; an unexpected exception gives `error: <class>:
+  <message>`, and running out of heap `error: out of memory converting <input>; rerun with a larger -Xmx (see
+  --help)`. No output and no temp file is left. For input whose
   tags do not match, xxindex (jmzML's indexer) prints its own diagnostic lines to stdout first.
 - `2`: a usage error, with `error: <message>` and the usage line on stderr; nothing is written. An unknown option, an
   option given twice or without its value, a missing or extra argument, an option for the other direction, both
@@ -503,7 +505,8 @@ design (it works up to about 90% of `-Xmx`):
 | 4 GB | ≈ 58,500 spectra, ≈ 3.85 GB | ≈ 260,000 spectra, ≈ 0.9 GB |
 | 16 GB | ≈ 249,000 spectra, ≈ 16.4 GB | ≈ 1.1 million spectra, ≈ 3.8 GB |
 
-A JVM that runs out of heap while the document is built fails with `OutOfMemoryError`.
+A JVM that runs out of heap while the document is built fails with `OutOfMemoryError`, which leaves no temp file;
+the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rules.
 
 ### What is lost
 
