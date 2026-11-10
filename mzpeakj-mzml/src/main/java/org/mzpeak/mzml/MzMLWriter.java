@@ -184,13 +184,16 @@ public final class MzMLWriter implements AutoCloseable {
      * The limit lines every writer notes (design 6.0), before its loss lines:
      * <ul>
      *   <li>L-8: the output is plain mzML, without index, offsets or checksum;
-     *   <li>L-9: the whole mzML document is held in memory before it is written.
+     *   <li>L-9: the whole mzML document is held in memory before it is written; with zlib, memory outside the
+     *       heap grows too (jmzML ends none of the {@code Deflater}s it creates, one per array).
      * </ul>
      */
     public static final List<String> LIMITS = List.of(
             "L-8 the output is plain mzML: no index, no offsets, no checksum",
             "L-9 the whole mzML document is held in memory before it is written: about 0.75 bytes of heap per byte"
-                    + " of the arrays' Base64 text plus 13 KB per spectrum");
+                    + " of the arrays' Base64 text plus 13 KB per spectrum; with zlib, jmzML creates a Deflater per"
+                    + " array and never ends it, so resident memory can reach 2-4.5 times -Xmx (without zlib it stays"
+                    + " near -Xmx)");
 
     /**
      * The losses of design 6.2 the converter cannot see and so cannot count, noted as fixed lines after

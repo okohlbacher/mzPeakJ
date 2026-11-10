@@ -133,6 +133,8 @@ public final class MzPeakConvert {
             out.println();
             out.println("Memory: mzML output is held in memory until it is written; run with");
             out.println("  " + MEMORY);
+            out.println("With zlib, jmzML's Deflaters (one per array, never ended) take memory outside the heap:");
+            out.println("  resident memory can reach 2-4.5 times -Xmx; --no-zlib keeps it near -Xmx");
             out.println("mzPeak output reads one spectrum at a time and keeps");
             out.println("  " + MEMORY_MZPEAK);
             return 0;

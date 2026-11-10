@@ -467,23 +467,27 @@ Reading mzML:
 
 Gzip-compressed mzML is not read at all: gunzip it first. Rejected with an `MzPeakException` (exit 1 in the CLI):
 gzipped input (a name ending in `.gz`, in any case: "gzip-compressed mzML is not supported by jmzML 1.7.11 as is:
-gunzip it first"; the CLI reports a `.mzML.gz` input as a usage error); UTF-16 and UTF-32 documents; a `run`,
-`spectrumList` or `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of it; arrays
-compressed with the combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748; MS-Numpress PIC counts
-of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
-intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or wavelength
-or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type terms on
-one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the attributes of
-`run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads them, so a
-character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80 becomes U+FFFD
-(a default ref with such a byte then names nothing, while the header lists keep the character).
+gunzip it first"; through the CLI, every input file ending in `.gz` is a usage error, exit 2); UTF-16 and UTF-32
+documents; a `run`, `spectrumList` or `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of
+it; arrays compressed with the combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748;
+MS-Numpress PIC counts of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an
+empty SLOF payload; arrays without a binary data type term (jmzML: "Required precision CV parameter not found");
+m/z, intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
+wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type
+terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the
+attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads
+them, so a character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80
+becomes U+FFFD (a default ref with such a byte then names nothing, while the header lists keep the character).
 
 Writing mzML:
 
 - **L-8 Plain mzML.** The output has no `indexedmzML` wrapper: no index, no offsets, no checksum. Tools that need
   random access (ProteoWizard, OpenMS) index a plain file when they open it.
 - **L-9 Whole document in memory.** jmzML has no streaming writer, so the whole document is built in memory before it
-  is written: about 0.75 bytes of heap per byte of the arrays' Base64 text plus 13 KB per spectrum.
+  is written: about 0.75 bytes of heap per byte of the arrays' Base64 text plus 13 KB per spectrum. With zlib (the
+  default), jmzML creates a `Deflater` per array and never ends it, so memory outside the heap grows as well: the
+  resident memory of the JVM can reach 2-4.5 times `-Xmx`. `--no-zlib` keeps it near `-Xmx`. This is a jmzML limit;
+  the converter does not work around it.
 
 Every write through jmzML's `MzMLMarshaller` sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`. It changes no output, and the CLI's JVM ends with the run, but
@@ -497,7 +501,8 @@ writer's entries): 300,000 spectra need about `-Xmx2g`. mzPeak → mzML holds th
 
 **`-Xmx` >= expected mzML size + 13 KB per spectrum + 1 GB**
 
-which errs on the safe side. The largest mzML output for a heap, estimated from the measurements of the converter's
+which errs on the safe side; with zlib, leave room for 2-4.5 times `-Xmx` of resident memory (L-9), or write with
+`--no-zlib`. The largest mzML output for a heap, estimated from the measurements of the converter's
 design (it works up to about 90% of `-Xmx`):
 
 | `-Xmx` | spectra like small.mzML's (67.5 KB of mzML each) | spectra of 15 points (3.5 KB of mzML each) |

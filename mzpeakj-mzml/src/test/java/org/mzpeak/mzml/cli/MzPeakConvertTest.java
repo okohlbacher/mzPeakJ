@@ -484,7 +484,8 @@ class MzPeakConvertTest {
         assertThat(lines).containsSubsequence(indented(MzMLReader.LIMITS))
                 .containsSubsequence(indented(MzMLWriter.LIMITS))
                 .contains("  -Xmx >= expected mzML size + 13 KB per spectrum + 1 GB",
-                        "  about 2.5 KB per spectrum: -Xmx2g per 300,000 spectra");
+                        "  about 2.5 KB per spectrum: -Xmx2g per 300,000 spectra",
+                        "  resident memory can reach 2-4.5 times -Xmx; --no-zlib keeps it near -Xmx");
         assertThat(String.join("\n", lines)).contains("--no-zlib", "--directory", "--layout split|packed",
                 "--numpress-slof", "--numpress-pic", "--row-group-size <bytes>", "gunzip it first");
         assertThat(run("--bogus", "x", "--help")).isEqualTo(r);
