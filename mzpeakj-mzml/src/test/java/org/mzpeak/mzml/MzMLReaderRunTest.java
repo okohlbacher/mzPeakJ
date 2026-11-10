@@ -166,7 +166,7 @@ class MzMLReaderRunTest {
         assertThat(run.reader.survey()).isEqualTo(new MzMLReader.Survey(ids(run.spectra), List.of(), Set.of(), 1));
         assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
-                "B-14 units of unitless summary and peak-intensity params set to the default (48)"));
+                "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default (48)"));
 
         Spectrum s2 = run.spectra.get(2);
         Precursor precursor = s2.description().primaryPrecursor();
@@ -381,7 +381,7 @@ class MzMLReaderRunTest {
                 "B-1 referenceableParamGroups expanded inline (2)",
                 "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
                 "B-7 run@sampleRef lost (1)",
-                "B-14 units of unitless summary and peak-intensity params set to the default (4)",
+                "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default (4)",
                 ARRAY_DP_LOST + " (10)",
                 "B-10 spectrum@spotID lost (1)",
                 "B-10 spectrum@sourceFileRef lost (1)",
@@ -418,8 +418,9 @@ class MzMLReaderRunTest {
         assertThat(d1.precursors()).containsExactly(new Precursor(0L, "scan=19",
                 new IsolationWindow(445.3, 0.5, 0.5),
                 List.of(new SelectedIon(445.34, 2, 120053.0, List.of())),
+                // B-14: the integer collision energy typed as a Double, as the mzPeak writer's column holds it
                 new Activation(List.of(new Param("collision-induced dissociation", "MS:1000133", null, null),
-                        new Param("collision energy", "MS:1000045", 35L, "UO:0000266")))));
+                        new Param("collision energy", "MS:1000045", 35.0, "UO:0000266")))));
 
         Spectrum s2 = run.spectra.get(2);
         assertThat(s2.mz()).isEmpty();
@@ -892,7 +893,7 @@ class MzMLReaderRunTest {
                 "B-1 referenceableParamGroups expanded inline (2)",
                 "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
                 "B-7 run@sampleRef lost (1)",
-                "B-14 units of unitless summary and peak-intensity params set to the default (4)",
+                "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default (4)",
                 ARRAY_DP_LOST + " (10)",
                 "B-21 lost array params other than array type, data type and compression (1)",
                 "B-10 spectrum@spotID lost (1)",
@@ -1665,6 +1666,35 @@ class MzMLReaderRunTest {
         assertThat(precursor.precursorIndex()).isNull();
         assertThat(precursor.precursorId()).isEqualTo("scan=1");
         assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33")).contains(MzMLReader.B_42 + " (1)");
+    }
+
+    /**
+     * B-14: tiny's collision energy ({@code 35} in electronvolt) replaced. Without unit it is typed as a Double in
+     * electronvolt, the unit MS:1000045 is defined in, and counted; in percent or with a value that is no number it
+     * stays as read, uncounted, as the mzPeak writer leaves such an energy a Param.
+     */
+    @ParameterizedTest
+    @MethodSource("collisionEnergies")
+    void aUnitlessCollisionEnergyIsTypedAsADoubleInElectronvolt(String value, String unit, Param expected,
+                                                                 int b14, @TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(s, "<cvParam cvRef=\"MS\" accession=\"MS:1000045\" name=\"collision"
+                + " energy\" value=\"35\" unitCvRef=\"UO\" unitAccession=\"UO:0000266\" unitName=\"electronvolt\"/>",
+                cv("MS:1000045", "collision energy", value, unit)));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(1).description().primaryPrecursor().activation().parameters()).containsExactly(
+                new Param("collision-induced dissociation", "MS:1000133", null, null), expected);
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_14_UNIT + " (" + b14 + ")");
+    }
+
+    static Stream<Arguments> collisionEnergies() {
+        String energy = "collision energy";
+        return Stream.of(
+                Arguments.of("35", null, new Param(energy, "MS:1000045", 35.0, "UO:0000266"), 5),
+                Arguments.of("27.5", null, new Param(energy, "MS:1000045", 27.5, "UO:0000266"), 5),
+                Arguments.of("35", "UO:0000187", new Param(energy, "MS:1000045", 35L, "UO:0000187"), 4),
+                Arguments.of("high", null, new Param(energy, "MS:1000045", "high", null), 4));
     }
 
     @Test

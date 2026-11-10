@@ -47,7 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>the opt_IMS position columns of spectra_metadata_scans (a Long in [0, 2^31), no unit), written only when some
  *       scan has such a position;
  *   <li>{@code activation.dissociation_method} (a value-less, unit-less MS:1000044 descendant) and
- *       {@code activation.collision_energy} (a finite Double in UO:0000266).
+ *       {@code activation.collision_energy} (a Long or finite Double in UO:0000266 or without unit, as mzML writers
+ *       give it; it reads back as a Double in UO:0000266).
  * </ul>
  * Only the first Param that qualifies for a column is promoted, and none whose accession another Param of the same
  * list carries, so no accession is ever both a column and a parameter of one scope.
@@ -72,6 +73,9 @@ class SplitWriterPromotionTest {
     private static final String POSITION_Y = "IMS:1000051";
     private static final String X_COLUMN = "opt_IMS_1000050_position_x";
     private static final String Y_COLUMN = "opt_IMS_1000051_position_y";
+    private static final String COLLISION_ENERGY = "MS:1000045";
+    private static final String ELECTRONVOLT = "UO:0000266";
+    private static final String PERCENT = "UO:0000187";
 
     /** The summary columns, by accession, in schema order, with their units. */
     private static final Map<String, String> SUMMARY_COLUMNS = new LinkedHashMap<>();
@@ -251,15 +255,15 @@ class SplitWriterPromotionTest {
         // No Params at all: everything is derived.
         spectra.set(msn.get(1), withParams(spectra.get(msn.get(1)), List.of()));
 
-        // Activations: ETD then supplemental beam-type CID; a duplicated CID and an energy without unit.
+        // Activations: ETD then supplemental beam-type CID; a duplicated CID and an energy in percent.
         Param etd = new Param("electron transfer dissociation", "MS:1000598", null, null);
         Param supplemental = new Param("supplemental beam-type collision-induced dissociation", "MS:1002678", null,
                 null);
         Param energy = new Param("collision energy", "MS:1000045", 30.0, "UO:0000266");
         spectra.set(msn.get(2), withActivation(spectra.get(msn.get(2)), List.of(etd, supplemental, energy)));
         Param cid = new Param("collision-induced dissociation", "MS:1000133", null, null);
-        Param unitlessEnergy = new Param("collision energy", "MS:1000045", 35.0, null);
-        spectra.set(msn.get(3), withActivation(spectra.get(msn.get(3)), List.of(cid, cid, unitlessEnergy)));
+        Param percentEnergy = new Param("collision energy", "MS:1000045", 35.0, PERCENT);
+        spectra.set(msn.get(3), withActivation(spectra.get(msn.get(3)), List.of(cid, cid, percentEnergy)));
 
         // Positions that do not qualify: too large for INT32, and with a unit.
         Param farX = new Param("position x", POSITION_X, 3_000_000_000L, null);
@@ -307,7 +311,7 @@ class SplitWriterPromotionTest {
         Group cidRow = activations.get(spectra.get(msn.get(3)).index());
         assertThat(ParquetGroups.optString(cidRow, "dissociation_method")).isNull();
         assertThat(ParquetGroups.optDouble(cidRow, "collision_energy")).isNull();
-        assertThat(ParquetGroups.readParams(cidRow, "parameters")).containsExactly(cid, cid, unitlessEnergy);
+        assertThat(ParquetGroups.readParams(cidRow, "parameters")).containsExactly(cid, cid, percentEnergy);
 
         // No scan has a position that qualifies, so there is no position column.
         assertThat(schema(out, SCANS).containsField(X_COLUMN)).isFalse();
@@ -378,6 +382,90 @@ class SplitWriterPromotionTest {
             assertThat(back.spectra.get(ms1.get(k)).description().parameters()).contains(tics.get(k));
             assertThat(back.spectra.get(msn.get(k)).description().primaryPrecursor().activation().parameters())
                     .containsExactlyInAnyOrder(cid, energies.get(k));
+        }
+        assertNoAccessionTwice(out);
+    }
+
+    /**
+     * mzML writers give the collision energy as an integer ({@code 35}) and omit its unit; MS:1000045 is defined in
+     * electronvolt, so a Long or finite Double without unit or in electronvolt goes to
+     * {@code activation.collision_energy} as a Double, leaves the {@code parameters} list and reads back as a Double
+     * in electronvolt, which the Rust reader takes as the energy instead of 0.
+     */
+    @Test
+    void integerAndUnitlessCollisionEnergiesGoToTheColumnInElectronvolt(@TempDir Path tmp) throws IOException {
+        Source small = source(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        List<Integer> msn = positions(spectra, true);
+        Param cid = new Param("collision-induced dissociation", "MS:1000133", null, null);
+        List<Param> energies = List.of(new Param("collision energy", COLLISION_ENERGY, 35L, null),
+                new Param("collision energy", COLLISION_ENERGY, 30L, ELECTRONVOLT),
+                new Param("collision energy", COLLISION_ENERGY, 27.5, null));
+        List<Double> columns = List.of(35.0, 30.0, 27.5);
+        for (int k = 0; k < energies.size(); k++) {
+            spectra.set(msn.get(k), withActivation(spectra.get(msn.get(k)), List.of(cid, energies.get(k))));
+        }
+
+        Path out = write(spectra, small, tmp.resolve("out.mzpeak"));
+
+        Map<Long, Group> activations = new HashMap<>();
+        for (Group row : rows(out.resolve(PRECURSORS))) {
+            activations.put(row.getLong("source_index", 0), ParquetGroups.optGroup(row, "activation"));
+        }
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        for (int k = 0; k < energies.size(); k++) {
+            Group activation = activations.get(spectra.get(msn.get(k)).index());
+            assertThat(ParquetGroups.optString(activation, "dissociation_method")).isEqualTo("MS:1000133");
+            assertThat(ParquetGroups.optDouble(activation, "collision_energy")).as("column of %s", energies.get(k))
+                    .isEqualTo(columns.get(k));
+            assertThat(ParquetGroups.readParams(activation, "parameters")).as("params of %s", energies.get(k))
+                    .isEmpty();
+            Activation read = back.spectra.get(msn.get(k)).description().primaryPrecursor().activation();
+            assertThat(read.parameters()).as("read back %s", energies.get(k)).containsExactly(cid,
+                    new Param("collision energy", COLLISION_ENERGY, columns.get(k), ELECTRONVOLT));
+            assertThat(read.collisionEnergy()).hasValue(columns.get(k));
+        }
+        assertNoAccessionTwice(out);
+    }
+
+    /**
+     * A collision energy in another unit than electronvolt, or whose value is no number, does not qualify for
+     * {@code activation.collision_energy}: it stays in the {@code parameters} list unchanged, the column stays null,
+     * and it reads back equal.
+     */
+    @Test
+    void aCollisionEnergyInAnotherUnitOrWithoutANumberStaysAParam(@TempDir Path tmp) throws IOException {
+        Source small = source(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        List<Integer> msn = positions(spectra, true);
+        Param cid = new Param("collision-induced dissociation", "MS:1000133", null, null);
+        List<Param> energies = List.of(new Param("collision energy", COLLISION_ENERGY, 35L, PERCENT),
+                new Param("collision energy", COLLISION_ENERGY, 35.0, PERCENT),
+                new Param("collision energy", COLLISION_ENERGY, "35", null),
+                new Param("collision energy", COLLISION_ENERGY, Double.NaN, null));
+        for (int k = 0; k < energies.size(); k++) {
+            spectra.set(msn.get(k), withActivation(spectra.get(msn.get(k)), List.of(cid, energies.get(k))));
+        }
+
+        Path out = write(spectra, small, tmp.resolve("out.mzpeak"));
+
+        Map<Long, Group> activations = new HashMap<>();
+        for (Group row : rows(out.resolve(PRECURSORS))) {
+            activations.put(row.getLong("source_index", 0), ParquetGroups.optGroup(row, "activation"));
+        }
+        for (int k = 0; k < energies.size(); k++) {
+            Group activation = activations.get(spectra.get(msn.get(k)).index());
+            assertThat(ParquetGroups.optString(activation, "dissociation_method")).isEqualTo("MS:1000133");
+            assertThat(ParquetGroups.optDouble(activation, "collision_energy")).as("column of %s", energies.get(k))
+                    .isNull();
+            assertThat(ParquetGroups.readParams(activation, "parameters")).as("params of %s", energies.get(k))
+                    .containsExactly(energies.get(k));
+        }
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        DescriptionAssert.assertEqual("energies that stay Params", descriptions(spectra), descriptions(back.spectra));
+        for (int k = 0; k < energies.size(); k++) {
+            assertThat(back.spectra.get(msn.get(k)).description().primaryPrecursor().activation().parameters())
+                    .containsExactly(cid, energies.get(k));
         }
         assertNoAccessionTwice(out);
     }

@@ -91,7 +91,7 @@ class MzMLConversionTest {
             "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
             "B-7 run@sampleRef lost (1)",
             // the unitless total ion current of three spectra and the unitless peak intensity of scan=20's ion
-            "B-14 units of unitless summary and peak-intensity params set to the default (4)",
+            "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default (4)",
             "B-21 lost array dataProcessingRef (10)",
             "B-10 spectrum@spotID lost (1)",
             "B-10 spectrum@sourceFileRef lost (1)",
@@ -165,7 +165,7 @@ class MzMLConversionTest {
 
         assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(List.of(
                 "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
-                "B-14 units of unitless summary and peak-intensity params set to the default (48)")));
+                "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default (48)")));
         assertThat(b.toMzML.warnings()).containsExactlyElementsOf(writerLimits());
         assertThat(List.of(b.toMzPeak.spectra(), b.toMzPeak.wavelengthSpectra(), b.toMzPeak.chromatograms()))
                 .containsExactly(48L, 0L, 1L);

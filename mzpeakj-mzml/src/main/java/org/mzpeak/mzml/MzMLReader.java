@@ -175,7 +175,8 @@ public final class MzMLReader {
             + " spectra, renumbered";
     static final String B_13 = "B-13 scanList params other than the combination term moved to the spectrum";
     static final String B_14_TYPE = "B-14 userParam values that do not match their type kept as text";
-    static final String B_14_UNIT = "B-14 units of unitless summary and peak-intensity params set to the default";
+    static final String B_14_UNIT =
+            "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default";
     static final String B_15 = "B-15 times converted to minutes and drift times to milliseconds";
     static final String B_16 = "B-16 sourceFileRef of scans and precursors lost";
     static final String B_17_WINDOW = "B-17 scan windows without both limits in m/z dropped";
@@ -229,6 +230,7 @@ public final class MzMLReader {
     private static final String MINUTE = "UO:0000031";
     private static final String MILLISECOND = "UO:0000028";
     private static final String COUNTS = "MS:1000131";
+    private static final String ELECTRONVOLT = "UO:0000266";
     /**
      * The summary params of an MS spectrum with the unit the mzPeak writer's summary columns take (design 5.5): m/z
      * for the m/z range and the base peak m/z, detector counts for the base peak intensity and total ion current.
@@ -894,7 +896,10 @@ public final class MzMLReader {
     /**
      * A precursor of a spectrum or, with {@code ofSpectrum} false, of a chromatogram (design 5.2, 5.6, 5.8). A
      * spectrum precursor's {@code spectrumRef} gives its index through {@link #survey()}: the MS ordinal it names, or
-     * null for a wavelength spectrum (B-33) or no spectrum. A chromatogram precursor has no index.
+     * null for a wavelength spectrum (B-33) or no spectrum. A chromatogram precursor has no index. A numeric collision
+     * energy without unit or in electronvolt, its defined unit, is typed as a Double in electronvolt (a unitless one
+     * counted under B-14), as the mzPeak writer moves it to its column and reads it back (mzML writers give
+     * {@code 35} and omit the unit).
      */
     private Precursor precursor(uk.ac.ebi.jmzml.model.mzml.Precursor p, boolean ofSpectrum) {
         String id = reference(p.getSpectrumRef(), p.getExternalSpectrumID(), p.getSourceFileRef(), !ofSpectrum);
@@ -926,7 +931,16 @@ public final class MzMLReader {
                 ions.add(new SelectedIon(mz == null ? Double.NaN : mz, charge, intensity, params));
             }
         }
-        return new Precursor(index, id, window, ions, new Activation(params(p.getActivation())));
+        List<Param> activation = new ArrayList<>(params(p.getActivation()));
+        for (ListIterator<Param> it = activation.listIterator(); it.hasNext(); ) {
+            Param q = it.next();
+            if (CvTerms.COLLISION_ENERGY.equals(q.accession()) && q.value() instanceof Number n
+                    && (q.unit() == null || ELECTRONVOLT.equals(q.unit()))) {
+                note(B_14_UNIT, q.unit() == null ? 1 : 0);
+                it.set(new Param(q.name(), q.accession(), n.doubleValue(), ELECTRONVOLT));
+            }
+        }
+        return new Precursor(index, id, window, ions, new Activation(activation));
     }
 
     /**

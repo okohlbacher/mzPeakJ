@@ -77,7 +77,9 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param moves to its standardized
  * column only if the reader rebuilds it equal apart from its name ({@link Promotion}, WR-5c): a summary value, the
  * spectrum type, an imaging position, the dissociation method or the collision energy, and of a wavelength spectrum
- * its representation, base peak intensity or total ion current. Every other Param stays in
+ * its representation, base peak intensity or total ion current. A collision energy is promoted also when it is an
+ * integer or has no unit, as mzML writers give it: MS:1000045 is defined in electronvolt, and it reads back as a
+ * Double in electronvolt. Every other Param stays in
  * its {@code parameters} list, ion mobility included. The summary values are derived from the payload only when the
  * spectrum's Params have none of the five, and the spectrum type from the MS level only when they have no spectrum
  * type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
@@ -578,9 +580,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     if (method != null) {
                         activation.add(field(DISSOCIATION_METHOD), method.accession());
                     }
-                    Param energy = params.promote(doubleIn(COLLISION_ENERGY));
+                    Param energy = params.promote(energyIn(COLLISION_ENERGY));
                     if (energy != null) {
-                        activation.add(field(COLLISION_ENERGY), (Double) energy.value());
+                        activation.add(field(COLLISION_ENERGY), ((Number) energy.value()).doubleValue());
                     }
                     params(activation, params.rest());
                     writer.write(row);
@@ -847,6 +849,17 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static Predicate<Param> doubleIn(Column column) {
         return p -> column.accession().equals(p.accession()) && p.value() instanceof Double v && Double.isFinite(v)
                 && Objects.equals(column.unit(), p.unit());
+    }
+
+    /**
+     * A collision energy the column can hold: a finite number in the column's unit (electronvolt) or without unit,
+     * since MS:1000045 is defined in electronvolt. mzML writers give integers ({@code 35}) and omit the unit; such a
+     * value reads back as a Double in electronvolt.
+     */
+    private static Predicate<Param> energyIn(Column column) {
+        return p -> column.accession().equals(p.accession())
+                && (p.unit() == null || Objects.equals(column.unit(), p.unit()))
+                && (p.value() instanceof Long || p.value() instanceof Double v && Double.isFinite(v));
     }
 
     /** An empty {@code auxiliary_arrays} list and a zero count, as the reference writes for a row without any. */

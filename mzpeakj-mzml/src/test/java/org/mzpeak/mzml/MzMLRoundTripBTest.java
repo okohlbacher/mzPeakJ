@@ -65,7 +65,7 @@ class MzMLRoundTripBTest {
      *       already);
      *   <li>diaPASEF: B_22, the m/z, intensity and ion mobility arrays of its 9 spectra (27 differences), which pwiz
      *       wrote in scan order and the mzPeak writer sorts by m/z; its 18 userParam units are lost in M1 already
-     *       (L-4).
+     *       (L-4). Its B-14 line counts 18 unitless summary params and 8 unitless collision energies.
      * </ul>
      */
     static Stream<Arguments> fixtures() {
@@ -90,7 +90,7 @@ class MzMLRoundTripBTest {
                                 MzMLReader.B_11_INDEX + " (520)"), List.of()),
                 arguments(MzMLFixtures.DIAPASEF, Map.of(ModelAssert.B_22, 3 * 9), List.of(9L, 0L, 2L),
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (11)",
-                                MzMLReader.B_14_UNIT + " (18)"), List.of()));
+                                MzMLReader.B_14_UNIT + " (26)"), List.of()));
     }
 
     @ParameterizedTest(name = "{0}")
