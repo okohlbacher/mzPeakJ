@@ -1,6 +1,6 @@
 package org.mzpeak.mzml;
 
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -76,7 +76,8 @@ class OpenMSFileInfoTest {
             "Error: Binary data array of type 'MS:1003006 ! mean inverse reduced ion mobility array' cannot have the"
                     + " value type 'MS:1000523 ! 64-bit float'.",
             "Error: Value-type required, but not given (xsd:decimal): 'MS:1003006 - mean inverse reduced ion mobility"
-                    + " array' value='' at element '/mzML/run/spectrumList/spectrum/binaryDataArrayList/binaryDataArray'",
+                    + " array' value='' at element"
+                    + " '/mzML/run/spectrumList/spectrum/binaryDataArrayList/binaryDataArray'",
             // the fixtures name MS:1002815 by its older name
             "Error: Name of CV term not correct: 'MS:1002815 - inverse reduced ion mobility drift time' should be"
                     + " 'inverse reduced ion mobility'",
@@ -121,8 +122,8 @@ class OpenMSFileInfoTest {
     @TempDir
     Path dir;
 
-    @BeforeAll
-    static void fileInfoIsGiven() {
+    @BeforeEach
+    void fileInfoIsGiven() {
         String property = System.getProperty(PROPERTY, "");
         assumeTrue(!property.isBlank(), "-D" + PROPERTY + "=<FileInfo> not set");
         fileInfo = Path.of(property);

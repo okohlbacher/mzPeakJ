@@ -1,7 +1,7 @@
 package org.mzpeak.mzml;
 
 import ms.numpress.MSNumpress;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.Fixtures;
@@ -65,8 +65,8 @@ class PythonMzMLReaderTest {
     @TempDir
     Path dir;
 
-    @BeforeAll
-    static void uvIsGiven() {
+    @BeforeEach
+    void uvIsGiven() {
         uv = System.getProperty(PROPERTY, "");
         assumeTrue(!uv.isBlank(), "-D" + PROPERTY + "=<uv> not set");
         assertThat(Path.of(uv)).as("-D%s", PROPERTY).isExecutable();
