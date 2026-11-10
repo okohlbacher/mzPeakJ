@@ -29,7 +29,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,14 +93,12 @@ class MzMLRoundTripATest {
      * carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_16 one
      * spectrum type and five summary params per spectrum (48 or 212); A_2, A_8, A_17 and A_18 one each.
      *
-     * <p>Mapping-rule violations (design 6.4, 12.4): none for the outputs of current small*, has_uv, diaPASEF.ref and
-     * .grid, Example_Processed and legacy small*. diaPASEF.ref and .grid lack nothing the six rules check (IC 0 holds
-     * the instrument model MS:1003005 timsTOF Pro, every spectrum a spectrum type and a representation, both
-     * chromatograms a type, every activation a dissociation method), and so does Example_Processed (its spectra of MS
-     * level 0 carry MS:1000579 and MS:1000128, IC 0 holds MS:1000557 LTQ FT Ultra); their A-2, A-8, A-17 and A-18
-     * repairs are not mapping rules. Legacy has_uv: the 520 wavelength spectra of its packed layout carry the spectrum
-     * type MS:1000804 but no spectrum representation (MS:1000127 or MS:1000128; current has_uv has MS:1000128), which
-     * the writer does not invent, so each is one spectrum_must violation.
+     * <p>Mapping-rule violations (design 6.4, 12.4): none for the outputs of any fixture. diaPASEF.ref and .grid lack
+     * nothing the six rules check (IC 0 holds the instrument model MS:1003005 timsTOF Pro, every spectrum a spectrum
+     * type and a representation, both chromatograms a type, every activation a dissociation method), and so does
+     * Example_Processed (its spectra of MS level 0 carry MS:1000579 and MS:1000128, IC 0 holds MS:1000557 LTQ FT
+     * Ultra); their A-2, A-8, A-17 and A-18 repairs are not mapping rules. Legacy has_uv: the 520 wavelength spectra
+     * of its packed layout keep their spectrum representation since the core reader no longer drops it (LIB-1).
      */
     static Map<String, Fixture> fixtures() {
         Map<String, Fixture> f = new LinkedHashMap<>();
@@ -137,9 +134,7 @@ class MzMLRoundTripATest {
         f.put("legacy has_uv.mzpeak", new Fixture(Fixtures.legacy("has_uv.mzpeak"), List.of(hides(ModelAssert.A_7,
                 212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_16, 212 + 5 * 212),
                 hides(ModelAssert.A_17, 1)), List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_16 + " (212)",
-                MzMLWriter.A_9 + " (211)", a7(212 + 520)), msUo,
-                IntStream.range(0, 520).mapToObj(k -> MzMLMappingCheck.SPECTRUM_MUST + " @ merged=" + (212 + k)
-                        + " row=" + k).toList()));
+                MzMLWriter.A_9 + " (211)", a7(212 + 520)), msUo, List.of()));
         return f;
     }
 
