@@ -515,7 +515,12 @@ kind with its count: B-1 … B-40 for mzML → mzPeak (→ mzML), such as refere
 converted to minutes or lost array data processing refs, and A-1 … A-31 for mzPeak → mzML, such as required content
 synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
 lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
-Added after the design's tables:
+The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input lacks what
+the rule asks for (it does not invent the data): spectra without exactly one spectrum type and representation
+(`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum precursor
+activations without a dissociation method (`precursor_activation_must`), instrument configurations synthesized or
+without exactly one instrument model (`instrumentconfiguration_must`) and chromatograms without exactly one type
+(`chromatogram_must`). Added after the design's tables:
 
 - A-31: a chromatogram carries one chromatogram type (its type, else the first type among its params); further
   type params that name another type are dropped and counted.
@@ -664,6 +669,8 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders (`mzpeakj/src/main/java/ms/numpress/`)
 - Apache-2.0 HUPO-PSI mzPeak example fixtures (`mzpeakj/src/test/resources/`)
 - mzML test fixtures and the PSI mzML schemas (`mzpeakj-mzml/src/test/resources/mzml/`)
+- CC BY 4.0 PSI-MS instrument-model accessions (`mzpeakj-mzml/src/main/resources/org/mzpeak/mzml/`, also in the
+  converter's jars)
 - in the two `-all` jars only, the runtime libraries: parquet-java 1.17.1, Jackson 2.18.2, hadoop-client-api 3.5.0,
   snappy-java 1.1.10.7, aircompressor 2.0.2 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
   jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);

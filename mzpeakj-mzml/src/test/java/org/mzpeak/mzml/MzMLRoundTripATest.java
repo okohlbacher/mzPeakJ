@@ -177,6 +177,7 @@ class MzMLRoundTripATest {
         assertThat(text).contains(accession(zlib ? ZLIB : NO_COMPRESSION));
         assertThat(text.contains(accession(ZLIB))).as("zlib-compressed arrays").isEqualTo(zlib);
         assertThat(MzMLMappingCheck.violations(mzml)).containsExactlyElementsOf(fixture.violations());
+        assertMappingWarningsMatch(toMzML.warnings(), mzml);
 
         Model actual = Model.load(back);
         assertThat(actual.cvList()).extracting(CvEntry::id).containsExactlyElementsOf(fixture.cvs());
@@ -257,6 +258,71 @@ class MzMLRoundTripATest {
         }
         assertThat(ModelAssert.assertEqual("array keys A", given, Model.load(back), STRICT, ModelAssert.A_7).hidden())
                 .isEqualTo(Map.of("A_7", 48));
+    }
+
+    // ---- the PSI mapping-rule warnings (design 6.4) -------------------------------------------------------------
+
+    /**
+     * tiny with spectrum scan=19's representation, the CID term of scan=20's precursor activation and the TIC's type
+     * removed, converted to mzPeak and back: each mapping-rule warning of the writer appears exactly when
+     * {@link MzMLMappingCheck} reports its rule in the mzML, with its count.
+     */
+    @Test
+    void theMappingRuleWarningsMatchTheViolationsOfATinyDerivedDocument() throws IOException {
+        Path source = Files.createDirectories(dir.resolve("source"));
+        String tiny = Files.readString(MzMLFixtures.extract(MzMLFixtures.TINY, source), StandardCharsets.ISO_8859_1);
+        String edited = removeAfter(tiny, "id=\"scan=19\"",
+                "          <cvParam cvRef=\"MS\" accession=\"MS:1000127\" name=\"centroid spectrum\" value=\"\"/>\n");
+        edited = removeAfter(edited, "id=\"scan=20\"", "                <cvParam cvRef=\"MS\" accession=\"MS:1000133\""
+                + " name=\"collision-induced dissociation\" value=\"\"/>\n");
+        edited = removeAfter(edited, "id=\"tic\"", "          <cvParam cvRef=\"MS\" accession=\"MS:1000235\""
+                + " name=\"total ion current chromatogram\" value=\"\"/>\n");
+        Path input = Files.writeString(dir.resolve("edited.mzML"), edited, StandardCharsets.ISO_8859_1);
+        Path mzpeak = dir.resolve("edited.mzpeak");
+        Path mzml = dir.resolve("edited-back.mzML");
+
+        MzMLConversion.toMzPeak(input, mzpeak, false, MzPeakWriter.Options.defaults());
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(mzpeak, mzml, true);
+        MzMLAssert.valid(mzml);
+
+        assertThat(MzMLMappingCheck.violations(mzml)).containsExactly("spectrum_must @ scan=19",
+                "precursor_activation_must @ scan=20", "chromatogram_must @ tic");
+        assertThat(toMzML.warnings()).contains(MzMLWriter.SPECTRUM_MUST + " (1)", MzMLWriter.ACTIVATION_MUST + " (1)",
+                MzMLWriter.CHROMATOGRAM_MUST + " (1)");
+        assertMappingWarningsMatch(toMzML.warnings(), mzml);
+    }
+
+    /** The writer's warning for each rule of {@link MzMLMappingCheck} it can break (design 6.4). */
+    private static final Map<String, String> RULE_WARNINGS = Map.of(
+            MzMLMappingCheck.SPECTRUM_MUST, MzMLWriter.SPECTRUM_MUST,
+            MzMLMappingCheck.SCAN_MUST, MzMLWriter.SCAN_MUST,
+            MzMLMappingCheck.PRECURSOR_ACTIVATION_MUST, MzMLWriter.ACTIVATION_MUST,
+            MzMLMappingCheck.INSTRUMENTCONFIGURATION_MUST, MzMLWriter.INSTRUMENT_MUST,
+            MzMLMappingCheck.CHROMATOGRAM_MUST, MzMLWriter.CHROMATOGRAM_MUST);
+
+    /**
+     * The mapping-rule warnings among {@code warnings} are exactly one per rule {@link MzMLMappingCheck} reports for
+     * {@code mzml}, each with the number of its violations.
+     */
+    private static void assertMappingWarningsMatch(List<String> warnings, Path mzml) throws IOException {
+        Map<String, Long> perRule = new LinkedHashMap<>();
+        for (String violation : MzMLMappingCheck.violations(mzml)) {
+            perRule.merge(violation.substring(0, violation.indexOf(" @ ")), 1L, Long::sum);
+        }
+        assertThat(RULE_WARNINGS.keySet()).containsAll(perRule.keySet());
+        Set<String> expected = new LinkedHashSet<>();
+        perRule.forEach((rule, n) -> expected.add(RULE_WARNINGS.get(rule) + " (" + n + ")"));
+        assertThat(warnings.stream().filter(line -> RULE_WARNINGS.values().stream().anyMatch(line::startsWith)))
+                .containsExactlyInAnyOrderElementsOf(expected);
+    }
+
+    /** {@code s} without the first {@code target} after {@code anchor}. */
+    private static String removeAfter(String s, String anchor, String target) {
+        int from = s.indexOf(anchor);
+        assertThat(from).as("'%s' occurs", anchor).isNotNegative();
+        int at = s.indexOf(target, from);
+        assertThat(at).as("'%s' occurs after '%s'", target, anchor).isNotNegative();
+        return s.substring(0, at) + s.substring(at + target.length());
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

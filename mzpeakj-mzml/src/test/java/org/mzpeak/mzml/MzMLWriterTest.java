@@ -518,8 +518,9 @@ class MzMLWriterTest {
     // ---- (j) the other rules of the mapping -------------------------------------------------------------------
 
     @Test
-    void whatMzMLRequiresAndTheModelLacksIsSynthesized() {
+    void whatMzMLRequiresAndTheModelLacksIsSynthesized() throws IOException {
         for (Written w : write("empty", contents(FileMetadata.EMPTY))) {
+            assertThat(MzMLMappingCheck.violations(w.file())).containsExactly("instrumentconfiguration_must @ IC1");
             FileMetadata back = read(w.file()).header().fileMetadata();
             assertThat(back.software()).containsExactly(new Software("mzPeakJ", "unknown",
                     List.of(new Param("custom unreleased software tool", "MS:1000799", "mzPeakJ", null))));
@@ -537,6 +538,7 @@ class MzMLWriterTest {
                     String.format(MzMLWriter.A_8, "software mzPeakJ") + " (1)",
                     String.format(MzMLWriter.A_8, "data processing mzpeakj_conversion") + " (1)",
                     String.format(MzMLWriter.A_8, "run id mzpeakj_run") + " (1)",
+                    MzMLWriter.INSTRUMENT_MUST + " (1)",
                     String.format(MzMLWriter.A_8, "run defaultInstrumentConfigurationRef (the first instrument"
                             + " configuration)") + " (1)",
                     String.format(MzMLWriter.A_8, "spectrumList defaultDataProcessingRef (the first data"

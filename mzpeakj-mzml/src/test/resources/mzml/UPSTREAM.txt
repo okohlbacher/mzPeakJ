@@ -27,7 +27,7 @@ xsd/mzML1.1.0.xsd (58,417 bytes) and xsd/mzML1.1.2_idx.xsd (4,418 bytes)
   SHA-256: 141877fd774653617ad1c067533bc74d51e63fb9f19f78558faff50a3e14a206  mzML1.1.0.xsd
            5a58505a065209c5b964e185c2b2cb077450cfd4246ce794dec7dfcb058b708f  mzML1.1.2_idx.xsd
 
-ms-instrument-models.txt
+ms-instrument-models.txt (in mzpeakj-mzml/src/main/resources/org/mzpeak/mzml/, read by the converter and the tests)
   Generated from psi-ms.obo data-version 4.2.11 (mzdata v0.68.0 cv/psi-ms.obo.gz, SHA-256
   4cef86b34651ebca638abcecfb568d14ea2f109666c79f5bed16644d1896c584): the non-obsolete transitive is_a descendants
   of MS:1000031 "instrument model" (502 descendants, MS:1000870 obsolete: 501 accessions), one per line, in

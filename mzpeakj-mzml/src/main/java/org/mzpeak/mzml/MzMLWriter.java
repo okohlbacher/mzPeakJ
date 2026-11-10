@@ -100,7 +100,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * {@code MzMLMarshaller} to a temp file next to the target, which it then moves to the target without replacing
  * anything there. Nothing is written before {@code finish()}; the whole document is held in memory until then. Every
  * writer notes the limit lines {@link #LIMITS} (design 6.0), and what the mzML cannot carry as it is is counted in
- * {@link #warnings()} (design 6.2).
+ * {@link #warnings()} (design 6.2), as is every PSI mapping-rule violation it passes through (design 6.4: spectra
+ * without exactly one spectrum type and representation, scanLists without exactly one combination term, spectrum
+ * precursor activations without dissociation method, instrument configurations synthesized or without exactly one
+ * instrument model, chromatograms without exactly one type).
  *
  * <p><b>Ids</b> (design 5.2) come from one registry, allocated in this order: the instrument configurations by rule
  * IC ({@code IC<n+1>}, {@code IC_<n>}); the CVs of the cv list; the other header ids in document order (source files,
@@ -211,6 +214,17 @@ public final class MzMLWriter implements AutoCloseable {
             + " and 'unknown'";
     static final String PARAM_SKIPPED = "params with neither name nor accession skipped";
     static final String NAMED_BY_ACCESSION = "cvParams without name and of an unknown term named by their accession";
+    // The PSI mapping-rule violations of design 6.4 passed through, warned without a loss number.
+    static final String SPECTRUM_MUST = "spectra without exactly one spectrum type and one representation (PSI"
+            + " mapping rule spectrum_must)";
+    static final String SCAN_MUST = "scanLists without exactly one spectra combination term (PSI mapping rule"
+            + " scan_must)";
+    static final String ACTIVATION_MUST = "spectrum precursor activations without a dissociation method (PSI mapping"
+            + " rule precursor_activation_must)";
+    static final String INSTRUMENT_MUST = "instrument configurations synthesized or without exactly one instrument"
+            + " model (PSI mapping rule instrumentconfiguration_must)";
+    static final String CHROMATOGRAM_MUST = "chromatograms without exactly one chromatogram type (PSI mapping rule"
+            + " chromatogram_must)";
 
     private static final String NON_STANDARD_ARRAY = "MS:1000786";
     private static final String MZ_ARRAY = "MS:1000514";
@@ -386,6 +400,7 @@ public final class MzMLWriter implements AutoCloseable {
         note(A_9, Double.compare(time, d.retentionTime()) == 0 ? 0 : 1);
         x.setScanList(scanList(scans, rest));
         params(x, rest);
+        spectrumMust(x);
         if (!d.precursors().isEmpty()) {
             PrecursorList precursors = new PrecursorList();
             d.precursors().forEach(p -> precursors.getPrecursor().add(spectrumPrecursor(p)));
@@ -431,6 +446,7 @@ public final class MzMLWriter implements AutoCloseable {
         x.setScanList(scanList(List.of(new ScanEvent(spectrum.time(), null, null, null, null, null, null, null)),
                 rest));
         params(x, rest);
+        spectrumMust(x);
         x.setBinaryDataArrayList(arrays(WAVELENGTH_ARRAY, spectrum.wavelength(), spectrum.intensity(), COUNTS,
                 Map.of()));
         add(list, x);
@@ -843,6 +859,7 @@ public final class MzMLWriter implements AutoCloseable {
                 note(A_25, ic.softwareReference() == null ? 1 : 0);
             }
             x.setSoftwareRef(text(Objects.requireNonNullElse(software, firstSoftware)));
+            note(INSTRUMENT_MUST, count(x, MzMLTerms.INSTRUMENT_MODELS::contains) == 1 ? 0 : 1);
             list.getInstrumentConfiguration().add(x);
         }
         list.setCount(ids.size());
@@ -1022,6 +1039,7 @@ public final class MzMLWriter implements AutoCloseable {
         }
         term(x, POLARITY_TERMS.get(c.polarity()));
         params(x, rest);
+        note(CHROMATOGRAM_MUST, count(x, MzMLTerms.CHROMATOGRAM_TYPES::containsKey) == 1 ? 0 : 1);
         if (!c.precursors().isEmpty()) {
             note(A_11, c.precursors().size() > 1 ? 1 : 0);
             Precursor p = c.precursors().get(0);
@@ -1070,6 +1088,17 @@ public final class MzMLWriter implements AutoCloseable {
         return x;
     }
 
+    /** Notes a spectrum without exactly one spectrum type and one representation (design 6.4, spectrum_must). */
+    private void spectrumMust(uk.ac.ebi.jmzml.model.mzml.Spectrum x) {
+        note(SPECTRUM_MUST, count(x, MzMLTerms.SPECTRUM_TYPES::containsKey) == 1
+                && count(x, CONTINUITY_TERMS::containsValue) == 1 ? 0 : 1);
+    }
+
+    /** How many cvParams of {@code group} have an accession that passes {@code terms}. */
+    private static long count(ParamGroup group, Predicate<String> terms) {
+        return group.getCvParam().stream().filter(c -> terms.test(c.getAccession())).count();
+    }
+
     private static void add(SpectrumList list, uk.ac.ebi.jmzml.model.mzml.Spectrum spectrum) {
         list.getSpectrum().add(spectrum);
         list.setCount(list.getSpectrum().size());
@@ -1090,6 +1119,7 @@ public final class MzMLWriter implements AutoCloseable {
             note(A_7);
         }
         params(list, combination);
+        note(SCAN_MUST, combination.size() == 1 ? 0 : 1);
         scans.forEach(scan -> list.getScan().add(scan(scan)));
         list.setCount(scans.size());
         return list;
@@ -1177,6 +1207,7 @@ public final class MzMLWriter implements AutoCloseable {
                     index == null ? 0 : 1);
         }
         uk.ac.ebi.jmzml.model.mzml.Precursor x = precursor(p);
+        note(ACTIVATION_MUST, count(x.getActivation(), CvTerms.DISSOCIATION_METHODS::containsKey) > 0 ? 0 : 1);
         refer(p.precursorId(), local, x::setSpectrumRef, x::setExternalSpectrumID, x::setSourceFileRef);
         return x;
     }

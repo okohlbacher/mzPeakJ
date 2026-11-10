@@ -330,7 +330,8 @@ class MzMLFixturesTest {
     void theInstrumentModelListHoldsTheCurrentDescendantsOfMs1000031() throws IOException {
         List<String> lines;
         try (BufferedReader in = new BufferedReader(new InputStreamReader(
-                MzMLFixtures.open("ms-instrument-models.txt"), StandardCharsets.US_ASCII))) {
+                MzMLFixturesTest.class.getResourceAsStream(MzMLMappingCheck.MODELS_RESOURCE),
+                StandardCharsets.US_ASCII))) {
             lines = in.lines().toList();
         }
         List<String> header = lines.stream().takeWhile(l -> l.startsWith("#")).toList();
