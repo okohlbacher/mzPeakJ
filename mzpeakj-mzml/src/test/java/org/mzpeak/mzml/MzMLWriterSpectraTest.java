@@ -337,6 +337,43 @@ class MzMLWriterSpectraTest {
 
     // ---- (e) spectrum and wavelength spectrum params ------------------------------------------------------------
 
+    /**
+     * A scan start time among a spectrum's params, which mzML allows on scans only, is dropped: silently when it is the
+     * first scan's start time in minutes (in minutes, seconds or milliseconds, or without unit), else counted (A-32): a
+     * time that differs (two, in minutes and in hours), one that is no number, one in a unit that is no time, one of
+     * a spectrum without scans.
+     */
+    @Test
+    void aSpectrumLevelScanStartTimeIsDropped() {
+        List<List<Param>> params = List.of(
+                List.of(start(1.0, "UO:0000031")),
+                List.of(start(60.0, "UO:0000010"), start(60_000.0, "UO:0000028"), start(1.0, null)),
+                List.of(start(2.0, "UO:0000031"), start(0.5, "UO:0000032")),
+                List.of(new Param("scan start time", "MS:1000016", "early", null)),
+                List.of(start(1.0, "UO:0000018")));
+        List<Spectrum> spectra = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < params.size(); i++) {
+            spectra.add(spectrum(description("scan=" + i, 1, List.of(scan(1.0)), List.of(), params.get(i))));
+            ids.add("scan=" + i);
+        }
+        spectra.add(spectrum(description("scan=5", 1, List.of(), List.of(), List.of(start(1.0, null)))));
+        ids.add("scan=5");
+        Contents contents = new Contents(metadata(), List.of(), List.of(), ids, List.of(), List.of());
+
+        for (Written w : write("start-times", contents, writer -> spectra.forEach(writer::write))) {
+            assertThat(jmzmlSpectra(w.file())).allSatisfy(s -> assertThat(s.getCvParam())
+                    .extracting(CVParam::getAccession).doesNotContain("MS:1000016"));
+            assertThat(read(w.file()).spectra()).allSatisfy(s -> assertThat(s.description().parameters())
+                    .extracting(Param::accession).doesNotContain("MS:1000016"));
+            assertThat(w.warnings()).contains(MzMLWriter.A_32 + " (5)");
+        }
+    }
+
+    private static Param start(double value, String unit) {
+        return new Param("scan start time", "MS:1000016", value, unit);
+    }
+
     @Test
     void spectrumParamsAreWrittenInTheCanonicalOrderWithATypeFromTheMsLevel() {
         List<Param> params = List.of(new Param("note", null, "n", null),

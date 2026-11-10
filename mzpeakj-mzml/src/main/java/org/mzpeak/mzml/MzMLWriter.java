@@ -85,6 +85,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.DoubleUnaryOperator;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -157,7 +158,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * params MS:1000528, MS:1000527, MS:1000504, MS:1000505, MS:1000285; the others in list order. A peak list that is not
  * a row copy of the arrays is dropped (A-1). The scans go into a scanList with the spectrum's combination terms, else
  * MS:1000795 'no combination' for exactly one scan (A-7); a spectrum without scans gets one holding a finite retention
- * time (A-8), and a retention time that is not the first scan's start time is lost (A-9). A scan holds its start time,
+ * time (A-8), and a retention time that is not the first scan's start time is lost (A-9). A scan start time
+ * (MS:1000016) among the spectrum's params, which mzML allows on scans only, is dropped: silently when it is the first
+ * written scan's start time in minutes, else counted (A-32). A scan holds its start time,
  * injection time, filter string, preset scan configuration, the ion mobility terms and then its other params, its
  * instrument configuration and its windows. A precursor holds its isolation window (omitted when it holds nothing), its
  * selected ions (the list omitted when empty) and its activation (always). <b>Wavelength spectra</b> (design 5.9) come
@@ -228,6 +231,7 @@ public final class MzMLWriter implements AutoCloseable {
     static final String A_28 = "A-28 values with characters XML cannot carry or C1 controls, replaced by U+FFFD";
     static final String A_29 = "A-29 values with characters outside ASCII, which jmzML-based readers read as U+FFFD";
     static final String A_31 = "A-31 chromatogram type params other than the chromatogram type dropped";
+    static final String A_32 = "A-32 spectrum-level scan start times that differ from the first scan's dropped";
     // Warned by design 5.2 and 5.3, without a loss number.
     static final String CV_WITHOUT_ID = "cv list entries without id dropped";
     static final String CV_COMPLETED = "CVs without fullName or URI completed from the known CVs, else with the prefix"
@@ -255,6 +259,10 @@ public final class MzMLWriter implements AutoCloseable {
     private static final String COUNTS = "MS:1000131";
     private static final String MINUTE = "UO:0000031";
     private static final String NANOMETER = "UO:0000018";
+    private static final String START_TIME = "MS:1000016";
+    /** How a time in each unit the mzML read converts becomes minutes, as the read converts it (design 5.5). */
+    private static final Map<String, DoubleUnaryOperator> TO_MINUTES = Map.of(MINUTE, v -> v, "UO:0000010",
+            v -> v / 60, "UO:0000028", v -> v / 60_000, "UO:0000032", v -> v * 60);
     private static final String NO_COMBINATION = "MS:1000795";
     private static final Map<Polarity, String> POLARITY_TERMS =
             new EnumMap<>(Map.of(Polarity.POSITIVE, "MS:1000130", Polarity.NEGATIVE, "MS:1000129"));
@@ -421,6 +429,11 @@ public final class MzMLWriter implements AutoCloseable {
         }
         double time = scans.isEmpty() ? Double.NaN : scans.get(0).startTime();
         note(A_9, Double.compare(time, d.retentionTime()) == 0 ? 0 : 1);
+        for (Param start : take(rest, p -> START_TIME.equals(p.accession()))) {
+            DoubleUnaryOperator minutes = TO_MINUTES.get(Objects.requireNonNullElse(start.unit(), MINUTE));
+            note(A_32, minutes != null && start.value() instanceof Number n
+                    && minutes.applyAsDouble(n.doubleValue()) == time ? 0 : 1);
+        }
         x.setScanList(scanList(scans, rest));
         params(x, rest);
         spectrumMust(x);
@@ -1159,7 +1172,7 @@ public final class MzMLWriter implements AutoCloseable {
                 "scan instrumentConfigurationRef dropped")));
         refer(e.spectrumReference(), spectrumRefs.get(e.spectrumReference()), x::setSpectrumRef,
                 x::setExternalSpectrumID, x::setSourceFileRef);
-        scalar(x, "MS:1000016", Double.isNaN(e.startTime()) ? null : e.startTime(), MINUTE);
+        scalar(x, START_TIME, Double.isNaN(e.startTime()) ? null : e.startTime(), MINUTE);
         scalar(x, "MS:1000927", e.injectionTime(), "UO:0000028");
         scalar(x, "MS:1000512", e.filterString(), null);
         scalar(x, "MS:1000616", e.presetScanConfiguration(), null);

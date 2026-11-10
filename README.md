@@ -512,7 +512,7 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
 kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
-converted to minutes or lost array data processing refs, and A-1 … A-31 for mzPeak → mzML, such as required content
+converted to minutes or lost array data processing refs, and A-1 … A-32 for mzPeak → mzML, such as required content
 synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
 lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
 Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
@@ -526,6 +526,8 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
 
 - A-31: a chromatogram carries one chromatogram type (its type, else the first type among its params); further
   type params that name another type are dropped and counted.
+- A-32: a scan start time (MS:1000016) among a spectrum's own params, which mzML allows on scans only, is dropped;
+  counted unless it is the first scan's start time.
 - B-14 also counts the summary params (m/z range, base peak, total ion current) and selected-ion peak intensities
   written without unit, as ProteoWizard writes the total ion current: they are given their default unit (m/z or
   detector counts) and typed as numbers with decimals, so that they reach the mzPeak summary columns (and the TIC
