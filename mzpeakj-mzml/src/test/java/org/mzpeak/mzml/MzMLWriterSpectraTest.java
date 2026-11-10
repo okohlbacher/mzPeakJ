@@ -673,6 +673,7 @@ class MzMLWriterSpectraTest {
             writer.write(s);
             writer.finish();
             assertThat(writer.warnings()).startsWith(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
+                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.NOT_VISIBLE.get(1),
                     MzMLWriter.A_17 + " (5)", MzMLWriter.CV_COMPLETED + " (1)");
         }
         MzMLAssert.valid(target);

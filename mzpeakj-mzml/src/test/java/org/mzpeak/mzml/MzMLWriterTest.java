@@ -533,6 +533,7 @@ class MzMLWriterTest {
                     List.of()));
             assertThat(back.fileDescription()).isEqualTo(new FileDescription(List.of(), List.of(), List.of()));
             assertThat(w.warnings()).containsExactly(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
+                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.NOT_VISIBLE.get(1),
                     String.format(MzMLWriter.A_8, "instrument configuration IC1") + " (1)",
                     MzMLWriter.A_17 + " (2)",
                     String.format(MzMLWriter.A_8, "software mzPeakJ") + " (1)",
@@ -683,6 +684,34 @@ class MzMLWriterTest {
                     + " value=\"x\" unitAccession=\"MS:9999999\" unitCvRef=\"MS\">");
             assertThat(w.warnings()).contains(MzMLWriter.NAMED_BY_ACCESSION + " (1)",
                     MzMLWriter.PARAM_SKIPPED + " (1)");
+        }
+    }
+
+    /**
+     * A String cvParam value the mzML read types comes back typed (A-5), except a contact name the read takes
+     * verbatim; a userParam keeps its String by its type; an empty value comes back as none (A-6).
+     */
+    @Test
+    void valuesTheMzMLReadGivesBackOtherwiseAreCounted() {
+        List<Param> params = List.of(
+                new Param("number", "MS:1000001", "1.5", null),
+                new Param("flag", "MS:1000002", "true", null),
+                new Param("infinite", "MS:1000003", "INF", null),
+                new Param("text", "MS:1000004", "abc", null),
+                new Param("empty", "MS:1000005", "", null),
+                new Param("user number", null, "42", null),
+                new Param("user empty", null, "", null));
+        FileMetadata m = new FileMetadata(new FileDescription(List.of(), List.of(new SourceFile("sf", "a.raw",
+                "file:///data", List.of())), List.of(new Contact("007", null, List.of()))),
+                List.of(instrument(0, "sw")), List.of(processing("dp", "sw")), List.of(),
+                List.of(new Software("sw", "1", params)), run("run"));
+
+        for (Written w : write("retyped", contents(m))) {
+            FileMetadata back = read(w.file()).header().fileMetadata();
+            assertThat(back.software().get(0).parameters()).extracting(Param::value)
+                    .containsExactly(1.5, true, Double.POSITIVE_INFINITY, "abc", null, "42", null);
+            assertThat(back.fileDescription().contacts()).extracting(Contact::name).containsExactly("007");
+            assertThat(w.warnings()).contains(MzMLWriter.A_5 + " (3)", MzMLWriter.A_6 + " (2)");
         }
     }
 

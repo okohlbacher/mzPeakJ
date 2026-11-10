@@ -170,6 +170,8 @@ public final class MzMLReader {
     static final String B_9 = "B-9 arrays of spectra and chromatograms without an axis or intensity array dropped";
     static final String B_10 = "B-10 spectrum@%s lost";
     static final String B_11 = "B-11 MS spectra after wavelength spectra, their interleaving lost";
+    static final String B_11_INDEX = "B-11 spectra whose index is not their position among the MS or the wavelength"
+            + " spectra, renumbered";
     static final String B_13 = "B-13 scanList params other than the combination term moved to the spectrum";
     static final String B_14_TYPE = "B-14 userParam values that do not match their type kept as text";
     static final String B_15 = "B-15 times converted to minutes and drift times to milliseconds";
@@ -708,7 +710,8 @@ public final class MzMLReader {
 
     /**
      * A spectrum (design 5.4): a wavelength spectrum if it has a wavelength array and no m/z array, or no arrays and
-     * a wavelength spectrum type; else an MS spectrum. Its params are its own, then those of its scanList.
+     * a wavelength spectrum type; else an MS spectrum. Its params are its own, then those of its scanList. Its index
+     * becomes its position among the MS or the wavelength spectra; another {@code @index} is counted (B-11).
      */
     private Consumer<Visitor> spectrum(uk.ac.ebi.jmzml.model.mzml.Spectrum s) {
         List<String> lost = Arrays.asList(s.getSpotID(), s.getSourceFileRef(), s.getDataProcessingRef());
@@ -731,6 +734,7 @@ public final class MzMLReader {
         boolean wavelength = arrays.isEmpty()
                 ? params.stream().anyMatch(p -> WAVELENGTH_TYPES.contains(p.accession()))
                 : first(arrays, Kind.WAVELENGTH.axis) != null && first(arrays, MZ_ARRAY) == null;
+        note(B_11_INDEX, Objects.equals(s.getIndex(), (int) (wavelength ? wavelengthIndex : msIndex)) ? 0 : 1);
         if (wavelength) {
             WavelengthSpectrum spectrum = wavelengthSpectrum(s, params, scans, arrays);
             return v -> v.wavelengthSpectrum(spectrum);

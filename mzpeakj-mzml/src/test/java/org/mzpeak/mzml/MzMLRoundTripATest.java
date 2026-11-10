@@ -42,8 +42,9 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * {@link MzMLAssert#valid} and {@link MzMLMappingCheck}, converted back by {@link MzMLConversion#toMzPeak} (defaults,
  * archive) and read again; {@link ModelAssert} compares the two models strictly, arrays bit-exact, with exactly the
  * exclusions of the A table of design 12.4, each hiding the pinned number of differences. The warnings of both steps
- * are pinned: the limit lines (L-8 and L-9 of the writer, L-1 to L-6 of the reader), the writer's loss lines per
- * fixture, no A-25 to A-29 line, and no loss line of the reader. Last, the array-key case of design 12.4: extra
+ * are pinned: the limit lines (L-8 and L-9 and the A-13 and A-14 lines of the writer, L-1 to L-6 of the reader), the
+ * writer's loss lines per fixture, no A-25 to A-29 line, and the loss lines of the way back per fixture
+ * ({@link #back}). Last, the array-key case of design 12.4: extra
  * arrays keyed outside {@link CvTerms#ARRAY_TYPES} go through A as MS:1000786 'non-standard data array'.
  */
 class MzMLRoundTripATest {
@@ -138,6 +139,23 @@ class MzMLRoundTripATest {
         return f;
     }
 
+    /**
+     * The loss lines of {@link MzMLConversion#toMzPeak} for the mzML written from the fixture {@code name}, after the
+     * reader's limit lines: B-11 for has_uv's 520 wavelength spectra, which follow its 212 MS spectra in the mzML;
+     * B-24 for the summary params the mzPeak writer adds to the spectra of the legacy fixtures, whose packed layout
+     * reads none back (A-16).
+     */
+    static List<String> back(String name) {
+        String b11 = MzMLReader.B_11_INDEX + " (520)";
+        if (name.equals("legacy has_uv.mzpeak")) {
+            return List.of(b11, MzMLConversion.B_24_SUMMARY + " (212)");
+        }
+        if (name.startsWith("legacy small")) {
+            return List.of(MzMLConversion.B_24_SUMMARY + " (48)");
+        }
+        return name.equals("current has_uv.mzpeak") ? List.of(b11) : List.of();
+    }
+
     /** Every fixture, with zlib and without. */
     static Stream<Arguments> cases() {
         return fixtures().entrySet().stream().flatMap(e -> Stream.of(arguments(e.getKey(), e.getValue(), true),
@@ -164,10 +182,13 @@ class MzMLRoundTripATest {
         MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
 
         List<String> writerLines = new ArrayList<>(MzMLWriter.LIMITS);
+        writerLines.addAll(MzMLWriter.NOT_VISIBLE);
         writerLines.addAll(fixture.losses());
         assertThat(toMzML.warnings()).containsExactlyElementsOf(writerLines)
                 .noneMatch(line -> line.matches("A-2[5-9] .*"));
-        assertThat(toMzPeak.warnings()).containsExactlyElementsOf(MzMLReader.LIMITS);
+        List<String> readerLines = new ArrayList<>(MzMLReader.LIMITS);
+        readerLines.addAll(back(name));
+        assertThat(toMzPeak.warnings()).containsExactlyElementsOf(readerLines);
         List<Long> sizes = List.of((long) expected.spectrumList().size(), (long) expected.wavelengthSpectra().size(),
                 (long) expected.chromatograms().size());
         assertThat(List.of(toMzML.spectra(), toMzML.wavelengthSpectra(), toMzML.chromatograms())).isEqualTo(sizes);
@@ -243,6 +264,7 @@ class MzMLRoundTripATest {
         MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
 
         List<String> writerLines = new ArrayList<>(MzMLWriter.LIMITS);
+        writerLines.addAll(MzMLWriter.NOT_VISIBLE);
         writerLines.add(a7(48));
         assertThat(toMzML.warnings()).containsExactlyElementsOf(writerLines);
         Xml xml = xml(mzml);

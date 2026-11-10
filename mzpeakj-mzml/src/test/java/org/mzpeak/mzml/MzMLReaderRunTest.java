@@ -253,7 +253,9 @@ class MzMLReaderRunTest {
         assertThat(run.reader.survey().spectrumArrays()).isEmpty();
         assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
-                "B-17 scan window params other than the limits lost (212)"));
+                "B-17 scan window params other than the limits lost (212)",
+                // the 520 UV spectra follow the 212 MS spectra at mzML indexes 212 to 731
+                MzMLReader.B_11_INDEX + " (520)"));
 
         WavelengthSpectrum uv = run.wavelengthSpectra.get(0);
         assertThat(uv.index()).isZero();

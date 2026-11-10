@@ -99,7 +99,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * announce them, and {@link #finish()} adds the chromatograms and marshals the whole tree with jmzML's
  * {@code MzMLMarshaller} to a temp file next to the target, which it then moves to the target without replacing
  * anything there. Nothing is written before {@code finish()}; the whole document is held in memory until then. Every
- * writer notes the limit lines {@link #LIMITS} (design 6.0), and what the mzML cannot carry as it is is counted in
+ * writer notes the limit lines {@link #LIMITS} (design 6.0) and the fixed lines {@link #NOT_VISIBLE} of the losses it
+ * cannot see (A-13, A-14), and what the mzML cannot carry as it is is counted in
  * {@link #warnings()} (design 6.2), as is every PSI mapping-rule violation it passes through (design 6.4: spectra
  * without exactly one spectrum type and representation, scanLists without exactly one combination term, spectrum
  * precursor activations without dissociation method, instrument configurations synthesized or without exactly one
@@ -131,7 +132,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * announced: a spectrum that uses another is rejected.
  *
  * <p><b>Values</b> (design 5.3): params are written in list order, cvParams before userParams, a value formatted by
- * {@link MzMLTerms#format}, a cvParam without name named by {@link MzMLTerms#name}, else by its accession. Every
+ * {@link MzMLTerms#format}, a cvParam without name named by {@link MzMLTerms#name}, else by its accession. A String
+ * cvParam value that the mzML read types as a number, boolean or non-finite value is counted (A-5), except the
+ * filter string, contact name and affiliation and array name, which it reads verbatim; an empty value, which reads
+ * back as none, is counted too (A-6). Every
  * string handed to jmzML is first made XML-safe (C0 and C1 controls, U+FFFE, U+FFFF and unpaired surrogates replaced
  * by U+FFFD, A-28); values with tab, LF or CR (read back as spaces, A-27) and values with a character outside ASCII
  * (jmzML-based readers read them as U+FFFD, since jmzML writes no encoding declaration; A-29) are counted. A run start
@@ -161,8 +165,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  *
  * <p><b>Chromatograms</b> (design 5.8) carry one chromatogram type, their {@code typeCurie}, else the first type among
  * their params; a further type param is dropped, counted when it names another type (A-31). They keep their first
- * precursor (A-11), whose {@code precursorIndex} is not written (A-19). The chromatogramList's default data processing is that of every chromatogram when they all name the same,
- * else the spectrumList's; a chromatogram names its own when it differs from the list's.
+ * precursor (A-11), whose {@code precursorIndex} is not written (A-19). The chromatogramList's default data
+ * processing is that of every chromatogram when they all name the same, else the spectrumList's; a chromatogram names
+ * its own when it differs from the list's.
  *
  * <p><b>Side effect of jmzML.</b> Every call of {@code MzMLMarshaller.marshall}, so every {@link #finish()} that
  * writes, sets the JVM-wide system property {@code javax.xml.stream.XMLOutputFactory} to
@@ -182,11 +187,24 @@ public final class MzMLWriter implements AutoCloseable {
             "L-9 the whole mzML document is held in memory before it is written: about 0.75 bytes of heap per byte"
                     + " of the arrays' Base64 text plus 13 KB per spectrum");
 
+    /**
+     * The losses of design 6.2 the converter cannot see and so cannot count, noted as fixed lines after
+     * {@link #LIMITS}: A-13, the units and data types of arrays as stored in mzPeak; A-14, auxiliary arrays.
+     */
+    static final List<String> NOT_VISIBLE = List.of(
+            "A-13 array units and data types as stored in mzPeak are not visible to the converter: every array is"
+                    + " written as 64-bit floats in the default unit of its key, or without unit",
+            "A-14 auxiliary_arrays of the mzPeak input are not visible to the converter (the library does not read"
+                    + " them)");
+
     // The losses of design 6.2 this writer counts, one line each in warnings().
     static final String A_1 = "A-1 peak lists that are not a row copy of the spectrum's arrays dropped";
     static final String A_2 = "A-2 ids that are not NCNames encoded by rule NC";
     static final String A_3 = "A-3 spectrum and chromatogram ids that are null, empty, malformed or taken written as"
             + " index=<i>";
+    static final String A_5 = "A-5 String cvParam values that the mzML read types as numbers, booleans or non-finite"
+            + " values";
+    static final String A_6 = "A-6 empty param values, which the mzML read gives as none";
     static final String A_7 = "A-7 MS:1000795 'no combination' added to one-scan spectra without a combination term";
     static final String A_8 = "A-8 required content synthesized: %s";
     static final String A_9 = "A-9 retention times other than the first scan's start time lost";
@@ -254,6 +272,8 @@ public final class MzMLWriter implements AutoCloseable {
     /** What XML's end-of-line handling and attribute-value normalization read as one space: CR LF, tab, LF, CR. */
     private static final Pattern ATTRIBUTE_SPACE = Pattern.compile("\r\n|[\t\n\r]");
     private static final Pattern NON_ASCII = Pattern.compile("[^\\x00-\\x7F]");
+    /** The cvParams whose value the mzML read takes verbatim: filter string, contact name, affiliation, array name. */
+    private static final Set<String> VERBATIM = Set.of("MS:1000512", "MS:1000586", "MS:1000590", NON_STANDARD_ARRAY);
 
     private final Path target;
     private final Contents contents;
@@ -321,6 +341,7 @@ public final class MzMLWriter implements AutoCloseable {
         this.zlib = zlib;
         this.spectrumPrefixes = spectrumPrefixes;
         LIMITS.forEach(losses::limit);
+        NOT_VISIBLE.forEach(losses::limit);
         build();
     }
 
@@ -1343,6 +1364,7 @@ public final class MzMLWriter implements AutoCloseable {
             c.setCvRef(text(cvs.get(prefix(p.accession())).getId()));
             c.setAccession(text(p.accession()));
             c.setValue(text(MzMLTerms.format(p.value())));
+            retyped(p, !VERBATIM.contains(p.accession()));
             String name = p.name() != null ? p.name() : MzMLTerms.name(p.accession());
             if (name == null) {
                 note(NAMED_BY_ACCESSION);
@@ -1355,10 +1377,23 @@ public final class MzMLWriter implements AutoCloseable {
             u.setName(text(p.name()));
             u.setType(text(MzMLTerms.userParamType(p.value())));
             u.setValue(text(MzMLTerms.format(p.value())));
+            retyped(p, false);
             unit(p.unit(), u::setUnitAccession, u::setUnitName, u::setUnitCvRef);
             group.getUserParam().add(u);
         } else {
             note(PARAM_SKIPPED);
+        }
+    }
+
+    /**
+     * Notes the value of {@code p} if the mzML read gives it back otherwise: empty (A-6) or, with {@code typed}, a
+     * String the read types (A-5).
+     */
+    private void retyped(Param p, boolean typed) {
+        if ("".equals(p.value())) {
+            note(A_6);
+        } else if (typed && p.value() instanceof String s && !(MzMLTerms.value(s, null).value() instanceof String)) {
+            note(A_5);
         }
     }
 

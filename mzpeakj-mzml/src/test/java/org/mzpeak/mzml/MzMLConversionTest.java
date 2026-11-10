@@ -443,6 +443,38 @@ class MzMLConversionTest {
     }
 
     /**
+     * What the mzPeak writer adds is counted (B-24): the type of the three spectra of CommonMS1SpectrumParams without
+     * their MS1 spectrum term, the summary params of scan=20 without its five, a scan to scan=21 without its scanList,
+     * and the run's default source file; and scan=19 at index 7 is renumbered (B-11).
+     */
+    @Test
+    void whatTheMzPeakWriterAddsAndRenumberedIndexesAreCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            String edited = replaceOnce(s, "<cvParam cvRef=\"MS\" accession=\"MS:1000579\" name=\"MS1 spectrum\""
+                    + " value=\"\"/>", "");
+            edited = replaceOnce(edited, " defaultSourceFileRef=\"tiny1.yep\"", "");
+            edited = replaceOnce(edited, "<spectrum index=\"0\" id=\"scan=19\"",
+                    "<spectrum index=\"7\" id=\"scan=19\"");
+            int scan20 = edited.indexOf(SCAN_20);
+            int scan21 = edited.indexOf(SCAN_21);
+            return edited.substring(0, scan20) + cut(edited.substring(scan20, scan21),
+                    "<cvParam cvRef=\"MS\" accession=\"MS:1000528\"", "name=\"total ion current\" value=\"16675500\"/>")
+                    + cut(edited.substring(scan21), "<scanList", "</scanList>");
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_SOURCE + " (1)",
+                MzMLConversion.B_24_TYPE + " (3)", MzMLConversion.B_24_SUMMARY + " (1)",
+                MzMLConversion.B_24_SCAN + " (1)", MzMLReader.B_11_INDEX + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.fileMetadata().run().defaultSourceFileId()).isEqualTo("tiny1.yep");
+            assertThat(reader.metadata().get(0).index()).isZero();
+            assertThat(reader.metadata().get(2).scans()).hasSize(1);
+        }
+    }
+
+    /**
      * A run without source files and data processings: the mzPeak writer adds both stubs and names them the run's
      * defaults; toMzML removes them and the defaults, and the mzML writer synthesizes the data processing mzML
      * requires.
@@ -712,9 +744,10 @@ class MzMLConversionTest {
         return lines;
     }
 
-    /** The limit lines every writer notes, then {@code losses}. */
+    /** The limit lines and the A-13 and A-14 lines every writer notes, then {@code losses}. */
     private static List<String> writerLimits(String... losses) {
         List<String> lines = new ArrayList<>(MzMLWriter.LIMITS);
+        lines.addAll(MzMLWriter.NOT_VISIBLE);
         lines.addAll(List.of(losses));
         return lines;
     }

@@ -515,12 +515,14 @@ kind with its count: B-1 … B-40 for mzML → mzPeak (→ mzML), such as refere
 converted to minutes or lost array data processing refs, and A-1 … A-31 for mzPeak → mzML, such as required content
 synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
 lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
-The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input lacks what
-the rule asks for (it does not invent the data): spectra without exactly one spectrum type and representation
-(`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum precursor
-activations without a dissociation method (`precursor_activation_must`), instrument configurations synthesized or
-without exactly one instrument model (`instrumentconfiguration_must`) and chromatograms without exactly one type
-(`chromatogram_must`). Added after the design's tables:
+Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
+A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`, which the library does not
+read). The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
+lacks what the rule asks for (it does not invent the data): spectra without exactly one spectrum type and
+representation (`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum
+precursor activations without a dissociation method (`precursor_activation_must`), instrument configurations
+synthesized or without exactly one instrument model (`instrumentconfiguration_must`) and chromatograms without
+exactly one type (`chromatogram_must`). Added after the design's tables:
 
 - A-31: a chromatogram carries one chromatogram type (its type, else the first type among its params); further
   type params that name another type are dropped and counted.

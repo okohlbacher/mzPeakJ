@@ -85,7 +85,8 @@ class MzMLRoundTripBTest {
                 arguments(MzMLFixtures.SMALL, Map.of(), List.of(48L, 0L, 1L),
                         List.of(b3, MzMLReader.B_1 + " (1)"), List.of()),
                 arguments(MzMLFixtures.TOFSULFAS, Map.of(), List.of(212L, 520L, 2L),
-                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_17_PARAMS + " (212)"), List.of()),
+                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_17_PARAMS + " (212)",
+                                MzMLReader.B_11_INDEX + " (520)"), List.of()),
                 arguments(MzMLFixtures.DIAPASEF, Map.of(ModelAssert.B_22, 3 * 9), List.of(9L, 0L, 2L),
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (11)"), List.of()));
     }
@@ -109,6 +110,7 @@ class MzMLRoundTripBTest {
         readerLines.addAll(toMzPeakLosses);
         assertThat(toMzPeak.warnings()).containsExactlyElementsOf(readerLines);
         List<String> writerLines = new ArrayList<>(MzMLWriter.LIMITS);
+        writerLines.addAll(MzMLWriter.NOT_VISIBLE);
         writerLines.addAll(toMzMLLosses);
         assertThat(toMzML.warnings()).containsExactlyElementsOf(writerLines);
         assertThat(List.of(toMzPeak.spectra(), toMzPeak.wavelengthSpectra(), toMzPeak.chromatograms()))
