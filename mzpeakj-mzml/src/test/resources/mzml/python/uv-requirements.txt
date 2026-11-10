@@ -1,0 +1,5 @@
+pyteomics==5.0.2
+psims==1.4.0
+pynumpress
+numpy
+lxml
