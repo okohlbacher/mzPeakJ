@@ -48,14 +48,16 @@ class SignalModeTest {
 
     /**
      * Signal digests ({@link #signalDigest}) of the default read, recorded on the reader before AP-2. The current and
-     * the legacy example of a kind decode alike, and so do small and small.unpacked.
+     * the legacy example of a kind decode alike, and so do small and small.unpacked. The intensities of small.numpress
+     * are MS-Numpress SLOF and hashed rounded to float32, so that its digest holds on every platform
+     * ({@link SignalSnapshotTest.SignalDigest#float32}); recorded so on aarch64 and checked on x86_64.
      */
     private static final String SMALL = "48 spectra, 243054 points, 25344 peaks, "
             + "d72d003d9b327a498100a8827f883ed330db332f7455f080b63b9c89c68a4de2";
     private static final String CHUNKED = "48 spectra, 243054 points, 50247 peaks, "
             + "8e97a663d7c26cae59f84bdfee88aa2bfb62edcf5e4d1e234b23cd9ec26a39bd";
     private static final String NUMPRESS = "48 spectra, 243054 points, 25344 peaks, "
-            + "3271922ef97bced47ca825a745463e282ddd9949ff25d0770d7d9794d2f675db";
+            + "d5056aaecaef851cc799522699fea9a32c3b286e3988dd0ab10af37361606446";
     private static final String HAS_UV = "212 spectra, 24310 points, 24310 peaks, "
             + "6d82374f7b65a136b4e3eef88cb20b8fdc58b266441bcf5f181cafe7ec37c990";
 
@@ -96,7 +98,7 @@ class SignalModeTest {
     @MethodSource("pinnedSignals")
     void defaultOptionsDecodeThePinnedSignal(Path fixture, String digest) {
         try (MzPeakReader reader = MzPeakReader.open(fixture, Options.defaults())) {
-            assertThat(signalDigest(reader)).isEqualTo(digest);
+            assertThat(signalDigest(reader, fixture)).isEqualTo(digest);
         }
     }
 
@@ -107,7 +109,7 @@ class SignalModeTest {
     void bothIsTheDefaultAndDecodesThePinnedSignal(Path fixture, String digest) {
         try (MzPeakReader reader = MzPeakReader.open(fixture, Options.defaults().withSignalMode(SignalMode.BOTH));
              MzPeakReader byPath = MzPeakReader.open(fixture)) {
-            assertThat(signalDigest(reader)).isEqualTo(digest);
+            assertThat(signalDigest(reader, fixture)).isEqualTo(digest);
             assertThat(reader.options()).isEqualTo(Options.defaults());
             assertThat(byPath.options().signalMode()).isEqualTo(SignalMode.BOTH);
         }
@@ -378,9 +380,11 @@ class SignalModeTest {
      * total number of m/z values and peaks, so that a mismatch shows whether the shape changed. Per spectrum: its
      * index; the m/z and intensity arrays; the peaks as index, m/z and intensity; then {@link Spectrum#arrays()} and
      * {@link Spectrum#peakArrays()} as key and array, in iteration order. An array is its length and the raw bits of
-     * its values.
+     * its values; the spectrum and peak intensities of a {@link SignalSnapshotTest#SLOF_FIXTURES} fixture are rounded
+     * to float32 first.
      */
-    static String signalDigest(MzPeakReader reader) {
+    static String signalDigest(MzPeakReader reader, Path fixture) {
+        boolean slof = SignalSnapshotTest.SLOF_FIXTURES.contains(fixture.getFileName().toString());
         MessageDigest sha = sha256();
         long points = 0;
         long peaks = 0;
@@ -388,12 +392,12 @@ class SignalModeTest {
             Spectrum s = reader.getSpectrumAt(i);
             update(sha, s.description().index());
             update(sha, s.mz());
-            update(sha, s.intensity());
+            update(sha, slof ? SignalSnapshotTest.SignalDigest.float32(s.intensity()) : s.intensity());
             update(sha, s.peaks().size());
             for (CentroidPeak p : s.peaks()) {
                 update(sha, p.index());
                 update(sha, Double.doubleToRawLongBits(p.mz()));
-                update(sha, Double.doubleToRawLongBits(p.intensity()));
+                update(sha, Double.doubleToRawLongBits(slof ? (float) p.intensity() : p.intensity()));
             }
             update(sha, s.arrays());
             update(sha, s.peakArrays());

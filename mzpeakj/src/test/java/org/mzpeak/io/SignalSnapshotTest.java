@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -55,6 +56,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ({@link Double#doubleToRawLongBits}) of its values. Each snapshot also records the entry count, the absent indices
  * and the total number of values, and for a current member its Parquet row count, so that a mismatch points at what
  * changed.
+ *
+ * <p>Exception: the intensities of small.numpress ({@link #SLOF_FIXTURES}) are hashed rounded to float32
+ * ({@link SignalDigest#float32}). Its spectrum and chromatogram intensities are MS-Numpress SLOF, which the vendored
+ * codec decodes with {@link Math#exp}, whose last bit depends on the platform: on x86_64 HotSpot's intrinsic differs
+ * from fdlibm (and from aarch64) in about one decoded value in ten. Rounded to float32 the values agree (no
+ * difference among 37 million SLOF decodes, over fixed points for maxima from 1 to 1e12, on x86_64 against fdlibm);
+ * the rounding is still far finer than a SLOF quantization step, so a changed decode still changes the digest
+ * ({@link #float32HidesTheLastBitOfASlofValueButNotOneQuantizationStep}). Its peak intensities are float32 columns,
+ * which the rounding keeps exactly; its m/z and times are exact and hashed raw.
  */
 class SignalSnapshotTest {
 
@@ -63,6 +73,8 @@ class SignalSnapshotTest {
     private static final String DATA = "spectra_data.parquet";
     private static final String PEAKS = "spectra_peaks.parquet";
     private static final Set<String> DATA_ROLES = Set.of("data arrays", "data_arrays");
+    /** The fixtures whose intensities are MS-Numpress SLOF, hashed rounded to float32 (see the class comment). */
+    static final Set<String> SLOF_FIXTURES = Set.of("small.numpress.mzpeak");
 
     /** Snapshot key to {@code <summary> sha256=<hex>}, recorded on the base code (agent-team/upstream-p0 5956240). */
     private static final Map<String, String> EXPECTED = Map.ofEntries(
@@ -106,19 +118,19 @@ class SignalSnapshotTest {
 
             snap("legacy small.numpress.mzpeak reconstructProfile=false spectra",
                     "entries=48 absent=none values=536796",
-                    "01a952df8fa4b0f7271421c4b282c1b9040c7bc49b58d2f9567ddb9a6379bfd2"),
+                    "dacf5ee29806b4afb4e728c64d618c0a89dd3f6597b2bc9bc8f4cc51e484f4ca"),
             snap("legacy small.numpress.mzpeak reconstructProfile=false chromatograms",
                     "entries=1 absent=none values=96",
-                    "20209b8732cb1e6a40e5fa49a44dd1e71c4fd273a5c33ccfe576b0fd5c4454e7"),
+                    "55721ab9cc234c7dbf6395bbb949befbd2374448b6ac80e7e9ecc815a6945703"),
             snap("legacy small.numpress.mzpeak reconstructProfile=false wavelength_spectra",
                     "entries=0 absent=none values=0",
                     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             snap("legacy small.numpress.mzpeak reconstructProfile=true spectra",
                     "entries=48 absent=none values=536796",
-                    "01a952df8fa4b0f7271421c4b282c1b9040c7bc49b58d2f9567ddb9a6379bfd2"),
+                    "dacf5ee29806b4afb4e728c64d618c0a89dd3f6597b2bc9bc8f4cc51e484f4ca"),
             snap("legacy small.numpress.mzpeak reconstructProfile=true chromatograms",
                     "entries=1 absent=none values=96",
-                    "20209b8732cb1e6a40e5fa49a44dd1e71c4fd273a5c33ccfe576b0fd5c4454e7"),
+                    "55721ab9cc234c7dbf6395bbb949befbd2374448b6ac80e7e9ecc815a6945703"),
             snap("legacy small.numpress.mzpeak reconstructProfile=true wavelength_spectra",
                     "entries=0 absent=none values=0",
                     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
@@ -189,13 +201,13 @@ class SignalSnapshotTest {
 
             snap("current small.numpress.mzpeak reconstructProfile=false spectra_data.parquet",
                     "member_rows=488 entries=48 absent=2-6,9-13,16-20,23-27,30-33,36-40,43-47 values=435420",
-                    "b8e17a27bf96b22def609240b8adb134bf598dd9050fc7278c205e511d93b6fa"),
+                    "8445b3ad39a8b52fbbde6e54c4876a4a5ad075e98495487fecd4c7846463d119"),
             snap("current small.numpress.mzpeak reconstructProfile=false spectra_peaks.parquet",
                     "member_rows=25344 entries=48 absent=0-1,7-8,14-15,21-22,28-29,34-35,41-42 values=50688",
                     "433b1d0b778db88f556f94f77f153eb2b575a9fe1c39ec1dd2a0836b8fbb0393"),
             snap("current small.numpress.mzpeak reconstructProfile=true spectra_data.parquet",
                     "member_rows=488 entries=48 absent=2-6,9-13,16-20,23-27,30-33,36-40,43-47 values=435420",
-                    "b8e17a27bf96b22def609240b8adb134bf598dd9050fc7278c205e511d93b6fa"),
+                    "8445b3ad39a8b52fbbde6e54c4876a4a5ad075e98495487fecd4c7846463d119"),
             snap("current small.numpress.mzpeak reconstructProfile=true spectra_peaks.parquet",
                     "member_rows=25344 entries=48 absent=0-1,7-8,14-15,21-22,28-29,34-35,41-42 values=50688",
                     "433b1d0b778db88f556f94f77f153eb2b575a9fe1c39ec1dd2a0836b8fbb0393"),
@@ -356,6 +368,29 @@ class SignalSnapshotTest {
         assertThat(sha256(marker)).isNotEqualTo(digest(0));
     }
 
+    /**
+     * The float32 rounding of SLOF intensities hides what differs between platforms, the last bit of a decoded double,
+     * but not a change of one SLOF quantization step: decoded = exp(x / fixedPoint) - 1 for an integer x, so a step
+     * changes value + 1 by the factor exp(1 / fixedPoint), at least about 1 + 1.06e-5 for the 16-bit range (fixed point
+     * 0xFFFF / ln(max + 1) at most 65535 / ln 2), far above a float32 ulp (6e-8).
+     */
+    @Test
+    void float32HidesTheLastBitOfASlofValueButNotOneQuantizationStep() {
+        double[] intensity;
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("small.numpress.mzpeak"), false)) {
+            intensity = reader.getSpectrum(0).orElseThrow().intensity();
+        }
+        int i = intensity.length / 2;
+        assertThat(intensity[i]).isPositive();
+        String original = digest(0, SignalDigest.float32(intensity));
+        assertThat(digest(0, SignalDigest.float32(flipped(intensity, i)))).isEqualTo(original);
+        assertThat(digest(0, flipped(intensity, i))).isNotEqualTo(digest(0, intensity));
+
+        double[] stepped = intensity.clone();
+        stepped[i] = (intensity[i] + 1) * Math.exp(1.0 / (0xFFFF / Math.log(2))) - 1;
+        assertThat(digest(0, SignalDigest.float32(stepped))).isNotEqualTo(original);
+    }
+
     /** A copy of {@code values} with the lowest bit of element {@code i} flipped. */
     private static double[] flipped(double[] values, int i) {
         double[] out = values.clone();
@@ -379,6 +414,7 @@ class SignalSnapshotTest {
         SignalDigest spectra = new SignalDigest("");
         SignalDigest chromatograms = new SignalDigest("");
         SignalDigest wavelength = new SignalDigest("");
+        UnaryOperator<double[]> intensity = SLOF_FIXTURES.contains(fixture) ? SignalDigest::float32 : v -> v;
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy(fixture), reconstructProfile)) {
             for (Spectrum s : reader) {
                 List<CentroidPeak> peaks = s.peaks();
@@ -388,10 +424,11 @@ class SignalSnapshotTest {
                     peakMz[i] = peaks.get(i).mz();
                     peakIntensity[i] = peaks.get(i).intensity();
                 }
-                spectra.entry(s.index(), s.mz(), s.intensity(), peakMz, peakIntensity);
+                spectra.entry(s.index(), s.mz(), intensity.apply(s.intensity()), peakMz,
+                        intensity.apply(peakIntensity));
             }
             for (Chromatogram c : reader.chromatograms()) {
-                chromatograms.entry(c.index(), c.time(), c.intensity());
+                chromatograms.entry(c.index(), c.time(), intensity.apply(c.intensity()));
             }
             for (WavelengthSpectrum w : reader.wavelengthSpectra()) {
                 wavelength.entry(w.index(), w.wavelength(), w.intensity());
@@ -411,6 +448,7 @@ class SignalSnapshotTest {
      */
     static Map<String, SignalDigest> currentDigests(String fixture, boolean reconstructProfile) {
         Map<String, SignalDigest> out = new LinkedHashMap<>();
+        UnaryOperator<double[]> intensity = SLOF_FIXTURES.contains(fixture) ? SignalDigest::float32 : v -> v;
         try (MzPeakSource source = MzPeakSource.open(Fixtures.current(fixture))) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
             long spectra = rowCount(source, member(manifest, METADATA, Set.of("metadata")));
@@ -423,7 +461,7 @@ class SignalSnapshotTest {
                         if (arrays == null) {
                             digest.marker(index);
                         } else {
-                            digest.entry(index, arrays.mz(), arrays.intensity());
+                            digest.entry(index, arrays.mz(), intensity.apply(arrays.intensity()));
                         }
                     }
                 }
@@ -504,6 +542,20 @@ class SignalSnapshotTest {
 
         long entries() {
             return entries;
+        }
+
+        /**
+         * A copy of {@code values}, each rounded to float32 and widened back: for values decoded from MS-Numpress
+         * SLOF, whose last bits depend on the platform's {@link Math#exp} (see the class comment). Residual risk: a
+         * decoded value within a double ulp of a float32 rounding boundary could round differently on two platforms;
+         * none did among 37 million SLOF decodes compared on x86_64 and aarch64.
+         */
+        static double[] float32(double[] values) {
+            double[] out = new double[values.length];
+            for (int i = 0; i < values.length; i++) {
+                out[i] = (float) values[i];
+            }
+            return out;
         }
 
         List<Long> absent() {

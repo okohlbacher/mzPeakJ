@@ -74,14 +74,19 @@ import static org.assertj.core.api.Assertions.within;
  */
 class SignalPlanWiringTest {
 
-    /** Fixture and entity to the summary of its arrays, recorded on the base code (agent-team/upstream-p1 5736e6d). */
+    /**
+     * Fixture and entity to the summary of its arrays, recorded on the base code (agent-team/upstream-p1 5736e6d). The
+     * chromatogram intensities of small.numpress are MS-Numpress SLOF, hashed rounded to float32 so that the digest
+     * holds on every platform ({@link SignalSnapshotTest.SignalDigest#float32}; recorded on aarch64, checked on
+     * x86_64).
+     */
     private static final Map<String, String> CURRENT = Map.ofEntries(
             current("small.mzpeak", "chromatograms", "entries=1 absent=none values=96",
                     "316eab9cb4e2028177069ca8bade8660ed0b66fba3ccde716c924eab8baf98ee"),
             current("small.chunked.mzpeak", "chromatograms", "entries=1 absent=none values=96",
                     "316eab9cb4e2028177069ca8bade8660ed0b66fba3ccde716c924eab8baf98ee"),
             current("small.numpress.mzpeak", "chromatograms", "entries=1 absent=none values=96",
-                    "20209b8732cb1e6a40e5fa49a44dd1e71c4fd273a5c33ccfe576b0fd5c4454e7"),
+                    "55721ab9cc234c7dbf6395bbb949befbd2374448b6ac80e7e9ecc815a6945703"),
             current("small.unpacked.mzpeak", "chromatograms", "entries=1 absent=none values=96",
                     "316eab9cb4e2028177069ca8bade8660ed0b66fba3ccde716c924eab8baf98ee"),
             current("has_uv.mzpeak", "chromatograms", "entries=2 absent=none values=1476",
@@ -428,9 +433,11 @@ class SignalPlanWiringTest {
     void currentChromatogramAndWavelengthArraysAreUnchanged(String fixture) {
         SignalSnapshotTest.SignalDigest chromatograms = new SignalSnapshotTest.SignalDigest("");
         SignalSnapshotTest.SignalDigest wavelength = new SignalSnapshotTest.SignalDigest("");
+        boolean slof = SignalSnapshotTest.SLOF_FIXTURES.contains(fixture);
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.current(fixture))) {
             for (Chromatogram c : reader.chromatograms()) {
-                chromatograms.entry(c.index(), c.time(), c.intensity());
+                chromatograms.entry(c.index(), c.time(),
+                        slof ? SignalSnapshotTest.SignalDigest.float32(c.intensity()) : c.intensity());
             }
             for (WavelengthSpectrum w : reader.wavelengthSpectra()) {
                 wavelength.entry(w.index(), w.wavelength(), w.intensity());

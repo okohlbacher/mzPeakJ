@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,13 +72,16 @@ class NumpressConformanceTest {
 
     /**
      * {@code <encoding> reconstructProfile=<mode>} to the read-back digest recorded on the base code (aee4e0f).
-     * Numpress chunks carry no null markers, so both modes read the same arrays.
+     * Numpress chunks carry no null markers, so both modes read the same arrays. SLOF intensities are decoded with
+     * {@link Math#exp}, whose last bit depends on the platform, so they are hashed rounded to float32
+     * ({@link SignalDigest#float32}; SLOF digests recorded so on aarch64 and checked on x86_64); PIC intensities and
+     * the linear m/z are exact and hashed raw.
      */
     private static final Map<String, String> READ_BACK = Map.of(
             "SLOF reconstructProfile=false", "entries=48 absent=none values=536796"
-                    + " sha256=756967bdb24235ca4115e4d69ac7338dfb0364b4b501afedc148e968a4a209de",
+                    + " sha256=79e804866a84e38783df10d1bb1cdf78640c606070c95b8fc982cece31d14e22",
             "SLOF reconstructProfile=true", "entries=48 absent=none values=536796"
-                    + " sha256=756967bdb24235ca4115e4d69ac7338dfb0364b4b501afedc148e968a4a209de",
+                    + " sha256=79e804866a84e38783df10d1bb1cdf78640c606070c95b8fc982cece31d14e22",
             "PIC reconstructProfile=false", "entries=48 absent=none values=536796"
                     + " sha256=d48b2d8b74bde14d859dcee4b43fcda6ffc8155cd7820ff9ff96578f7ed18e5f",
             "PIC reconstructProfile=true", "entries=48 absent=none values=536796"
@@ -96,9 +100,11 @@ class NumpressConformanceTest {
                                     @TempDir Path tmp) {
         Path out = write(encoding, tmp);
         SignalDigest digest = new SignalDigest("");
+        UnaryOperator<double[]> intensity = encoding == NumpressIntensityEncoding.SLOF ? SignalDigest::float32 : v -> v;
         try (MzPeakReader reader = MzPeakReader.open(out, reconstructProfile)) {
             for (Spectrum s : reader) {
-                digest.entry(s.index(), s.mz(), s.intensity(), peakMz(s), peakIntensity(s));
+                digest.entry(s.index(), s.mz(), intensity.apply(s.intensity()), peakMz(s),
+                        intensity.apply(peakIntensity(s)));
             }
         }
         assertThat(digest.summary()).isEqualTo(READ_BACK.get(encoding + " reconstructProfile=" + reconstructProfile));
