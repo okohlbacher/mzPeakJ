@@ -111,7 +111,9 @@ public final class MzMLConversion {
 
     /**
      * Converts the mzML file {@code mzml} into the mzPeak dataset {@code target}: an unpacked directory if
-     * {@code directory}, else a ZIP archive, written with {@code options} and the mzML's cv list.
+     * {@code directory}, else a ZIP archive, written with {@code options} and the mzML's cv list: the cv list of
+     * {@code options} ({@link MzPeakWriter.Options#cvList()}) is replaced by the mzML's {@code cvList}, whatever it
+     * holds.
      *
      * @throws MzPeakException      if the mzML cannot be read or holds what the model cannot carry (as
      *                              {@link MzMLReader} states), before the target is created; if {@code target} exists

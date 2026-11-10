@@ -390,8 +390,9 @@ Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--to
 ## mzML conversion
 
 The module `mzpeakj-mzml` converts mzML 1.1 to mzPeak and mzPeak to mzML through jmzML 1.7.11 as is
-(`org.mzpeak.mzml.MzMLConversion`; `MzMLReader` and `MzMLWriter` are public too). The command-line tool runs from
-the module's self-contained jar, which `mvn verify` (or `mvn -DskipTests package`) builds:
+(`org.mzpeak.mzml.MzMLConversion`; `MzMLReader` and `MzMLWriter` are public too). `MzMLConversion.toMzPeak`
+writes the mzML's cv list: it replaces the cv list of the `MzPeakWriter.Options` it is given. The command-line tool
+runs from the module's self-contained jar, which `mvn verify` (or `mvn -DskipTests package`) builds:
 
 ```bash
 java [-Xmx...] -cp mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar org.mzpeak.mzml.cli.MzPeakConvert \
