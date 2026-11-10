@@ -274,9 +274,9 @@ public final class MzMLConversion {
         }
     }
 
-    /** Whether {@code params} hold a param with one of {@code accessions}. */
+    /** Whether {@code params} hold a param with one of {@code accessions}; a userParam has none (null). */
     private static boolean has(List<Param> params, Collection<String> accessions) {
-        return params.stream().anyMatch(p -> accessions.contains(p.accession()));
+        return params.stream().anyMatch(p -> p.accession() != null && accessions.contains(p.accession()));
     }
 
     /** The number of {@code arrays} without a value other than NaN, empty ones included (B-26). */

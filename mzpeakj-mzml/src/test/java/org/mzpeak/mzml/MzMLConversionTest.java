@@ -497,6 +497,27 @@ class MzMLConversionTest {
     }
 
     /**
+     * A spectrum with points, its userParam and none of the summary params (B-24): the userParam's null accession is
+     * no summary param, and the spectrum is counted once.
+     */
+    @Test
+    void aSpectrumWithAUserParamAndNoSummaryParamsIsCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            int cycle22 = s.indexOf("id=\"sample=1 period=1 cycle=22");
+            return s.substring(0, cycle22) + cut(s.substring(cycle22),
+                    "<cvParam cvRef=\"MS\" accession=\"MS:1000528\"", "name=\"total ion current\" value=\"4200\"/>");
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_SUMMARY + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadata().get(3).parameters()).anyMatch(p -> p.accession() == null
+                    && "alternate source file".equals(p.name()));
+        }
+    }
+
+    /**
      * A run without source files and data processings: the mzPeak writer adds both stubs and names them the run's
      * defaults; toMzML removes them and the defaults, and the mzML writer synthesizes the data processing mzML
      * requires.
