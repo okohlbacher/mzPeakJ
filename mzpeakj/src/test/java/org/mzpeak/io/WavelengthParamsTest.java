@@ -45,9 +45,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * MZ-4: {@link WavelengthSpectrum#parameters()}. has_uv's 520 UV spectra carry a spectrum type, a representation,
  * the lowest and highest observed wavelength and a spectrum title, which the reader used to drop and the writer used
- * to write as an empty list. The reader takes a row's {@code parameters} list first, then, in the split layout, the
- * leftover columns whose accession is not already there (a term marker as {@code Param(null, CURIE)}); in the packed
- * layout the struct's list. The split writer writes them into the {@code parameters} column; the packed writer, whose
+ * to write as an empty list. The reader takes a row's {@code parameters} list first, then, in both layouts (packed
+ * since LIB-1), the leftover columns whose accession is not already there (a term marker as
+ * {@code Param(null, CURIE)}). The split writer writes them into the {@code parameters} column; the packed writer, whose
  * schema is frozen, does not, and warns once. The cv-list prefix scan covers them (design §7).
  */
 class WavelengthParamsTest {
@@ -120,17 +120,23 @@ class WavelengthParamsTest {
         }
     }
 
-    /** Legacy (packed) has_uv gives the struct's list only: the current spectra's Params without the leftovers. */
+    /**
+     * LIB-1: legacy (packed) has_uv gives the struct's list, then the struct's leftover scalar columns by the split
+     * rule: the same Params, in the same order, as current has_uv, among them the representation term marker and
+     * the base peak intensity and TIC, which the reader used to drop.
+     */
     @Test
-    void legacyPackedHasUvGivesTheStructsParameters() {
+    void legacyPackedHasUvGivesTheSameParamsAsCurrent() {
         List<WavelengthSpectrum> current = wavelengthSpectra(Fixtures.current(HAS_UV));
         List<WavelengthSpectrum> legacy = wavelengthSpectra(Fixtures.legacy(HAS_UV));
-        assertThat(legacy).hasSameSizeAs(current);
+        assertThat(legacy).hasSize(520).hasSameSizeAs(current);
         for (int i = 0; i < legacy.size(); i++) {
             List<Param> c = current.get(i).parameters();
-            assertThat(legacy.get(i).parameters()).as("spectrum %d", i).hasSize(4)
-                    .containsExactlyElementsOf(c.subList(0, 4));
+            assertThat(c).as("current spectrum %d", i).hasSize(7);
+            assertThat(legacy.get(i).parameters()).as("spectrum %d", i).containsExactlyElementsOf(c);
         }
+        assertThat(legacy.get(0).parameters()).extracting(Param::accession).containsExactly(
+                "MS:1000804", "MS:1000619", "MS:1000618", TITLE, "MS:1000128", "MS:1000505", "MS:1000285");
     }
 
     // ---- (c): written and read again ------------------------------------------------------------------------

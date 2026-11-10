@@ -47,11 +47,11 @@ final class WavelengthMetadataDecoder {
      * first occur. A repeated index keeps its first position and takes the values of its last row. Packed
      * placeholder rows (a null struct or index) are skipped.
      *
-     * <p>A row's Params are its {@code parameters} list, then, in the split layout, its leftovers
-     * ({@link ColumnResolver#leftovers}): the scalar columns that neither a header field nor the point count is read
-     * from, such as the spectrum type and representation term markers and the summary columns. A leftover is kept
-     * only when its accession is new to the row's Params, so a column that repeats a list entry adds nothing; an
-     * unmapped column has no accession and is kept. The packed layout has no leftovers.
+     * <p>A row's Params are its {@code parameters} list, then, in both layouts, its leftovers
+     * ({@link ColumnResolver#leftoversInBothLayouts}): the scalar columns that neither a header field nor the point
+     * count is read from, such as the spectrum type and representation term markers and the summary columns. A
+     * leftover is kept only when its accession is new to the row's Params, so a column that repeats a list entry adds
+     * nothing; an unmapped column has no accession and is kept.
      *
      * @throws MzPeakException if the member has rows but neither metadata shape, or a split row's index is null, or
      *                         an index has the high bit set
@@ -68,7 +68,7 @@ final class WavelengthMetadataDecoder {
             Double lambdaMax = columns.doubleValue(g, consume(consumed, columns.resolve(LAMBDA_MAX)));
             consume(consumed, columns.resolve(N_POINTS));
             byIndex.put(index, new Header(index, id, time == null ? Double.NaN : time, lambdaMax,
-                    parameters(columns.params(g), columns.leftovers(g, consumed))));
+                    parameters(columns.params(g), columns.leftoversInBothLayouts(g, consumed))));
         });
         return List.copyOf(byIndex.values());
     }

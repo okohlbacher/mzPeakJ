@@ -58,10 +58,13 @@ class LegacyMetadataSnapshotTest {
             // MZ-4: each of the 520 wavelength lines gained "|[...]", the 4 Params of its packed struct's parameters
             // list (spectrum type, lowest and highest observed wavelength, spectrum title), which the reader used to
             // drop; header fields and lengths are unchanged (e8f510ac... before). No other digest changed.
+            // LIB-1: each wavelength line gained 3 more Params, the leftovers of its packed struct's scalar columns
+            // (representation MS:1000128, base peak intensity, TIC), as current has_uv gives them (83b63f36...
+            // before). No other digest changed.
             "has_uv.mzpeak", new Snapshot(212, 2, 520,
                     "35518229d5314fb17f486361d16934af5dd9234c51183d363a7036aecc80c8a8",
                     "907aeb63c7f4823af2bd626503cc185c55f8a9df07ba2aa8442fcdb56c44d099",
-                    "83b63f369577acebe198592ab10761911d7a04c1a387c5931368cc0018a6f9e3"));
+                    "80e459e37d589ce848e546dc937b3872fb401e7ec07521fa63602eb7e62dad3e"));
 
     static Stream<String> legacyFixtures() {
         return Fixtures.LEGACY_NAMES.stream();

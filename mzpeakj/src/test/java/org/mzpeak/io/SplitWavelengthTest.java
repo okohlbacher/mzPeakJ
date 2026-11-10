@@ -26,7 +26,6 @@ import org.mzpeak.model.WavelengthSpectrum;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.LongStream;
@@ -48,9 +47,12 @@ class SplitWavelengthTest {
     private static final String ID0 = "merged=212 row=0";
     private static final double TIME0 = 0.001833333333;
 
-    /** The SHA-256 of the canonical wavelength lines of legacy has_uv, pinned by CH-1 (with their Params from MZ-4). */
+    /**
+     * The SHA-256 of the canonical wavelength lines of legacy has_uv, pinned by CH-1 (with their Params from MZ-4,
+     * and the packed struct's leftovers from LIB-1).
+     */
     private static final String LEGACY_HAS_UV_WAVELENGTH_SHA256 =
-            "83b63f369577acebe198592ab10761911d7a04c1a387c5931368cc0018a6f9e3";
+            "80e459e37d589ce848e546dc937b3872fb401e7ec07521fa63602eb7e62dad3e";
 
     @TempDir
     Path tmp;
@@ -103,9 +105,9 @@ class SplitWavelengthTest {
     }
 
     /**
-     * The split current has_uv and the packed legacy has_uv give the same wavelength spectra, value for value, except
-     * that the current ones carry the leftovers of the split columns after the legacy struct's Params (MZ-4): the
-     * representation term marker, the base peak intensity and the TIC. Without those leftovers the current spectra
+     * The split current has_uv and the packed legacy has_uv give the same wavelength spectra, value for value,
+     * Params included: both carry the leftovers of their scalar columns after the list's Params (MZ-4 for split,
+     * LIB-1 for packed), the representation term marker, the base peak intensity and the TIC. So the current spectra
      * have the canonical digest that CH-1 pins for the legacy file.
      */
     @Test
@@ -113,7 +115,6 @@ class SplitWavelengthTest {
         List<WavelengthSpectrum> current = wavelengthSpectra(Fixtures.current(HAS_UV));
         List<WavelengthSpectrum> legacy = wavelengthSpectra(Fixtures.legacy(HAS_UV));
         assertThat(current).hasSameSizeAs(legacy);
-        List<WavelengthSpectrum> withoutLeftovers = new ArrayList<>(current.size());
         for (int i = 0; i < current.size(); i++) {
             WavelengthSpectrum c = current.get(i);
             WavelengthSpectrum l = legacy.get(i);
@@ -121,14 +122,11 @@ class SplitWavelengthTest {
                     .as("header %d", i).isEqualTo(tuple(l.index(), l.id(), l.time(), l.lambdaMax()));
             assertThat(c.wavelength()).as("wavelength %d", i).isEqualTo(l.wavelength());
             assertThat(c.intensity()).as("intensity %d", i).isEqualTo(l.intensity());
-            int n = l.parameters().size();
-            assertThat(c.parameters().subList(0, n)).as("params %d", i).isEqualTo(l.parameters());
-            assertThat(c.parameters().subList(n, c.parameters().size())).as("leftovers %d", i)
+            assertThat(c.parameters()).as("params %d", i).isEqualTo(l.parameters());
+            assertThat(c.parameters().subList(4, c.parameters().size())).as("leftovers %d", i)
                     .extracting(Param::accession).containsExactly("MS:1000128", "MS:1000505", "MS:1000285");
-            withoutLeftovers.add(new WavelengthSpectrum(c.index(), c.id(), c.time(), c.lambdaMax(), c.wavelength(),
-                    c.intensity(), c.parameters().subList(0, n)));
         }
-        assertThat(Canonical.sha256(Canonical.lines(withoutLeftovers, Canonical::describe)))
+        assertThat(Canonical.sha256(Canonical.lines(current, Canonical::describe)))
                 .isEqualTo(LEGACY_HAS_UV_WAVELENGTH_SHA256);
     }
 

@@ -338,6 +338,20 @@ final class ColumnResolver {
         if (entry == null) {
             return List.of();
         }
+        return scalarCells(row, consumed);
+    }
+
+    /**
+     * {@link #leftovers} in both layouts: in the packed layout too, the struct's unconsumed scalar cells by the same
+     * rules, mapped through {@link ColumnTable} (its pin-era fallback names), since there is no column_mapping.
+     */
+    List<Param> leftoversInBothLayouts(Group row, Set<String> consumed) {
+        Objects.requireNonNull(row, "row");
+        Objects.requireNonNull(consumed, "consumed");
+        return scalarCells(row, consumed);
+    }
+
+    private List<Param> scalarCells(Group row, Set<String> consumed) {
         Set<String> structural = ColumnTable.structural(facet);
         List<Param> out = new ArrayList<>();
         for (Type type : row.getType().getFields()) {
