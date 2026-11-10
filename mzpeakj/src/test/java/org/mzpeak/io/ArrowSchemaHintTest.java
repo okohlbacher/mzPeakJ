@@ -27,10 +27,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link ArrowSchemaHint}: the {@code ARROW:schema} footer value is an encapsulated Arrow IPC Schema message, which a
- * flatbuffer reader written here, independently of the encoder, decodes to the intended fields: every field typed as
- * arrow-rs infers it from the Parquet schema, and {@code auxiliary_arrays} exactly as in the reference's has_uv, whose
- * own {@code ARROW:schema} the same reader decodes. pyarrow and the Rust reference reader (rdump) decoded the written
- * hint too (RustReaderAcceptanceTest).
+ * flatbuffer reader written here decodes to the intended fields: every field typed as arrow-rs infers it from the
+ * Parquet schema, and {@code auxiliary_arrays} exactly as in the reference's has_uv. The reader follows the Arrow
+ * format's Schema.fbs and Message.fbs, not the encoder: it reads {@code Int.bitWidth} as the 32-bit {@code int} the
+ * format declares ({@code table Int { bitWidth: int; is_signed: bool; }}) and accepts only the widths it allows, and it
+ * is checked on the reference's own {@code ARROW:schema}, which arrow-rs wrote, against types written out here by
+ * hand from pyarrow's reading of that file. pyarrow and the Rust reference reader (rdump) decode the written hint too
+ * (RustReaderAcceptanceTest).
  */
 class ArrowSchemaHintTest {
 
@@ -50,8 +53,34 @@ class ArrowSchemaHintTest {
     private static final ArrowType LARGE_UTF8 = ArrowType.of(20);
     private static final ArrowType LARGE_LIST = ArrowType.of(21);
 
+    /**
+     * {@code auxiliary_arrays} of the reference's has_uv, written out from {@code pq.ParquetFile(...).schema_arrow}:
+     * {@code large_list<item: struct<data: large_list<item: uint8 not null>, name: param, data_type: string,
+     * compression: string, items: uint64, unit: string, parameters: large_list<item: param>,
+     * data_processing_id: large_string>>}, with param {@code struct<value: struct<integer: int64, float: double,
+     * string: large_string, boolean: bool>, accession: string, name: large_string, unit: string>}.
+     */
+    private static final ArrowField REFERENCE_AUXILIARY_ARRAYS = new ArrowField("auxiliary_arrays", true, LARGE_LIST,
+            List.of(new ArrowField("item", true, STRUCT, List.of(
+                    new ArrowField("data", true, LARGE_LIST, List.of(
+                            new ArrowField("item", false, new ArrowType(2, 8, false, 0), List.of()))),
+                    referenceParam("name"),
+                    leaf("data_type", UTF8),
+                    leaf("compression", UTF8),
+                    leaf("items", UINT64),
+                    leaf("unit", UTF8),
+                    new ArrowField("parameters", true, LARGE_LIST, List.of(referenceParam("item"))),
+                    leaf("data_processing_id", LARGE_UTF8)))));
+
     @TempDir
     Path tmp;
+
+    private static ArrowField referenceParam(String name) {
+        ArrowField value = new ArrowField("value", true, STRUCT, List.of(leaf("integer", INT64), leaf("float", DOUBLE),
+                leaf("string", LARGE_UTF8), leaf("boolean", BOOL)));
+        return new ArrowField(name, true, STRUCT, List.of(value, leaf("accession", UTF8), leaf("name", LARGE_UTF8),
+                leaf("unit", UTF8)));
+    }
 
     /**
      * Both hinted members of a split write of has_uv carry the hint of their own schema, which decodes to the fields
@@ -71,8 +100,9 @@ class ArrowSchemaHintTest {
 
             ArrowField reference = field(decode(footer(Fixtures.current(HAS_UV), member).keyValue()
                     .get(ArrowSchemaHint.KEY)), "auxiliary_arrays");
+            assertThat(reference).as("the reference's %s, as pyarrow reads it", member)
+                    .isEqualTo(REFERENCE_AUXILIARY_ARRAYS);
             assertThat(field(decoded, "auxiliary_arrays")).as(member).isEqualTo(reference);
-            assertThat(reference.type()).isEqualTo(LARGE_LIST);
         }
     }
 
@@ -195,7 +225,7 @@ class ArrowSchemaHintTest {
         int typeId = fb.get(table + slot(fb, table, 2));
         int type = indirect(fb, table, 3);
         ArrowType t = switch (typeId) {
-            case 2 -> new ArrowType(2, fb.getInt(type + slot(fb, type, 0)),
+            case 2 -> new ArrowType(2, bitWidth(fb, type),
                     slot(fb, type, 1) != 0 && fb.get(type + slot(fb, type, 1)) != 0, 0);
             case 3 -> new ArrowType(3, 0, false, fb.getShort(type + slot(fb, type, 0)));
             default -> ArrowType.of(typeId);
@@ -203,6 +233,25 @@ class ArrowSchemaHintTest {
         int children = slot(fb, table, 5);
         return new ArrowField(new String(name, StandardCharsets.UTF_8), nullable, t,
                 children == 0 ? List.of() : fields(fb, indirect(fb, table, 5)));
+    }
+
+    /**
+     * {@code Int.bitWidth}: an {@code int}, 32 bits, per Schema.fbs ({@code table Int { bitWidth: int; ... }}),
+     * restricted to 8, 16, 32 and 64. A narrower encoding would read here as another value (the next byte, such as
+     * {@code is_signed}, becomes part of it) or out of the table.
+     */
+    private static int bitWidth(ByteBuffer fb, int table) {
+        int at = slot(fb, table, 0);
+        assertThat(at).as("Int.bitWidth present").isPositive();
+        assertThat(at + 4).as("Int.bitWidth within the table").isLessThanOrEqualTo(tableSize(fb, table));
+        int width = fb.getInt(table + at);
+        assertThat(width).as("Int.bitWidth").isIn(8, 16, 32, 64);
+        return width;
+    }
+
+    /** The size of {@code table} its vtable gives. */
+    private static int tableSize(ByteBuffer fb, int table) {
+        return fb.getShort(table - fb.getInt(table) + 2);
     }
 
     /** The offset in {@code table} of field {@code index}, 0 when absent. */
