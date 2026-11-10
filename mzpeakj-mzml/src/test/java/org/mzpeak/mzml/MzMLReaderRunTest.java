@@ -118,7 +118,8 @@ class MzMLReaderRunTest {
     /** The five summary params, recomputed from the signal by the reference converter (and given a unit). */
     private static final Exclusion SUMMARIES = new Exclusion("SUMMARIES",
             "the summary params MS:1000528, MS:1000527, MS:1000504, MS:1000505, MS:1000285, which small.mzpeak"
-                    + " recomputed from the signal: 167 in small",
+                    + " recomputed from the signal: 133 in small (the unitless total ion currents get MS:1000131 on"
+                    + " read, B-14, as small.mzpeak has them)",
             d -> SUMMARY.matcher(d.path()).matches());
     /** The scanList combination term, which the reference converter does not store. */
     private static final Exclusion NO_COMBINATION = new Exclusion("NO_COMBINATION",
@@ -164,7 +165,8 @@ class MzMLReaderRunTest {
                 .filteredOn(c -> c == SignalContinuity.PROFILE).hasSize(14);
         assertThat(run.reader.survey()).isEqualTo(new MzMLReader.Survey(ids(run.spectra), List.of(), Set.of(), 1));
         assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
-                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)"));
+                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
+                "B-14 units of unitless summary and peak-intensity params set to the default (48)"));
 
         Spectrum s2 = run.spectra.get(2);
         Precursor precursor = s2.description().primaryPrecursor();
@@ -192,7 +194,7 @@ class MzMLReaderRunTest {
             ModelAssert.Result result = ModelAssert.assertEqual("small.mzML vs small.mzpeak",
                     descriptions(run.spectra, run.chromatograms), descriptions(theirs, mzpeak.chromatograms()),
                     Mode.MZML_VS_MZPEAK, SUMMARIES, NO_COMBINATION, FLOAT32, DEFAULT_IC, XSD_FLOAT);
-            assertThat(result.hidden()).containsExactly(Map.entry("SUMMARIES", 167), Map.entry("NO_COMBINATION", 48),
+            assertThat(result.hidden()).containsExactly(Map.entry("SUMMARIES", 133), Map.entry("NO_COMBINATION", 48),
                     Map.entry("FLOAT32", 105), Map.entry("DEFAULT_IC", 7), Map.entry("XSD_FLOAT", 34));
 
             for (int i = 0; i < 48; i++) {
@@ -253,7 +255,9 @@ class MzMLReaderRunTest {
         assertThat(run.reader.survey().spectrumArrays()).isEmpty();
         assertThat(run.reader.warnings()).containsExactlyElementsOf(withLimits(
                 "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
-                "B-17 scan window params other than the limits lost (212)"));
+                "B-17 scan window params other than the limits lost (212)",
+                // the 520 UV spectra follow the 212 MS spectra at mzML indexes 212 to 731
+                MzMLReader.B_11_INDEX + " (520)"));
 
         WavelengthSpectrum uv = run.wavelengthSpectra.get(0);
         assertThat(uv.index()).isZero();
@@ -377,6 +381,7 @@ class MzMLReaderRunTest {
                 "B-1 referenceableParamGroups expanded inline (2)",
                 "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
                 "B-7 run@sampleRef lost (1)",
+                "B-14 units of unitless summary and peak-intensity params set to the default (4)",
                 ARRAY_DP_LOST + " (10)",
                 "B-10 spectrum@spotID lost (1)",
                 "B-10 spectrum@sourceFileRef lost (1)",
@@ -399,8 +404,9 @@ class MzMLReaderRunTest {
                 List.of(new Param("lowest observed m/z", "MS:1000528", 400.39, "MS:1000040"),
                         new Param("highest observed m/z", "MS:1000527", 1795.56, "MS:1000040"),
                         new Param("base peak m/z", "MS:1000504", 445.347, "MS:1000040"),
-                        new Param("base peak intensity", "MS:1000505", 120053L, "MS:1000131"),
-                        new Param("total ion current", "MS:1000285", 16675500L, null),
+                        // integral summary values typed as Doubles, the unitless total ion current in counts (B-14)
+                        new Param("base peak intensity", "MS:1000505", 120053.0, "MS:1000131"),
+                        new Param("total ion current", "MS:1000285", 16675500.0, "MS:1000131"),
                         new Param("MS1 spectrum", "MS:1000579", null, null),
                         new Param("no combination", "MS:1000795", null, null))));
 
@@ -886,6 +892,7 @@ class MzMLReaderRunTest {
                 "B-1 referenceableParamGroups expanded inline (2)",
                 "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
                 "B-7 run@sampleRef lost (1)",
+                "B-14 units of unitless summary and peak-intensity params set to the default (4)",
                 ARRAY_DP_LOST + " (10)",
                 "B-21 lost array params other than array type, data type and compression (1)",
                 "B-10 spectrum@spotID lost (1)",
@@ -1457,6 +1464,33 @@ class MzMLReaderRunTest {
                 "B-39 instrument configuration refs that name no instrument configuration read as null (1)");
     }
 
+    /**
+     * A numeric summary param is typed as a Double and, without unit, given its default unit (B-14); one whose value is
+     * no number stays as it is. The unitless peak intensity of a selected ion counts too, since it is written back in
+     * counts.
+     */
+    @Test
+    void summaryParamsAreTypedAndGivenTheirDefaultUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(replaceAfter(s, SCAN_19,
+                "name=\"total ion current\" value=\"16675500\"", "name=\"total ion current\" value=\"n/a\""),
+                SCAN_19, "name=\"base peak m/z\" value=\"445.34699999999998\" unitCvRef=\"MS\""
+                        + " unitAccession=\"MS:1000040\" unitName=\"m/z\"",
+                "name=\"base peak m/z\" value=\"445\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).description().parameters()).contains(
+                new Param("base peak m/z", "MS:1000504", 445.0, "MS:1000040"),
+                new Param("base peak intensity", "MS:1000505", 120053.0, "MS:1000131"),
+                new Param("total ion current", "MS:1000285", "n/a", null));
+        assertThat(run.spectra.get(1).description().parameters())
+                .contains(new Param("total ion current", "MS:1000285", 16675500.0, "MS:1000131"));
+        assertThat(run.spectra.get(1).description().primaryPrecursor().selectedIons().get(0).intensity())
+                .isEqualTo(120053.0);
+        // scan=19's base peak m/z, the total ion currents of scan=20 and the fourth spectrum, scan=20's ion
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_14_UNIT + " (4)");
+    }
+
     @Test
     void anInjectionTimeInSecondsStaysAScanParam(@TempDir Path dir) throws IOException {
         String injection = cv("MS:1000927", "ion injection time", "0.05", "UO:0000010");
@@ -1605,7 +1639,8 @@ class MzMLReaderRunTest {
         assertThat(run.spectra.get(0).description().scans().get(0).spectrumReference()).isEqualTo("scan=21");
         assertThat(run.spectra.get(1).description().scans().get(0).spectrumReference()).isEqualTo("elsewhere");
         assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33"))
-                .contains("B-16 sourceFileRef of scans and precursors lost (1)");
+                .contains("B-16 sourceFileRef of scans and precursors lost (1)")
+                .contains(MzMLReader.B_41 + " (1)");
     }
 
     @Test
@@ -1629,7 +1664,7 @@ class MzMLReaderRunTest {
         Precursor precursor = run.spectra.get(1).description().primaryPrecursor();
         assertThat(precursor.precursorIndex()).isNull();
         assertThat(precursor.precursorId()).isEqualTo("scan=1");
-        assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33"));
+        assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33")).contains(MzMLReader.B_42 + " (1)");
     }
 
     @Test

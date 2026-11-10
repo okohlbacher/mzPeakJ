@@ -90,6 +90,8 @@ class MzMLConversionTest {
             "B-1 referenceableParamGroups expanded inline (2)",
             "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
             "B-7 run@sampleRef lost (1)",
+            // the unitless total ion current of three spectra and the unitless peak intensity of scan=20's ion
+            "B-14 units of unitless summary and peak-intensity params set to the default (4)",
             "B-21 lost array dataProcessingRef (10)",
             "B-10 spectrum@spotID lost (1)",
             "B-10 spectrum@sourceFileRef lost (1)",
@@ -137,13 +139,33 @@ class MzMLConversionTest {
                 .containsExactly(Map.entry("A_26", 1));
     }
 
+    /**
+     * small.mzML writes its total ion currents without unit, as pwiz does: the reader gives them MS:1000131 (B-14), so
+     * that they reach the mzPeak summary column and the TIC derived from it has a point per spectrum.
+     */
+    @Test
+    void smallsUnitlessTotalIonCurrentsReachTheSummaryColumn() throws IOException {
+        Path small = MzMLFixtures.extract(MzMLFixtures.SMALL, dir);
+        Path mzpeak = dir.resolve("small.mzpeak");
+
+        MzMLConversion.toMzPeak(small, mzpeak, false, MzPeakWriter.Options.defaults());
+
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.encodedTic()).get().extracting(Chromatogram::size).isEqualTo(48);
+            assertThat(reader.encodedBpc()).get().extracting(Chromatogram::size).isEqualTo(48);
+            assertThat(reader.metadataAt(0).parameters())
+                    .contains(new Param("total ion current", "MS:1000285", 1.5245068E7, "MS:1000131"));
+        }
+    }
+
     @Test
     void smallComesBackEqual() throws IOException {
         Path small = MzMLFixtures.extract(MzMLFixtures.SMALL, dir);
         B b = b(small, true);
 
         assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(List.of(
-                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)")));
+                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
+                "B-14 units of unitless summary and peak-intensity params set to the default (48)")));
         assertThat(b.toMzML.warnings()).containsExactlyElementsOf(writerLimits());
         assertThat(List.of(b.toMzPeak.spectra(), b.toMzPeak.wavelengthSpectra(), b.toMzPeak.chromatograms()))
                 .containsExactly(48L, 0L, 1L);
@@ -443,6 +465,59 @@ class MzMLConversionTest {
     }
 
     /**
+     * What the mzPeak writer adds is counted (B-24): the type of the three spectra of CommonMS1SpectrumParams without
+     * their MS1 spectrum term, the summary params of scan=20 without its five, a scan to scan=21 without its scanList,
+     * and the run's default source file; and scan=19 at index 7 is renumbered (B-11).
+     */
+    @Test
+    void whatTheMzPeakWriterAddsAndRenumberedIndexesAreCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            String edited = replaceOnce(s, "<cvParam cvRef=\"MS\" accession=\"MS:1000579\" name=\"MS1 spectrum\""
+                    + " value=\"\"/>", "");
+            edited = replaceOnce(edited, " defaultSourceFileRef=\"tiny1.yep\"", "");
+            edited = replaceOnce(edited, "<spectrum index=\"0\" id=\"scan=19\"",
+                    "<spectrum index=\"7\" id=\"scan=19\"");
+            int scan20 = edited.indexOf(SCAN_20);
+            int scan21 = edited.indexOf(SCAN_21);
+            return edited.substring(0, scan20) + cut(edited.substring(scan20, scan21),
+                    "<cvParam cvRef=\"MS\" accession=\"MS:1000528\"", "name=\"total ion current\" value=\"16675500\"/>")
+                    + cut(edited.substring(scan21), "<scanList", "</scanList>");
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_SOURCE + " (1)",
+                MzMLConversion.B_24_TYPE + " (3)", MzMLConversion.B_24_SUMMARY + " (1)",
+                MzMLConversion.B_24_SCAN + " (1)", MzMLReader.B_11_INDEX + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.fileMetadata().run().defaultSourceFileId()).isEqualTo("tiny1.yep");
+            assertThat(reader.metadata().get(0).index()).isZero();
+            assertThat(reader.metadata().get(2).scans()).hasSize(1);
+        }
+    }
+
+    /**
+     * A spectrum with points, its userParam and none of the summary params (B-24): the userParam's null accession is
+     * no summary param, and the spectrum is counted once.
+     */
+    @Test
+    void aSpectrumWithAUserParamAndNoSummaryParamsIsCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            int cycle22 = s.indexOf("id=\"sample=1 period=1 cycle=22");
+            return s.substring(0, cycle22) + cut(s.substring(cycle22),
+                    "<cvParam cvRef=\"MS\" accession=\"MS:1000528\"", "name=\"total ion current\" value=\"4200\"/>");
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_SUMMARY + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadata().get(3).parameters()).anyMatch(p -> p.accession() == null
+                    && "alternate source file".equals(p.name()));
+        }
+    }
+
+    /**
      * A run without source files and data processings: the mzPeak writer adds both stubs and names them the run's
      * defaults; toMzML removes them and the defaults, and the mzML writer synthesizes the data processing mzML
      * requires.
@@ -461,9 +536,13 @@ class MzMLConversionTest {
         }
         Path mzml = dir.resolve("out.mzML");
 
-        MzMLConversion.toMzML(input, mzml, true);
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
 
         MzMLAssert.valid(mzml);
+        // the run default naming the removed data processing stub is removed too, so the writer synthesizes it
+        assertThat(toMzML.warnings()).contains(String.format(MzMLWriter.A_8,
+                "spectrumList defaultDataProcessingRef (the first data processing)") + " (1)")
+                .noneMatch(line -> line.startsWith("A-18 "));
         assertThat(Files.readString(mzml, StandardCharsets.UTF_8)).doesNotContain("mzpeakj_source", "mzpeakj_export",
                 "<sourceFile", "defaultSourceFileRef");
         FileMetadata m = model(mzml).fileMetadata();
@@ -471,6 +550,36 @@ class MzMLConversionTest {
         assertThat(m.dataProcessingMethods()).extracting(DataProcessing::id).containsExactly("mzpeakj_conversion");
         assertThat(m.run().id()).isEqualTo("run1");
         assertThat(m.run().defaultSourceFileId()).isNull();
+    }
+
+    /**
+     * The CV prefixes the spectra use only as the unit of a scan param (XYZ) or as the accession of an activation
+     * param (ABC), which the mzPeak writer leaves undeclared, are announced to the mzML writer: it declares both
+     * (A-17) instead of rejecting the spectrum.
+     */
+    @Test
+    void theCvPrefixesOfScanParamUnitsAndActivationParamsAreDeclared() throws IOException {
+        Path input = dir.resolve("prefixes.mzpeak");
+        Spectrum s = spectrum(1, "scan=2", 2, List.of(new Precursor(0L, "scan=1", null, List.of(), new Activation(
+                List.of(new Param("collision-induced dissociation", "MS:1000133", null, null),
+                        new Param("custom activation", "ABC:0000001", null, null))))), List.of());
+        SpectrumDescription d = s.description();
+        ScanEvent scan = new ScanEvent(2.0, null, null, null, null, null, List.of(),
+                List.of(new Param("custom scan value", null, 1.5, "XYZ:0000001")));
+        Spectrum ms2 = new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), List.of(scan),
+                d.precursors(), d.parameters()), s.mz(), s.intensity(), s.peaks());
+        MzPeakWriter.writeArchive(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of());
+        try (MzPeakReader reader = MzPeakReader.open(input)) {
+            assertThat(reader.manifest().cvList()).extracting(CvEntry::id).doesNotContain("XYZ", "ABC");
+        }
+        Path mzml = dir.resolve("prefixes.mzML");
+
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
+
+        MzMLAssert.valid(mzml);
+        assertThat(model(mzml).cvList()).extracting(CvEntry::id).contains("XYZ", "ABC");
+        assertThat(toMzML.warnings()).anyMatch(line -> line.startsWith(MzMLWriter.A_17 + " ("));
     }
 
     /** The exact stubs are removed also next to other entries, and a run default that names another one is kept. */
@@ -531,7 +640,7 @@ class MzMLConversionTest {
 
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES,
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(tinyLosses(5),
                 MzMLConversion.B_19 + " (1)"));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Precursor> precursors = reader.metadataAt(1).precursors();
@@ -558,7 +667,7 @@ class MzMLConversionTest {
 
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES));
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(tinyLosses(5)));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Precursor> precursors = reader.metadataAt(1).precursors();
             assertThat(precursors).extracting(Precursor::precursorIndex).containsExactly(0L, 2L, 0L);
@@ -704,6 +813,12 @@ class MzMLConversionTest {
         return spectra;
     }
 
+    /** {@link #TINY_LOSSES} with {@code unitless} params given their default unit (B-14): tiny with more ions. */
+    private static List<String> tinyLosses(int unitless) {
+        return TINY_LOSSES.stream().map(line -> line.startsWith("B-14 ") ? MzMLReader.B_14_UNIT + " (" + unitless
+                + ")" : line).toList();
+    }
+
     /** The limit lines every reader notes, then {@code losses}, then {@code more}. */
     private static List<String> withLimits(List<String> losses, String... more) {
         List<String> lines = new ArrayList<>(MzMLReader.LIMITS);
@@ -712,9 +827,10 @@ class MzMLConversionTest {
         return lines;
     }
 
-    /** The limit lines every writer notes, then {@code losses}. */
+    /** The limit lines and the A-13 and A-14 lines every writer notes, then {@code losses}. */
     private static List<String> writerLimits(String... losses) {
         List<String> lines = new ArrayList<>(MzMLWriter.LIMITS);
+        lines.addAll(MzMLWriter.NOT_VISIBLE);
         lines.addAll(List.of(losses));
         return lines;
     }

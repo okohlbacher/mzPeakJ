@@ -14,7 +14,7 @@
   <packaging>jar</packaging>
 
   <name>mzPeakJ mzML converter</name>
-  <description>Reads mzML into the mzPeakJ model through jmzML 1.7.11; the mzML writer and converter are to come.</description>
+  <description>An mzML &lt;-&gt; mzPeak converter through jmzML 1.7.11: MzMLReader, MzMLWriter, MzMLConversion and the CLI MzPeakConvert.</description>
 
   <!-- jmzML and its parent POMs are published only here (mzML design 2.1). The id is the one the artifacts in the
        local repository were resolved with; a checksum mismatch fails the build. -->

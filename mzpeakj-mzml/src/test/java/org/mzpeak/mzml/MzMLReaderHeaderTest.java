@@ -451,6 +451,31 @@ class MzMLReaderHeaderTest {
         assertThat(reader.warnings()).contains("B-30 cvRef aliases replaced by the accession prefix (3)");
     }
 
+    /** A unitCvRef that is not the unit accession's prefix is an alias too; one without unit accession is none. */
+    @Test
+    void aUnitCvRefAliasIsCounted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, "<fileContent>", "</fileContent>",
+                "  <cvParam cvRef=\"MS\" accession=\"MS:1000016\" name=\"scan start time\" value=\"5\""
+                        + " unitCvRef=\"UnitOntology\" unitAccession=\"UO:0000010\" unitName=\"second\"/>\n"
+                        + "      <cvParam cvRef=\"MS\" accession=\"MS:1000927\" name=\"ion injection time\" value=\"2\""
+                        + " unitCvRef=\"UO\" unitAccession=\"UO:0000028\" unitName=\"millisecond\"/>\n"
+                        + "      <cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\""
+                        + " unitCvRef=\"UO\"/>\n"
+                        + "      <cvParam cvRef=\"MS\" accession=\"MS:1000580\" name=\"MSn spectrum\" value=\"\""
+                        + " unitAccession=\"UO:0000010\"/>\n"
+                        + "      </fileContent>"));
+
+        MzMLReader reader = new MzMLReader(file);
+        MzMLReader.Header header = reader.header();
+
+        assertThat(header.fileMetadata().fileDescription().contents()).extracting(Param::accession, Param::unit)
+                .containsExactly(tuple("MS:1000580", null), tuple("MS:1000127", null), // tiny's own
+                        tuple("MS:1000016", "UO:0000010"), tuple("MS:1000927", "UO:0000028"),
+                        tuple("MS:1000511", null), tuple("MS:1000580", "UO:0000010"));
+        assertThat(reader.warnings()).contains(MzMLReader.B_30_UNIT + " (1)")
+                .noneMatch(w -> w.startsWith(MzMLReader.B_30 + " "));
+    }
+
     @Test
     void anInfValueIsTypedAsPositiveInfinity(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, "<fileContent>",

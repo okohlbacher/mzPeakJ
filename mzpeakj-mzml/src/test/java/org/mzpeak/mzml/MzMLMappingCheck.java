@@ -40,7 +40,7 @@ import java.util.Set;
  *       ({@link #COMPRESSIONS}); the mapping file names the two cases {@code spectrum_binarydataarray_must} and
  *       {@code chromatogram_binarydataarray_must};
  *   <li>{@code instrumentconfiguration_must}: every {@code instrumentConfiguration} carries exactly one instrument
- *       model ({@link #instrumentModels()}, from {@code mzml/ms-instrument-models.txt});
+ *       model ({@link #instrumentModels()}, from the converter's resource {@code ms-instrument-models.txt});
  *   <li>{@code chromatogram_must}: every chromatogram carries exactly one chromatogram type
  *       ({@link #CHROMATOGRAM_TYPES}).
  * </ul>
@@ -181,7 +181,7 @@ public final class MzMLMappingCheck {
     public static final String INSTRUMENTCONFIGURATION_MUST = "instrumentconfiguration_must";
     public static final String CHROMATOGRAM_MUST = "chromatogram_must";
 
-    private static final String MODELS_RESOURCE = "ms-instrument-models.txt";
+    static final String MODELS_RESOURCE = "/org/mzpeak/mzml/ms-instrument-models.txt";
     private static Set<String> instrumentModels;
 
     private MzMLMappingCheck() {
@@ -189,14 +189,14 @@ public final class MzMLMappingCheck {
 
     /**
      * The instrument models: descendants of MS:1000031 'instrument model' (502, of which MS:1000870 obsolete), read
-     * from the test resource {@code mzml/ms-instrument-models.txt} (501 accessions after its {@code #} header).
-     * Unmodifiable, in accession order.
+     * from the converter's main resource {@code org/mzpeak/mzml/ms-instrument-models.txt} (501 accessions after its
+     * {@code #} header). Unmodifiable, in accession order.
      */
     public static synchronized Set<String> instrumentModels() {
         if (instrumentModels == null) {
             Set<String> out = new LinkedHashSet<>();
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(MzMLFixtures.open(MODELS_RESOURCE),
-                    StandardCharsets.US_ASCII))) {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(
+                    MzMLMappingCheck.class.getResourceAsStream(MODELS_RESOURCE), StandardCharsets.US_ASCII))) {
                 for (String line = in.readLine(); line != null; line = in.readLine()) {
                     if (!line.isBlank() && !line.startsWith("#")) {
                         out.add(line.trim());

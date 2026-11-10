@@ -126,8 +126,8 @@ HUPO-PSI mzML XML schemas (test resources, unmodified)
     THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF
     MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 
-PSI-MS controlled vocabulary (instrument-model accessions, test resource)
-  Files: mzpeakj-mzml/src/test/resources/mzml/ms-instrument-models.txt
+PSI-MS controlled vocabulary (instrument-model accessions, a resource of mzpeakj-mzml and its -all jar)
+  Files: mzpeakj-mzml/src/main/resources/org/mzpeak/mzml/ms-instrument-models.txt
   Source: psi-ms.obo data-version 4.2.11 (https://github.com/HUPO-PSI/psi-ms-CV), derived: the accessions of the
           non-obsolete is_a descendants of MS:1000031 'instrument model'
   Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0,

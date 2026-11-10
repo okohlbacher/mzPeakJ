@@ -1,8 +1,8 @@
 # PSI-MS instrument models: the non-obsolete transitive is_a descendants of MS:1000031 "instrument model" in
 # psi-ms.obo data-version 4.2.11 (mzdata v0.68.0, cv/psi-ms.obo.gz). Only is_a edges are followed, MS:1000031
 # itself is not listed, and obsolete terms are skipped (502 descendants, 1 obsolete: MS:1000870). One accession
-# per line, in accession order: 501 lines after this header. Read by the test helper MzMLMappingCheck (mapping
-# rule instrumentconfiguration_must).
+# per line, in accession order: 501 lines after this header. Read by MzMLTerms, for MzMLWriter's warning, and by
+# the test helper MzMLMappingCheck (mapping rule instrumentconfiguration_must).
 # Source: the PSI-MS controlled vocabulary (https://github.com/HUPO-PSI/psi-ms-CV), licensed under CC BY 4.0
 # (https://creativecommons.org/licenses/by/4.0/).
 MS:1000121

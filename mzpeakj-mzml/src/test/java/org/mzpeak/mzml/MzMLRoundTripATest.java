@@ -42,8 +42,9 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * {@link MzMLAssert#valid} and {@link MzMLMappingCheck}, converted back by {@link MzMLConversion#toMzPeak} (defaults,
  * archive) and read again; {@link ModelAssert} compares the two models strictly, arrays bit-exact, with exactly the
  * exclusions of the A table of design 12.4, each hiding the pinned number of differences. The warnings of both steps
- * are pinned: the limit lines (L-8 and L-9 of the writer, L-1 to L-6 of the reader), the writer's loss lines per
- * fixture, no A-25 to A-29 line, and no loss line of the reader. Last, the array-key case of design 12.4: extra
+ * are pinned: the limit lines (L-8 and L-9 and the A-13 and A-14 lines of the writer, L-1 to L-6 of the reader), the
+ * writer's loss lines per fixture, no A-25 to A-29 line, and the loss lines of the way back per fixture
+ * ({@link #back}). Last, the array-key case of design 12.4: extra
  * arrays keyed outside {@link CvTerms#ARRAY_TYPES} go through A as MS:1000786 'non-standard data array'.
  */
 class MzMLRoundTripATest {
@@ -138,6 +139,23 @@ class MzMLRoundTripATest {
         return f;
     }
 
+    /**
+     * The loss lines of {@link MzMLConversion#toMzPeak} for the mzML written from the fixture {@code name}, after the
+     * reader's limit lines: B-11 for has_uv's 520 wavelength spectra, which follow its 212 MS spectra in the mzML;
+     * B-24 for the summary params the mzPeak writer adds to the spectra of the legacy fixtures, whose packed layout
+     * reads none back (A-16).
+     */
+    static List<String> back(String name) {
+        String b11 = MzMLReader.B_11_INDEX + " (520)";
+        if (name.equals("legacy has_uv.mzpeak")) {
+            return List.of(b11, MzMLConversion.B_24_SUMMARY + " (212)");
+        }
+        if (name.startsWith("legacy small")) {
+            return List.of(MzMLConversion.B_24_SUMMARY + " (48)");
+        }
+        return name.equals("current has_uv.mzpeak") ? List.of(b11) : List.of();
+    }
+
     /** Every fixture, with zlib and without. */
     static Stream<Arguments> cases() {
         return fixtures().entrySet().stream().flatMap(e -> Stream.of(arguments(e.getKey(), e.getValue(), true),
@@ -164,10 +182,13 @@ class MzMLRoundTripATest {
         MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
 
         List<String> writerLines = new ArrayList<>(MzMLWriter.LIMITS);
+        writerLines.addAll(MzMLWriter.NOT_VISIBLE);
         writerLines.addAll(fixture.losses());
         assertThat(toMzML.warnings()).containsExactlyElementsOf(writerLines)
                 .noneMatch(line -> line.matches("A-2[5-9] .*"));
-        assertThat(toMzPeak.warnings()).containsExactlyElementsOf(MzMLReader.LIMITS);
+        List<String> readerLines = new ArrayList<>(MzMLReader.LIMITS);
+        readerLines.addAll(back(name));
+        assertThat(toMzPeak.warnings()).containsExactlyElementsOf(readerLines);
         List<Long> sizes = List.of((long) expected.spectrumList().size(), (long) expected.wavelengthSpectra().size(),
                 (long) expected.chromatograms().size());
         assertThat(List.of(toMzML.spectra(), toMzML.wavelengthSpectra(), toMzML.chromatograms())).isEqualTo(sizes);
@@ -177,6 +198,7 @@ class MzMLRoundTripATest {
         assertThat(text).contains(accession(zlib ? ZLIB : NO_COMPRESSION));
         assertThat(text.contains(accession(ZLIB))).as("zlib-compressed arrays").isEqualTo(zlib);
         assertThat(MzMLMappingCheck.violations(mzml)).containsExactlyElementsOf(fixture.violations());
+        assertMappingWarningsMatch(toMzML.warnings(), mzml);
 
         Model actual = Model.load(back);
         assertThat(actual.cvList()).extracting(CvEntry::id).containsExactlyElementsOf(fixture.cvs());
@@ -238,10 +260,13 @@ class MzMLRoundTripATest {
         Path mzml = dir.resolve("keys.mzML");
         MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
         MzMLAssert.valid(mzml);
+        assertThat(MzMLMappingCheck.violations(mzml)).isEmpty();
         Path back = dir.resolve("keys-back.mzpeak");
-        MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
+        MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
+        assertThat(toMzPeak.warnings()).containsExactlyElementsOf(MzMLReader.LIMITS);
 
         List<String> writerLines = new ArrayList<>(MzMLWriter.LIMITS);
+        writerLines.addAll(MzMLWriter.NOT_VISIBLE);
         writerLines.add(a7(48));
         assertThat(toMzML.warnings()).containsExactlyElementsOf(writerLines);
         Xml xml = xml(mzml);
@@ -257,6 +282,71 @@ class MzMLRoundTripATest {
         }
         assertThat(ModelAssert.assertEqual("array keys A", given, Model.load(back), STRICT, ModelAssert.A_7).hidden())
                 .isEqualTo(Map.of("A_7", 48));
+    }
+
+    // ---- the PSI mapping-rule warnings (design 6.4) -------------------------------------------------------------
+
+    /**
+     * tiny with spectrum scan=19's representation, the CID term of scan=20's precursor activation and the TIC's type
+     * removed, converted to mzPeak and back: each mapping-rule warning of the writer appears exactly when
+     * {@link MzMLMappingCheck} reports its rule in the mzML, with its count.
+     */
+    @Test
+    void theMappingRuleWarningsMatchTheViolationsOfATinyDerivedDocument() throws IOException {
+        Path source = Files.createDirectories(dir.resolve("source"));
+        String tiny = Files.readString(MzMLFixtures.extract(MzMLFixtures.TINY, source), StandardCharsets.ISO_8859_1);
+        String edited = removeAfter(tiny, "id=\"scan=19\"",
+                "          <cvParam cvRef=\"MS\" accession=\"MS:1000127\" name=\"centroid spectrum\" value=\"\"/>\n");
+        edited = removeAfter(edited, "id=\"scan=20\"", "                <cvParam cvRef=\"MS\" accession=\"MS:1000133\""
+                + " name=\"collision-induced dissociation\" value=\"\"/>\n");
+        edited = removeAfter(edited, "id=\"tic\"", "          <cvParam cvRef=\"MS\" accession=\"MS:1000235\""
+                + " name=\"total ion current chromatogram\" value=\"\"/>\n");
+        Path input = Files.writeString(dir.resolve("edited.mzML"), edited, StandardCharsets.ISO_8859_1);
+        Path mzpeak = dir.resolve("edited.mzpeak");
+        Path mzml = dir.resolve("edited-back.mzML");
+
+        MzMLConversion.toMzPeak(input, mzpeak, false, MzPeakWriter.Options.defaults());
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(mzpeak, mzml, true);
+        MzMLAssert.valid(mzml);
+
+        assertThat(MzMLMappingCheck.violations(mzml)).containsExactly("spectrum_must @ scan=19",
+                "precursor_activation_must @ scan=20", "chromatogram_must @ tic");
+        assertThat(toMzML.warnings()).contains(MzMLWriter.SPECTRUM_MUST + " (1)", MzMLWriter.ACTIVATION_MUST + " (1)",
+                MzMLWriter.CHROMATOGRAM_MUST + " (1)");
+        assertMappingWarningsMatch(toMzML.warnings(), mzml);
+    }
+
+    /** The writer's warning for each rule of {@link MzMLMappingCheck} it can break (design 6.4). */
+    private static final Map<String, String> RULE_WARNINGS = Map.of(
+            MzMLMappingCheck.SPECTRUM_MUST, MzMLWriter.SPECTRUM_MUST,
+            MzMLMappingCheck.SCAN_MUST, MzMLWriter.SCAN_MUST,
+            MzMLMappingCheck.PRECURSOR_ACTIVATION_MUST, MzMLWriter.ACTIVATION_MUST,
+            MzMLMappingCheck.INSTRUMENTCONFIGURATION_MUST, MzMLWriter.INSTRUMENT_MUST,
+            MzMLMappingCheck.CHROMATOGRAM_MUST, MzMLWriter.CHROMATOGRAM_MUST);
+
+    /**
+     * The mapping-rule warnings among {@code warnings} are exactly one per rule {@link MzMLMappingCheck} reports for
+     * {@code mzml}, each with the number of its violations.
+     */
+    private static void assertMappingWarningsMatch(List<String> warnings, Path mzml) throws IOException {
+        Map<String, Long> perRule = new LinkedHashMap<>();
+        for (String violation : MzMLMappingCheck.violations(mzml)) {
+            perRule.merge(violation.substring(0, violation.indexOf(" @ ")), 1L, Long::sum);
+        }
+        assertThat(RULE_WARNINGS.keySet()).containsAll(perRule.keySet());
+        Set<String> expected = new LinkedHashSet<>();
+        perRule.forEach((rule, n) -> expected.add(RULE_WARNINGS.get(rule) + " (" + n + ")"));
+        assertThat(warnings.stream().filter(line -> RULE_WARNINGS.values().stream().anyMatch(line::startsWith)))
+                .containsExactlyInAnyOrderElementsOf(expected);
+    }
+
+    /** {@code s} without the first {@code target} after {@code anchor}. */
+    private static String removeAfter(String s, String anchor, String target) {
+        int from = s.indexOf(anchor);
+        assertThat(from).as("'%s' occurs", anchor).isNotNegative();
+        int at = s.indexOf(target, from);
+        assertThat(at).as("'%s' occurs after '%s'", target, anchor).isNotNegative();
+        return s.substring(0, at) + s.substring(at + target.length());
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

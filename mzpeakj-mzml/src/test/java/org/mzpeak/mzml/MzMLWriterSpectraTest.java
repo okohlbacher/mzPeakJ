@@ -9,6 +9,7 @@ import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
+import org.mzpeak.io.MzPeakWriter;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
@@ -237,7 +238,26 @@ class MzMLWriterSpectraTest {
             assertThat(raw).extracting(uk.ac.ebi.jmzml.model.mzml.Precursor::getSourceFileRef).containsExactly(
                     null, null, "sf", null, "sf", null, null);
             assertThat(w.warnings()).contains(MzMLWriter.A_23 + " (1)", String.format(MzMLWriter.A_18,
-                    "spectrum precursorIndex naming no spectrum written as externalSpectrumID") + " (2)");
+                    "spectrum precursorIndex naming no spectrum written as externalSpectrumID") + " (2)",
+                    String.format(MzMLWriter.A_18, "spectrum precursors without index, naming no written spectrum,"
+                            + " written as externalSpectrumID") + " (1)");
+        }
+        // without a source file, which mzML requires next to an externalSpectrumID, an external ref is dropped
+        FileMetadata m = metadata();
+        FileMetadata noSource = new FileMetadata(new FileDescription(List.of(), List.of()),
+                m.instrumentConfigurations(), m.dataProcessingMethods(), List.of(), m.software(),
+                new MsRun("run", 0, "dp", null, null, List.of()));
+        Contents withoutSource = new Contents(noSource, List.of(), List.of(), List.of("scan=1", "scan=2", "scan=3"),
+                List.of(), List.of());
+        for (Written w : write("no-source", withoutSource, writer -> spectra.forEach(writer::write))) {
+            List<uk.ac.ebi.jmzml.model.mzml.Precursor> raw = jmzmlSpectra(w.file()).get(1).getPrecursorList()
+                    .getPrecursor();
+            assertThat(raw).extracting(uk.ac.ebi.jmzml.model.mzml.Precursor::getExternalSpectrumID).containsOnlyNulls();
+            assertThat(raw).extracting(uk.ac.ebi.jmzml.model.mzml.Precursor::getSourceFileRef).containsOnlyNulls();
+            assertThat(read(w.file()).spectra().get(1).description().precursors()).extracting(Precursor::precursorId)
+                    .containsExactly("scan=1", "scan=1", null, null, null, null, "scan=3");
+            assertThat(w.warnings()).contains(String.format(MzMLWriter.A_18, "spectrum refs to an external document"
+                    + " without a source file dropped") + " (2)").noneMatch(l -> l.contains("without index"));
         }
     }
 
@@ -317,6 +337,43 @@ class MzMLWriterSpectraTest {
     }
 
     // ---- (e) spectrum and wavelength spectrum params ------------------------------------------------------------
+
+    /**
+     * A scan start time among a spectrum's params, which mzML allows on scans only, is dropped: silently when it is the
+     * first scan's start time in minutes (in minutes, seconds or milliseconds, or without unit), else counted (A-32): a
+     * time that differs (two, in minutes and in hours), one that is no number, one in a unit that is no time, one of
+     * a spectrum without scans.
+     */
+    @Test
+    void aSpectrumLevelScanStartTimeIsDropped() {
+        List<List<Param>> params = List.of(
+                List.of(start(1.0, "UO:0000031")),
+                List.of(start(60.0, "UO:0000010"), start(60_000.0, "UO:0000028"), start(1.0, null)),
+                List.of(start(2.0, "UO:0000031"), start(0.5, "UO:0000032")),
+                List.of(new Param("scan start time", "MS:1000016", "early", null)),
+                List.of(start(1.0, "UO:0000018")));
+        List<Spectrum> spectra = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < params.size(); i++) {
+            spectra.add(spectrum(description("scan=" + i, 1, List.of(scan(1.0)), List.of(), params.get(i))));
+            ids.add("scan=" + i);
+        }
+        spectra.add(spectrum(description("scan=5", 1, List.of(), List.of(), List.of(start(1.0, null)))));
+        ids.add("scan=5");
+        Contents contents = new Contents(metadata(), List.of(), List.of(), ids, List.of(), List.of());
+
+        for (Written w : write("start-times", contents, writer -> spectra.forEach(writer::write))) {
+            assertThat(jmzmlSpectra(w.file())).allSatisfy(s -> assertThat(s.getCvParam())
+                    .extracting(CVParam::getAccession).doesNotContain("MS:1000016"));
+            assertThat(read(w.file()).spectra()).allSatisfy(s -> assertThat(s.description().parameters())
+                    .extracting(Param::accession).doesNotContain("MS:1000016"));
+            assertThat(w.warnings()).contains(MzMLWriter.A_32 + " (5)");
+        }
+    }
+
+    private static Param start(double value, String unit) {
+        return new Param("scan start time", "MS:1000016", value, unit);
+    }
 
     @Test
     void spectrumParamsAreWrittenInTheCanonicalOrderWithATypeFromTheMsLevel() {
@@ -515,6 +572,40 @@ class MzMLWriterSpectraTest {
             Spectrum read = back.spectra().get(0);
             assertThat(read.arrays()).containsOnlyKeys(arrays.keySet());
             arrays.forEach((key, values) -> assertThat(bits(read.arrays().get(key))).as(key).isEqualTo(bits(values)));
+            assertThat(w.warnings()).noneMatch(l -> l.startsWith("A-33"));
+        }
+    }
+
+    /**
+     * The keys MS:1000786 and "" name no non-standard data array: each is given the name 'non-standard data array'
+     * (A-33), the name the library gives a nameless one, under which it survives the mzML read and toMzPeak; without a
+     * name the mzML read would drop it (B-21).
+     */
+    @Test
+    void aNamelessNonStandardArrayIsGivenTheGeneratedName() throws IOException {
+        List<String> keys = List.of("MS:1000786", "");
+        List<Spectrum> spectra = new ArrayList<>();
+        for (int i = 0; i < keys.size(); i++) {
+            spectra.add(new Spectrum(description("scan=" + i, 1, List.of(scan(1.0)), List.of(), List.of()),
+                    new double[]{100, 200}, new double[]{1, 2}, null, Map.of(keys.get(i), new double[]{3, i}), null));
+        }
+        Contents contents = new Contents(metadata(), List.of(), List.of(), List.of("scan=0", "scan=1"), List.of(),
+                List.of());
+
+        for (Written w : write("nameless", contents, writer -> spectra.forEach(writer::write))) {
+            assertThat(Files.readString(w.file(), UTF_8)).contains("<cvParam cvRef=\"MS\" accession=\"MS:1000786\""
+                    + " value=\"non-standard data array\" name=\"non-standard data array\"></cvParam>");
+            assertThat(read(w.file()).spectra()).allSatisfy(s -> assertThat(s.arrays())
+                    .containsOnlyKeys("non-standard data array"));
+            assertThat(w.warnings()).contains(MzMLWriter.A_33 + " (2)");
+            Path back = dir.resolve("nameless-" + w.zlib() + ".mzpeak");
+            MzMLConversion.toMzPeak(w.file(), back, false, MzPeakWriter.Options.defaults());
+            try (MzPeakReader reader = MzPeakReader.open(back)) {
+                for (int i = 0; i < keys.size(); i++) {
+                    assertThat(reader.getSpectrumAt(i).arrays()).containsOnlyKeys("non-standard data array");
+                    assertThat(reader.getSpectrumAt(i).arrays().get("non-standard data array")).containsExactly(3, i);
+                }
+            }
         }
     }
 
@@ -673,6 +764,7 @@ class MzMLWriterSpectraTest {
             writer.write(s);
             writer.finish();
             assertThat(writer.warnings()).startsWith(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
+                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.NOT_VISIBLE.get(1),
                     MzMLWriter.A_17 + " (5)", MzMLWriter.CV_COMPLETED + " (1)");
         }
         MzMLAssert.valid(target);

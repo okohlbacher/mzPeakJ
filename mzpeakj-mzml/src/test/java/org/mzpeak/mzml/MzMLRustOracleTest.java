@@ -176,13 +176,15 @@ class MzMLRustOracleTest {
             double intensity = 0;
             double im = 0;
             for (int k = 0; k < ours.length; k++) {
-                mz = Math.max(mz, Math.abs(theirs[k][0] - ours[k][0]) / ours[k][0]);
+                mz = Math.max(mz, Math.abs(theirs[k][0] - ours[k][0]) / Math.abs(theirs[k][0]));
                 intensity = Math.max(intensity, Math.abs(theirs[k][1] - ours[k][1]));
                 im = Math.max(im, Math.abs(theirs[k][2] - ours[k][2]));
             }
-            assertThat(mz).as("spectrum %d m/z, relative", i).isLessThanOrEqualTo(1.8e-12);
-            assertThat(im).as("spectrum %d ion mobility", i).isLessThanOrEqualTo(0x1p-51); // 4.4e-16, 2 ulp at 1
-            assertThat(intensity).as("spectrum %d intensity", i).isLessThanOrEqualTo(1.0);
+            // Math.max lets NaN through, so a non-finite difference would pass the bounds without isFinite
+            assertThat(mz).as("spectrum %d m/z, relative", i).isFinite().isLessThanOrEqualTo(1.8e-12);
+            assertThat(im).as("spectrum %d ion mobility", i).isFinite()
+                    .isLessThanOrEqualTo(0x1p-51); // 4.4e-16, 2 ulp at 1
+            assertThat(intensity).as("spectrum %d intensity", i).isFinite().isLessThanOrEqualTo(1.0);
         }
     }
 

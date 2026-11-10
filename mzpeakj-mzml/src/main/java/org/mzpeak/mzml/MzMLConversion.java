@@ -18,17 +18,20 @@ import org.mzpeak.model.meta.FileMetadata.MsRun;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Converts mzML to mzPeak and mzPeak to mzML (mzML design 3, 8.1), each in one pass over its input.
@@ -41,9 +44,11 @@ import java.util.Set;
  * its own first; every isolation window and activation stays (design 5.6, B-19). It counts what the mzPeak read
  * changes (design 6.1): extra arrays of spectra and chromatograms without a value other than NaN, empty ones included,
  * which it drops (B-26); spectra with a NaN m/z, which it interpolates (B-34); non-finite values of file-level params,
- * which come back as the Strings {@code Infinity}, {@code -Infinity} or {@code NaN} (B-35); and chromatograms without
- * points, whose intensity unit it drops (B-36). A failure closes the session, which removes the target and the temp
- * files it created.
+ * which come back as the Strings {@code Infinity}, {@code -Infinity} or {@code NaN} (B-35); chromatograms without
+ * points, whose intensity unit it drops (B-36); and what the mzPeak writer adds (B-24): a spectrum type to spectra
+ * without one, the five summary params to spectra with points and none of them, a scan to spectra without scans,
+ * and a run default source file when the run names none. A failure closes the session, which removes the target and
+ * the temp files it created.
  *
  * <p>{@link #toMzML} refuses an existing target before it opens the input (Q66), then reads the mzPeak through
  * {@link MzPeakReader} with its default options (profile points reconstructed, both signal members) and writes it
@@ -63,6 +68,12 @@ public final class MzMLConversion {
 
     // The losses of design 6.1 toMzPeak counts itself, one line each after the reader's.
     static final String B_19 = "B-19 selected ions moved to the first precursor of their spectrum with the same parent";
+    static final String B_24_TYPE = "B-24 spectrum types added by the mzPeak writer to spectra without one";
+    static final String B_24_SUMMARY = "B-24 summary params (m/z range, base peak, total ion current) added by the"
+            + " mzPeak writer to spectra with points and none of the five";
+    static final String B_24_SCAN = "B-24 scans added by the mzPeak writer to spectra without scans";
+    static final String B_24_SOURCE = "B-24 run defaultSourceFileRef added by the mzPeak writer (the first source"
+            + " file, else a stub source file)";
     static final String B_26 = "B-26 extra arrays without a value other than NaN, which the mzPeak read drops";
     static final String B_34 = "B-34 spectra with a NaN m/z, which the mzPeak read interpolates";
     static final String B_35 = "B-35 non-finite file-level param values, which the mzPeak read gives as the Strings"
@@ -74,6 +85,9 @@ public final class MzMLConversion {
             List.of());
     /** The data processing the mzPeak writer adds when the run names none and the file has none (design 5.10). */
     private static final DataProcessing PROCESSING_STUB = new DataProcessing("mzpeakj_export", List.of());
+    /** The summary params the mzPeak writer derives from the points when a spectrum has none of them (B-24). */
+    private static final Set<String> SUMMARIES = Set.of("MS:1000528", "MS:1000527", "MS:1000504", "MS:1000505",
+            "MS:1000285");
 
     private MzMLConversion() {
     }
@@ -97,7 +111,9 @@ public final class MzMLConversion {
 
     /**
      * Converts the mzML file {@code mzml} into the mzPeak dataset {@code target}: an unpacked directory if
-     * {@code directory}, else a ZIP archive, written with {@code options} and the mzML's cv list.
+     * {@code directory}, else a ZIP archive, written with {@code options} and the mzML's cv list: the cv list of
+     * {@code options} ({@link MzPeakWriter.Options#cvList()}) is replaced by the mzML's {@code cvList}, whatever it
+     * holds.
      *
      * @throws MzPeakException      if the mzML cannot be read or holds what the model cannot carry (as
      *                              {@link MzMLReader} states), before the target is created; if {@code target} exists
@@ -114,6 +130,7 @@ public final class MzMLConversion {
         MzMLReader.Survey survey = reader.survey();
         Losses losses = new Losses();
         losses.note(B_35, nonFinite(header.fileMetadata(), header.scanSettings()));
+        losses.note(B_24_SOURCE, header.fileMetadata().run().defaultSourceFileId() == null ? 1 : 0);
         MzPeakWriter.Options withCvList = options.withCvList(header.cvList());
         Adding adding;
         try (MzPeakWriter.Session session = directory
@@ -135,7 +152,9 @@ public final class MzMLConversion {
      * {@code target}, its arrays zlib-compressed if {@code zlib}.
      *
      * @throws MzPeakException      if {@code target} exists, before the input is opened; if the dataset cannot be
-     *                              read; or if the mzML cannot be written, which leaves no target and no temp file
+     *                              read, with a message that starts with {@code mzPeak <mzpeak>: } (also for an
+     *                              {@link UncheckedIOException} of the reader); or if the mzML cannot be written,
+     *                              which leaves no target and no temp file
      * @throws NullPointerException if an argument is null
      */
     public static Result toMzML(Path mzpeak, Path target, boolean zlib) {
@@ -144,23 +163,36 @@ public final class MzMLConversion {
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             throw new MzPeakException("mzML " + target + ": the target exists; it is never replaced");
         }
-        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
-            List<SpectrumDescription> spectra = reader.metadata();
-            List<WavelengthSpectrum> wavelengthSpectra = reader.wavelengthSpectra();
-            List<Chromatogram> chromatograms = reader.chromatograms();
-            MzMLWriter.Contents contents = new MzMLWriter.Contents(withoutStubs(reader.fileMetadata()),
-                    reader.scanSettings(), reader.manifest().cvList(),
+        try (MzPeakReader reader = read(mzpeak, () -> MzPeakReader.open(mzpeak))) {
+            List<SpectrumDescription> spectra = read(mzpeak, reader::metadata);
+            List<WavelengthSpectrum> wavelengthSpectra = read(mzpeak, reader::wavelengthSpectra);
+            MzMLWriter.Contents contents = read(mzpeak, () -> new MzMLWriter.Contents(
+                    withoutStubs(reader.fileMetadata()), reader.scanSettings(), reader.manifest().cvList(),
                     spectra.stream().map(SpectrumDescription::id).toList(),
-                    wavelengthSpectra.stream().map(WavelengthSpectrum::id).toList(), chromatograms);
+                    wavelengthSpectra.stream().map(WavelengthSpectrum::id).toList(), reader.chromatograms()));
             try (MzMLWriter writer = MzMLWriter.open(target, contents, zlib,
                     spectrumPrefixes(spectra, wavelengthSpectra))) {
                 for (int i = 0; i < spectra.size(); i++) {
-                    writer.write(reader.getSpectrumAt(i));
+                    int index = i;
+                    writer.write(read(mzpeak, () -> reader.getSpectrumAt(index)));
                 }
                 wavelengthSpectra.forEach(writer::write);
                 writer.finish();
-                return new Result(spectra.size(), wavelengthSpectra.size(), chromatograms.size(), writer.warnings());
+                return new Result(spectra.size(), wavelengthSpectra.size(), contents.chromatograms().size(),
+                        writer.warnings());
             }
+        }
+    }
+
+    /**
+     * What {@code read} reads from the mzPeak dataset {@code mzpeak}; a failure of the reader names the dataset, as the
+     * writer's failures name the mzML target.
+     */
+    private static <T> T read(Path mzpeak, Supplier<T> read) {
+        try {
+            return read.get();
+        } catch (MzPeakException | UncheckedIOException e) {
+            throw new MzPeakException("mzPeak " + mzpeak + ": " + e.getMessage(), e);
         }
     }
 
@@ -184,6 +216,10 @@ public final class MzMLConversion {
         public void spectrum(Spectrum spectrum) {
             losses.note(B_34, Arrays.stream(spectrum.mz()).anyMatch(Double::isNaN) ? 1 : 0);
             losses.note(B_26, nanOnly(spectrum.arrays()));
+            SpectrumDescription d = spectrum.description();
+            losses.note(B_24_TYPE, has(d.parameters(), MzMLTerms.SPECTRUM_TYPES.keySet()) ? 0 : 1);
+            losses.note(B_24_SUMMARY, spectrum.mz().length == 0 || has(d.parameters(), SUMMARIES) ? 0 : 1);
+            losses.note(B_24_SCAN, d.scans().isEmpty() ? 1 : 0);
             session.addSpectrum(sharedParentsMoved(spectrum));
             spectra++;
         }
@@ -236,6 +272,11 @@ public final class MzMLConversion {
             return new Spectrum(description, spectrum.mz(), spectrum.intensity(), spectrum.peaks(), spectrum.arrays(),
                     spectrum.peakArrays());
         }
+    }
+
+    /** Whether {@code params} hold a param with one of {@code accessions}; a userParam has none (null). */
+    private static boolean has(List<Param> params, Collection<String> accessions) {
+        return params.stream().anyMatch(p -> p.accession() != null && accessions.contains(p.accession()));
     }
 
     /** The number of {@code arrays} without a value other than NaN, empty ones included (B-26). */

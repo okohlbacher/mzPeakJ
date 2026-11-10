@@ -417,6 +417,25 @@ class MzMLWriterTest {
         assertThat(listing()).containsExactly("late.mzML");
     }
 
+    /** An Error or RuntimeException while the document is marshalled leaves no temp file and no target. */
+    @Test
+    void aFailureWhileMarshallingLeavesNoTempFile() throws IOException {
+        Path target = dir.resolve("failed.mzML");
+        MzMLWriter oom = MzMLWriter.open(target, contents(metadata()), true);
+
+        assertThatThrownBy(() -> oom.finishWith((document, w) -> {
+            throw new OutOfMemoryError("Java heap space");
+        })).isInstanceOf(OutOfMemoryError.class).hasMessage("Java heap space");
+        assertThat(listing()).isEmpty();
+
+        MzMLWriter failing = MzMLWriter.open(target, contents(metadata()), true);
+        assertThatThrownBy(() -> failing.finishWith((document, w) -> {
+            throw new IllegalArgumentException("boom");
+        })).isInstanceOf(MzPeakException.class).hasMessage("mzML " + target
+                + ": cannot be written: java.lang.IllegalArgumentException: boom");
+        assertThat(listing()).isEmpty();
+    }
+
     @Test
     void closeWithoutFinishWritesNothingAndCanBeRepeated() throws IOException {
         Path target = dir.resolve("closed.mzML");
@@ -499,8 +518,9 @@ class MzMLWriterTest {
     // ---- (j) the other rules of the mapping -------------------------------------------------------------------
 
     @Test
-    void whatMzMLRequiresAndTheModelLacksIsSynthesized() {
+    void whatMzMLRequiresAndTheModelLacksIsSynthesized() throws IOException {
         for (Written w : write("empty", contents(FileMetadata.EMPTY))) {
+            assertThat(MzMLMappingCheck.violations(w.file())).containsExactly("instrumentconfiguration_must @ IC1");
             FileMetadata back = read(w.file()).header().fileMetadata();
             assertThat(back.software()).containsExactly(new Software("mzPeakJ", "unknown",
                     List.of(new Param("custom unreleased software tool", "MS:1000799", "mzPeakJ", null))));
@@ -513,11 +533,13 @@ class MzMLWriterTest {
                     List.of()));
             assertThat(back.fileDescription()).isEqualTo(new FileDescription(List.of(), List.of(), List.of()));
             assertThat(w.warnings()).containsExactly(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
+                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.NOT_VISIBLE.get(1),
                     String.format(MzMLWriter.A_8, "instrument configuration IC1") + " (1)",
                     MzMLWriter.A_17 + " (2)",
                     String.format(MzMLWriter.A_8, "software mzPeakJ") + " (1)",
                     String.format(MzMLWriter.A_8, "data processing mzpeakj_conversion") + " (1)",
                     String.format(MzMLWriter.A_8, "run id mzpeakj_run") + " (1)",
+                    MzMLWriter.INSTRUMENT_MUST + " (1)",
                     String.format(MzMLWriter.A_8, "run defaultInstrumentConfigurationRef (the first instrument"
                             + " configuration)") + " (1)",
                     String.format(MzMLWriter.A_8, "spectrumList defaultDataProcessingRef (the first data"
@@ -665,6 +687,34 @@ class MzMLWriterTest {
         }
     }
 
+    /**
+     * A String cvParam value the mzML read types comes back typed (A-5), except a contact name the read takes
+     * verbatim; a userParam keeps its String by its type; an empty value comes back as none (A-6).
+     */
+    @Test
+    void valuesTheMzMLReadGivesBackOtherwiseAreCounted() {
+        List<Param> params = List.of(
+                new Param("number", "MS:1000001", "1.5", null),
+                new Param("flag", "MS:1000002", "true", null),
+                new Param("infinite", "MS:1000003", "INF", null),
+                new Param("text", "MS:1000004", "abc", null),
+                new Param("empty", "MS:1000005", "", null),
+                new Param("user number", null, "42", null),
+                new Param("user empty", null, "", null));
+        FileMetadata m = new FileMetadata(new FileDescription(List.of(), List.of(new SourceFile("sf", "a.raw",
+                "file:///data", List.of())), List.of(new Contact("007", null, List.of()))),
+                List.of(instrument(0, "sw")), List.of(processing("dp", "sw")), List.of(),
+                List.of(new Software("sw", "1", params)), run("run"));
+
+        for (Written w : write("retyped", contents(m))) {
+            FileMetadata back = read(w.file()).header().fileMetadata();
+            assertThat(back.software().get(0).parameters()).extracting(Param::value)
+                    .containsExactly(1.5, true, Double.POSITIVE_INFINITY, "abc", null, "42", null);
+            assertThat(back.fileDescription().contacts()).extracting(Contact::name).containsExactly("007");
+            assertThat(w.warnings()).contains(MzMLWriter.A_5 + " (3)", MzMLWriter.A_6 + " (2)");
+        }
+    }
+
     @Test
     void chromatogramsKeepTheirTypePolarityParamsAndDataProcessing() {
         FileMetadata m = metadata(List.of(software("sw")), List.of(instrument(0, "sw")),
@@ -689,6 +739,43 @@ class MzMLWriterTest {
                     .containsExactly("dp2", null, "dp2");
             assertThat(w.warnings()).contains(String.format(MzMLWriter.A_18, "chromatogram dataProcessingRef dropped")
                     + " (1)");
+        }
+    }
+
+    /**
+     * A chromatogram carries exactly one type (chromatogram_must): a param repeating its typeCurie is dropped without
+     * a count, one naming another type is dropped and counted (A-31), and without typeCurie the first type param is
+     * the type.
+     */
+    @Test
+    void aChromatogramCarriesExactlyOneType() throws IOException {
+        Param tic = new Param("total ion current chromatogram", "MS:1000235", null, null);
+        Param bpc = new Param("basepeak chromatogram", "MS:1000628", null, null);
+        Param note = new Param("note", null, "n", null);
+        FileMetadata m = metadata(List.of(software("sw")), List.of(new InstrumentConfiguration(0, List.of(),
+                "sw", List.of(new Param("LTQ", "MS:1000447", null, null)))), List.of(processing("dp", "sw")),
+                run("run"));
+        Chromatogram repeated = new Chromatogram(0, "repeated", "MS:1000235", new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(tic, note), List.of());
+
+        for (Written w : write("repeated-type", contents(m, repeated))) {
+            assertThat(MzMLMappingCheck.violations(w.file())).isEmpty();
+            assertThat(Files.readString(w.file(), UTF_8)).containsOnlyOnce("accession=\"MS:1000235\"");
+            List<Chromatogram> back = read(w.file()).chromatograms();
+            assertThat(back.get(0).typeCurie()).isEqualTo("MS:1000235");
+            assertThat(back.get(0).parameters()).containsExactly(note);
+            assertThat(w.warnings()).noneMatch(l -> l.startsWith("A-31"));
+        }
+        Chromatogram other = new Chromatogram(0, "other", "MS:1000235", new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(bpc, tic), List.of());
+        Chromatogram fromParams = new Chromatogram(1, "params", null, new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(note, bpc, tic), List.of());
+        for (Written w : write("other-type", contents(m, other, fromParams))) {
+            assertThat(MzMLMappingCheck.violations(w.file())).isEmpty();
+            List<Chromatogram> back = read(w.file()).chromatograms();
+            assertThat(back).extracting(Chromatogram::typeCurie).containsExactly("MS:1000235", "MS:1000628");
+            assertThat(back).extracting(Chromatogram::parameters).containsExactly(List.of(), List.of(note));
+            assertThat(w.warnings()).contains(MzMLWriter.A_31 + " (2)");
         }
     }
 
@@ -737,10 +824,11 @@ class MzMLWriterTest {
                 run("run"));
         for (Written w : write("no-source-file", contents(noSourceFile, withTwo))) {
             uk.ac.ebi.jmzml.model.mzml.Precursor p = jmzmlChromatograms(w.file()).get(0).getPrecursor();
-            assertThat(p.getExternalSpectrumID()).isEqualTo("scan=9");
+            assertThat(p.getExternalSpectrumID()).isNull();
             assertThat(p.getSourceFileRef()).isNull();
             assertThat(w.warnings()).contains(String.format(MzMLWriter.A_18, "run defaultSourceFileRef dropped")
-                    + " (1)");
+                    + " (1)", String.format(MzMLWriter.A_18, "spectrum refs to an external document without a source"
+                    + " file dropped") + " (1)");
         }
     }
 

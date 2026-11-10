@@ -35,6 +35,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
@@ -236,6 +237,16 @@ class MzPeakConvertTest {
                 "wrote " + back + ": 4 spectra, 0 wavelength spectra, 2 chromatograms");
         assertThat(toMzML.errLines()).startsWith(warnings(MzMLWriter.LIMITS).toArray(String[]::new));
         MzMLAssert.valid(back);
+
+        // a directory is an mzPeak input whatever its name, also one ending in .mzML
+        Path named = Files.move(renamed, dir.resolve("dataset.mzML"));
+        Path again = dir.resolve("again.mzML");
+        Run fromNamed = run(named.toString(), again.toString());
+
+        assertThat(fromNamed.code()).as(fromNamed.err()).isZero();
+        assertThat(fromNamed.out().lines()).containsExactly(
+                "wrote " + again + ": 4 spectra, 0 wavelength spectra, 2 chromatograms");
+        assertThat(Files.readAllBytes(again)).isEqualTo(Files.readAllBytes(back));
     }
 
     @Test
@@ -369,6 +380,7 @@ class MzPeakConvertTest {
         assertThat(r.errLines()).containsExactly(
                 "error: mzML " + file + ": Internal stack of XML tags was corrupted!");
         assertThat(target).doesNotExist();
+        assertThat(listing(dir)).as("no temp file remains").containsOnlyKeys("misspelt.mzML");
     }
 
     /** --numpress-slof cannot encode a negative intensity (MZ-23): the session fails and removes what it wrote. */
@@ -405,7 +417,8 @@ class MzPeakConvertTest {
         assertThat(fromMzML.code()).isEqualTo(1);
         assertThat(fromMzML.errLines()).containsExactly("error: mzML " + mzml + ": not a readable regular file");
         assertThat(fromMzPeak.code()).isEqualTo(1);
-        assertThat(fromMzPeak.errLines()).containsExactly("error: No such mzPeak dataset: " + mzpeak);
+        assertThat(fromMzPeak.errLines()).containsExactly("error: mzPeak " + mzpeak + ": No such mzPeak dataset: "
+                + mzpeak);
         assertThat(listing(dir)).isEmpty();
     }
 
@@ -426,8 +439,37 @@ class MzPeakConvertTest {
 
         assertThat(r.code()).isEqualTo(1);
         assertThat(r.out()).isEmpty();
-        assertThat(r.errLines()).containsExactly("error: Failed reading Parquet footer");
+        assertThat(r.errLines()).containsExactly("error: mzPeak " + dataset + ": Failed reading Parquet footer");
         assertThat(target).doesNotExist();
+    }
+
+    /** Any other RuntimeException fails the conversion with its class and message, not a stack trace. */
+    @Test
+    void anUnexpectedRuntimeExceptionFailsTheConversionWithAnErrorLine() throws IOException {
+        Path tiny = MzMLFixtures.extract(MzMLFixtures.TINY, dir);
+
+        Run r = run(command -> {
+            throw new IllegalArgumentException("boom");
+        }, tiny.toString(), dir.resolve("x.mzpeak").toString());
+
+        assertThat(r.code()).isEqualTo(1);
+        assertThat(r.out()).isEmpty();
+        assertThat(r.errLines()).containsExactly("error: java.lang.IllegalArgumentException: boom");
+    }
+
+    /** An OutOfMemoryError fails the conversion with advice, not a stack trace. */
+    @Test
+    void runningOutOfMemoryFailsTheConversionWithAdvice() throws IOException {
+        Path small = Fixtures.current("small.mzpeak");
+
+        Run r = run(command -> {
+            throw new OutOfMemoryError("Java heap space");
+        }, small.toString(), dir.resolve("x.mzML").toString());
+
+        assertThat(r.code()).isEqualTo(1);
+        assertThat(r.out()).isEmpty();
+        assertThat(r.errLines()).containsExactly("error: out of memory converting " + small
+                + "; rerun with a larger -Xmx (see --help)");
     }
 
     // ---- (g) --help -----------------------------------------------------------------------------------------------
@@ -442,7 +484,9 @@ class MzPeakConvertTest {
         assertThat(lines.get(0)).isEqualTo(MzPeakConvert.USAGE);
         assertThat(lines).containsSubsequence(indented(MzMLReader.LIMITS))
                 .containsSubsequence(indented(MzMLWriter.LIMITS))
-                .contains("  -Xmx >= expected mzML size + 13 KB per spectrum + 1 GB");
+                .contains("  -Xmx >= expected mzML size + 13 KB per spectrum + 1 GB",
+                        "  about 2.5 KB per spectrum: -Xmx2g per 300,000 spectra",
+                        "  resident memory can reach 2-4.5 times -Xmx; --no-zlib keeps it near -Xmx");
         assertThat(String.join("\n", lines)).contains("--no-zlib", "--directory", "--layout split|packed",
                 "--numpress-slof", "--numpress-pic", "--row-group-size <bytes>", "gunzip it first");
         assertThat(run("--bogus", "x", "--help")).isEqualTo(r);
@@ -468,6 +512,17 @@ class MzPeakConvertTest {
         int code;
         try (PrintStream o = new PrintStream(out, true, UTF_8); PrintStream e = new PrintStream(err, true, UTF_8)) {
             code = MzPeakConvert.run(args, o, e);
+        }
+        return new Run(code, out.toString(UTF_8), err.toString(UTF_8));
+    }
+
+    /** {@link #run(String...)} with {@code convert} in place of the conversion. */
+    private static Run run(Function<MzPeakConvert.Command, MzMLConversion.Result> convert, String... args) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int code;
+        try (PrintStream o = new PrintStream(out, true, UTF_8); PrintStream e = new PrintStream(err, true, UTF_8)) {
+            code = MzPeakConvert.run(args, o, e, convert);
         }
         return new Run(code, out.toString(UTF_8), err.toString(UTF_8));
     }

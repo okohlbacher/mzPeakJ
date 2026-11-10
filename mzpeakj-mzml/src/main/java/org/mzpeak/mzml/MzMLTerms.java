@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -152,6 +153,12 @@ final class MzMLTerms {
             "MS:1000829", "isolation window upper offset",
             "MS:1000927", "ion injection time",
             "MS:1003812", "lambda max");
+
+    /**
+     * Instrument models: the descendants of MS:1000031 'instrument model' (501 terms), read from the resource
+     * {@code ms-instrument-models.txt} next to this class (one accession per line after a {@code #} header).
+     */
+    static final Set<String> INSTRUMENT_MODELS = instrumentModels();
 
     private static final Map<String, String> NAMES = names(SPECTRUM_TYPES, CHROMATOGRAM_TYPES, SPECTRA_COMBINATION,
             DATA_TYPES, COMPRESSIONS, UNIT_NAMES, FIXED_TERMS, CvTerms.ARRAY_TYPES, CvTerms.DISSOCIATION_METHODS);
@@ -611,6 +618,15 @@ final class MzMLTerms {
             out.put(accessionNamePairs[i], accessionNamePairs[i + 1]);
         }
         return Collections.unmodifiableMap(out);
+    }
+
+    private static Set<String> instrumentModels() {
+        Set<String> models = new HashSet<>();
+        try (Scanner in = new Scanner(MzMLTerms.class.getResourceAsStream("ms-instrument-models.txt"),
+                StandardCharsets.US_ASCII)) {
+            in.findAll("(?m)^MS:[0-9]{7}$").forEach(m -> models.add(m.group()));
+        }
+        return Collections.unmodifiableSet(models);
     }
 
     @SafeVarargs

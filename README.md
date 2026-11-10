@@ -390,8 +390,9 @@ Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--to
 ## mzML conversion
 
 The module `mzpeakj-mzml` converts mzML 1.1 to mzPeak and mzPeak to mzML through jmzML 1.7.11 as is
-(`org.mzpeak.mzml.MzMLConversion`; `MzMLReader` and `MzMLWriter` are public too). The command-line tool runs from
-the module's self-contained jar, which `mvn verify` (or `mvn -DskipTests package`) builds:
+(`org.mzpeak.mzml.MzMLConversion`; `MzMLReader` and `MzMLWriter` are public too). `MzMLConversion.toMzPeak`
+writes the mzML's cv list: it replaces the cv list of the `MzPeakWriter.Options` it is given. The command-line tool
+runs from the module's self-contained jar, which `mvn verify` (or `mvn -DskipTests package`) builds:
 
 ```bash
 java [-Xmx...] -cp mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar org.mzpeak.mzml.cli.MzPeakConvert \
@@ -427,7 +428,9 @@ the run one for each limit of the direction and one for each kind of loss, with 
 
 - `0`: the output was written (warnings allowed).
 - `1`: the conversion failed, with `error: <message>` on stderr: the input cannot be read or holds what the
-  converter rejects (below), or the output cannot be written. No output and no temp file is left. For input whose
+  converter rejects (below), or the output cannot be written; an unexpected exception gives `error: <class>:
+  <message>`, and running out of heap `error: out of memory converting <input>; rerun with a larger -Xmx (see
+  --help)`. No output and no temp file is left. For input whose
   tags do not match, xxindex (jmzML's indexer) prints its own diagnostic lines to stdout first.
 - `2`: a usage error, with `error: <message>` and the usage line on stderr; nothing is written. An unknown option, an
   option given twice or without its value, a missing or extra argument, an option for the other direction, both
@@ -464,23 +467,27 @@ Reading mzML:
 
 Gzip-compressed mzML is not read at all: gunzip it first. Rejected with an `MzPeakException` (exit 1 in the CLI):
 gzipped input (a name ending in `.gz`, in any case: "gzip-compressed mzML is not supported by jmzML 1.7.11 as is:
-gunzip it first"; the CLI reports a `.mzML.gz` input as a usage error); UTF-16 and UTF-32 documents; a `run`,
-`spectrumList` or `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of it; arrays
-compressed with the combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748; MS-Numpress PIC counts
-of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an empty SLOF payload; m/z,
-intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or wavelength
-or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type terms on
-one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the attributes of
-`run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads them, so a
-character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80 becomes U+FFFD
-(a default ref with such a byte then names nothing, while the header lists keep the character).
+gunzip it first"; through the CLI, every input file ending in `.gz` is a usage error, exit 2); UTF-16 and UTF-32
+documents; a `run`, `spectrumList` or `chromatogramList` start tag longer than the 2,048 bytes jmzML's index reads of
+it; arrays compressed with the combined MS-Numpress-and-zlib terms MS:1002746, MS:1002747 and MS:1002748;
+MS-Numpress PIC counts of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an
+empty SLOF payload; arrays without a binary data type term (jmzML: "Required precision CV parameter not found");
+m/z, intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
+wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type
+terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the
+attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads
+them, so a character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80
+becomes U+FFFD (a default ref with such a byte then names nothing, while the header lists keep the character).
 
 Writing mzML:
 
 - **L-8 Plain mzML.** The output has no `indexedmzML` wrapper: no index, no offsets, no checksum. Tools that need
   random access (ProteoWizard, OpenMS) index a plain file when they open it.
 - **L-9 Whole document in memory.** jmzML has no streaming writer, so the whole document is built in memory before it
-  is written: about 0.75 bytes of heap per byte of the arrays' Base64 text plus 13 KB per spectrum.
+  is written: about 0.75 bytes of heap per byte of the arrays' Base64 text plus 13 KB per spectrum. With zlib (the
+  default), jmzML creates a `Deflater` per array and never ends it, so memory outside the heap grows as well: the
+  resident memory of the JVM can reach 2-4.5 times `-Xmx`. `--no-zlib` keeps it near `-Xmx`. This is a jmzML limit;
+  the converter does not work around it.
 
 Every write through jmzML's `MzMLMarshaller` sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`. It changes no output, and the CLI's JVM ends with the run, but
@@ -494,7 +501,8 @@ writer's entries): 300,000 spectra need about `-Xmx2g`. mzPeak → mzML holds th
 
 **`-Xmx` >= expected mzML size + 13 KB per spectrum + 1 GB**
 
-which errs on the safe side. The largest mzML output for a heap, estimated from the measurements of the converter's
+which errs on the safe side; with zlib, leave room for 2-4.5 times `-Xmx` of resident memory (L-9), or write with
+`--no-zlib`. The largest mzML output for a heap, estimated from the measurements of the converter's
 design (it works up to about 90% of `-Xmx`):
 
 | `-Xmx` | spectra like small.mzML's (67.5 KB of mzML each) | spectra of 15 points (3.5 KB of mzML each) |
@@ -503,15 +511,44 @@ design (it works up to about 90% of `-Xmx`):
 | 4 GB | ≈ 58,500 spectra, ≈ 3.85 GB | ≈ 260,000 spectra, ≈ 0.9 GB |
 | 16 GB | ≈ 249,000 spectra, ≈ 16.4 GB | ≈ 1.1 million spectra, ≈ 3.8 GB |
 
-A JVM that runs out of heap while the document is built fails with `OutOfMemoryError`.
+A JVM that runs out of heap while the document is built fails with `OutOfMemoryError`, which leaves no temp file;
+the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rules.
 
 ### What is lost
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
-kind with its count: B-1 … B-40 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
-converted to minutes or lost array data processing refs, and A-1 … A-30 for mzPeak → mzML, such as required content
+kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
+converted to minutes or lost array data processing refs, and A-1 … A-33 for mzPeak → mzML, such as required content
 synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
 lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
+Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
+A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`, which the library does not
+read). The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
+lacks what the rule asks for (it does not invent the data): spectra without exactly one spectrum type and
+representation (`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum
+precursor activations without a dissociation method (`precursor_activation_must`), instrument configurations
+synthesized or without exactly one instrument model (`instrumentconfiguration_must`) and chromatograms without
+exactly one type (`chromatogram_must`). Added after the design's tables:
+
+- A-31: a chromatogram carries one chromatogram type (its type, else the first type among its params); further
+  type params that name another type are dropped and counted.
+- A-32: a scan start time (MS:1000016) among a spectrum's own params, which mzML allows on scans only, is dropped;
+  counted unless it is the first scan's start time.
+- A-33: a non-standard data array without a name (keyed MS:1000786 or with an empty key) is written with the name
+  'non-standard data array', the name the library gives such an array, under which it comes back; the mzML read
+  drops a nameless one.
+- B-14 also counts the summary params (m/z range, base peak, total ion current) and selected-ion peak intensities
+  written without unit, as ProteoWizard writes the total ion current: they are given their default unit (m/z or
+  detector counts) and typed as numbers with decimals, so that they reach the mzPeak summary columns (and the TIC
+  and BPC derived from them).
+- B-41: an `externalSpectrumID` next to a `spectrumRef` (on a scan or precursor) is lost: the model holds one
+  reference, the `spectrumRef`.
+- B-42: a `spectrumRef` that names no spectrum of the file is kept as the reference's id, without index, and comes
+  back as an `externalSpectrumID`.
+- A-18 also counts the spectrum precursors without index that are written as `externalSpectrumID`, and drops (and
+  counts) every external reference when the run has no default source file, which mzML requires next to an
+  `externalSpectrumID`. The HEAD Python reader attaches selected ions to their precursor by `(source_index,
+  precursor_index)`, so it attaches none to an mzPeak precursor without index.
 
 ## Architecture
 
@@ -657,6 +694,8 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - Apache-2.0 [MS-Numpress](https://github.com/ms-numpress/ms-numpress) decoders (`mzpeakj/src/main/java/ms/numpress/`)
 - Apache-2.0 HUPO-PSI mzPeak example fixtures (`mzpeakj/src/test/resources/`)
 - mzML test fixtures and the PSI mzML schemas (`mzpeakj-mzml/src/test/resources/mzml/`)
+- CC BY 4.0 PSI-MS instrument-model accessions (`mzpeakj-mzml/src/main/resources/org/mzpeak/mzml/`, also in the
+  converter's jars)
 - in the two `-all` jars only, the runtime libraries: parquet-java 1.17.1, Jackson 2.18.2, hadoop-client-api 3.5.0,
   snappy-java 1.1.10.7, aircompressor 2.0.2 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
   jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);
