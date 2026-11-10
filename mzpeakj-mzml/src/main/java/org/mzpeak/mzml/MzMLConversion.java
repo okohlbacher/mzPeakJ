@@ -18,6 +18,7 @@ import org.mzpeak.model.meta.FileMetadata.MsRun;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Converts mzML to mzPeak and mzPeak to mzML (mzML design 3, 8.1), each in one pass over its input.
@@ -148,7 +150,9 @@ public final class MzMLConversion {
      * {@code target}, its arrays zlib-compressed if {@code zlib}.
      *
      * @throws MzPeakException      if {@code target} exists, before the input is opened; if the dataset cannot be
-     *                              read; or if the mzML cannot be written, which leaves no target and no temp file
+     *                              read, with a message that starts with {@code mzPeak <mzpeak>: } (also for an
+     *                              {@link UncheckedIOException} of the reader); or if the mzML cannot be written,
+     *                              which leaves no target and no temp file
      * @throws NullPointerException if an argument is null
      */
     public static Result toMzML(Path mzpeak, Path target, boolean zlib) {
@@ -157,23 +161,36 @@ public final class MzMLConversion {
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             throw new MzPeakException("mzML " + target + ": the target exists; it is never replaced");
         }
-        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
-            List<SpectrumDescription> spectra = reader.metadata();
-            List<WavelengthSpectrum> wavelengthSpectra = reader.wavelengthSpectra();
-            List<Chromatogram> chromatograms = reader.chromatograms();
-            MzMLWriter.Contents contents = new MzMLWriter.Contents(withoutStubs(reader.fileMetadata()),
-                    reader.scanSettings(), reader.manifest().cvList(),
+        try (MzPeakReader reader = read(mzpeak, () -> MzPeakReader.open(mzpeak))) {
+            List<SpectrumDescription> spectra = read(mzpeak, reader::metadata);
+            List<WavelengthSpectrum> wavelengthSpectra = read(mzpeak, reader::wavelengthSpectra);
+            MzMLWriter.Contents contents = read(mzpeak, () -> new MzMLWriter.Contents(
+                    withoutStubs(reader.fileMetadata()), reader.scanSettings(), reader.manifest().cvList(),
                     spectra.stream().map(SpectrumDescription::id).toList(),
-                    wavelengthSpectra.stream().map(WavelengthSpectrum::id).toList(), chromatograms);
+                    wavelengthSpectra.stream().map(WavelengthSpectrum::id).toList(), reader.chromatograms()));
             try (MzMLWriter writer = MzMLWriter.open(target, contents, zlib,
                     spectrumPrefixes(spectra, wavelengthSpectra))) {
                 for (int i = 0; i < spectra.size(); i++) {
-                    writer.write(reader.getSpectrumAt(i));
+                    int index = i;
+                    writer.write(read(mzpeak, () -> reader.getSpectrumAt(index)));
                 }
                 wavelengthSpectra.forEach(writer::write);
                 writer.finish();
-                return new Result(spectra.size(), wavelengthSpectra.size(), chromatograms.size(), writer.warnings());
+                return new Result(spectra.size(), wavelengthSpectra.size(), contents.chromatograms().size(),
+                        writer.warnings());
             }
+        }
+    }
+
+    /**
+     * What {@code read} reads from the mzPeak dataset {@code mzpeak}; a failure of the reader names the dataset, as the
+     * writer's failures name the mzML target.
+     */
+    private static <T> T read(Path mzpeak, Supplier<T> read) {
+        try {
+            return read.get();
+        } catch (MzPeakException | UncheckedIOException e) {
+            throw new MzPeakException("mzPeak " + mzpeak + ": " + e.getMessage(), e);
         }
     }
 

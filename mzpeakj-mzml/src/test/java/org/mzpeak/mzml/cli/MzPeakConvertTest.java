@@ -406,7 +406,8 @@ class MzPeakConvertTest {
         assertThat(fromMzML.code()).isEqualTo(1);
         assertThat(fromMzML.errLines()).containsExactly("error: mzML " + mzml + ": not a readable regular file");
         assertThat(fromMzPeak.code()).isEqualTo(1);
-        assertThat(fromMzPeak.errLines()).containsExactly("error: No such mzPeak dataset: " + mzpeak);
+        assertThat(fromMzPeak.errLines()).containsExactly("error: mzPeak " + mzpeak + ": No such mzPeak dataset: "
+                + mzpeak);
         assertThat(listing(dir)).isEmpty();
     }
 
@@ -427,7 +428,7 @@ class MzPeakConvertTest {
 
         assertThat(r.code()).isEqualTo(1);
         assertThat(r.out()).isEmpty();
-        assertThat(r.errLines()).containsExactly("error: Failed reading Parquet footer");
+        assertThat(r.errLines()).containsExactly("error: mzPeak " + dataset + ": Failed reading Parquet footer");
         assertThat(target).doesNotExist();
     }
 
