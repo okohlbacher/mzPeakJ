@@ -130,7 +130,8 @@ class SplitWriterSpectraTest {
                 "chromatograms_metadata_selected_ions.parquet|chromatogram|selected_ions",
                 "chromatograms_data.parquet|chromatogram|data_arrays");
 
-        // WR-5c added spectrum_type and the five summary columns, in the reference's order.
+        // WR-5c added spectrum_type and the five summary columns, and the Rust-reader fix the empty auxiliary
+        // arrays, in the reference's order.
         MessageType spectra = schema(out, "spectra_metadata.parquet");
         assertThat(columns(spectra)).containsExactly(
                 "index required INT64 uint64", "id optional BINARY string", "ms_level optional INT32 -",
@@ -139,7 +140,8 @@ class SplitWriterSpectraTest {
                 "lowest_observed_mz optional DOUBLE -", "highest_observed_mz optional DOUBLE -",
                 "number_of_data_points optional INT64 uint64", "number_of_peaks optional INT64 uint64",
                 "base_peak_mz optional DOUBLE -", "base_peak_intensity optional DOUBLE -",
-                "total_ion_current optional DOUBLE -", "parameters optional group list");
+                "total_ion_current optional DOUBLE -", "parameters optional group list",
+                "auxiliary_arrays optional group list", "number_of_auxiliary_arrays optional INT32 uint32");
         MessageType scans = schema(out, "spectra_metadata_scans.parquet");
         assertThat(columns(scans)).containsExactly(
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",

@@ -43,6 +43,7 @@ import java.util.function.Predicate;
 
 import static org.mzpeak.io.DatasetWriter.member;
 import static org.mzpeak.io.ParquetOutput.UINT64;
+import static org.mzpeak.io.ParquetOutput.auxiliaryArrayListField;
 import static org.mzpeak.io.ParquetOutput.countKey;
 import static org.mzpeak.io.ParquetOutput.openWriter;
 import static org.mzpeak.io.ParquetOutput.paramListField;
@@ -56,8 +57,8 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *
  * <ul>
  *   <li>spectra_metadata: one row per spectrum with its typed columns (index, id, ms level, time, polarity,
- *       representation, spectrum type, the five summary values, the point counts of the files written) and its
- *       {@code parameters};
+ *       representation, spectrum type, the five summary values, the point counts of the files written), its
+ *       {@code parameters} and an empty {@code auxiliary_arrays} list with {@code number_of_auxiliary_arrays} 0;
  *   <li>spectra_metadata_scans: one row per scan of every spectrum, keyed by {@code source_index} with a global
  *       {@code scan_index}, with its typed columns, {@code parameters}, {@code scan_windows} and, when some scan has
  *       one, the imaging positions. A spectrum without scans gets one row all the same, as in the packed layout: its
@@ -75,7 +76,8 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *
  * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param moves to its standardized
  * column only if the reader rebuilds it equal apart from its name ({@link Promotion}, WR-5c): a summary value, the
- * spectrum type, an imaging position, the dissociation method or the collision energy. Every other Param stays in
+ * spectrum type, an imaging position, the dissociation method or the collision energy, and of a wavelength spectrum
+ * its representation, base peak intensity or total ion current. Every other Param stays in
  * its {@code parameters} list, ion mobility included. The summary values are derived from the payload only when the
  * spectrum's Params have none of the five, and the spectrum type from the MS level only when they have no spectrum
  * type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
@@ -102,8 +104,13 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       every chromatogram, with the {@code precursor_index} the planner maps through the chromatogram numbering,
  *       and one row per selected ion, in the same order and with the same promotions. Chromatogram products are not
  *       modelled, and no products member is written;
- *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, point count, lambda
- *       max and its {@code parameters}, none promoted to a column; wavelength_spectra_metadata_scans: one row per
+ *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, representation,
+ *       point count, lambda max, base peak intensity and total ion current, in the reference's column order, its
+ *       {@code parameters} and, as in spectra_metadata, empty auxiliary arrays. The reader appends the
+ *       representation, base peak intensity and TIC columns to the Params in that order, after the list, as it
+ *       reads them from the reference's has_uv, so a read, write and read keeps their order. A Param without a name
+ *       that no column takes is written to the list as it is; the readers give none
+ *       (SplitWriterRustReaderTest); wavelength_spectra_metadata_scans: one row per
  *       wavelength spectrum, keyed by {@code source_index} with a global {@code scan_index}, whose
  *       {@code scan_start_time} is the spectrum's time, with an empty {@code parameters} list.
  * </ul>
@@ -145,6 +152,10 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column MS_LEVEL = column(Facet.SPECTRUM, "MS:1000511");
     private static final Column SCAN_POLARITY = column(Facet.SPECTRUM, "MS:1000465");
     private static final Column REPRESENTATION = column(Facet.SPECTRUM, "MS:1000525");
+    /** Written empty, as the reference does: the Rust reader needs both columns (see auxiliaryArrayListField). */
+    private static final String AUXILIARY_ARRAYS = "auxiliary_arrays";
+    private static final String AUXILIARY_COUNT = "number_of_auxiliary_arrays";
+    private static final LogicalTypeAnnotation UINT32 = LogicalTypeAnnotation.intType(32, false);
     private static final Column SPECTRUM_TYPE = column(Facet.SPECTRUM, "MS:1000559");
     private static final Column LOWEST_MZ = column(Facet.SPECTRUM, "MS:1000528");
     private static final Column HIGHEST_MZ = column(Facet.SPECTRUM, "MS:1000527");
@@ -192,8 +203,13 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column CHROMATOGRAM_POINTS = column(Facet.CHROMATOGRAM, "MS:1003060");
 
     // CV-mapped wavelength-spectrum columns
+    private static final Column WAVELENGTH_REPRESENTATION = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000525");
     private static final Column WAVELENGTH_POINTS = column(Facet.WAVELENGTH_SPECTRUM, "MS:1003060");
     private static final Column LAMBDA_MAX = column(Facet.WAVELENGTH_SPECTRUM, "MS:1003812");
+    private static final Column WAVELENGTH_BASE_PEAK_INTENSITY = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000505");
+    private static final Column WAVELENGTH_TIC = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000285");
+    /** The two representation terms the reader rebuilds from a representation marker cell. */
+    private static final Set<String> REPRESENTATIONS = Set.of("MS:1000127", "MS:1000128");
     private static final Column WAVELENGTH_SCAN_START_TIME = column(Facet.WAVELENGTH_SCAN, "MS:1000016");
 
     private static final MessageType SPECTRUM_SCHEMA = Types.buildMessage()
@@ -212,6 +228,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(field(BASE_PEAK_INTENSITY))
             .optional(PrimitiveTypeName.DOUBLE).named(field(TIC))
             .addField(paramListField())
+            .addField(auxiliaryArrayListField())
+            .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
             .named("spectra_metadata");
 
     private static final MessageType PRECURSOR_SCHEMA = Types.buildMessage()
@@ -252,9 +270,15 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
             .optional(PrimitiveTypeName.DOUBLE).named(TIME)
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+            .named(field(WAVELENGTH_REPRESENTATION))
             .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(WAVELENGTH_POINTS))
             .optional(PrimitiveTypeName.DOUBLE).named(field(LAMBDA_MAX))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_BASE_PEAK_INTENSITY))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_TIC))
             .addField(paramListField())
+            .addField(auxiliaryArrayListField())
+            .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
             .named("wavelength_spectra_metadata");
 
     private static final MessageType WAVELENGTH_SCAN_SCHEMA = Types.buildMessage()
@@ -283,7 +307,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final List<ColumnMapping> CHROMATOGRAM_SELECTED_ION_MAPPING = mapping(
             Facet.CHROMATOGRAM_SELECTED_ION, sameColumns(Facet.CHROMATOGRAM_SELECTED_ION, SELECTED_ION_COLUMNS));
     private static final List<ColumnMapping> WAVELENGTH_MAPPING = mapping(Facet.WAVELENGTH_SPECTRUM,
-            Set.of(WAVELENGTH_POINTS, LAMBDA_MAX));
+            Set.of(WAVELENGTH_REPRESENTATION, WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY,
+                    WAVELENGTH_TIC));
     private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
             Set.of(WAVELENGTH_SCAN_START_TIME));
 
@@ -407,6 +432,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     row.add(field(N_PEAKS), (long) entry.peakRows());
                 }
                 params(row, params.rest());
+                noAuxiliaryArrays(row);
                 writer.write(row);
             }
         }
@@ -671,9 +697,23 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 if (Double.isFinite(w.time())) {
                     row.add(TIME, w.time());
                 }
+                Promotion params = new Promotion(w.parameters());
+                Param representation = params.promote(termOf(REPRESENTATIONS));
+                if (representation != null) {
+                    row.add(field(WAVELENGTH_REPRESENTATION), representation.accession());
+                }
                 row.add(field(WAVELENGTH_POINTS), (long) w.size());
                 addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
-                params(row, w.parameters());
+                // After the representation, in the reference's column order: the reader appends these leftovers in
+                // column order, so a read-write-read keeps them, and the representation, where it found them.
+                for (Column column : List.of(WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC)) {
+                    Param p = params.promote(doubleIn(column));
+                    if (p != null) {
+                        row.add(field(column), (Double) p.value());
+                    }
+                }
+                params(row, params.rest());
+                noAuxiliaryArrays(row);
                 writer.write(row);
             }
         }
@@ -807,6 +847,12 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static Predicate<Param> doubleIn(Column column) {
         return p -> column.accession().equals(p.accession()) && p.value() instanceof Double v && Double.isFinite(v)
                 && Objects.equals(column.unit(), p.unit());
+    }
+
+    /** An empty {@code auxiliary_arrays} list and a zero count, as the reference writes for a row without any. */
+    private static void noAuxiliaryArrays(Group row) {
+        row.add(AUXILIARY_COUNT, 0);
+        row.addGroup(AUXILIARY_ARRAYS);
     }
 
     /**

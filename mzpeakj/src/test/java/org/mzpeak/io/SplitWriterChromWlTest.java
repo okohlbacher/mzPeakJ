@@ -119,8 +119,10 @@ class SplitWriterChromWlTest {
                 .isEqualTo(schema(out, "spectra_metadata_selected_ions.parquet").getFields());
         assertThat(columns(schema(out, WAVELENGTH))).containsExactly(
                 "index required INT64 uint64", "id optional BINARY string", "time optional DOUBLE -",
-                "number_of_data_points optional INT64 uint64", "lambda_max optional DOUBLE -",
-                "parameters optional group list");
+                "spectrum_representation optional BINARY string", "number_of_data_points optional INT64 uint64",
+                "lambda_max optional DOUBLE -", "base_peak_intensity optional DOUBLE -",
+                "total_ion_current optional DOUBLE -", "parameters optional group list",
+                "auxiliary_arrays optional group list", "number_of_auxiliary_arrays optional INT32 uint32");
         assertThat(columns(schema(out, WAVELENGTH_SCANS))).containsExactly(
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",
                 "scan_start_time optional DOUBLE -", "parameters optional group list");
@@ -153,9 +155,14 @@ class SplitWriterChromWlTest {
             assertThat(row.getDouble("time", 0)).isEqualTo(w.time());
             assertThat(row.getLong("number_of_data_points", 0)).isEqualTo(w.size());
             assertThat(row.getDouble("lambda_max", 0)).isEqualTo(w.lambdaMax());
-            // MZ-4: every Param goes to the list, none to a column.
+            // MZ-4: the four list Params go to the list; the representation, base peak intensity and TIC, which
+            // the reader appended from has_uv's columns, go to the same columns.
+            assertThat(w.parameters()).as("parameters of %s", w.id()).hasSize(7);
             assertThat(ParquetGroups.readParams(row, "parameters")).as("parameters of %s", w.id())
-                    .isNotEmpty().isEqualTo(w.parameters());
+                    .isEqualTo(w.parameters().subList(0, 4));
+            assertThat(row.getString("spectrum_representation", 0)).isEqualTo(w.parameters().get(4).accession());
+            assertThat(row.getDouble("base_peak_intensity", 0)).isEqualTo(w.parameters().get(5).value());
+            assertThat(row.getDouble("total_ion_current", 0)).isEqualTo(w.parameters().get(6).value());
 
             Group scan = scanRows.get(i);
             assertThat(scan.getLong("source_index", 0)).isEqualTo(w.index());
@@ -217,7 +224,8 @@ class SplitWriterChromWlTest {
         assertThat(mappedPaths(entry(written, CHROMATOGRAM_PRECURSORS))).hasSize(5);
         assertThat(mappedPaths(entry(written, CHROMATOGRAM_SELECTED_IONS))).hasSize(3);
 
-        assertThat(mappedPaths(entry(written, WAVELENGTH))).containsExactly("number_of_data_points", "lambda_max");
+        assertThat(mappedPaths(entry(written, WAVELENGTH))).containsExactly("spectrum_representation",
+                "number_of_data_points", "lambda_max", "base_peak_intensity", "total_ion_current");
         assertThat(mappedPaths(entry(written, WAVELENGTH_SCANS))).containsExactly("scan_start_time");
         for (String member : WAVELENGTH_MEMBERS) {
             List<JsonNode> currentRows = list(entry(current, member).path("column_mapping"));

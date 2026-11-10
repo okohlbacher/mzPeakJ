@@ -42,7 +42,44 @@ final class ParquetOutput {
 
     /** A reusable {@code parameters: large_list<item: struct<value-union, accession, name, unit>>} field schema. */
     static Type paramListField() {
+        return paramListField("parameters");
+    }
+
+    /**
+     * {@code auxiliary_arrays: list<struct<data, name, data_type, compression, items, unit, parameters,
+     * data_processing_id>>} as the reference writes it in {@code spectra_metadata} and
+     * {@code wavelength_spectra_metadata}. mzPeakJ writes it empty; the Rust reader projects it for every wavelength
+     * spectrum and fails when the column is missing.
+     */
+    static Type auxiliaryArrayListField() {
         GroupType itemType = Types.buildGroup(Type.Repetition.OPTIONAL)
+                .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                        .addField(Types.repeatedGroup()
+                                .required(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(8, false))
+                                .named("item")
+                                .named("list"))
+                        .named("data"))
+                .addField(paramItem("name"))
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_type")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("compression")
+                .optional(PrimitiveTypeName.INT64).as(UINT64).named("items")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
+                .addField(paramListField("parameters"))
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_processing_id")
+                .named("item");
+        return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .addField(Types.repeatedGroup().addField(itemType).named("list"))
+                .named("auxiliary_arrays");
+    }
+
+    private static Type paramListField(String name) {
+        return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .addField(Types.repeatedGroup().addField(paramItem("item")).named("list"))
+                .named(name);
+    }
+
+    private static GroupType paramItem(String name) {
+        return Types.buildGroup(Type.Repetition.OPTIONAL)
                 .addField(Types.optionalGroup()
                         .optional(PrimitiveTypeName.INT64).named("integer")
                         .optional(PrimitiveTypeName.DOUBLE).named("float")
@@ -52,10 +89,7 @@ final class ParquetOutput {
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("accession")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("name")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
-                .named("item");
-        return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
-                .addField(Types.repeatedGroup().addField(itemType).named("list"))
-                .named("parameters");
+                .named(name);
     }
 
     /** {@code scan_windows: large_list<item: struct<lower, upper>>} field schema (matches the reference fixtures). */

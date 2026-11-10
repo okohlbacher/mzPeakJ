@@ -47,8 +47,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the lowest and highest observed wavelength and a spectrum title, which the reader used to drop and the writer used
  * to write as an empty list. The reader takes a row's {@code parameters} list first, then, in both layouts (packed
  * since LIB-1), the leftover columns whose accession is not already there (a term marker as
- * {@code Param(null, CURIE)}). The split writer writes them into the {@code parameters} column; the packed writer, whose
- * schema is frozen, does not, and warns once. The cv-list prefix scan covers them (design §7).
+ * {@code Param(null, CURIE)}). The split writer writes the representation, base peak intensity and TIC into their
+ * columns, as the reference does, and the others into the {@code parameters} column; the packed writer, whose schema is
+ * frozen, writes none of them, and warns once. The cv-list prefix scan covers them (design §7).
  */
 class WavelengthParamsTest {
 
@@ -141,7 +142,12 @@ class WavelengthParamsTest {
 
     // ---- (c): written and read again ------------------------------------------------------------------------
 
-    /** The split writer writes every Param into the parameters column; reading it back gives them in order. */
+    /**
+     * The split writer writes the list Params into the parameters column and the representation, base peak intensity
+     * and TIC, which the reader appended from has_uv's columns, into the same columns, in the reference's order;
+     * reading it back gives every Param in the order read. The representation, a term marker the reader gives without
+     * a name, never reaches the list (the Rust reader requires a name there).
+     */
     @Test
     void splitWriteKeepsEveryParamInOrder() {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current(HAS_UV));
@@ -159,13 +165,26 @@ class WavelengthParamsTest {
                     .containsExactlyInAnyOrderElementsOf(expected)
                     .isEqualTo(expected);
         }
-        // The member itself: the Params are list entries, not columns; the row has no other Param-bearing column.
+        // The member itself: the four list Params are list entries, the three leftovers columns.
         List<Group> rows = new ArrayList<>();
         ParquetGroups.forEach(out.resolve(METADATA), rows::add);
-        assertThat(ParquetGroups.readParams(rows.get(0), "parameters"))
-                .isEqualTo(source.wavelengthSpectra.get(0).parameters());
+        assertThat(rows).hasSameSizeAs(source.wavelengthSpectra);
+        for (int i = 0; i < rows.size(); i++) {
+            Group row = rows.get(i);
+            List<Param> params = source.wavelengthSpectra.get(i).parameters();
+            assertThat(ParquetGroups.readParams(row, "parameters")).as("spectrum %d", i)
+                    .isEqualTo(params.subList(0, 4)).extracting(Param::name).doesNotContainNull();
+            assertThat(ParquetGroups.optString(row, "spectrum_representation")).as("spectrum %d", i)
+                    .isEqualTo("MS:1000128").isEqualTo(params.get(4).accession());
+            assertThat(ParquetGroups.optDouble(row, "base_peak_intensity")).as("spectrum %d", i)
+                    .isEqualTo(params.get(5).value());
+            assertThat(ParquetGroups.optDouble(row, "total_ion_current")).as("spectrum %d", i)
+                    .isEqualTo(params.get(6).value());
+        }
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName())
-                .containsExactly("index", "id", "time", "number_of_data_points", "lambda_max", "parameters");
+                .containsExactly("index", "id", "time", "spectrum_representation", "number_of_data_points",
+                        "lambda_max", "base_peak_intensity", "total_ion_current", "parameters", "auxiliary_arrays",
+                        "number_of_auxiliary_arrays");
     }
 
     /** The packed schema has no parameters column: one warning with the counts, and the Params read back empty. */
@@ -258,9 +277,10 @@ class WavelengthParamsTest {
         assertThat(cvIds(out)).contains("BTO", "NCIT");
         assertThat(WriterCvListTest.assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000142")
                 .containsEntry("NCIT", "NCIT:C48505");
+        // Each added Param stays in the list, so it reads back after the list Params and before the three columns.
         List<WavelengthSpectrum> back = wavelengthSpectra(out);
-        assertThat(back.get(0).parameters()).endsWith(brain);
-        assertThat(back.get(1).parameters()).endsWith(mass);
+        assertThat(back.get(0).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(0), brain));
+        assertThat(back.get(1).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(1), mass));
     }
 
     // ---- constructed split tables ---------------------------------------------------------------------------
@@ -378,6 +398,14 @@ class WavelengthParamsTest {
     private static List<String> planWarnings(List<WavelengthSpectrum> waves, Options options) {
         return WritePlanner.plan(List.of(), List.of(), waves, List.of(), org.mzpeak.model.meta.FileMetadata.EMPTY,
                 options).report().warnings().stream().filter(w -> w.contains(PACKED_WARNING)).toList();
+    }
+
+    /** The four list Params of a has_uv spectrum {@code w}, then {@code added}, then its three column Params. */
+    private static List<Param> listThenColumns(WavelengthSpectrum w, Param added) {
+        List<Param> out = new ArrayList<>(w.parameters().subList(0, 4));
+        out.add(added);
+        out.addAll(w.parameters().subList(4, 7));
+        return out;
     }
 
     private static WavelengthSpectrum withParam(WavelengthSpectrum w, Param param) {

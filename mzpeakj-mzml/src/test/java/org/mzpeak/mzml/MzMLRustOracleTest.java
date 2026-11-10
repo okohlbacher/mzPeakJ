@@ -130,7 +130,11 @@ class MzMLRustOracleTest {
                     .isEqualTo(Double.doubleToRawLongBits(theirs.time()));
             assertThat(bits(ours1.wavelength())).as(what + " wavelength").isEqualTo(bits(theirs.wavelength()));
             assertThat(bits(ours1.intensity())).as(what + " intensity").isEqualTo(bits(theirs.intensity()));
-            assertThat(ours1.parameters()).as(what).containsAll(givenUv.get(i).parameters());
+            // the representation goes to its term-marker column, as in has_uv, and comes back without its name
+            assertThat(ours1.parameters()).as(what).containsAll(givenUv.get(i).parameters().stream()
+                    .map(p -> "MS:1000128".equals(p.accession()) ? new Param(null, p.accession(), p.value(), p.unit())
+                            : p)
+                    .toList());
             assertThat(ours1.parameters()).as(what).extracting(Param::accession)
                     .contains("MS:1000804", "MS:1000128", "MS:1000619", "MS:1000618", "MS:1000796")
                     .doesNotContain("MS:1000505", "MS:1000285");
