@@ -91,9 +91,14 @@ class MzMLCorpusTest {
 
     private TimeZone zone;
 
-    /** Skips without the property or its directory; looks the files up once. */
+    /**
+     * Sets the default time zone UTC, before anything can skip the case, so that {@link #restoreTimeZone} always
+     * restores the one it replaced; then skips without the property or its directory and looks the files up once.
+     */
     @BeforeEach
-    void corpusIsGiven() throws IOException {
+    void utcAndCorpusIsGiven() throws IOException {
+        zone = TimeZone.getDefault();
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
         String property = System.getProperty(PROPERTY, "");
         assumeTrue(!property.isBlank(), "-D" + PROPERTY + "=<dir> not set");
         Path root = Path.of(property);
@@ -129,12 +134,6 @@ class MzMLCorpusTest {
             }
         });
         System.out.println("MzMLCorpusTest: found " + found);
-    }
-
-    @BeforeEach
-    void utc() {
-        zone = TimeZone.getDefault();
-        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
     }
 
     @AfterEach

@@ -18,8 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -39,12 +38,13 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * environment {@code OPENMS_DISABLE_UPDATE_CHECK=ON} and {@code LC_ALL=en_US.UTF-8}:
  * <ul>
  *   <li>{@code FileInfo -in <mzML> -v} prints 'Success - the file is valid!' (XSD 1.1.0). Its exit code is 0 either
- *       way, so the text is checked;
+ *       way, so the text is checked, and the exit code of every run of FileInfo is 0;
  *   <li>semantic validation (the PSI mapping rules and the CV): the output of small.mzML is semantically valid, like
  *       small.mzML itself, and the error lines of every B output are a subset of those FileInfo prints for its
- *       source (the converter passes such violations through, design 6.4; it never adds one). An A source is mzPeak,
- *       which FileInfo cannot read, so the distinct error lines of each A output are pinned in {@link #A_ERRORS}, each
- *       explained by the source's own content. Design 12.6 expected the outputs of the 8 small*.mzpeak fixtures to be
+ *       source, each as often as there or less (the converter passes such violations through, design 6.4; it never
+ *       adds one). An A source is mzPeak, which FileInfo cannot read, so the error lines of each A output are pinned
+ *       in {@link #A_ERRORS} with the number of times FileInfo prints each, each explained by the source's own
+ *       content. Design 12.6 expected the outputs of the 8 small*.mzpeak fixtures to be
  *       semantically valid; they are not, for one reason the fixtures carry ({@link #PROCESSING_METHOD});
  *   <li>{@code FileInfo -in <mzML>} prints 'Number of spectra: N' and 'Number of chromatograms: M' equal to the
  *       numbers of MS plus wavelength spectra and of chromatograms of the source model (no line counts as 0).
@@ -71,7 +71,10 @@ class OpenMSFileInfoTest {
     /** has_uv (from TOFsulfas): source files without checksum and nativeID format terms, as in TOFsulfas. */
     private static final String SOURCE_FILE = "Error: Violated mapping rule 'sourcefile_must' at element"
             + " '/mzML/fileDescription/sourceFileList/sourceFile', 3 term(s) should be present, 1 found!";
-    /** diaPASEF.ref and .grid: the ion mobility arrays, which the CV gives no binary data type (design 6.4). */
+    /**
+     * diaPASEF.ref and .grid: the ion mobility arrays, which the CV gives no binary data type (design 6.4), printed once
+     * per array (9), and once per selected ion (8) or chromatogram (1); in this order.
+     */
     private static final List<String> ION_MOBILITY = List.of(
             "Error: Binary data array of type 'MS:1003006 ! mean inverse reduced ion mobility array' cannot have the"
                     + " value type 'MS:1000523 ! 64-bit float'.",
@@ -94,25 +97,34 @@ class OpenMSFileInfoTest {
             "Error: CV term must have a unit: MS:1000847 - pulse duration",
             "Error: CV term must have a unit: MS:1000848 - attenuation");
 
-    /** The distinct semantic error lines of the output of each A source, keyed as in {@link #outputs()}. */
-    static final Map<String, Set<String>> A_ERRORS = aErrors();
+    /**
+     * The semantic error lines of the output of each A source, keyed as in {@link #outputs()}, each with the number of
+     * times FileInfo prints it.
+     */
+    static final Map<String, Map<String, Long>> A_ERRORS = aErrors();
 
-    private static Map<String, Set<String>> aErrors() {
-        Map<String, Set<String>> errors = new LinkedHashMap<>();
+    private static Map<String, Map<String, Long>> aErrors() {
+        Map<String, Map<String, Long>> errors = new LinkedHashMap<>();
         for (String layout : List.of("current", "legacy")) {
             for (String name : List.of("small.mzpeak", "small.numpress.mzpeak", "small.unpacked.mzpeak",
                     "small.chunked.mzpeak")) {
-                errors.put("A " + layout + " " + name, Set.of(PROCESSING_METHOD));
+                errors.put("A " + layout + " " + name, Map.of(PROCESSING_METHOD, 1L));
             }
-            errors.put("A " + layout + " has_uv.mzpeak", Set.of(PROCESSING_METHOD, FILE_CONTENT, SOURCE_FILE));
+            errors.put("A " + layout + " has_uv.mzpeak", Map.of(PROCESSING_METHOD, 1L, FILE_CONTENT, 1L,
+                    SOURCE_FILE, 1L));
         }
         for (String name : List.of("diaPASEF.ref.mzpeak", "diaPASEF.grid.mzpeak")) {
-            Set<String> e = new TreeSet<>(ION_MOBILITY);
-            e.add(PROCESSING_METHOD);
+            Map<String, Long> e = new TreeMap<>();
+            List<Long> times = List.of(9L, 9L, 8L, 1L);
+            for (int i = 0; i < ION_MOBILITY.size(); i++) {
+                e.put(ION_MOBILITY.get(i), times.get(i));
+            }
+            e.put(PROCESSING_METHOD, 1L);
             errors.put("A current " + name, e);
         }
-        Set<String> e = new TreeSet<>(EXAMPLE_PROCESSED);
-        e.add(PROCESSING_METHOD);
+        Map<String, Long> e = new TreeMap<>();
+        EXAMPLE_PROCESSED.forEach(line -> e.put(line, 1L));
+        e.put(PROCESSING_METHOD, 1L);
         errors.put("A current Example_Processed.img.mzpeak", e);
         return errors;
     }
@@ -149,7 +161,7 @@ class OpenMSFileInfoTest {
     void fileInfoValidatesAndCountsTheOutput(String source, boolean zlib) throws IOException, InterruptedException {
         Path mzml = dir.resolve("out.mzML");
         Model model;
-        Set<String> sourceErrors = null;
+        Map<String, Long> sourceErrors = null;
         if (source.startsWith("A ")) {
             String[] parts = source.split(" ", 3);
             Path fixture = parts[1].equals("current") ? Fixtures.current(parts[2]) : Fixtures.legacy(parts[2]);
@@ -169,15 +181,20 @@ class OpenMSFileInfoTest {
 
         String validation = fileInfo("-in", mzml.toString(), "-v");
         assertThat(validation).as(validation).contains(VALID);
-        Set<String> errors = errors(validation);
+        Map<String, Long> errors = errors(validation);
         boolean semantic = validation.contains(SEMANTICALLY_VALID);
         System.out.println("FileInfo " + source + ", zlib " + zlib + ": semantically valid " + semantic
-                + errors.stream().map(l -> System.lineSeparator() + "  " + l).collect(Collectors.joining()));
+                + errors.entrySet().stream().map(e -> System.lineSeparator() + "  " + e.getValue() + " x "
+                + e.getKey()).collect(Collectors.joining()));
         assertThat(semantic).as(validation).isEqualTo(errors.isEmpty());
         if (sourceErrors == null) {
-            assertThat(errors).as(validation).containsExactlyInAnyOrderElementsOf(A_ERRORS.get(source));
+            assertThat(errors).as(validation).isEqualTo(A_ERRORS.get(source));
         } else {
-            assertThat(sourceErrors).as("the source's errors").containsAll(errors);
+            // every error line of the output, each as often as in the source or less
+            for (Map.Entry<String, Long> error : errors.entrySet()) {
+                assertThat(sourceErrors.getOrDefault(error.getKey(), 0L)).as("the source's '%s'", error.getKey())
+                        .isGreaterThanOrEqualTo(error.getValue());
+            }
             if (source.equals("B " + MzMLFixtures.SMALL)) {
                 assertThat(sourceErrors).isEmpty();
                 assertThat(semantic).as(validation).isTrue();
@@ -190,9 +207,10 @@ class OpenMSFileInfoTest {
                         "chromatograms", (long) model.chromatograms().size()));
     }
 
-    /** The distinct error lines of a FileInfo validation. */
-    private static Set<String> errors(String validation) {
-        return validation.lines().filter(l -> l.startsWith("Error")).collect(Collectors.toCollection(TreeSet::new));
+    /** The error lines of a FileInfo validation, each with the number of times FileInfo prints it. */
+    private static Map<String, Long> errors(String validation) {
+        return validation.lines().filter(l -> l.startsWith("Error"))
+                .collect(Collectors.groupingBy(l -> l, TreeMap::new, Collectors.counting()));
     }
 
     /** The number of the one line {@code pattern} matches in {@code info}; 0 when none does. */
@@ -220,6 +238,8 @@ class OpenMSFileInfoTest {
             process.destroyForcibly();
             throw new IllegalStateException("timed out after " + TIMEOUT_MINUTES + " min: " + command);
         }
-        return Files.readString(log, StandardCharsets.UTF_8);
+        String output = Files.readString(log, StandardCharsets.UTF_8);
+        assertThat(process.exitValue()).as("the exit code of %s: %s", command, output).isZero();
+        return output;
     }
 }

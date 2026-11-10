@@ -260,8 +260,10 @@ class MzMLRoundTripATest {
         Path mzml = dir.resolve("keys.mzML");
         MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
         MzMLAssert.valid(mzml);
+        assertThat(MzMLMappingCheck.violations(mzml)).isEmpty();
         Path back = dir.resolve("keys-back.mzpeak");
-        MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
+        MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, false, MzPeakWriter.Options.defaults());
+        assertThat(toMzPeak.warnings()).containsExactlyElementsOf(MzMLReader.LIMITS);
 
         List<String> writerLines = new ArrayList<>(MzMLWriter.LIMITS);
         writerLines.addAll(MzMLWriter.NOT_VISIBLE);

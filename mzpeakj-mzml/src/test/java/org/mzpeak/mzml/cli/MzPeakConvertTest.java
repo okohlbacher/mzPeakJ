@@ -380,6 +380,7 @@ class MzPeakConvertTest {
         assertThat(r.errLines()).containsExactly(
                 "error: mzML " + file + ": Internal stack of XML tags was corrupted!");
         assertThat(target).doesNotExist();
+        assertThat(listing(dir)).as("no temp file remains").containsOnlyKeys("misspelt.mzML");
     }
 
     /** --numpress-slof cannot encode a negative intensity (MZ-23): the session fails and removes what it wrote. */
