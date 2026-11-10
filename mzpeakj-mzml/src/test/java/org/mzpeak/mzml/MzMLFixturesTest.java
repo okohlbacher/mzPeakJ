@@ -459,6 +459,43 @@ class MzMLFixturesTest {
         assertThat(result.problems()).singleElement().asString().startsWith("not well-formed: ");
     }
 
+    // ---- MzMLAttributeCheck (final review) ------------------------------------------------------------------------
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("countAttributes")
+    void theWriterSetAttributesOfEveryFixtureMatch(String name, int counts, @TempDir Path dir) throws IOException {
+        assertThat(MzMLAttributeCheck.problems(MzMLFixtures.extract(name, dir))).isEmpty();
+    }
+
+    /**
+     * Negative controls on tiny: an encodedLength one too large, indexes counted from 1, a defaultArrayLength one too
+     * large; an array with arrayLength is not compared with defaultArrayLength.
+     */
+    @Test
+    void writerSetAttributesThatDoNotMatchAreReported(@TempDir Path dir) throws IOException {
+        assertThat(MzMLAttributeCheck.problems(tinyWith(dir, s -> replaceAfter(s, "id=\"tic\"",
+                "encodedLength=\"160\"", "encodedLength=\"161\"")))).containsExactly(
+                "encodedLength 161 but 160 Base64 characters @ chromatogram [tic]");
+        assertThat(MzMLAttributeCheck.problems(tinyWith(dir, s -> s.replace("<spectrum index=\"3\"",
+                "<spectrum index=\"4\"").replace("<spectrum index=\"2\"", "<spectrum index=\"3\"")
+                .replace("<spectrum index=\"1\"", "<spectrum index=\"2\"")
+                .replace("<spectrum index=\"0\"", "<spectrum index=\"1\"")))).containsExactly(
+                "index 1 but position 0 @ spectrum [scan=19]", "index 2 but position 1 @ spectrum [scan=20]",
+                "index 3 but position 2 @ spectrum [scan=21]",
+                "index 4 but position 3 @ spectrum [sample=1 period=1 cycle=22 experiment=1]");
+        String length15 = "id=\"scan=19\" defaultArrayLength=\"15\"";
+        String length16 = "id=\"scan=19\" defaultArrayLength=\"16\"";
+        assertThat(MzMLAttributeCheck.problems(tinyWith(dir, s -> replaceOnce(s, length15, length16))))
+                .containsExactly("defaultArrayLength 16 but 15 values in an array @ spectrum [scan=19]",
+                        "defaultArrayLength 16 but 15 values in an array @ spectrum [scan=19]");
+        assertThat(MzMLAttributeCheck.problems(tinyWith(dir, s -> replaceOnce(replaceAfter(s, "id=\"scan=19\"",
+                "<binaryDataArray encodedLength=\"160\"", "<binaryDataArray arrayLength=\"15\" encodedLength=\"160\""),
+                length15, length16)))).containsExactly(
+                "defaultArrayLength 16 but 15 values in an array @ spectrum [scan=19]");
+        Path broken = Files.writeString(dir.resolve("broken.mzML"), "<mzML><run></mzML>");
+        assertThat(MzMLAttributeCheck.problems(broken)).singleElement().asString().startsWith("not well-formed: ");
+    }
+
     // ---- MzMLAssert ----------------------------------------------------------------------------------------------
 
     @Test
