@@ -526,6 +526,10 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
 
 - A-31: a chromatogram carries one chromatogram type (its type, else the first type among its params); further
   type params that name another type are dropped and counted.
+- B-14 also counts the summary params (m/z range, base peak, total ion current) and selected-ion peak intensities
+  written without unit, as ProteoWizard writes the total ion current: they are given their default unit (m/z or
+  detector counts) and typed as numbers with decimals, so that they reach the mzPeak summary columns (and the TIC
+  and BPC derived from them).
 - B-41: an `externalSpectrumID` next to a `spectrumRef` (on a scan or precursor) is lost: the model holds one
   reference, the `spectrumRef`.
 - B-42: a `spectrumRef` that names no spectrum of the file is kept as the reference's id, without index, and comes

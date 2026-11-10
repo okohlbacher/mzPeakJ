@@ -75,6 +75,7 @@ class MzMLRoundTripBTest {
                         List.of(b3, MzMLReader.B_1 + " (2)",
                                 String.format(MzMLReader.B_5, "[LCQ_x0020_Deca]") + " (1)",
                                 MzMLReader.B_7 + " (1)",
+                                MzMLReader.B_14_UNIT + " (4)",
                                 MzMLReader.B_21_PROCESSING + " (10)",
                                 String.format(MzMLReader.B_10, "spotID") + " (1)",
                                 String.format(MzMLReader.B_10, "sourceFileRef") + " (1)",
@@ -83,12 +84,13 @@ class MzMLRoundTripBTest {
                         List.of(String.format(MzMLWriter.A_26, "2007-06-27T15:23:45.00035", "2007-06-27T15:23:45Z")
                                 + " (1)")),
                 arguments(MzMLFixtures.SMALL, Map.of(), List.of(48L, 0L, 1L),
-                        List.of(b3, MzMLReader.B_1 + " (1)"), List.of()),
+                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_14_UNIT + " (48)"), List.of()),
                 arguments(MzMLFixtures.TOFSULFAS, Map.of(), List.of(212L, 520L, 2L),
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_17_PARAMS + " (212)",
                                 MzMLReader.B_11_INDEX + " (520)"), List.of()),
                 arguments(MzMLFixtures.DIAPASEF, Map.of(ModelAssert.B_22, 3 * 9), List.of(9L, 0L, 2L),
-                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (11)"), List.of()));
+                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (11)",
+                                MzMLReader.B_14_UNIT + " (18)"), List.of()));
     }
 
     @ParameterizedTest(name = "{0}")

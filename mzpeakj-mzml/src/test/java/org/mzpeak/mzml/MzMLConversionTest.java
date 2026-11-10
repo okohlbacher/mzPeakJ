@@ -90,6 +90,8 @@ class MzMLConversionTest {
             "B-1 referenceableParamGroups expanded inline (2)",
             "B-5 instrumentConfiguration ids [LCQ_x0020_Deca] numbered by position (1)",
             "B-7 run@sampleRef lost (1)",
+            // the unitless total ion current of three spectra and the unitless peak intensity of scan=20's ion
+            "B-14 units of unitless summary and peak-intensity params set to the default (4)",
             "B-21 lost array dataProcessingRef (10)",
             "B-10 spectrum@spotID lost (1)",
             "B-10 spectrum@sourceFileRef lost (1)",
@@ -137,13 +139,33 @@ class MzMLConversionTest {
                 .containsExactly(Map.entry("A_26", 1));
     }
 
+    /**
+     * small.mzML writes its total ion currents without unit, as pwiz does: the reader gives them MS:1000131 (B-14), so
+     * that they reach the mzPeak summary column and the TIC derived from it has a point per spectrum.
+     */
+    @Test
+    void smallsUnitlessTotalIonCurrentsReachTheSummaryColumn() throws IOException {
+        Path small = MzMLFixtures.extract(MzMLFixtures.SMALL, dir);
+        Path mzpeak = dir.resolve("small.mzpeak");
+
+        MzMLConversion.toMzPeak(small, mzpeak, false, MzPeakWriter.Options.defaults());
+
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.encodedTic()).get().extracting(Chromatogram::size).isEqualTo(48);
+            assertThat(reader.encodedBpc()).get().extracting(Chromatogram::size).isEqualTo(48);
+            assertThat(reader.metadataAt(0).parameters())
+                    .contains(new Param("total ion current", "MS:1000285", 1.5245068E7, "MS:1000131"));
+        }
+    }
+
     @Test
     void smallComesBackEqual() throws IOException {
         Path small = MzMLFixtures.extract(MzMLFixtures.SMALL, dir);
         B b = b(small, true);
 
         assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(List.of(
-                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)")));
+                "B-3 mzML@id and mzML@accession lost (1)", "B-1 referenceableParamGroups expanded inline (1)",
+                "B-14 units of unitless summary and peak-intensity params set to the default (48)")));
         assertThat(b.toMzML.warnings()).containsExactlyElementsOf(writerLimits());
         assertThat(List.of(b.toMzPeak.spectra(), b.toMzPeak.wavelengthSpectra(), b.toMzPeak.chromatograms()))
                 .containsExactly(48L, 0L, 1L);
@@ -563,7 +585,7 @@ class MzMLConversionTest {
 
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES,
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(tinyLosses(5),
                 MzMLConversion.B_19 + " (1)"));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Precursor> precursors = reader.metadataAt(1).precursors();
@@ -590,7 +612,7 @@ class MzMLConversionTest {
 
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES));
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(tinyLosses(5)));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Precursor> precursors = reader.metadataAt(1).precursors();
             assertThat(precursors).extracting(Precursor::precursorIndex).containsExactly(0L, 2L, 0L);
@@ -734,6 +756,12 @@ class MzMLConversionTest {
             spectra.add(it.next());
         }
         return spectra;
+    }
+
+    /** {@link #TINY_LOSSES} with {@code unitless} params given their default unit (B-14): tiny with more ions. */
+    private static List<String> tinyLosses(int unitless) {
+        return TINY_LOSSES.stream().map(line -> line.startsWith("B-14 ") ? MzMLReader.B_14_UNIT + " (" + unitless
+                + ")" : line).toList();
     }
 
     /** The limit lines every reader notes, then {@code losses}, then {@code more}. */

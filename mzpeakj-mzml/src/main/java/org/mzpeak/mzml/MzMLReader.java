@@ -66,6 +66,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -174,6 +175,7 @@ public final class MzMLReader {
             + " spectra, renumbered";
     static final String B_13 = "B-13 scanList params other than the combination term moved to the spectrum";
     static final String B_14_TYPE = "B-14 userParam values that do not match their type kept as text";
+    static final String B_14_UNIT = "B-14 units of unitless summary and peak-intensity params set to the default";
     static final String B_15 = "B-15 times converted to minutes and drift times to milliseconds";
     static final String B_16 = "B-16 sourceFileRef of scans and precursors lost";
     static final String B_17_WINDOW = "B-17 scan windows without both limits in m/z dropped";
@@ -226,6 +228,13 @@ public final class MzMLReader {
     private static final String NANOMETER = "UO:0000018";
     private static final String MINUTE = "UO:0000031";
     private static final String MILLISECOND = "UO:0000028";
+    private static final String COUNTS = "MS:1000131";
+    /**
+     * The summary params of an MS spectrum with the unit the mzPeak writer's summary columns take (design 5.5): m/z
+     * for the m/z range and the base peak m/z, detector counts for the base peak intensity and total ion current.
+     */
+    private static final Map<String, String> SUMMARY_UNITS = Collections.unmodifiableMap(new HashMap<>(Map.of(
+            "MS:1000528", MZ, "MS:1000527", MZ, "MS:1000504", MZ, "MS:1000505", COUNTS, "MS:1000285", COUNTS)));
     /** The spectrum types that make a spectrum without arrays a wavelength spectrum (design 5.4); null-tolerant. */
     private static final Set<String> WAVELENGTH_TYPES =
             Collections.unmodifiableSet(new HashSet<>(List.of("MS:1000804", "MS:1000805", "MS:1000806")));
@@ -752,10 +761,20 @@ public final class MzMLReader {
 
     /**
      * An MS spectrum: ms level, polarity and representation promoted; no peak list; its array length counts as
-     * {@code numberOfPeaks} for a centroid spectrum, else as {@code numberOfDataPoints}.
+     * {@code numberOfPeaks} for a centroid spectrum, else as {@code numberOfDataPoints}. A numeric summary param is
+     * typed as a Double and, without unit, given its default unit ({@link #SUMMARY_UNITS}, B-14), so that the mzPeak
+     * writer moves it to its summary column (pwiz writes the total ion current without unit).
      */
     private Spectrum msSpectrum(uk.ac.ebi.jmzml.model.mzml.Spectrum s, List<Param> params, List<ScanEvent> scans,
                                 List<Array> arrays) {
+        for (ListIterator<Param> it = params.listIterator(); it.hasNext(); ) {
+            Param p = it.next();
+            String unit = SUMMARY_UNITS.get(p.accession());
+            if (unit != null && p.value() instanceof Number n) {
+                note(B_14_UNIT, p.unit() == null ? 1 : 0);
+                it.set(new Param(p.name(), p.accession(), n.doubleValue(), p.unit() == null ? unit : p.unit()));
+            }
+        }
         Integer msLevel = intParam(params, CvTerms.MS_LEVEL);
         Polarity polarity = polarity(params);
         SignalContinuity continuity = exclusive(params, CvTerms.CENTROID_SPECTRUM, SignalContinuity.CENTROID,
@@ -901,7 +920,9 @@ public final class MzMLReader {
                 Double mz = doubleParam(params, CvTerms.SELECTED_ION_MZ, MZ);
                 note(B_18, mz == null ? 1 : 0);
                 Integer charge = intParam(params, CvTerms.CHARGE_STATE);
-                Double intensity = doubleParam(params, CvTerms.SELECTED_ION_INTENSITY, "MS:1000131");
+                Param peak = Param.find(params, CvTerms.SELECTED_ION_INTENSITY).orElse(null);
+                Double intensity = doubleParam(params, CvTerms.SELECTED_ION_INTENSITY, COUNTS);
+                note(B_14_UNIT, intensity != null && peak.unit() == null ? 1 : 0); // written back in counts
                 ions.add(new SelectedIon(mz == null ? Double.NaN : mz, charge, intensity, params));
             }
         }
