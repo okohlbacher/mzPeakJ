@@ -236,8 +236,8 @@ class MzPeakFileInfoTest {
                 "  unknown: 3",
                 "",
                 "Activation methods:",
+                "  MS:1000133: 1",
                 "  MS:1000422: 1",
-                "  collision-induced dissociation: 1",
                 "",
                 "Number of chromatograms: 2",
                 "Number of chromatographic peaks: 3",
@@ -392,10 +392,10 @@ class MzPeakFileInfoTest {
     /**
      * Six spectra and two chromatograms with what no fixture has. MS1: one profile spectrum without retention time and
      * with the only MS1 point, one empty centroid spectrum. MS2: a precursor without selected ion and activation, a
-     * charged precursor whose second dissociation method (HCD) has no name, and no precursor. MS3: an uncharged
+     * charged precursor whose dissociation methods (CID, HCD) have no name, and no precursor. MS3: an uncharged
      * precursor, no retention time and no points. Then an ion current and an untyped chromatogram, and file metadata
      * with an unnamed run, a software without version, an unknown component without named parameters, a resolution
-     * and a source file without name.
+     * and a source file without name. Written in the packed layout, which keeps the methods nameless.
      */
     private static Path writeEdgeCases(Path dir) {
         Precursor withoutIon = new Precursor(0L, "scan=1", null, List.of(), Activation.EMPTY);
@@ -427,7 +427,10 @@ class MzPeakFileInfoTest {
                 List.of(), List.of(),
                 List.of(new Software("mzpeakj-test", null, List.of())),
                 new MsRun(null, null, null, null, null, List.of()));
-        MzPeakWriter.writeDirectory(dir, spectra, chromatograms, metadata);
+        // The packed layout writes Params as given, so both methods above read back without a name; the split
+        // writer would name them (the Rust reader needs a name).
+        MzPeakWriter.writeDirectory(dir, spectra, chromatograms, List.of(), List.of(), metadata,
+                MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
         return dir;
     }
 

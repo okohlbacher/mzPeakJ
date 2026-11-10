@@ -119,7 +119,9 @@ class SplitWriterChromWlTest {
                 .isEqualTo(schema(out, "spectra_metadata_selected_ions.parquet").getFields());
         assertThat(columns(schema(out, WAVELENGTH))).containsExactly(
                 "index required INT64 uint64", "id optional BINARY string", "time optional DOUBLE -",
-                "spectrum_representation optional BINARY string", "number_of_data_points optional INT64 uint64",
+                "spectrum_type optional BINARY string", "spectrum_representation optional BINARY string",
+                "lowest_observed_wavelength optional DOUBLE -", "highest_observed_wavelength optional DOUBLE -",
+                "number_of_data_points optional INT64 uint64",
                 "lambda_max optional DOUBLE -", "base_peak_intensity optional DOUBLE -",
                 "total_ion_current optional DOUBLE -", "parameters optional group list",
                 "auxiliary_arrays optional group list", "number_of_auxiliary_arrays optional INT32 uint32");
@@ -155,11 +157,16 @@ class SplitWriterChromWlTest {
             assertThat(row.getDouble("time", 0)).isEqualTo(w.time());
             assertThat(row.getLong("number_of_data_points", 0)).isEqualTo(w.size());
             assertThat(row.getDouble("lambda_max", 0)).isEqualTo(w.lambdaMax());
-            // MZ-4: the four list Params go to the list; the representation, base peak intensity and TIC, which
-            // the reader appended from has_uv's columns, go to the same columns.
+            // MZ-4: the four list Params go to the list, the type and wavelength range also to their columns, as
+            // in has_uv; the representation, base peak intensity and TIC, which the reader appended from has_uv's
+            // columns, go to the same columns only.
             assertThat(w.parameters()).as("parameters of %s", w.id()).hasSize(7);
             assertThat(ParquetGroups.readParams(row, "parameters")).as("parameters of %s", w.id())
                     .isEqualTo(w.parameters().subList(0, 4));
+            assertThat(row.getString("spectrum_type", 0)).isEqualTo(w.parameters().get(0).accession())
+                    .isEqualTo("MS:1000804");
+            assertThat(row.getDouble("lowest_observed_wavelength", 0)).isEqualTo(w.parameters().get(1).value());
+            assertThat(row.getDouble("highest_observed_wavelength", 0)).isEqualTo(w.parameters().get(2).value());
             assertThat(row.getString("spectrum_representation", 0)).isEqualTo(w.parameters().get(4).accession());
             assertThat(row.getDouble("base_peak_intensity", 0)).isEqualTo(w.parameters().get(5).value());
             assertThat(row.getDouble("total_ion_current", 0)).isEqualTo(w.parameters().get(6).value());
@@ -190,6 +197,9 @@ class SplitWriterChromWlTest {
         try (MzPeakSource dataset = MzPeakSource.open(out)) {
             Map<String, String> fileMetadata = withoutWriterModel(dataset.inputFile("spectra_metadata.parquet"));
             assertThat(fileMetadata.remove("spectrum_count")).isEqualTo("212");
+            // the Arrow schema hint of each member is its own (SplitWriterRustReaderTest)
+            assertThat(fileMetadata.remove(ArrowSchemaHint.KEY))
+                    .isEqualTo(ArrowSchemaHint.encode(schema(out, "spectra_metadata.parquet")));
             assertThat(fileMetadata).containsKey("run");
             for (String member : CHROMATOGRAM_MEMBERS) {
                 Map<String, String> footer = withoutWriterModel(dataset.inputFile(member));
@@ -198,6 +208,10 @@ class SplitWriterChromWlTest {
             for (String member : WAVELENGTH_MEMBERS) {
                 Map<String, String> footer = withoutWriterModel(dataset.inputFile(member));
                 assertThat(footer.remove("wavelength_spectrum_count")).as("count of %s", member).isEqualTo("520");
+                if (member.equals(WAVELENGTH)) {
+                    assertThat(footer.remove(ArrowSchemaHint.KEY)).isEqualTo(ArrowSchemaHint.encode(schema(out,
+                            WAVELENGTH)));
+                }
                 assertThat(footer).as("file metadata of %s", member).isEqualTo(fileMetadata);
             }
         }
@@ -224,7 +238,8 @@ class SplitWriterChromWlTest {
         assertThat(mappedPaths(entry(written, CHROMATOGRAM_PRECURSORS))).hasSize(5);
         assertThat(mappedPaths(entry(written, CHROMATOGRAM_SELECTED_IONS))).hasSize(3);
 
-        assertThat(mappedPaths(entry(written, WAVELENGTH))).containsExactly("spectrum_representation",
+        assertThat(mappedPaths(entry(written, WAVELENGTH))).containsExactly("spectrum_type",
+                "spectrum_representation", "lowest_observed_wavelength", "highest_observed_wavelength",
                 "number_of_data_points", "lambda_max", "base_peak_intensity", "total_ion_current");
         assertThat(mappedPaths(entry(written, WAVELENGTH_SCANS))).containsExactly("scan_start_time");
         for (String member : WAVELENGTH_MEMBERS) {

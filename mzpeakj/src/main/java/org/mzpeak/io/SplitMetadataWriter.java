@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -80,9 +81,12 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * its representation, base peak intensity or total ion current. A collision energy is promoted also when it is an
  * integer or has no unit, as mzML writers give it: MS:1000045 is defined in electronvolt, and it reads back as a
  * Double in electronvolt. Every other Param stays in
- * its {@code parameters} list, ion mobility included. The summary values are derived from the payload only when the
- * spectrum's Params have none of the five, and the spectrum type from the MS level only when they have no spectrum
- * type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
+ * its {@code parameters} list, ion mobility included. A promoted Param reads back after the list, in column order, so
+ * a description whose promoted terms (summary values, spectrum type, representation, collision energy, ...) did not
+ * come last in its Params reads back in another order: CV param order carries no meaning, and a list read from this
+ * writer's output, where promoted terms always come last, keeps its order. The summary values are derived from the
+ * payload only when the spectrum's Params have none of the five, and the spectrum type from the MS level only when
+ * they have no spectrum type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
  * as in the reference's output; the isolation window's {@code parameters} list holds its Params, none promoted
  * (AP-7).
  *
@@ -106,19 +110,29 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       every chromatogram, with the {@code precursor_index} the planner maps through the chromatogram numbering,
  *       and one row per selected ion, in the same order and with the same promotions. Chromatogram products are not
  *       modelled, and no products member is written;
- *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, representation,
- *       point count, lambda max, base peak intensity and total ion current, in the reference's column order, its
- *       {@code parameters} and, as in spectra_metadata, empty auxiliary arrays. The reader appends the
- *       representation, base peak intensity and TIC columns to the Params in that order, after the list, as it
- *       reads them from the reference's has_uv, so a read, write and read keeps their order. A Param without a name
- *       that no column takes is written to the list as it is; the readers give none
- *       (SplitWriterRustReaderTest); wavelength_spectra_metadata_scans: one row per
+ *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, spectrum type,
+ *       representation, lowest and highest observed wavelength, point count, lambda max, base peak intensity and
+ *       total ion current, in the reference's column order, its {@code parameters} and, as in spectra_metadata,
+ *       empty auxiliary arrays. As in the reference, the spectrum type and the wavelength range are copied to their
+ *       columns and stay in the list ({@link Promotion#mirror}), since the Rust reader takes them from the list
+ *       only; the reader drops a column that repeats a list accession. The representation, base peak intensity and
+ *       TIC move to their columns, which the reader appends to the Params in that order, after the list, as it reads
+ *       them from the reference's has_uv, so a read, write and read keeps every Param in its order;
+ *       wavelength_spectra_metadata_scans: one row per
  *       wavelength spectrum, keyed by {@code source_index} with a global {@code scan_index}, whose
  *       {@code scan_start_time} is the spectrum's time, with an empty {@code parameters} list.
  * </ul>
  * As in the reference's output, the chromatogram members carry {@code chromatogram_count} as their only footer
  * key-value, and the wavelength members the plan's file metadata and {@code wavelength_spectrum_count}. The reader
- * finds every member by role and detects its layout from its own schema.
+ * finds every member by role and detects its layout from its own schema. spectra_metadata and
+ * wavelength_spectra_metadata also carry an {@code ARROW:schema} key-value ({@link ArrowSchemaHint}), which types
+ * {@code auxiliary_arrays} as the reference does for Arrow readers; the Rust reader fails on every wavelength spectrum
+ * without it.
+ *
+ * <p>No {@code parameters} item is written with an accession but no name, which the Rust reader cannot read: such a
+ * Param that no column takes, as a term-marker cell the reader gives as {@code Param(null, CURIE)}, is written with
+ * the name of its term ({@link #params}), or its accession where the writer does not know the term, and reads back
+ * with that name.
  */
 final class SplitMetadataWriter implements MetadataTablesWriter {
 
@@ -205,7 +219,10 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column CHROMATOGRAM_POINTS = column(Facet.CHROMATOGRAM, "MS:1003060");
 
     // CV-mapped wavelength-spectrum columns
+    private static final Column WAVELENGTH_TYPE = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000559");
     private static final Column WAVELENGTH_REPRESENTATION = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000525");
+    private static final Column LOWEST_WAVELENGTH = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000619");
+    private static final Column HIGHEST_WAVELENGTH = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000618");
     private static final Column WAVELENGTH_POINTS = column(Facet.WAVELENGTH_SPECTRUM, "MS:1003060");
     private static final Column LAMBDA_MAX = column(Facet.WAVELENGTH_SPECTRUM, "MS:1003812");
     private static final Column WAVELENGTH_BASE_PEAK_INTENSITY = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000505");
@@ -272,8 +289,11 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ID)
             .optional(PrimitiveTypeName.DOUBLE).named(TIME)
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(WAVELENGTH_TYPE))
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
             .named(field(WAVELENGTH_REPRESENTATION))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(LOWEST_WAVELENGTH))
+            .optional(PrimitiveTypeName.DOUBLE).named(field(HIGHEST_WAVELENGTH))
             .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(WAVELENGTH_POINTS))
             .optional(PrimitiveTypeName.DOUBLE).named(field(LAMBDA_MAX))
             .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_BASE_PEAK_INTENSITY))
@@ -309,10 +329,13 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final List<ColumnMapping> CHROMATOGRAM_SELECTED_ION_MAPPING = mapping(
             Facet.CHROMATOGRAM_SELECTED_ION, sameColumns(Facet.CHROMATOGRAM_SELECTED_ION, SELECTED_ION_COLUMNS));
     private static final List<ColumnMapping> WAVELENGTH_MAPPING = mapping(Facet.WAVELENGTH_SPECTRUM,
-            Set.of(WAVELENGTH_REPRESENTATION, WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY,
-                    WAVELENGTH_TIC));
+            Set.of(WAVELENGTH_TYPE, WAVELENGTH_REPRESENTATION, LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH,
+                    WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC));
     private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
             Set.of(WAVELENGTH_SCAN_START_TIME));
+
+    /** See {@link #termNames()}. */
+    private static final Map<String, String> TERM_NAMES = termNames();
 
     /** Precursors by their precursor_index, null first, as Rust orders an {@code Option}. */
     private static final Comparator<Precursor> PRECURSOR_KEY_ORDER = Comparator.comparing(Precursor::precursorIndex,
@@ -395,7 +418,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     private static void writeSpectra(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_SCHEMA, footer, plan.options())) {
+        try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_SCHEMA, withSchemaHint(footer, SPECTRUM_SCHEMA),
+                plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 SpectrumDescription d = entry.description();
                 Group row = factory.newGroup();
@@ -688,7 +712,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static void writeWavelengthSpectra(Path file, WritePlan plan, Map<String, String> footer)
             throws IOException {
         SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_SCHEMA, footer, plan.options())) {
+        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_SCHEMA,
+                withSchemaHint(footer, WAVELENGTH_SCHEMA), plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
                 WavelengthSpectrum w = entry.source();
                 Group row = factory.newGroup();
@@ -700,20 +725,25 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     row.add(TIME, w.time());
                 }
                 Promotion params = new Promotion(w.parameters());
+                // The type and wavelength range are copied to their columns and stay in the list, as the reference
+                // writes them: the Rust reader takes them from the list only.
+                Param type = params.mirror(termOf(SpectrumSummary.SPECTRUM_TYPES));
+                if (type != null) {
+                    row.add(field(WAVELENGTH_TYPE), type.accession());
+                }
                 Param representation = params.promote(termOf(REPRESENTATIONS));
                 if (representation != null) {
                     row.add(field(WAVELENGTH_REPRESENTATION), representation.accession());
                 }
-                row.add(field(WAVELENGTH_POINTS), (long) w.size());
-                addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
-                // After the representation, in the reference's column order: the reader appends these leftovers in
-                // column order, so a read-write-read keeps them, and the representation, where it found them.
-                for (Column column : List.of(WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC)) {
-                    Param p = params.promote(doubleIn(column));
+                for (Column column : List.of(LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH)) {
+                    Param p = params.mirror(doubleIn(column));
                     if (p != null) {
                         row.add(field(column), (Double) p.value());
                     }
                 }
+                row.add(field(WAVELENGTH_POINTS), (long) w.size());
+                addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
+                promoteDoubles(row, params, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC);
                 params(row, params.rest());
                 noAuxiliaryArrays(row);
                 writer.write(row);
@@ -780,7 +810,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * The Params of one scope as they are written (WR-5c, design §11.8). A Param moves to its column, and leaves the
      * {@code parameters} list, only if the reader rebuilds it equal apart from its name. Per column only the first
      * Param that qualifies is promoted, and only when no other Param of the list has its accession, so no accession
-     * is ever both a column and a parameter of the scope.
+     * is ever both a column and a parameter of the scope, except a {@link #mirror mirrored} one, which the reference
+     * writes in both.
      */
     private static final class Promotion {
 
@@ -797,19 +828,37 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
          * Param of the list has its accession.
          */
         Param promote(Predicate<Param> qualifies) {
+            int i = find(qualifies);
+            if (i < 0) {
+                return null;
+            }
+            promoted[i] = true;
+            return params.get(i);
+        }
+
+        /**
+         * The Param {@link #promote} would promote, left in the {@code parameters} list: for a column the reference
+         * writes next to the list entry.
+         */
+        Param mirror(Predicate<Param> qualifies) {
+            int i = find(qualifies);
+            return i < 0 ? null : params.get(i);
+        }
+
+        /** The position of the first Param not promoted that {@code qualifies}, or -1 as {@link #promote} says. */
+        private int find(Predicate<Param> qualifies) {
             for (int i = 0; i < params.size(); i++) {
                 Param p = params.get(i);
                 if (!promoted[i] && p.accession() != null && qualifies.test(p)) {
                     for (int j = 0; j < params.size(); j++) {
                         if (j != i && p.accession().equals(params.get(j).accession())) {
-                            return null;
+                            return -1;
                         }
                     }
-                    promoted[i] = true;
-                    return p;
+                    return i;
                 }
             }
-            return null;
+            return -1;
         }
 
         /** Whether a Param of the list, promoted or not, has one of {@code accessions}. */
@@ -862,6 +911,16 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 && (p.value() instanceof Long || p.value() instanceof Double v && Double.isFinite(v));
     }
 
+    /** Promotes to each of the DOUBLE {@code columns} of {@code row} the Param that qualifies for it, if any. */
+    private static void promoteDoubles(Group row, Promotion params, Column... columns) {
+        for (Column column : columns) {
+            Param p = params.promote(doubleIn(column));
+            if (p != null) {
+                row.add(field(column), (Double) p.value());
+            }
+        }
+    }
+
     /** An empty {@code auxiliary_arrays} list and a zero count, as the reference writes for a row without any. */
     private static void noAuxiliaryArrays(Group row) {
         row.add(AUXILIARY_COUNT, 0);
@@ -879,13 +938,50 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     // ---- helpers ------------------------------------------------------------------------------------------------
 
-    /** Writes {@code params} as the row's {@code parameters} list, an empty list when there are none. */
+    /**
+     * Writes {@code params} as the row's {@code parameters} list, an empty list when there are none. A Param with an
+     * accession but no name, such as a term-marker cell the reader gives as {@code Param(null, CURIE)} when no column
+     * takes it, is written with a name, since the Rust reader requires one there: the term's name where
+     * {@link #TERM_NAMES} knows it, else its accession.
+     */
     private static void params(Group row, List<Param> params) {
         if (params.isEmpty()) {
             row.addGroup(PARAMETERS);
-        } else {
-            writeParams(row, params);
+            return;
         }
+        List<Param> named = new ArrayList<>(params.size());
+        for (Param p : params) {
+            named.add(p.name() == null && p.accession() != null
+                    ? new Param(TERM_NAMES.getOrDefault(p.accession(), p.accession()), p.accession(), p.value(),
+                    p.unit())
+                    : p);
+        }
+        writeParams(row, named);
+    }
+
+    /** {@code footer} with the {@link ArrowSchemaHint} of {@code schema} added last, as Arrow writers place it. */
+    private static Map<String, String> withSchemaHint(Map<String, String> footer, MessageType schema) {
+        Map<String, String> out = new LinkedHashMap<>(footer);
+        out.put(ArrowSchemaHint.KEY, ArrowSchemaHint.encode(schema));
+        return out;
+    }
+
+    /**
+     * The term names the writer gives a nameless Param in a {@code parameters} list: those of the {@link ColumnTable}
+     * columns, the spectrum types, the two representations and the dissociation methods.
+     */
+    private static Map<String, String> termNames() {
+        Map<String, String> out = new HashMap<>();
+        for (Facet facet : Facet.values()) {
+            for (Column c : ColumnTable.columns(facet)) {
+                out.put(c.accession(), c.name());
+            }
+        }
+        out.putAll(SpectrumSummary.SPECTRUM_TYPE_NAMES);
+        out.put(CvTerms.CENTROID_SPECTRUM, "centroid spectrum");
+        out.put(CvTerms.PROFILE_SPECTRUM, "profile spectrum");
+        out.putAll(CvTerms.DISSOCIATION_METHODS);
+        return Map.copyOf(out);
     }
 
     /** Sets {@code field} of {@code group} to {@code value} unless it is null. */

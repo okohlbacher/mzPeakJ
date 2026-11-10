@@ -282,6 +282,16 @@ Writer notes:
 - Emits the reference metadata schema: derived spectrum columns (observed m/z range, base peak, TIC,
   spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
+- A CV param that has a standardized column (summary values, spectrum type, representation, dissociation method,
+  collision energy, imaging position, wavelength representation, base peak intensity and TIC) is written to that
+  column and leaves the `parameters` list, so it reads back after the list, in column order, and without its name
+  where the column is a term marker. CV param order carries no meaning; a description whose promoted terms did not
+  come last reads back in another order, and one read from mzPeakJ's own output keeps its order. As the reference
+  does, a wavelength spectrum's type and observed wavelength range are written to their columns and also stay in the
+  list. A param with an accession but no name in a `parameters` list is written with its term's name (its accession
+  where mzPeakJ does not know the term), which the Rust reference reader requires.
+- In the `SPLIT` layout, `spectra_metadata` and `wavelength_spectra_metadata` carry empty `auxiliary_arrays` and
+  an `ARROW:schema` footer entry that types them as the reference does; the Rust reference reader needs both.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
   only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
   A CENTROID spectrum with a non-finite m/z keeps both files, since `spectra_peaks` would read such a row back

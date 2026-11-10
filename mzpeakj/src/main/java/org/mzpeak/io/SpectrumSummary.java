@@ -5,9 +5,9 @@ import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -27,26 +27,28 @@ final class SpectrumSummary {
 
     /**
      * Spectrum types: the descendants of MS:1000559 'spectrum type' (16 terms), the CURIEs a {@code spectrum_type}
-     * term-marker cell holds. Unmodifiable, in accession order; {@code contains(null)} is false.
+     * term-marker cell holds, with their names. Unmodifiable, in accession order.
      */
-    static final Set<String> SPECTRUM_TYPES = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-            "MS:1000294", // mass spectrum
-            "MS:1000322", // charge inversion mass spectrum
-            "MS:1000325", // constant neutral gain spectrum
-            "MS:1000326", // constant neutral loss spectrum
-            "MS:1000328", // e/2 mass spectrum
-            "MS:1000341", // precursor ion spectrum
-            "MS:1000579", // MS1 spectrum
-            "MS:1000580", // MSn spectrum
-            "MS:1000581", // CRM spectrum
-            "MS:1000582", // SIM spectrum
-            "MS:1000583", // SRM spectrum
-            "MS:1000789", // enhanced multiply charged spectrum
-            "MS:1000790", // time-delayed fragmentation spectrum
-            "MS:1000804", // electromagnetic radiation spectrum
-            "MS:1000805", // emission spectrum
-            "MS:1000806"  // absorption spectrum
-    )));
+    static final Map<String, String> SPECTRUM_TYPE_NAMES = names(
+            "MS:1000294", "mass spectrum",
+            "MS:1000322", "charge inversion mass spectrum",
+            "MS:1000325", "constant neutral gain spectrum",
+            "MS:1000326", "constant neutral loss spectrum",
+            "MS:1000328", "e/2 mass spectrum",
+            "MS:1000341", "precursor ion spectrum",
+            "MS:1000579", "MS1 spectrum",
+            "MS:1000580", "MSn spectrum",
+            "MS:1000581", "CRM spectrum",
+            "MS:1000582", "SIM spectrum",
+            "MS:1000583", "SRM spectrum",
+            "MS:1000789", "enhanced multiply charged spectrum",
+            "MS:1000790", "time-delayed fragmentation spectrum",
+            "MS:1000804", "electromagnetic radiation spectrum",
+            "MS:1000805", "emission spectrum",
+            "MS:1000806", "absorption spectrum");
+
+    /** The accessions of {@link #SPECTRUM_TYPE_NAMES}, in its order; {@code contains(null)} is false. */
+    static final Set<String> SPECTRUM_TYPES = SPECTRUM_TYPE_NAMES.keySet();
 
     /**
      * The summary values derived from a spectrum's payload; each is {@code null} when it cannot be derived. The total
@@ -56,6 +58,15 @@ final class SpectrumSummary {
     }
 
     private static final Values NONE = new Values(null, null, null, null, null);
+
+    /** An unmodifiable ordered map of the accession-name pairs. */
+    private static Map<String, String> names(String... accessionNamePairs) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int i = 0; i < accessionNamePairs.length; i += 2) {
+            out.put(accessionNamePairs[i], accessionNamePairs[i + 1]);
+        }
+        return Collections.unmodifiableMap(out);
+    }
 
     private SpectrumSummary() {
     }

@@ -165,7 +165,8 @@ class WavelengthParamsTest {
                     .containsExactlyInAnyOrderElementsOf(expected)
                     .isEqualTo(expected);
         }
-        // The member itself: the four list Params are list entries, the three leftovers columns.
+        // The member itself: the four list Params are list entries, the type and wavelength range also columns (as
+        // in has_uv), the three leftovers columns only.
         List<Group> rows = new ArrayList<>();
         ParquetGroups.forEach(out.resolve(METADATA), rows::add);
         assertThat(rows).hasSameSizeAs(source.wavelengthSpectra);
@@ -174,6 +175,12 @@ class WavelengthParamsTest {
             List<Param> params = source.wavelengthSpectra.get(i).parameters();
             assertThat(ParquetGroups.readParams(row, "parameters")).as("spectrum %d", i)
                     .isEqualTo(params.subList(0, 4)).extracting(Param::name).doesNotContainNull();
+            assertThat(ParquetGroups.optString(row, "spectrum_type")).as("spectrum %d", i)
+                    .isEqualTo(params.get(0).accession());
+            assertThat(ParquetGroups.optDouble(row, "lowest_observed_wavelength")).as("spectrum %d", i)
+                    .isEqualTo(params.get(1).value());
+            assertThat(ParquetGroups.optDouble(row, "highest_observed_wavelength")).as("spectrum %d", i)
+                    .isEqualTo(params.get(2).value());
             assertThat(ParquetGroups.optString(row, "spectrum_representation")).as("spectrum %d", i)
                     .isEqualTo("MS:1000128").isEqualTo(params.get(4).accession());
             assertThat(ParquetGroups.optDouble(row, "base_peak_intensity")).as("spectrum %d", i)
@@ -182,7 +189,8 @@ class WavelengthParamsTest {
                     .isEqualTo(params.get(6).value());
         }
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName())
-                .containsExactly("index", "id", "time", "spectrum_representation", "number_of_data_points",
+                .containsExactly("index", "id", "time", "spectrum_type", "spectrum_representation",
+                        "lowest_observed_wavelength", "highest_observed_wavelength", "number_of_data_points",
                         "lambda_max", "base_peak_intensity", "total_ion_current", "parameters", "auxiliary_arrays",
                         "number_of_auxiliary_arrays");
     }
