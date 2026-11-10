@@ -9,6 +9,7 @@ import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
+import org.mzpeak.io.MzPeakWriter;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
@@ -571,6 +572,40 @@ class MzMLWriterSpectraTest {
             Spectrum read = back.spectra().get(0);
             assertThat(read.arrays()).containsOnlyKeys(arrays.keySet());
             arrays.forEach((key, values) -> assertThat(bits(read.arrays().get(key))).as(key).isEqualTo(bits(values)));
+            assertThat(w.warnings()).noneMatch(l -> l.startsWith("A-33"));
+        }
+    }
+
+    /**
+     * The keys MS:1000786 and "" name no non-standard data array: each is given the name 'non-standard data array'
+     * (A-33), the name the library gives a nameless one, under which it survives the mzML read and toMzPeak; without a
+     * name the mzML read would drop it (B-21).
+     */
+    @Test
+    void aNamelessNonStandardArrayIsGivenTheGeneratedName() throws IOException {
+        List<String> keys = List.of("MS:1000786", "");
+        List<Spectrum> spectra = new ArrayList<>();
+        for (int i = 0; i < keys.size(); i++) {
+            spectra.add(new Spectrum(description("scan=" + i, 1, List.of(scan(1.0)), List.of(), List.of()),
+                    new double[]{100, 200}, new double[]{1, 2}, null, Map.of(keys.get(i), new double[]{3, i}), null));
+        }
+        Contents contents = new Contents(metadata(), List.of(), List.of(), List.of("scan=0", "scan=1"), List.of(),
+                List.of());
+
+        for (Written w : write("nameless", contents, writer -> spectra.forEach(writer::write))) {
+            assertThat(Files.readString(w.file(), UTF_8)).contains("<cvParam cvRef=\"MS\" accession=\"MS:1000786\""
+                    + " value=\"non-standard data array\" name=\"non-standard data array\"></cvParam>");
+            assertThat(read(w.file()).spectra()).allSatisfy(s -> assertThat(s.arrays())
+                    .containsOnlyKeys("non-standard data array"));
+            assertThat(w.warnings()).contains(MzMLWriter.A_33 + " (2)");
+            Path back = dir.resolve("nameless-" + w.zlib() + ".mzpeak");
+            MzMLConversion.toMzPeak(w.file(), back, false, MzPeakWriter.Options.defaults());
+            try (MzPeakReader reader = MzPeakReader.open(back)) {
+                for (int i = 0; i < keys.size(); i++) {
+                    assertThat(reader.getSpectrumAt(i).arrays()).containsOnlyKeys("non-standard data array");
+                    assertThat(reader.getSpectrumAt(i).arrays().get("non-standard data array")).containsExactly(3, i);
+                }
+            }
         }
     }
 

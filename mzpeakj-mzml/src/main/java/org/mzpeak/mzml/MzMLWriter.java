@@ -232,6 +232,8 @@ public final class MzMLWriter implements AutoCloseable {
     static final String A_29 = "A-29 values with characters outside ASCII, which jmzML-based readers read as U+FFFD";
     static final String A_31 = "A-31 chromatogram type params other than the chromatogram type dropped";
     static final String A_32 = "A-32 spectrum-level scan start times that differ from the first scan's dropped";
+    static final String A_33 = "A-33 non-standard data arrays without a name given the name 'non-standard data"
+            + " array'";
     // Warned by design 5.2 and 5.3, without a loss number.
     static final String CV_WITHOUT_ID = "cv list entries without id dropped";
     static final String CV_COMPLETED = "CVs without fullName or URI completed from the known CVs, else with the prefix"
@@ -1364,14 +1366,19 @@ public final class MzMLWriter implements AutoCloseable {
 
     /**
      * One array, encoded by jmzML as 64-bit floats, zlib-compressed unless empty (guard 1: jmzML's encoder never
-     * returns on an empty array with zlib); then its type, or MS:1000786 named {@code key}, with {@code unit}.
+     * returns on an empty array with zlib); then its type, or MS:1000786 named {@code key}, with {@code unit}. A
+     * nameless non-standard array (the key MS:1000786, which the library gives one, or an empty key) is named
+     * 'non-standard data array', which the mzML read takes as its key (A-33); without a name it would be dropped.
      * {@code arrayLength} is never written; {@code encodedLength} is the Base64 length of the encoded bytes.
      */
     private BinaryDataArray array(String key, double[] values, String unit) {
         BinaryDataArray a = new BinaryDataArray();
         a.set64BitFloatArrayAsBinaryData(values, zlib && values.length > 0, cvs.get("MS"));
-        boolean typed = CvTerms.ARRAY_TYPES.containsKey(key);
-        param(a, new Param(null, typed ? key : NON_STANDARD_ARRAY, typed ? null : key, unit));
+        boolean nameless = key.isEmpty() || NON_STANDARD_ARRAY.equals(key);
+        note(A_33, nameless ? 1 : 0);
+        boolean typed = !nameless && CvTerms.ARRAY_TYPES.containsKey(key);
+        param(a, new Param(null, typed ? key : NON_STANDARD_ARRAY, typed ? null
+                : nameless ? MzMLTerms.name(NON_STANDARD_ARRAY) : key, unit));
         a.setEncodedLength(4 * ((a.getBinary().length + 2) / 3));
         return a;
     }
