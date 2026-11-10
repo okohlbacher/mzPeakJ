@@ -237,7 +237,26 @@ class MzMLWriterSpectraTest {
             assertThat(raw).extracting(uk.ac.ebi.jmzml.model.mzml.Precursor::getSourceFileRef).containsExactly(
                     null, null, "sf", null, "sf", null, null);
             assertThat(w.warnings()).contains(MzMLWriter.A_23 + " (1)", String.format(MzMLWriter.A_18,
-                    "spectrum precursorIndex naming no spectrum written as externalSpectrumID") + " (2)");
+                    "spectrum precursorIndex naming no spectrum written as externalSpectrumID") + " (2)",
+                    String.format(MzMLWriter.A_18, "spectrum precursors without index, naming no written spectrum,"
+                            + " written as externalSpectrumID") + " (1)");
+        }
+        // without a source file, which mzML requires next to an externalSpectrumID, an external ref is dropped
+        FileMetadata m = metadata();
+        FileMetadata noSource = new FileMetadata(new FileDescription(List.of(), List.of()),
+                m.instrumentConfigurations(), m.dataProcessingMethods(), List.of(), m.software(),
+                new MsRun("run", 0, "dp", null, null, List.of()));
+        Contents withoutSource = new Contents(noSource, List.of(), List.of(), List.of("scan=1", "scan=2", "scan=3"),
+                List.of(), List.of());
+        for (Written w : write("no-source", withoutSource, writer -> spectra.forEach(writer::write))) {
+            List<uk.ac.ebi.jmzml.model.mzml.Precursor> raw = jmzmlSpectra(w.file()).get(1).getPrecursorList()
+                    .getPrecursor();
+            assertThat(raw).extracting(uk.ac.ebi.jmzml.model.mzml.Precursor::getExternalSpectrumID).containsOnlyNulls();
+            assertThat(raw).extracting(uk.ac.ebi.jmzml.model.mzml.Precursor::getSourceFileRef).containsOnlyNulls();
+            assertThat(read(w.file()).spectra().get(1).description().precursors()).extracting(Precursor::precursorId)
+                    .containsExactly("scan=1", "scan=1", null, null, null, null, "scan=3");
+            assertThat(w.warnings()).contains(String.format(MzMLWriter.A_18, "spectrum refs to an external document"
+                    + " without a source file dropped") + " (2)").noneMatch(l -> l.contains("without index"));
         }
     }
 

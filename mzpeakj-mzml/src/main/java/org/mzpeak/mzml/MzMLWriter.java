@@ -122,7 +122,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * become a {@code spectrumRef}, any other an {@code externalSpectrumID} with the run's default source file. For a
  * spectrum precursor the index decides, never the id: an index that names an announced MS spectrum gives that
  * spectrum's {@code spectrumRef}, a precursor id other than its original id lost (A-23); a precursor without index, or
- * with one that names no spectrum (A-18), is external.
+ * with one that names no spectrum, is external (both counted, A-18). An external reference needs the run's default
+ * source file; without one it is dropped (A-18). (The HEAD Python reader attaches selected ions to their precursor by
+ * {@code (source_index, precursor_index)}, so it attaches none to an mzPeak precursor without index.)
  *
  * <p><b>CVs</b> (design 5.11): the cv list is that of the contents, an entry without id dropped and a missing full
  * name or URI completed from {@link CvEntry#known()}, else with the prefix and {@code unknown}; then MS, UO and every
@@ -1229,23 +1231,33 @@ public final class MzMLWriter implements AutoCloseable {
         }
         uk.ac.ebi.jmzml.model.mzml.Precursor x = precursor(p);
         note(ACTIVATION_MUST, count(x.getActivation(), CvTerms.DISSOCIATION_METHODS::containsKey) > 0 ? 0 : 1);
-        refer(p.precursorId(), local, x::setSpectrumRef, x::setExternalSpectrumID, x::setSourceFileRef);
+        boolean external = refer(p.precursorId(), local, x::setSpectrumRef, x::setExternalSpectrumID,
+                x::setSourceFileRef);
+        note(String.format(A_18, "spectrum precursors without index, naming no written spectrum, written as"
+                + " externalSpectrumID"), external && index == null ? 1 : 0);
         return x;
     }
 
     /**
      * The reference of a scan or precursor to the spectrum {@code id}: {@code spectrumRef} = {@code local}, a
      * written spectrum id, if not null; else {@code externalSpectrumID} = {@code id} with the run's default source
-     * file; nothing for neither.
+     * file, which mzML requires next to it: without one the reference is dropped (A-18); nothing for neither.
+     * Whether an {@code externalSpectrumID} was written.
      */
-    private void refer(String id, String local, Consumer<String> spectrumRef, Consumer<String> external,
-                       Consumer<String> sourceFile) {
+    private boolean refer(String id, String local, Consumer<String> spectrumRef, Consumer<String> external,
+                          Consumer<String> sourceFile) {
         if (local != null) {
             spectrumRef.accept(text(local));
         } else if (id != null) {
+            if (defaultSourceFile == null) {
+                note(String.format(A_18, "spectrum refs to an external document without a source file dropped"));
+                return false;
+            }
             external.accept(text(id));
             sourceFile.accept(text(defaultSourceFile));
+            return true;
         }
+        return false;
     }
 
     /**

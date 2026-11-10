@@ -511,7 +511,7 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 ### What is lost
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
-kind with its count: B-1 … B-41 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
+kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
 converted to minutes or lost array data processing refs, and A-1 … A-31 for mzPeak → mzML, such as required content
 synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
 lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
@@ -528,6 +528,12 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
   type params that name another type are dropped and counted.
 - B-41: an `externalSpectrumID` next to a `spectrumRef` (on a scan or precursor) is lost: the model holds one
   reference, the `spectrumRef`.
+- B-42: a `spectrumRef` that names no spectrum of the file is kept as the reference's id, without index, and comes
+  back as an `externalSpectrumID`.
+- A-18 also counts the spectrum precursors without index that are written as `externalSpectrumID`, and drops (and
+  counts) every external reference when the run has no default source file, which mzML requires next to an
+  `externalSpectrumID`. The HEAD Python reader attaches selected ions to their precursor by `(source_index,
+  precursor_index)`, so it attaches none to an mzPeak precursor without index.
 
 ## Architecture
 

@@ -1632,7 +1632,7 @@ class MzMLReaderRunTest {
         Precursor precursor = run.spectra.get(1).description().primaryPrecursor();
         assertThat(precursor.precursorIndex()).isNull();
         assertThat(precursor.precursorId()).isEqualTo("scan=1");
-        assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33"));
+        assertThat(run.reader.warnings()).noneMatch(w -> w.startsWith("B-33")).contains(MzMLReader.B_42 + " (1)");
     }
 
     @Test

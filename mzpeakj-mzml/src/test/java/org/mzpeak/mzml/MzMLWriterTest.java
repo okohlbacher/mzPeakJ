@@ -824,10 +824,11 @@ class MzMLWriterTest {
                 run("run"));
         for (Written w : write("no-source-file", contents(noSourceFile, withTwo))) {
             uk.ac.ebi.jmzml.model.mzml.Precursor p = jmzmlChromatograms(w.file()).get(0).getPrecursor();
-            assertThat(p.getExternalSpectrumID()).isEqualTo("scan=9");
+            assertThat(p.getExternalSpectrumID()).isNull();
             assertThat(p.getSourceFileRef()).isNull();
             assertThat(w.warnings()).contains(String.format(MzMLWriter.A_18, "run defaultSourceFileRef dropped")
-                    + " (1)");
+                    + " (1)", String.format(MzMLWriter.A_18, "spectrum refs to an external document without a source"
+                    + " file dropped") + " (1)");
         }
     }
 
