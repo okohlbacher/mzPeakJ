@@ -515,9 +515,13 @@ class MzMLConversionTest {
         }
         Path mzml = dir.resolve("out.mzML");
 
-        MzMLConversion.toMzML(input, mzml, true);
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
 
         MzMLAssert.valid(mzml);
+        // the run default naming the removed data processing stub is removed too, so the writer synthesizes it
+        assertThat(toMzML.warnings()).contains(String.format(MzMLWriter.A_8,
+                "spectrumList defaultDataProcessingRef (the first data processing)") + " (1)")
+                .noneMatch(line -> line.startsWith("A-18 "));
         assertThat(Files.readString(mzml, StandardCharsets.UTF_8)).doesNotContain("mzpeakj_source", "mzpeakj_export",
                 "<sourceFile", "defaultSourceFileRef");
         FileMetadata m = model(mzml).fileMetadata();
@@ -525,6 +529,36 @@ class MzMLConversionTest {
         assertThat(m.dataProcessingMethods()).extracting(DataProcessing::id).containsExactly("mzpeakj_conversion");
         assertThat(m.run().id()).isEqualTo("run1");
         assertThat(m.run().defaultSourceFileId()).isNull();
+    }
+
+    /**
+     * The CV prefixes the spectra use only as the unit of a scan param (XYZ) or as the accession of an activation
+     * param (ABC), which the mzPeak writer leaves undeclared, are announced to the mzML writer: it declares both
+     * (A-17) instead of rejecting the spectrum.
+     */
+    @Test
+    void theCvPrefixesOfScanParamUnitsAndActivationParamsAreDeclared() throws IOException {
+        Path input = dir.resolve("prefixes.mzpeak");
+        Spectrum s = spectrum(1, "scan=2", 2, List.of(new Precursor(0L, "scan=1", null, List.of(), new Activation(
+                List.of(new Param("collision-induced dissociation", "MS:1000133", null, null),
+                        new Param("custom activation", "ABC:0000001", null, null))))), List.of());
+        SpectrumDescription d = s.description();
+        ScanEvent scan = new ScanEvent(2.0, null, null, null, null, null, List.of(),
+                List.of(new Param("custom scan value", null, 1.5, "XYZ:0000001")));
+        Spectrum ms2 = new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), List.of(scan),
+                d.precursors(), d.parameters()), s.mz(), s.intensity(), s.peaks());
+        MzPeakWriter.writeArchive(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of());
+        try (MzPeakReader reader = MzPeakReader.open(input)) {
+            assertThat(reader.manifest().cvList()).extracting(CvEntry::id).doesNotContain("XYZ", "ABC");
+        }
+        Path mzml = dir.resolve("prefixes.mzML");
+
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
+
+        MzMLAssert.valid(mzml);
+        assertThat(model(mzml).cvList()).extracting(CvEntry::id).contains("XYZ", "ABC");
+        assertThat(toMzML.warnings()).anyMatch(line -> line.startsWith(MzMLWriter.A_17 + " ("));
     }
 
     /** The exact stubs are removed also next to other entries, and a run default that names another one is kept. */
