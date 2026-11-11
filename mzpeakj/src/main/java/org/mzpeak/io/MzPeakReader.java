@@ -197,7 +197,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private final double[] sortedTimes;
     private final long[] timeIndexOrder;
 
-    private final String metadataFileName;
+    private final String metadataFileName;  // nullable
     private final String dataFileName;   // nullable
     private final String peaksFileName;  // nullable
     private boolean fileMetadataLoaded;
@@ -311,7 +311,6 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
                 checkFormatVersion(manifest, source.describe());
             }
             SpectrumMetadataDecoder.Decoded decoded = SpectrumMetadataDecoder.decode(source, manifest);
-            // present: decode() throws when the manifest lists no spectrum metadata member
             String metadataFile = member(manifest, EntityType.SPECTRUM, DataKind.METADATA);
             String dataFile = member(manifest, EntityType.SPECTRUM, DataKind.DATA_ARRAYS);
             String peaksFile = member(manifest, EntityType.SPECTRUM, DataKind.PEAKS);
@@ -841,11 +840,15 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         return fileMetadata;
     }
 
-    /** The key-value metadata of the spectrum metadata member's Parquet footer, read on first use. */
+    /**
+     * The key-value metadata of the spectrum metadata member's Parquet footer, read on first use; empty when the
+     * manifest lists no spectrum metadata member.
+     */
     private synchronized Map<String, String> footerKeyValue() {
         requireOpen();
         if (footerKeyValue == null) {
-            footerKeyValue = ParquetGroups.footerKeyValue(source.inputFile(metadataFileName));
+            footerKeyValue = metadataFileName == null ? Map.of()
+                    : ParquetGroups.footerKeyValue(source.inputFile(metadataFileName));
         }
         return footerKeyValue;
     }

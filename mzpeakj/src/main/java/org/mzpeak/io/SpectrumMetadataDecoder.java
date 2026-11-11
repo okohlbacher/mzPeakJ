@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Decodes the spectrum metadata into {@link SpectrumDescription}s. The spectrum metadata member's own schema selects
@@ -28,13 +29,16 @@ final class SpectrumMetadataDecoder {
 
     /**
      * Decodes the member that {@code manifest} lists under the role (spectrum, metadata) and, in the split layout,
-     * the scans, precursors and selected-ions members it lists; error messages name a member by its file name.
-     *
-     * @throws MzPeakException when the manifest lists no spectrum metadata member
+     * the scans, precursors and selected-ions members it lists; error messages name a member by its file name. A
+     * manifest that lists no spectrum metadata member, as for a dataset of chromatograms only, gives no spectra
+     * (RD-17); a member it lists that is missing or unreadable still throws.
      */
     static Decoded decode(MzPeakSource source, MzPeakManifest manifest) {
-        MzPeakManifest.Entry entry = manifest.find(EntityType.SPECTRUM, DataKind.METADATA)
-                .orElseThrow(() -> new MzPeakException("Manifest has no spectrum metadata file"));
+        Optional<MzPeakManifest.Entry> listed = manifest.find(EntityType.SPECTRUM, DataKind.METADATA);
+        if (listed.isEmpty()) {
+            return empty();
+        }
+        MzPeakManifest.Entry entry = listed.get();
         InputFile metadataFile = source.inputFile(entry.name());
         ParquetFooter footer = ParquetFooter.read(metadataFile);
         return switch (MetadataShape.detect(footer, "spectrum", F_INDEX, entry.name())) {

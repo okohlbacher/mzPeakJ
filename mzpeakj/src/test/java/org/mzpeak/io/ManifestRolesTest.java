@@ -228,7 +228,7 @@ class ManifestRolesTest {
     }
 
     @Test
-    void storesAreNullAndSpectrumMetadataThrowsWhenAMemberIsMissing(@TempDir Path tmp) throws IOException {
+    void storesAreNullAndSpectrumMetadataIsEmptyWhenAMemberIsMissing(@TempDir Path tmp) throws IOException {
         Path dir = unpack(Fixtures.legacy("small.unpacked.mzpeak"), tmp);
         try (MzPeakSource source = MzPeakSource.open(dir)) {
             MzPeakManifest m = MzPeakManifest.fromSource(source);
@@ -240,13 +240,14 @@ class ManifestRolesTest {
         try (MzPeakSource source = MzPeakSource.open(dir)) {
             MzPeakManifest m = MzPeakManifest.fromSource(source);
             assertThat(ChromatogramStore.load(source, m)).isNull();
-            assertThatThrownBy(() -> SpectrumMetadataDecoder.decode(source, m))
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("Manifest has no spectrum metadata file");
+            // RD-17: no spectrum metadata member listed, no spectra (it threw before)
+            SpectrumMetadataDecoder.Decoded decoded = SpectrumMetadataDecoder.decode(source, m);
+            assertThat(decoded.descriptions()).isEmpty();
+            assertThat(decoded.deltaModels()).isEmpty();
         }
-        assertThatThrownBy(() -> MzPeakReader.open(dir))
-                .isInstanceOf(MzPeakException.class)
-                .hasMessage("Manifest has no spectrum metadata file");
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            assertThat(reader.size()).isZero();
+        }
     }
 
     static Stream<Arguments> namelessMembers() {
