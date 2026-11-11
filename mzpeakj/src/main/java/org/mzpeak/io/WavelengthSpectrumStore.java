@@ -95,7 +95,7 @@ final class WavelengthSpectrumStore {
                 ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM), footer.schema(),
                 SignalEntity.WAVELENGTH_SPECTRUM);
         requireReadable(plan, footer.schema(), dataName);
-        Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, plan);
+        Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, plan, dataName);
 
         List<WavelengthSpectrum> all = new ArrayList<>(headers.size());
         for (WavelengthMetadataDecoder.Header h : headers) {

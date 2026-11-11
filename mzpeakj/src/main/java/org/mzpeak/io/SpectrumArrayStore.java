@@ -393,12 +393,9 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
 
         private long requireIndex(Group g) {
-            Long si = ParquetGroups.optLong(g, indexField);
+            Long si = ParquetGroups.optIndexKey(g, indexField, member);
             if (si == null) {
                 throw new MzPeakException("signal row missing spectrum_index");
-            }
-            if (si < 0) {
-                throw new MzPeakException("spectrum_index exceeds supported range (uint64 high bit set): " + si);
             }
             return si;
         }

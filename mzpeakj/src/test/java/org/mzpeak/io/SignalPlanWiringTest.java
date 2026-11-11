@@ -875,20 +875,21 @@ class SignalPlanWiringTest {
         MessageType schema = MessageTypeParser.parseMessageType("""
                 message m {
                   optional group point {
-                    optional int32 chromatogram_index (INTEGER(32,false));
+                    optional int32 chromatogram_index;
                     optional double time;
                     optional float intensity;
                   }
                 }""");
         SimpleGroupFactory rows = new SimpleGroupFactory(schema);
-        // the uint32 2^31 + 1, sign-extended
+        // a signed INT32; the same bits in an unsigned INT32 are the uint32 2^31 + 1 (SignalIndexKeyTest)
         Path data = write("chromatograms_data.parquet", schema,
                 point(rows).append("chromatogram_index", (int) 0x8000_0001L).append("time", 1.0)
                         .append("intensity", 2f).parent);
 
         assertThatThrownBy(() -> chromatograms(data, 0))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("chromatogram_index -2147483647 is out of range");
+                .hasMessage("chromatogram data member: int32 column chromatogram_index holds the negative index"
+                        + " -2147483647");
     }
 
     /** SLOF bytes that do not decode throw, naming the chromatogram index. */
@@ -1085,20 +1086,21 @@ class SignalPlanWiringTest {
         MessageType schema = MessageTypeParser.parseMessageType("""
                 message m {
                   optional group point {
-                    optional int32 wavelength_spectrum_index (INTEGER(32,false));
+                    optional int32 wavelength_spectrum_index;
                     optional float wavelength;
                     optional float intensity;
                   }
                 }""");
         SimpleGroupFactory rows = new SimpleGroupFactory(schema);
-        // the uint32 2^31, sign-extended: it missed the header of index 2^31 before FN-5
+        // a signed INT32; the same bits in an unsigned INT32 are the uint32 2^31 (SignalIndexKeyTest)
         Path data = write("wavelength_spectra_data.parquet", schema,
                 point(rows).append("wavelength_spectrum_index", Integer.MIN_VALUE).append("wavelength", 200f)
                         .append("intensity", 1f).parent);
 
         assertThatThrownBy(() -> wavelengthSpectra(data, 0))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("wavelength_spectrum_index -2147483648 is out of range");
+                .hasMessage("wavelength spectrum data member: int32 column wavelength_spectrum_index holds the"
+                        + " negative index -2147483648");
     }
 
     // ---- helpers --------------------------------------------------------------------------------------------

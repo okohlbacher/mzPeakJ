@@ -12,12 +12,16 @@ import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.LogicalTypeAnnotation.IntLogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.mzpeak.io.MzPeakException;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 /**
@@ -125,6 +129,38 @@ public final class ParquetGroups {
             }
             default -> throw new IllegalStateException("Field " + field + " is not an integer: " + p);
         };
+    }
+
+    /**
+     * Read the index key of a signal row (the entity index column of a data member) by its column type: an INT64
+     * annotated as unsigned 64-bit is read as is, an INT32 annotated as unsigned 8-, 16- or 32-bit is not
+     * sign-extended, and any other column reads as {@link #optLong} reads it.
+     *
+     * @param member the name of the member in errors
+     * @return the key, or {@code null} when the field is absent or null in this record (or a non-finite float)
+     * @throws MzPeakException if an unsigned 64-bit key has the high bit set, or a key of another column is negative;
+     *                         the message names the member, the column type and the field
+     */
+    public static Long optIndexKey(Group g, String field, String member) {
+        if (!has(g, field)) {
+            return null;
+        }
+        PrimitiveType type = g.getType().getType(field).asPrimitiveType();
+        PrimitiveTypeName p = type.getPrimitiveTypeName();
+        boolean unsigned = type.getLogicalTypeAnnotation() instanceof IntLogicalTypeAnnotation i && !i.isSigned();
+        if (unsigned && p == PrimitiveTypeName.INT32) {
+            return Integer.toUnsignedLong(g.getInteger(field, 0));
+        }
+        Long value = optLong(g, field);
+        if (value != null && value < 0) {
+            if (unsigned) {
+                throw new MzPeakException(member + ": uint64 column " + field + " holds "
+                        + Long.toUnsignedString(value) + ", beyond the supported range (high bit set)");
+            }
+            throw new MzPeakException(member + ": " + p.name().toLowerCase(Locale.ROOT) + " column " + field
+                    + " holds the negative index " + value);
+        }
+        return value;
     }
 
     /**
