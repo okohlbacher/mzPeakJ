@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.bytes.BytesInput;
+import org.apache.parquet.bytes.BytesUtils;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.column.statistics.Statistics;
@@ -14,6 +15,7 @@ import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.LocalOutputFile;
 import org.apache.parquet.io.SeekableInputStream;
+import org.apache.parquet.schema.ColumnOrder;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
 import org.junit.jupiter.api.Test;
@@ -303,7 +305,61 @@ class MetadataColumnsTest {
         }
     }
 
+    /**
+     * A footer that orders the column by IEEE 754 total order (parquet-java's default for DOUBLE columns since 1.18)
+     * keeps a NaN maximum next to a number as minimum, as parquet-java reads it; the row group then has no bounds
+     * either, as under the type-defined order, under which parquet-java drops a NaN bound.
+     */
+    @Test
+    void aNaNMaximumNextToANumberGivesNoBounds() throws IOException {
+        assertThat(LOWEST_OBSERVED_MZ.getPrimitiveType().columnOrder()).isEqualTo(ColumnOrder.ieee754TotalOrder());
+        ParquetFileWriter writer = lowLevelWriter();
+        writeRowGroup(writer, 0L, 150.5);
+        writer.startBlock(2);
+        Statistics<?> indexStats = Statistics.createStats(INDEX.getPrimitiveType());
+        indexStats.updateStats(1L);
+        indexStats.updateStats(2L);
+        writeTwoValueChunk(writer, INDEX, indexStats, ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+                .putLong(1L).putLong(2L).array());
+        // parquet-java's own statistics leave NaN out of the bounds; another writer may not
+        Statistics<?> mzStats = Statistics.getBuilderForReading(LOWEST_OBSERVED_MZ.getPrimitiveType())
+                .withMin(BytesUtils.longToBytes(Double.doubleToRawLongBits(160.5)))
+                .withMax(BytesUtils.longToBytes(Double.doubleToRawLongBits(Double.NaN))).withNumNulls(0).build();
+        writeTwoValueChunk(writer, LOWEST_OBSERVED_MZ, mzStats, ByteBuffer.allocate(16)
+                .order(ByteOrder.LITTLE_ENDIAN).putDouble(160.5).putDouble(Double.NaN).array());
+        writer.endBlock();
+        writer.end(new HashMap<>());
+        manifest(metadataEntry());
+
+        try (MzPeakSource src = MzPeakSource.open(tmp)) {
+            MzPeakManifest manifest = MzPeakManifest.fromSource(src);
+            assertThat(MetadataColumns.valuesByIndex(manifest, src, EntityType.SPECTRUM, LOWEST_MZ))
+                    .hasValueSatisfying(values -> assertThat(values).containsExactly(Map.entry(0L, 150.5),
+                            Map.entry(1L, 160.5), Map.entry(2L, Double.NaN)));
+            ColumnStatistics lowest = MetadataColumns.statistics(manifest, src, EntityType.SPECTRUM,
+                    DataKind.METADATA, LOWEST_MZ).orElseThrow();
+            assertThat(lowest.rowGroups()).containsExactly(new RowGroup(1, 0L, 150.5, 150.5),
+                    new RowGroup(2, 0L, null, null));
+            assertThat(lowest.complete()).isFalse();
+        }
+    }
+
     // ---- helpers ---------------------------------------------------------------------------------------------
+
+    /**
+     * A chunk of {@code column} of two non-null PLAIN values {@code values} in one v1 data page with the page
+     * statistics {@code statistics}: the definition levels, RLE with a 4-byte length (one run of two 1s), then the
+     * values.
+     */
+    private static void writeTwoValueChunk(ParquetFileWriter writer, ColumnDescriptor column,
+                                           Statistics<?> statistics, byte[] values) throws IOException {
+        ByteBuffer page = ByteBuffer.allocate(6 + values.length).order(ByteOrder.LITTLE_ENDIAN).putInt(2)
+                .put((byte) 4).put((byte) 1).put(values);
+        writer.startColumn(column, 2, CompressionCodecName.UNCOMPRESSED);
+        writer.writeDataPage(2, page.capacity(), BytesInput.from(page.array()), statistics, 2, Encoding.RLE,
+                Encoding.RLE, Encoding.PLAIN);
+        writer.endColumn();
+    }
 
     /**
      * parquet-java's low-level writer of a split spectrum metadata member {@code spectra_metadata.parquet} of the

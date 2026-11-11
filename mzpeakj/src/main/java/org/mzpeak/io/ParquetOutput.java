@@ -7,9 +7,11 @@ import org.apache.parquet.hadoop.ParquetFileWriter;
 import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.LocalOutputFile;
+import org.apache.parquet.schema.ColumnOrder;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
@@ -20,6 +22,7 @@ import org.mzpeak.model.Param;
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
@@ -126,7 +129,7 @@ final class ParquetOutput {
                                                    CountingGroupWriteSupport writeSupport, Options options)
             throws IOException {
         PlainParquetConfiguration conf = new PlainParquetConfiguration();
-        conf.set(SCHEMA_PROPERTY, schema.toString());
+        conf.set(SCHEMA_PROPERTY, typeDefinedOrder(schema).toString());
         var builder = new GroupWriterBuilder(new LocalOutputFile(file), writeSupport)
                 .withConf(conf)
                 .withCodecFactory(new ZstdCompressionCodecFactory())
@@ -141,6 +144,31 @@ final class ParquetOutput {
             builder = builder.withRowGroupSize(rowGroupSize.getAsLong());
         }
         return builder.build();
+    }
+
+    /**
+     * {@code schema} with every column in the type-defined order. parquet-java 1.18 orders FLOAT and DOUBLE columns by
+     * IEEE 754 total order unless told otherwise, and writes that order and NaN bounds into the footer; the reference
+     * writes the type-defined order, which mzPeakJ keeps.
+     */
+    private static MessageType typeDefinedOrder(MessageType schema) {
+        return new MessageType(schema.getName(), typeDefinedOrder(schema.getFields()));
+    }
+
+    private static List<Type> typeDefinedOrder(List<Type> fields) {
+        List<Type> ordered = new ArrayList<>(fields.size());
+        for (Type field : fields) {
+            if (field.isPrimitive()) {
+                PrimitiveType primitive = field.asPrimitiveType();
+                ordered.add(primitive.columnOrder().equals(ColumnOrder.ieee754TotalOrder())
+                        ? primitive.withColumnOrder(ColumnOrder.typeDefined())
+                        : primitive);
+            } else {
+                GroupType group = field.asGroupType();
+                ordered.add(group.withNewFields(typeDefinedOrder(group.getFields())));
+            }
+        }
+        return ordered;
     }
 
     /**

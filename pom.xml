@@ -30,7 +30,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
-    <parquet.version>1.17.1</parquet.version>
+    <parquet.version>1.18.2</parquet.version>
     <jackson.version>2.23.0</jackson.version>
     <junit.version>5.11.4</junit.version>
     <assertj.version>3.27.7</assertj.version>
@@ -263,7 +263,9 @@
       <!-- The reactor root holds no sources: a src/ here (left over from a merge of a pre-module branch, say) would
            silently not be built. Every module refuses Jackson and AssertJ versions below the chosen ones: the
            advisories are fixed on several release branches, so the floor is the chosen version itself
-           (jackson-annotations, versioned without a patch number, is left out). -->
+           (jackson-annotations, versioned without a patch number, is left out). parquet-hadoop's snappy-java and
+           aircompressor are floored at their first fixed versions, parquet-jackson (a shaded Jackson) at the parquet
+           release that shades a fixed Jackson. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
@@ -281,6 +283,9 @@
                     <exclude>com.fasterxml.jackson.core:jackson-core:(,2.23.0)</exclude>
                     <exclude>com.fasterxml.jackson.core:jackson-databind:(,2.23.0)</exclude>
                     <exclude>org.assertj:assertj-core:(,3.27.7)</exclude>
+                    <exclude>org.xerial.snappy:snappy-java:(,1.1.10.9)</exclude>
+                    <exclude>io.airlift:aircompressor:(,2.0.3)</exclude>
+                    <exclude>org.apache.parquet:parquet-jackson:(,1.18.2)</exclude>
                   </excludes>
                   <message>a version with a known advisory; see docs/design-decisions.md, D-1</message>
                 </bannedDependencies>

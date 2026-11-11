@@ -337,6 +337,11 @@ final class MetadataColumns {
         }
         double min = value(stats.genericGetMin(), c, "minimum");
         double max = value(stats.genericGetMax(), c, "maximum");
+        // a NaN bound kept because the footer orders the column by IEEE 754 total order: no bounds, as for the
+        // type-defined order
+        if (Double.isNaN(min) || Double.isNaN(max)) {
+            return new RowGroup(block.getRowCount(), nulls, null, null);
+        }
         return new RowGroup(block.getRowCount(), nulls, min, max);
     }
 
