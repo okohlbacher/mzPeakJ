@@ -42,9 +42,11 @@ import static org.mzpeak.io.MemberRewriter.rewrite;
 import static org.mzpeak.io.MemberRewriter.rewriteInPlace;
 
 /**
- * MZ-3 (mzML design §5.7 array units, §6.1 B-15, §6.2 A-13): the reader returns chromatogram times in minutes and
- * the drift-time ion mobility arrays of spectra in milliseconds, the units {@code CvTerms.DEFAULT_ARRAY_UNITS}
- * documents, converting from the unit of the column's array-index entry; a unit it cannot convert is rejected.
+ * MZ-3 (mzML design §5.7 array units, §6.1 B-15, §6.2 A-13): the reader returns the drift-time ion mobility arrays
+ * of spectra in milliseconds, the unit {@code CvTerms.DEFAULT_ARRAY_UNITS} documents, converting from the unit of the
+ * column's array-index entry; a unit it cannot convert is rejected. Since D-12a (V-21) chromatogram times are read as
+ * stored, in their {@link Chromatogram#timeUnit()}, and only a chunk start column is converted to the unit of its
+ * time values column; {@link Chromatogram#withTimeUnit} gives them in minutes.
  *
  * <p>Each case rewrites one signal member with parquet-java's Group API ({@link MemberRewriter#rewrite}): the values
  * of the named columns scaled into another unit, the unit of their array-index entries set to it, every other column
@@ -61,6 +63,7 @@ class ArrayUnitConversionTest {
     private static final String CHROMATOGRAMS_METADATA = "chromatograms_metadata.parquet";
     private static final String SPECTRA_PEAKS = "spectra_peaks.parquet";
     private static final String TIME_ARRAY = "MS:1000595";
+    private static final String MINUTE = "UO:0000031";
     private static final String TIC = "MS:1000235";
     private static final String MEAN_DRIFT_TIME = "MS:1002477";
     private static final String MEAN_INVERSE_REDUCED_ION_MOBILITY = "MS:1003006";
@@ -84,12 +87,12 @@ class ArrayUnitConversionTest {
 
     /**
      * (a), (b) Current small.unpacked with its point-layout time column stored in {@code unit}: every chromatogram,
-     * the TIC among them, has the time of the unchanged member within a relative 1e-15, and the same intensity and
-     * ms level arrays. No unit and minutes leave the values as stored.
+     * the TIC among them, has the stored times in {@code unit} (minute for no unit), which in minutes are the time
+     * of the unchanged member within a relative 1e-15, and the same intensity and ms level arrays.
      */
     @ParameterizedTest(name = "unit {0}")
     @MethodSource("timeUnits")
-    void aChromatogramTimeInAnotherUnitIsReadInMinutes(String unit, DoubleUnaryOperator fromMinutes)
+    void aChromatogramTimeInAnotherUnitIsReadAsStoredInItsUnit(String unit, DoubleUnaryOperator fromMinutes)
             throws IOException {
         Path dir = copySmallUnpacked();
         Path data = dir.resolve(CHROMATOGRAMS_DATA);
@@ -105,28 +108,39 @@ class ArrayUnitConversionTest {
                 Chromatogram a = expected.get(c);
                 Chromatogram b = actual.get(c);
                 assertThat(b.id()).isEqualTo(a.id());
-                assertClose(b.time(), a.time(), RELATIVE, "time of " + a.id());
+                assertThat(b.timeUnit()).isEqualTo(unit == null ? MINUTE : unit);
+                double[] stored = new double[a.size()];
+                for (int i = 0; i < stored.length; i++) {
+                    stored[i] = fromMinutes.applyAsDouble(a.time()[i]);
+                }
+                assertThat(b.time()).as("stored time of %s", a.id()).containsExactly(stored);
+                assertClose(b.withTimeUnit(MINUTE).time(), a.time(), RELATIVE, "time of " + a.id());
                 assertThat(b.intensity()).as("intensity of %s", a.id()).isEqualTo(a.intensity());
                 assertThat(b.arrays().keySet()).as("arrays of %s", a.id()).isEqualTo(a.arrays().keySet());
                 assertThat(b.arrays().get(MS_LEVEL)).as("ms level of %s", a.id()).isEqualTo(a.arrays().get(MS_LEVEL));
             }
-            assertClose(edited.tic().orElseThrow().time(), original.tic().orElseThrow().time(), RELATIVE, "TIC");
+            assertClose(edited.tic().orElseThrow().withTimeUnit(MINUTE).time(), original.tic().orElseThrow().time(),
+                    RELATIVE, "TIC");
         }
     }
 
-    /** (c) A time column in a unit that is no time unit is rejected, naming the member, the column and the unit. */
+    /**
+     * (c) A time column in a unit that is no time unit is read as stored, with that unit (D-12a; before, it was
+     * rejected); {@link Chromatogram#withTimeUnit} refuses to convert it.
+     */
     @Test
-    void aChromatogramTimeInAnUnknownUnitIsRejected() throws IOException {
+    void aChromatogramTimeInAnUnknownUnitIsReadAsStored() throws IOException {
         Path dir = copySmallUnpacked();
         rewriteInPlace(dir.resolve(CHROMATOGRAMS_DATA), SignalEntity.CHROMATOGRAM,
                 Map.of("point.time", new Edit("UO:0000033", v -> v)));
 
-        try (MzPeakReader reader = MzPeakReader.open(dir)) {
-            assertThatThrownBy(reader::chromatograms)
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage(CHROMATOGRAMS_DATA + ": chromatogram time column point.time has the unit UO:0000033;"
-                            + " supported are minute (UO:0000031), second (UO:0000010), millisecond (UO:0000028)"
-                            + " and hour (UO:0000032)");
+        try (MzPeakReader original = MzPeakReader.open(SMALL_UNPACKED); MzPeakReader reader = MzPeakReader.open(dir)) {
+            Chromatogram read = reader.chromatograms().get(0);
+            assertThat(read.timeUnit()).isEqualTo("UO:0000033");
+            assertThat(read.time()).isEqualTo(original.chromatograms().get(0).time());
+            assertThatThrownBy(() -> read.withTimeUnit(MINUTE))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("from UO:0000033 to UO:0000031");
         }
     }
 
@@ -148,11 +162,11 @@ class ArrayUnitConversionTest {
 
     /**
      * Current small.chunked, whose chromatograms are in the chunk layout: the chunk start in milliseconds, the chunk
-     * end and the deltas in seconds. Each column is converted by its own unit, so the times are those of the
-     * unchanged member within a relative 1e-15.
+     * end and the deltas in seconds. The chromatograms are in seconds, the unit of the values column, the start
+     * converted to it, so in minutes the times are those of the unchanged member within a relative 1e-15.
      */
     @Test
-    void aChunkedChromatogramTimeIsConvertedColumnByColumn() {
+    void aChunkedChromatogramStartIsConvertedToTheUnitOfTheValues() {
         try (MzPeakSource source = MzPeakSource.open(SMALL_CHUNKED)) {
             InputFile metadata = source.inputFile(CHROMATOGRAMS_METADATA);
             InputFile data = source.inputFile(CHROMATOGRAMS_DATA);
@@ -169,7 +183,9 @@ class ArrayUnitConversionTest {
             assertThat(actual).hasSameSizeAs(expected);
             int points = 0;
             for (int c = 0; c < expected.size(); c++) {
-                assertClose(actual.get(c).time(), expected.get(c).time(), RELATIVE, "time of " + expected.get(c).id());
+                assertThat(actual.get(c).timeUnit()).isEqualTo("UO:0000010");
+                assertClose(actual.get(c).withTimeUnit(MINUTE).time(), expected.get(c).time(), RELATIVE,
+                        "time of " + expected.get(c).id());
                 assertThat(actual.get(c).intensity()).isEqualTo(expected.get(c).intensity());
                 points += expected.get(c).size();
             }

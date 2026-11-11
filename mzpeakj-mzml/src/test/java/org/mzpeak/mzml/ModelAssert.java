@@ -261,6 +261,7 @@ public final class ModelAssert {
             entry("Chromatogram.dataProcessingRef", Rule.EXACT),
             entry("Chromatogram.parameters", Rule.PARAMS),
             entry("Chromatogram.precursors", Rule.list(Rule.RECORD)),
+            entry("Chromatogram.timeUnit", Rule.EXACT),
 
             entry("WavelengthSpectrum.index", Rule.EXACT),
             entry("WavelengthSpectrum.id", Rule.EXACT),

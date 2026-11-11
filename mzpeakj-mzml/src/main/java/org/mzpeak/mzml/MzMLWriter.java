@@ -1090,7 +1090,9 @@ public final class MzMLWriter implements AutoCloseable {
                     precursor::setExternalSpectrumID, precursor::setSourceFileRef);
             x.setPrecursor(precursor);
         }
-        x.setBinaryDataArrayList(arrays(TIME_ARRAY, c.time(), c.intensity(), c.intensityUnit(), c.arrays()));
+        // V-23 replaces this conversion: the time array is written in minutes, the unit arrays() declares for it.
+        x.setBinaryDataArrayList(arrays(TIME_ARRAY, c.withTimeUnit(MINUTE).time(), c.intensity(),
+                c.intensityUnit(), c.arrays()));
         return x;
     }
 

@@ -77,6 +77,8 @@ final class WritePlanner {
     private static final Set<String> CHROMATOGRAM_SIGNAL_COLUMNS = Set.of("chromatogram_index", "time");
     /** The column of the primary intensity of every signal file. */
     private static final String INTENSITY_COLUMN = "intensity";
+    /** UO:0000031 minute, the unit the chromatogram times are written in. */
+    private static final String MINUTE = "UO:0000031";
     /** The column names signal-data.md:119-139 recommends, for the array types an extra column may have. */
     private static final Map<String, String> SHORT_NAMES = Map.ofEntries(
             Map.entry("MS:1000516", "charge"),
@@ -174,8 +176,9 @@ final class WritePlanner {
         // What the packed layout, whose chromatogram schema is frozen, does not write of chromatograms.
         int[] chromatogramDrops = new int[4];
         for (int i = 0; i < chromatogramOrder.size(); i++) {
-            Chromatogram c = withWrittenPrecursors(chromatogramOrder.get(i), i, writtenChromatogramIndex,
-                    options.metadataLayout());
+            // V-22 replaces this conversion: the times are written in minutes, as ArrayIndex declares them.
+            Chromatogram c = withWrittenPrecursors(chromatogramOrder.get(i).withTimeUnit(MINUTE), i,
+                    writtenChromatogramIndex, options.metadataLayout());
             addExtraColumns(c, chromatogramExtras, chromatogramColumns);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
@@ -787,8 +790,8 @@ final class WritePlanner {
      * checked by {@link #requireOwnKeys}. A copy of {@code c} with those precursors is returned when one changes,
      * else {@code c} itself; the caller's chromatogram is never modified.
      */
-    private static Chromatogram withWrittenPrecursors(Chromatogram c, long index, Map<Long, Long> writtenIndex,
-                                                      MetadataLayout layout) {
+    static Chromatogram withWrittenPrecursors(Chromatogram c, long index, Map<Long, Long> writtenIndex,
+                                              MetadataLayout layout) {
         List<Precursor> precursors = writtenPrecursors(c.precursors(), writtenIndex);
         if (layout == MetadataLayout.SPLIT) {
             requireOwnKeys(Owner.CHROMATOGRAM, c.index(), index, c.precursors(), precursors);
@@ -797,7 +800,7 @@ final class WritePlanner {
             return c;
         }
         return new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(), c.intensityUnit(),
-                c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), precursors);
+                c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), precursors, c.timeUnit());
     }
 
     // Attribution check (design §11.5, WR-8). The mzPeakJ reader attaches a selected ion to the first precursor of its

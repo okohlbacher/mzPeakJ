@@ -633,7 +633,9 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     // ---- chromatograms ----------------------------------------------------------------------------
 
     /**
-     * All chromatograms (TIC, BPC, ...) ordered by index.
+     * All chromatograms (TIC, BPC, ...) ordered by index. Their times are as stored, in the
+     * {@link org.mzpeak.model.Chromatogram#timeUnit() timeUnit} the file declares for them; convert them with
+     * {@link org.mzpeak.model.Chromatogram#withTimeUnit}.
      *
      * @throws IllegalStateException if this reader is closed, as do {@link #getChromatogram(long)} and
      *                               {@link #getChromatogramById(String)}
@@ -677,10 +679,10 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     /**
      * The total ion current chromatogram derived from the spectrum metadata: one point per spectrum, in index order,
      * that has a total ion current (MS:1000285) and a finite retention time, which give the point's intensity and
-     * time. It has the index 0, the id {@code "TIC"} and the type MS:1000235 (total ion current chromatogram), no
-     * intensity unit and no further arrays. It is not one of {@link #chromatograms()}, and it may differ from a TIC
-     * the dataset stores, which {@link #tic()} prefers. Reads the index and total ion current columns of the
-     * spectrum metadata member.
+     * time. It has the index 0, the id {@code "TIC"} and the type MS:1000235 (total ion current chromatogram), the
+     * time unit minute (UO:0000031), no intensity unit and no further arrays. It is not one of
+     * {@link #chromatograms()}, and it may differ from a TIC the dataset stores, which {@link #tic()} prefers. Reads
+     * the index and total ion current columns of the spectrum metadata member.
      *
      * @return empty when the spectrum metadata has no numeric total ion current column
      * @throws IllegalStateException if this reader is closed
@@ -692,10 +694,10 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     /**
      * The base peak chromatogram derived from the spectrum metadata: one point per spectrum, in index order, that
      * has a base peak intensity (MS:1000505) and a finite retention time, which give the point's intensity and time.
-     * It has the index 1, the id {@code "BPC"} and the type MS:1000628 (basepeak chromatogram), no intensity unit
-     * and no further arrays. It is not one of {@link #chromatograms()}, and it may differ from a BPC the dataset
-     * stores, which {@link #bpc()} prefers. Reads the index and base peak intensity columns of the spectrum metadata
-     * member.
+     * It has the index 1, the id {@code "BPC"} and the type MS:1000628 (basepeak chromatogram), the time unit minute
+     * (UO:0000031), no intensity unit and no further arrays. It is not one of {@link #chromatograms()}, and it may
+     * differ from a BPC the dataset stores, which {@link #bpc()} prefers. Reads the index and base peak intensity
+     * columns of the spectrum metadata member.
      *
      * @return empty when the spectrum metadata has no numeric base peak intensity column
      * @throws IllegalStateException if this reader is closed

@@ -837,7 +837,8 @@ public final class MzMLReader {
         Chromatogram chromatogram = new Chromatogram(chromatogramIndex++, c.getId(),
                 type == null ? null : type.accession(), values(signal.axis()), values(signal.intensity()),
                 signal.intensity() == null ? null : signal.intensity().array().unit(), values(signal.extras()),
-                polarity, Objects.equals(processing, spectrumListDefault) ? null : processing, params, precursors);
+                polarity, Objects.equals(processing, spectrumListDefault) ? null : processing, params, precursors,
+                MINUTE);
         return v -> v.chromatogram(chromatogram);
     }
 
