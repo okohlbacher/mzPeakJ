@@ -165,9 +165,9 @@ class RemoteSourceTest {
     }
 
     @Test
-    void zipDuplicateMemberNamesStillThrow() throws IOException {
+    void zipDuplicateMemberNamesServeTheLastEntry() throws IOException {
         // spectra_metadata_scans.parquet and chromatograms_metadata.parquet have names of the same length; the second
-        // is renamed to the first in its central-directory record and its local header
+        // is renamed to the first in its central-directory record and its local header (RD-16: the last entry wins)
         Path fixture = Fixtures.current("small.mzpeak");
         byte[] archive = Files.readAllBytes(fixture);
         String kept = "spectra_metadata_scans.parquet";
@@ -175,14 +175,23 @@ class RemoteSourceTest {
         assertThat(kept).hasSameSizeAs(renamed);
         ByteBuffer le = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
         int record = centralRecord(archive, renamed);
+        String last = record > centralRecord(archive, kept) ? renamed : kept;
+        byte[] expected = ZipSourceCharacterizationTest.zipFileMembers(fixture).get(last);
         byte[] name = kept.getBytes(StandardCharsets.UTF_8);
         System.arraycopy(name, 0, archive, record + 46, name.length);
         System.arraycopy(name, 0, archive, le.getInt(record + 42) + 30, name.length);
 
         Counting bytes = new Counting(inMemory(archive));
-        assertThatThrownBy(() -> MzPeakSource.zip("memory:duplicate", bytes))
-                .isInstanceOf(MzPeakException.class)
-                .hasMessage("duplicate member '" + kept + "' in zip archive");
+        try (MzPeakSource source = MzPeakSource.zip("memory:duplicate", bytes)) {
+            InputFile member = source.inputFile(kept);
+            assertThat(member.getLength()).isEqualTo(expected.length);
+            byte[] read = new byte[expected.length];
+            try (SeekableInputStream in = member.newStream()) {
+                in.readFully(read);
+            }
+            assertThat(read).isEqualTo(expected);
+            assertThat(bytes.closes()).isZero();
+        }
         assertThat(bytes.closes()).isEqualTo(1);
     }
 

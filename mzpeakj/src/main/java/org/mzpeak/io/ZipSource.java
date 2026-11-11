@@ -44,7 +44,7 @@ final class ZipSource implements MzPeakSource {
         this.description = description;
         this.bytes = bytes;
         try {
-            this.index = ZipIndex.read(bytes);
+            this.index = ZipIndex.read(description, bytes);
         } catch (IOException | RuntimeException e) {
             closeQuietly(bytes);
             throw (e instanceof MzPeakException me) ? me
