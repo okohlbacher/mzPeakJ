@@ -28,8 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * F-3 (design §3.13): an extra array keeps its stored cell at a point whose m/z is null. A copy of current
  * small.unpacked whose spectra_data gets an extra column {@code point.probe} (array index entry MS:1000786, non-standard
- * data array, named {@code probe}, buffer format {@code point}) with a distinct value on every row, the null-marked
- * profile rows of spectrum 0 (null m/z and intensity) included, reads {@code arrays().get("probe")}:
+ * data array, named {@code probe}, buffer format {@code point}) with a distinct value on every row (quadratic in the
+ * row ordinal, so no interpolation reproduces it), the null-marked profile rows of spectrum 0 (null m/z and intensity)
+ * included, reads {@code arrays().get("probe")}:
  * <ul>
  *   <li>with {@code reconstructProfile=true}, parallel to the filled {@code mz()}: every position holds its stored
  *       cell, the filled positions too (not NaN, not interpolated);
@@ -69,8 +70,9 @@ class NullFilledExtraArrayTest {
             Group row = m.rows.get(i);
             Group p = row.getGroup("point", 0);
             long index = ParquetGroups.optLong(p, "spectrum_index");
-            double cell = index * 1_000_000.0 + PROBE_CELLS.computeIfAbsent(index, k -> new ArrayList<>()).size()
-                    + 0.25;
+            // strictly convex in the row ordinal, so a value interpolated from neighbouring cells never equals it
+            long ordinal = PROBE_CELLS.computeIfAbsent(index, k -> new ArrayList<>()).size();
+            double cell = index * 1_000_000.0 + ordinal * ordinal + 0.25;
             PROBE_CELLS.get(index).add(cell);
             HAS_MZ.computeIfAbsent(index, k -> new ArrayList<>()).add(ParquetGroups.has(p, "mz"));
             rows.add(MemberRewrite.copyRow(row, schema, null, g -> {
@@ -101,6 +103,31 @@ class NullFilledExtraArrayTest {
         // spectrum 0 has null-marked rows, which carry a probe cell but neither m/z nor intensity
         assertThat(HAS_MZ.get(0L)).hasSize(13589).contains(false);
         assertThat(HAS_MZ.get(0L).stream().filter(b -> !b).count()).isEqualTo(2376);
+        // the fixture separates stored from interpolated cells: at every null-marked row of spectrum 0 between two
+        // rows with an m/z, the stored cell differs from the linear interpolation of those two rows' cells
+        List<Boolean> hasMz = HAS_MZ.get(0L);
+        List<Double> cells = PROBE_CELLS.get(0L);
+        int separated = 0;
+        for (int i = 0; i < hasMz.size(); i++) {
+            if (hasMz.get(i)) {
+                continue;
+            }
+            int lo = i - 1;
+            while (lo >= 0 && !hasMz.get(lo)) {
+                lo--;
+            }
+            int hi = i + 1;
+            while (hi < hasMz.size() && !hasMz.get(hi)) {
+                hi++;
+            }
+            if (lo < 0 || hi >= hasMz.size()) {
+                continue;
+            }
+            double interpolated = cells.get(lo) + (cells.get(hi) - cells.get(lo)) * (i - lo) / (hi - lo);
+            assertThat(cells.get(i)).as("stored cell of null-marked row %d", i).isNotEqualTo(interpolated);
+            separated++;
+        }
+        assertThat(separated).isPositive();
     }
 
     @ParameterizedTest(name = "reconstructProfile={0}")
