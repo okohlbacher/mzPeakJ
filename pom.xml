@@ -292,6 +292,66 @@
               </rules>
             </configuration>
           </execution>
+          <!-- Fail-closed guard of .mvn/maven.config (design D-2): the resolver's group filter (.mvn/rrf: ebi-repo
+               serves only jmzML's groups, every POM-declared repository is denied) and its trusted checksums
+               (.mvn/checksums: the jmzML jar) are user properties that only maven.config sets, with paths under
+               ${session.rootDirectory}. A Maven older than the wrapper's, a build that does not read maven.config,
+               a basedir left uninterpolated or a deleted filter or summary file fails here, before any module
+               resolves its compile dependencies, instead of silently filtering and checking nothing.
+               tools/check-repo-policy.sh checks what the resolver then downloads. -->
+          <execution>
+            <id>repository-policy</id>
+            <phase>validate</phase>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <requireMavenVersion>
+                  <version>[3.9.16,)</version>
+                  <message>the build needs Maven 3.9.16+ for the resolver's repository filter and trusted checksums; use ./mvnw</message>
+                </requireMavenVersion>
+                <requireProperty>
+                  <property>aether.remoteRepositoryFilter.groupId</property>
+                  <regex>true</regex>
+                  <message>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</message>
+                  <regexMessage>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</regexMessage>
+                </requireProperty>
+                <requireProperty>
+                  <property>aether.artifactResolver.postProcessor.trustedChecksums</property>
+                  <regex>true</regex>
+                  <message>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</message>
+                  <regexMessage>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</regexMessage>
+                </requireProperty>
+                <requireProperty>
+                  <property>aether.remoteRepositoryFilter.groupId.basedir</property>
+                  <regex>^[^$]*[/\\]\.mvn[/\\]rrf$</regex>
+                  <message>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</message>
+                  <regexMessage>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</regexMessage>
+                </requireProperty>
+                <requireProperty>
+                  <property>aether.trustedChecksumsSource.summaryFile.basedir</property>
+                  <regex>^[^$]*[/\\]\.mvn[/\\]checksums$</regex>
+                  <message>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</message>
+                  <regexMessage>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</regexMessage>
+                </requireProperty>
+                <!-- origin-aware summary files would be named checksums-<repository id>.*, so checksums.sha512 and
+                     checksums.sha1 would not be read -->
+                <requireProperty>
+                  <property>aether.trustedChecksumsSource.summaryFile.originAware</property>
+                  <regex>false</regex>
+                  <message>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</message>
+                  <regexMessage>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</regexMessage>
+                </requireProperty>
+                <requireFilesExist>
+                  <files>
+                    <file>${aether.remoteRepositoryFilter.groupId.basedir}/groupId-ebi-repo.txt</file>
+                    <file>${aether.trustedChecksumsSource.summaryFile.basedir}/checksums.sha512</file>
+                    <file>${aether.trustedChecksumsSource.summaryFile.basedir}/checksums.sha1</file>
+                  </files>
+                  <message>the resolver repository filter or trusted checksums are not active; run the build from the project root with ./mvnw</message>
+                </requireFilesExist>
+              </rules>
+            </configuration>
+          </execution>
           <execution>
             <id>no-sources-at-root</id>
             <inherited>false</inherited>

@@ -1,0 +1,3 @@
+uk.ac.ebi.jmzml
+uk.ac.ebi.pride.architectural
+psidev.psi.tools
