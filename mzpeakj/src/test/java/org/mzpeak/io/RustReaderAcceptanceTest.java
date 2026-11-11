@@ -11,6 +11,7 @@ import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Spectrum;
@@ -114,6 +115,29 @@ class RustReaderAcceptanceTest {
         JsonNode precursor = record.path("prec").get(0);
         assertThat(precursor.path("energy").asDouble()).isEqualTo(35.0);
         assertThat(precursor.path("methods").get(0).asText()).isEqualTo("CollisionInducedDissociation");
+    }
+
+    /**
+     * D-12b (V-22): small.unpacked with its chromatogram in seconds, written split as an archive: Rust reads the
+     * chromatogram with its time array in seconds and the times as written.
+     */
+    @Test
+    void rustReadsAChromatogramInSeconds() throws Exception {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        Chromatogram seconds = WriterChromatogramTimeUnitTest.secondsChromatogram(tmp);
+        Path out = tmp.resolve("seconds.mzpeak");
+        MzPeakWriter.writeArchive(out, small.spectra, List.of(seconds), small.wavelengthSpectra, small.scanSettings,
+                small.fileMetadata, SPLIT);
+
+        Dump dump = rdump(out);
+        assertThat(dump.records("C")).singleElement().satisfies(c -> {
+            assertThat(c.has("panic") || c.has("none")).as("%s", c).isFalse();
+            assertThat(c.path("id").asText()).isEqualTo(seconds.id());
+            JsonNode time = c.path("arrays").path("TimeArray");
+            assertThat(time.path("unit").asText()).as("%s", c).isEqualTo("Second");
+            assertThat(dump.array(time)).isEqualTo(seconds.time());
+            assertThat(dump.array(c.path("arrays").path("IntensityArray"))).isEqualTo(seconds.intensity());
+        });
     }
 
     // ---- rdump ----------------------------------------------------------------------------------------------------

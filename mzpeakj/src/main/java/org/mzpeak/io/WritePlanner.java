@@ -77,7 +77,7 @@ final class WritePlanner {
     private static final Set<String> CHROMATOGRAM_SIGNAL_COLUMNS = Set.of("chromatogram_index", "time");
     /** The column of the primary intensity of every signal file. */
     private static final String INTENSITY_COLUMN = "intensity";
-    /** UO:0000031 minute, the unit the chromatogram times are written in. */
+    /** UO:0000031 minute, the time unit chromatograms_data declares when there are no chromatograms. */
     private static final String MINUTE = "UO:0000031";
     /** The column names signal-data.md:119-139 recommends, for the array types an extra column may have. */
     private static final Map<String, String> SHORT_NAMES = Map.ofEntries(
@@ -176,9 +176,8 @@ final class WritePlanner {
         // What the packed layout, whose chromatogram schema is frozen, does not write of chromatograms.
         int[] chromatogramDrops = new int[4];
         for (int i = 0; i < chromatogramOrder.size(); i++) {
-            // V-22 replaces this conversion: the times are written in minutes, as ArrayIndex declares them.
-            Chromatogram c = withWrittenPrecursors(chromatogramOrder.get(i).withTimeUnit(MINUTE), i,
-                    writtenChromatogramIndex, options.metadataLayout());
+            Chromatogram c = withWrittenPrecursors(chromatogramOrder.get(i), i, writtenChromatogramIndex,
+                    options.metadataLayout());
             addExtraColumns(c, chromatogramExtras, chromatogramColumns);
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
@@ -211,6 +210,7 @@ final class WritePlanner {
         return new WritePlan(options, spectra, signals, Collections.unmodifiableList(chromatogramEntries),
                 Collections.unmodifiableList(wavelengthEntries), writesSpectraData, spectrumExtras,
                 chromatogramIntensities, List.copyOf(chromatogramExtras.values()),
+                chromatogramOrder.isEmpty() ? MINUTE : chromatogramOrder.get(0).timeUnit(),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(footer), report);
     }
@@ -943,8 +943,8 @@ final class WritePlanner {
 
     /**
      * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
-     * unique within each kind, and in the {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index
-     * non-negative.
+     * unique within each kind, the chromatograms all of the time unit of the first ({@link #requireSameTimeUnit}),
+     * and in the {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative.
      */
     private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                        MetadataLayout layout) {
@@ -952,6 +952,7 @@ final class WritePlanner {
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
             requireUnique(seen, c.index(), "chromatogram index");
+            requireSameTimeUnit(chromatograms.get(0), c);
             List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
             addPrecursorParams(c.precursors(), lists);
             requireNamedParams(owner("chromatogram", c.index(), c.id()), lists);
@@ -1017,6 +1018,20 @@ final class WritePlanner {
     private static void requireNonNegative(long value, String what) {
         if (value < 0) {
             throw new MzPeakException(what + " must be non-negative (mzPeak indices are uint64): " + value);
+        }
+    }
+
+    /**
+     * Throws {@link MzPeakException} when {@code c} has another {@link Chromatogram#timeUnit()} than {@code first}:
+     * chromatograms_data declares one time unit for all its chromatograms (D-12), and the writer converts none.
+     * Checked by {@link #plan} and {@link #planFinish} and by a session as each chromatogram is added, before
+     * anything of it is written.
+     */
+    static void requireSameTimeUnit(Chromatogram first, Chromatogram c) {
+        if (!c.timeUnit().equals(first.timeUnit())) {
+            throw new MzPeakException("chromatograms " + first.index() + " (" + first.timeUnit() + ") and "
+                    + c.index() + " (" + c.timeUnit() + ") have different time units; convert one with"
+                    + " Chromatogram.withTimeUnit before writing");
         }
     }
 

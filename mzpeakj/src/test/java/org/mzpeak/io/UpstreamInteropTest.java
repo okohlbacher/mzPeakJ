@@ -108,6 +108,20 @@ class UpstreamInteropTest {
             "}))",
             "");
 
+    /** D-12b (V-22): the arrays of chromatogram 0 of one dataset, as the Python reader reads them. */
+    private static final String CHROMATOGRAM_ARRAYS_PROBE = String.join("\n",
+            "\"\"\"Chromatogram 0's arrays (mzPeakJ UpstreamInteropTest, V-22).\"\"\"",
+            "import json",
+            "import sys",
+            "",
+            "import numpy as np",
+            "from mzpeak import MzPeakFile",
+            "",
+            "reader = MzPeakFile(sys.argv[1])",
+            "data = reader.chromatogram_data[0]",
+            "print(json.dumps({str(k): [float(x) for x in v] for k, v in data.items() if isinstance(v, np.ndarray)}))",
+            "");
+
     /**
      * MZ-6: the Python reader's read of every spectrum of an archive and of its chromatograms (the metadata frames,
      * the precursor and selected-ion frames and the data arrays), the error of its {@code read_chromatogram}, if any,
@@ -253,6 +267,35 @@ class UpstreamInteropTest {
                 .isEqualTo("ValueError: Length of values (1) does not match length of index (2)");
         assertThat(read.path("precursor_rows").asInt()).isEqualTo(2);
         assertThat(read.path("targets").toString()).isEqualTo("[456.7,445.3]");
+    }
+
+    /**
+     * D-12b (V-22): small.unpacked with its chromatogram in seconds, written split as an archive: the Python reader
+     * reads the stored times, the seconds as written, and the archive passes {@code check_archive_integrity()}.
+     */
+    @Test
+    void thePythonReaderReadsTheStoredTimesOfAChromatogramInSeconds() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("seconds"));
+        ForwardBackwardCorpusTest.Source small = ForwardBackwardCorpusTest.readSource(
+                Fixtures.current("small.unpacked.mzpeak"));
+        Chromatogram seconds = WriterChromatogramTimeUnitTest.secondsChromatogram(dir);
+        Path archive = dir.resolve("seconds.mzpeak");
+        MzPeakWriter.writeArchive(archive, small.spectra, List.of(seconds), small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("chromatogram_arrays.py"), CHROMATOGRAM_ARRAYS_PROBE,
+                StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "seconds.json");
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode arrays = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(doubles(arrays.path("time array"))).as("%s", arrays).isEqualTo(seconds.time());
+        assertThat(doubles(arrays.path("intensity array"))).as("%s", arrays).isEqualTo(seconds.intensity());
+
+        Result counted = python(probe, archive, "seconds-counts.json");
+        assertThat(counted.exit()).as("probe on %s: %s", archive, counted).isZero();
+        JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
+        assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
+        assertThat(counts.path("chromatograms").asInt()).isEqualTo(1);
     }
 
     @Test
@@ -477,6 +520,14 @@ class UpstreamInteropTest {
         List<Long> values = new ArrayList<>();
         for (JsonNode n : array) {
             values.add(n.asLong());
+        }
+        return values;
+    }
+
+    private static double[] doubles(JsonNode array) {
+        double[] values = new double[array.size()];
+        for (int i = 0; i < values.length; i++) {
+            values[i] = array.get(i).asDouble();
         }
         return values;
     }

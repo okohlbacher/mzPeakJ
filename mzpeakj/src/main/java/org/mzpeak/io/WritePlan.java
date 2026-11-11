@@ -41,6 +41,10 @@ import java.util.Objects;
  * @param chromatogramExtras the extra columns of chromatograms_data, one for each key of the chromatograms'
  *                           {@link Chromatogram#arrays()}, in first-seen order: index order, and in a chromatogram the
  *                           map's order
+ * @param chromatogramTimeUnit
+ *                           the unit chromatograms_data declares for its time column: the {@link
+ *                           Chromatogram#timeUnit()} every chromatogram shares ({@link WritePlanner} refuses
+ *                           chromatograms of different units), minute (UO:0000031) without chromatograms
  * @param scanSettings       the scan settings for the manifest, possibly {@code null}: the caller's, in the split
  *                           layout with an id given to each one without
  * @param footer             the file metadata serialized once, for the spectra_metadata footer and the manifest
@@ -50,7 +54,8 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
                  List<Entry<Chromatogram>> chromatograms, List<Entry<WavelengthSpectrum>> wavelengthSpectra,
                  boolean writesSpectraData, List<ExtraColumn> spectrumExtras,
                  List<IntensityColumn> chromatogramIntensities, List<ExtraColumn> chromatogramExtras,
-                 List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
+                 String chromatogramTimeUnit, List<ScanSettings> scanSettings, Map<String, String> footer,
+                 WriteReport report) {
 
     /**
      * An extra column of the spectrum signal files or of chromatograms_data and its array-index entry (design §11.7,

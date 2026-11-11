@@ -45,7 +45,8 @@ class DatasetWriterTest {
         assertThat(plan.writesSpectraData()).isTrue();
         WritePlan withoutData = new WritePlan(plan.options(), plan.spectra(), plan.spectrumSignals(),
                 plan.chromatograms(), plan.wavelengthSpectra(), false, plan.spectrumExtras(),
-                plan.chromatogramIntensities(), plan.chromatogramExtras(), plan.scanSettings(), plan.footer(),
+                plan.chromatogramIntensities(), plan.chromatogramExtras(), plan.chromatogramTimeUnit(),
+                plan.scanSettings(), plan.footer(),
                 plan.report());
 
         Path planned = tmp.resolve("planned.mzpeak");
