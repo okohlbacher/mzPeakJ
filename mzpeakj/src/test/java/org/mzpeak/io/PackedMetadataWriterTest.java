@@ -84,6 +84,62 @@ class PackedMetadataWriterTest {
     }
 
     /**
+     * The spectrum type and summary columns of a packed row. Spectrum 0 (MS1) and the first MS2 spectrum of legacy
+     * small, whose Params hold none of them, get MS1 spectrum and MSn spectrum and the five values derived from their
+     * payload, with an empty parameters list. Spectrum 0 given a spectrum type Param (MSn spectrum) and a highest
+     * observed m/z Param of 1500.0 gets the same columns, and both Params stay in its parameters list.
+     */
+    @Test
+    void theSpectrumTypeAndSummaryColumnsOfAPackedRow(@TempDir Path tmp) {
+        Source small = ForwardBackwardCorpusTest.readSource(SMALL);
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        int ms2 = msnPositions(spectra).get(0);
+        Spectrum first = spectra.get(0);
+        SpectrumDescription d = first.description();
+        assertThat(d.parameters()).isEmpty();
+        assertThat(spectra.get(ms2).description().parameters()).isEmpty();
+        Param type = new Param("MSn spectrum", "MS:1000580", null, null);
+        Param highest = new Param("highest observed m/z", "MS:1000527", 1500.0, "MS:1000040");
+
+        Path out = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectory(out, spectra, small.chromatograms, small.wavelengthSpectra, small.scanSettings,
+                small.fileMetadata, PACKED);
+        List<Group> rows = rows(out.resolve(SPECTRA));
+        assertDerivedColumns(rows.get(0).getGroup("spectrum", 0), "MS:1000579", first);
+        assertDerivedColumns(rows.get(ms2).getGroup("spectrum", 0), "MS:1000580", spectra.get(ms2));
+
+        spectra.set(0, with(first, new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                d.precursors(), List.of(type, highest))));
+        Path withParams = tmp.resolve("with-params.mzpeak");
+        MzPeakWriter.writeDirectory(withParams, spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, PACKED);
+        Group spectrum = rows(withParams.resolve(SPECTRA)).get(0).getGroup("spectrum", 0);
+        assertThat(ParquetGroups.optString(spectrum, "MS_1000559_spectrum_type")).isEqualTo("MS:1000579");
+        assertThat(ParquetGroups.optDouble(spectrum, "MS_1000527_highest_observed_mz_unit_MS_1000040"))
+                .isEqualTo(SpectrumSummary.derive(first).highestMz());
+        assertThat(ParquetGroups.readParams(spectrum, "parameters")).containsExactly(type, highest);
+    }
+
+    /** {@code spectrum} holds {@code type}, the summary values derived from {@code s} and no parameters. */
+    private static void assertDerivedColumns(Group spectrum, String type, Spectrum s) {
+        SpectrumSummary.Values v = SpectrumSummary.derive(s);
+        assertThat(v.lowestMz()).isNotNull();
+        assertThat(ParquetGroups.optString(spectrum, "MS_1000559_spectrum_type")).isEqualTo(type);
+        assertThat(ParquetGroups.optDouble(spectrum, "MS_1000528_lowest_observed_mz_unit_MS_1000040"))
+                .isEqualTo(v.lowestMz());
+        assertThat(ParquetGroups.optDouble(spectrum, "MS_1000527_highest_observed_mz_unit_MS_1000040"))
+                .isEqualTo(v.highestMz());
+        assertThat(ParquetGroups.optDouble(spectrum, "MS_1000504_base_peak_mz_unit_MS_1000040"))
+                .isEqualTo(v.basePeakMz());
+        assertThat(ParquetGroups.optDouble(spectrum, "MS_1000505_base_peak_intensity_unit_MS_1000131"))
+                .isEqualTo(v.basePeakIntensity());
+        assertThat(ParquetGroups.optDouble(spectrum, "MS_1000285_total_ion_current_unit_MS_1000131"))
+                .isEqualTo(v.tic());
+        assertThat(ParquetGroups.readParams(spectrum, "parameters")).isEmpty();
+    }
+
+    /**
      * The primary precursors of five MS2 spectra of legacy small, each without some of its parts: without
      * precursor_id, isolation window and activation, its ion with a charge; with an isolation window of only a lower
      * offset and without selected ions; with only an upper offset; with only Params; and with an isolation window
