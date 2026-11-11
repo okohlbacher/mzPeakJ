@@ -31,9 +31,9 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
     <parquet.version>1.17.1</parquet.version>
-    <jackson.version>2.18.2</jackson.version>
+    <jackson.version>2.23.0</jackson.version>
     <junit.version>5.11.4</junit.version>
-    <assertj.version>3.26.3</assertj.version>
+    <assertj.version>3.27.7</assertj.version>
     <jacoco.version>0.8.16</jacoco.version>
     <!-- Set by jacoco:prepare-agent; empty so surefire's @{argLine} still resolves with -Djacoco.skip=true. -->
     <argLine/>
@@ -261,12 +261,32 @@
         </executions>
       </plugin>
       <!-- The reactor root holds no sources: a src/ here (left over from a merge of a pre-module branch, say) would
-           silently not be built. -->
+           silently not be built. Every module refuses Jackson and AssertJ versions below the chosen ones: the
+           advisories are fixed on several release branches, so the floor is the chosen version itself
+           (jackson-annotations, versioned without a patch number, is left out). -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
         <version>3.5.0</version>
         <executions>
+          <execution>
+            <id>no-vulnerable-versions</id>
+            <phase>validate</phase>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <!-- also transitively, in every scope -->
+                  <excludes>
+                    <exclude>com.fasterxml.jackson.core:jackson-core:(,2.23.0)</exclude>
+                    <exclude>com.fasterxml.jackson.core:jackson-databind:(,2.23.0)</exclude>
+                    <exclude>org.assertj:assertj-core:(,3.27.7)</exclude>
+                  </excludes>
+                  <message>a version with a known advisory; see docs/design-decisions.md, D-1</message>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
           <execution>
             <id>no-sources-at-root</id>
             <inherited>false</inherited>
