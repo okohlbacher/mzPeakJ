@@ -42,7 +42,7 @@ final class NumpressSignalWriter {
     private static final int NUMPRESS_CHUNK_SIZE = 500;
     /**
      * Numpress linear fixed-point scale (near-lossless for MS m/z up to ~6000 Da at 5 sig figs).
-     * {@link WritePlanner#requireNumpressEncodable} refuses the m/z the codec cannot store at this scale.
+     * {@link NumpressRange#check} refuses the m/z the codec cannot store at this scale.
      */
     static final double NUMPRESS_LINEAR_FIXED_POINT = 100_000.0;
 
@@ -119,7 +119,7 @@ final class NumpressSignalWriter {
     /**
      * The end (exclusive) of the chunk that starts at point {@code pos} of a spectrum of {@code n} points: chunks of up
      * to 500 points, the last two 499 + 2 where a single point would be left over. {@link #appendNumpressChunks} writes
-     * these chunks, and {@link WritePlanner#requireNumpressEncodable} checks the m/z of each.
+     * these chunks, and {@link NumpressRange#check} checks the m/z of each.
      */
     static int chunkEnd(int pos, int n) {
         int end = Math.min(pos + NUMPRESS_CHUNK_SIZE, n);
@@ -154,7 +154,12 @@ final class NumpressSignalWriter {
      * each extra column holds the chunk's slice of {@link SpectrumSignal#extraValues}. The codecs encode only the
      * values {@link WritePlanner#requireNumpressEncodable} lets into the plan: finite m/z of at least 0 up to
      * 4294967295 at {@link #NUMPRESS_LINEAR_FIXED_POINT}, each after the first two of a chunk within a signed 32-bit
-     * difference of its linear extrapolation, finite intensities of at least 0, and PIC counts up to 2147483647.
+     * difference of its linear extrapolation, finite intensities of at least 0, and PIC counts up to 2147483647. The
+     * chunks are checked with {@link NumpressRange#check}, the planner's check, before any of them is encoded, so a
+     * value the codecs cannot encode throws the planner's {@link MzPeakException} and writes no row (design §4.1,
+     * D-11).
+     *
+     * @throws MzPeakException when a value cannot be encoded
      */
     static void appendNumpressChunks(SignalFile file, SpectrumSignal spectrum, List<ExtraColumn> extras,
                                      boolean peaksFile, NumpressIntensityEncoding intensityEncoding)
@@ -174,6 +179,8 @@ final class NumpressSignalWriter {
             mz = spectrum.arrays().x();
             intensity = spectrum.arrays().intensity();
         }
+        NumpressRange.check(s.index(), mz, intensity, peaksFile ? "spectra_peaks" : "spectra_data",
+                intensityEncoding == NumpressIntensityEncoding.PIC);
         int n = mz.length;
         int pos = 0;
         while (pos < n) {
