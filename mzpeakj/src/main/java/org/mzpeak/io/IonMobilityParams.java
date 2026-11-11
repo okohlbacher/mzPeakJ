@@ -18,9 +18,6 @@ final class IonMobilityParams {
     private static final String F_ION_MOBILITY_VALUE = "ion_mobility_value";
     private static final String F_ION_MOBILITY_TYPE = "ion_mobility_type";
 
-    /** The type of a value whose row names none: MS:1002476 'ion mobility drift time'. */
-    private static final String DEFAULT_TYPE = "MS:1002476";
-
     /** The name of the Param of a type {@link #NAMES_AND_UNITS} does not list. */
     private static final String OTHER_NAME = "ion mobility value";
 
@@ -40,11 +37,14 @@ final class IonMobilityParams {
 
     /**
      * {@code params} plus the row's typed ion mobility as {@code Param(name, type, value, unit)}, appended when
-     * {@code params} hold no ion mobility type ({@link CvTerms#ION_MOBILITY_TYPES}) and the row has a finite value. A
-     * null or blank type is {@code MS:1002476}. The name and unit are those the Rust reader gives the type: ion
-     * mobility drift time (UO:0000028 millisecond), inverse reduced ion mobility drift time (MS:1002814), FAIMS
-     * compensation voltage and SELEXION compensation voltage (UO:0000218 volt); any other type is named
-     * {@code ion mobility value} and has no unit. Returns {@code params} itself when nothing is appended.
+     * {@code params} hold no ion mobility type ({@link CvTerms#ION_MOBILITY_TYPES}) and the row has a finite value. The
+     * name and unit are those the Rust reader gives the type: ion mobility drift time (UO:0000028 millisecond),
+     * inverse reduced ion mobility drift time (MS:1002814), FAIMS compensation voltage and SELEXION compensation
+     * voltage (UO:0000218 volt); any other type is named {@code ion mobility value} and has no unit. Returns
+     * {@code params} itself when nothing is appended.
+     *
+     * @throws MzPeakException if such a value has a null or blank type (D-8; the Rust reader panics there,
+     *                         visitor.rs:879)
      */
     static List<Param> withTypedIonMobility(FacetRow row, List<Param> params) {
         if (params.stream().anyMatch(p -> CvTerms.ION_MOBILITY_TYPES.contains(p.accession()))) {
@@ -57,11 +57,15 @@ final class IonMobilityParams {
             return params;
         }
         String type = columns.stringValue(g, columns.resolveName(F_ION_MOBILITY_TYPE));
-        String accession = type != null && !type.isBlank() ? type : DEFAULT_TYPE;
+        if (type == null || type.isBlank()) {
+            throw new MzPeakException(columns.member() + ": " + row.facet() + " row with "
+                    + FacetRow.keyColumn(g.getType(), row.facet()) + " " + row.key() + " has " + F_ION_MOBILITY_VALUE
+                    + " " + value + " but no " + F_ION_MOBILITY_TYPE);
+        }
         List<Param> out = new ArrayList<>(params);
-        String[] nameAndUnit = NAMES_AND_UNITS.get(accession);
-        out.add(nameAndUnit == null ? new Param(OTHER_NAME, accession, value, null)
-                : new Param(nameAndUnit[0], accession, value, nameAndUnit[1]));
+        String[] nameAndUnit = NAMES_AND_UNITS.get(type);
+        out.add(nameAndUnit == null ? new Param(OTHER_NAME, type, value, null)
+                : new Param(nameAndUnit[0], type, value, nameAndUnit[1]));
         return out;
     }
 }

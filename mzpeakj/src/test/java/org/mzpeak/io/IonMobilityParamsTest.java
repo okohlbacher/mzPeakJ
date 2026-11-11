@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * RD-11: the no-duplicate path of {@link IonMobilityParams#withTypedIonMobility}. A row's typed ion mobility is
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class IonMobilityParamsTest {
 
     private static final MessageType SCAN = Types.buildMessage()
+            .optional(PrimitiveTypeName.INT64).named("source_index")
             .optional(PrimitiveTypeName.DOUBLE).named("ion_mobility_value")
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("ion_mobility_type")
             .named("scan");
@@ -96,10 +98,23 @@ class IonMobilityParamsTest {
         List<Param> params = List.of(new Param("window group", null, 1L, null));
         assertThat(IonMobilityParams.withTypedIonMobility(row(null, "MS:1002815"), params)).isSameAs(params);
         assertThat(IonMobilityParams.withTypedIonMobility(row(Double.NaN, null), params)).isSameAs(params);
-        assertThat(IonMobilityParams.withTypedIonMobility(row(0.5, null), params))
-                .containsExactly(params.get(0), new Param("ion mobility drift time", "MS:1002476", 0.5, "UO:0000028"));
-        assertThat(IonMobilityParams.withTypedIonMobility(row(0.5, " "), params))
-                .containsExactly(params.get(0), new Param("ion mobility drift time", "MS:1002476", 0.5, "UO:0000028"));
+    }
+
+    /** D-8: a finite value with a null or blank type is rejected (the Rust reader panics there, visitor.rs:879). */
+    @Test
+    void aValueWithoutATypeIsRejected() {
+        List<Param> params = List.of(new Param("window group", null, 1L, null));
+        assertThatThrownBy(() -> IonMobilityParams.withTypedIonMobility(row(0.5, null), params))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("packed struct 'scan': SPECTRUM_SCAN row with source_index 7 has ion_mobility_value 0.5"
+                        + " but no ion_mobility_type")
+                .hasMessageContaining("no ion_mobility_type");
+        assertThatThrownBy(() -> IonMobilityParams.withTypedIonMobility(row(0.5, " "), params))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("no ion_mobility_type");
+        // a Param that already holds an ion mobility type keeps the typed cells out, so nothing is rejected
+        List<Param> typed = List.of(TYPED);
+        assertThat(IonMobilityParams.withTypedIonMobility(row(0.5, null), typed)).isSameAs(typed);
     }
 
     /** A value that is not finite is dropped without a type, as without a value; the given list is returned as is. */
@@ -179,6 +194,7 @@ class IonMobilityParamsTest {
 
     private static FacetRow row(Double value, String type) {
         Group g = new SimpleGroup(SCAN);
+        g.add("source_index", 7L);
         if (value != null) {
             g.add("ion_mobility_value", value);
         }

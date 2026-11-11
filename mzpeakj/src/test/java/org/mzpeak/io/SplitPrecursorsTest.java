@@ -43,6 +43,7 @@ import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * RD-7: precursors and selected ions of the spectrum metadata, in both layouts.
@@ -73,7 +74,7 @@ class SplitPrecursorsTest {
     private static final Param CID_MARKER = new Param("collision-induced dissociation", CID, null, null);
     private static final String COLLISION_ENERGY = "MS:1000045";
     private static final String ELECTRONVOLT = "UO:0000266";
-    private static final String DEFAULT_ION_MOBILITY_TYPE = "MS:1002476";
+    private static final String DRIFT_TIME = "MS:1002476";
     /** The isolation-window param of every precursor of current small. */
     private static final Param WINDOW_MS_LEVEL = new Param("ms level", null, 1L, null);
 
@@ -247,8 +248,43 @@ class SplitPrecursorsTest {
         assertThat(SelectedIonRowDecoder.decode(typed)).isEqualTo(new SelectedIon(ion5.mz(), ion5.charge(),
                 ion5.intensity(), List.of(new Param("inverse reduced ion mobility drift time", "MS:1002815", 1.25,
                 "MS:1002814"))));
-        assertThat(SelectedIonRowDecoder.decode(untyped).parameters()).containsExactly(
-                new Param("ion mobility drift time", DEFAULT_ION_MOBILITY_TYPE, 0.75, "UO:0000028"));
+        // D-8: a value without a type is rejected
+        assertThatThrownBy(() -> SelectedIonRowDecoder.decode(untyped))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("SPECTRUM_SELECTED_ION row with source_index 5 has ion_mobility_value 0.75")
+                .hasMessageContaining("no ion_mobility_type");
+    }
+
+    /**
+     * D-8: a split selected-ion row of diaPASEF.ref whose ion mobility value has lost its type is rejected, with the
+     * member and the row's source_index in the message; with its type it decodes.
+     */
+    @Test
+    void aSplitSelectedIonWithAValueButNoTypeIsRejected() {
+        List<FacetRow> ions = new ArrayList<>();
+        Entry[] entry = new Entry[1];
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(DIA_REF))) {
+            entry[0] = Facet.SPECTRUM_SELECTED_ION.entry(MzPeakManifest.fromSource(source)).orElseThrow();
+            MetadataTable.forEachRow(source.inputFile(entry[0].name()), entry[0], Facet.SPECTRUM_SELECTED_ION,
+                    ions::add);
+        }
+        ColumnResolver columns = ions.get(0).columns();
+        assertThat(columns.resolveName("ion_mobility_value")).isEqualTo("ion_mobility_value");
+        assertThat(columns.resolveName("ion_mobility_type")).isEqualTo("ion_mobility_type");
+        FacetRow original = ions.stream()
+                .filter(r -> columns.doubleValue(r.group(), "ion_mobility_value") != null)
+                .findFirst().orElseThrow();
+        Double value = columns.doubleValue(original.group(), "ion_mobility_value");
+        assertThat(columns.stringValue(original.group(), "ion_mobility_type")).isNotBlank();
+        assertThat(SelectedIonRowDecoder.decode(original).parameters()).isNotEmpty();
+
+        Group g = new SimpleGroup(original.group().getType());
+        copy(original.group(), g, Set.of("ion_mobility_type"));
+        FacetRow untyped = new FacetRow(original.facet(), g, columns);
+        assertThatThrownBy(() -> SelectedIonRowDecoder.decode(untyped))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage(entry[0].name() + ": SPECTRUM_SELECTED_ION row with source_index " + original.key()
+                        + " has ion_mobility_value " + value + " but no ion_mobility_type");
     }
 
     /**
@@ -454,13 +490,14 @@ class SplitPrecursorsTest {
         Group g = new SimpleGroup(extended);
         copy(rows.ionRow(5).group(), g, Set.of("ion_mobility_value", "ion_mobility_type"));
         g.add("ion_mobility_value", 0.9);
+        g.add("ion_mobility_type", DRIFT_TIME);
         g.add("opt_ion_note", "monoisotopic");
         addParam(g, "user note", null, "first", null);
 
         assertThat(SelectedIonRowDecoder.decode(new FacetRow(Facet.SPECTRUM_SELECTED_ION, g, columns)))
                 .isEqualTo(new SelectedIon(ion5.mz(), ion5.charge(), ion5.intensity(), List.of(
                         new Param("user note", null, "first", null),
-                        new Param("ion mobility drift time", DEFAULT_ION_MOBILITY_TYPE, 0.9, "UO:0000028"),
+                        new Param("ion mobility drift time", DRIFT_TIME, 0.9, "UO:0000028"),
                         new Param("opt_ion_note", null, "monoisotopic", null))));
     }
 
@@ -539,8 +576,7 @@ class SplitPrecursorsTest {
                     }
                     Object mobility = cells.get("ion_mobility_value");
                     if (mobility != null) {
-                        Object type = cells.get("ion_mobility_type");
-                        String accession = type == null ? DEFAULT_ION_MOBILITY_TYPE : (String) type;
+                        String accession = (String) cells.get("ion_mobility_type");
                         assertThat(params).as(where + " selected-ion ion mobility")
                                 .anyMatch(q -> q.hasAccession(accession) && mobility.equals(q.value()));
                         seen[4]++;
