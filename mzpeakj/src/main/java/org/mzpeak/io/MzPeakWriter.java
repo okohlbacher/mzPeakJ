@@ -48,7 +48,10 @@ import java.util.stream.Stream;
  * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
  * own. A read &rarr; write cycle keeps everything {@link MzPeakReader} exposes, except the intensity unit of a
  * chromatogram without points: the reader takes a chromatogram's unit from the column that holds its values, so such
- * a chromatogram reads back without one. Chromatogram time is written as given and declared in minutes (UO:0000031).
+ * a chromatogram reads back without one. Chromatogram time is written in minutes and declared so (UO:0000031): a
+ * chromatogram in another {@link Chromatogram#timeUnit()} is converted with {@link Chromatogram#withTimeUnit}, so it
+ * reads back in minutes; one in a unit that method does not convert is refused with its
+ * {@link IllegalArgumentException}.
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -776,10 +779,12 @@ public final class MzPeakWriter {
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code chromatogram} is {@code null}
+         * @throws IllegalArgumentException if {@link Chromatogram#withTimeUnit} cannot convert its times to minutes
          */
         public void addChromatogram(Chromatogram chromatogram) {
             requireOpen();
-            chromatograms.add(Objects.requireNonNull(chromatogram, "chromatogram"));
+            // V-22 replaces this conversion: the times are written in minutes, as ArrayIndex declares them.
+            chromatograms.add(Objects.requireNonNull(chromatogram, "chromatogram").withTimeUnit("UO:0000031"));
         }
 
         /**

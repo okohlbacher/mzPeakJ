@@ -1,22 +1,7 @@
 package org.mzpeak.io;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.apache.parquet.conf.PlainParquetConfiguration;
-import org.apache.parquet.example.data.Group;
-import org.apache.parquet.example.data.simple.SimpleGroup;
-import org.apache.parquet.hadoop.ParquetFileWriter;
-import org.apache.parquet.hadoop.ParquetWriter;
-import org.apache.parquet.hadoop.example.ExampleParquetWriter;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.LocalInputFile;
-import org.apache.parquet.io.LocalOutputFile;
-import org.apache.parquet.schema.GroupType;
-import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
-import org.apache.parquet.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,11 +9,11 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ArrayIndex.BufferFormat;
 import org.mzpeak.io.MzPeakManifest.DataKind;
+import org.mzpeak.io.MemberRewriter.Edit;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.SignalContinuity;
@@ -37,10 +22,8 @@ import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -55,15 +38,19 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mzpeak.io.MemberRewriter.rewrite;
+import static org.mzpeak.io.MemberRewriter.rewriteInPlace;
 
 /**
- * MZ-3 (mzML design §5.7 array units, §6.1 B-15, §6.2 A-13): the reader returns chromatogram times in minutes and
- * the drift-time ion mobility arrays of spectra in milliseconds, the units {@code CvTerms.DEFAULT_ARRAY_UNITS}
- * documents, converting from the unit of the column's array-index entry; a unit it cannot convert is rejected.
+ * MZ-3 (mzML design §5.7 array units, §6.1 B-15, §6.2 A-13): the reader returns the drift-time ion mobility arrays
+ * of spectra in milliseconds, the unit {@code CvTerms.DEFAULT_ARRAY_UNITS} documents, converting from the unit of the
+ * column's array-index entry; a unit it cannot convert is rejected. Since D-12a (V-21) chromatogram times are read as
+ * stored, in their {@link Chromatogram#timeUnit()}, and only a chunk start column is converted to the unit of its
+ * time values column; {@link Chromatogram#withTimeUnit} gives them in minutes.
  *
- * <p>Each case rewrites one signal member with parquet-java's Group API ({@link #rewrite}): the values of the named
- * columns scaled into another unit, the unit of their array-index entries set to it, every other column and footer
- * key kept. The members are those of the vendored fixtures (current small.unpacked, small.chunked and
+ * <p>Each case rewrites one signal member with parquet-java's Group API ({@link MemberRewriter#rewrite}): the values
+ * of the named columns scaled into another unit, the unit of their array-index entries set to it, every other column
+ * and footer key kept. The members are those of the vendored fixtures (current small.unpacked, small.chunked and
  * diaPASEF.grid) or of a dataset {@link MzPeakWriter} wrote; the oracle is the same member read unchanged. Before
  * MZ-3 the reader passed the stored values through, so every case with another unit than the model's fails there.
  */
@@ -76,12 +63,12 @@ class ArrayUnitConversionTest {
     private static final String CHROMATOGRAMS_METADATA = "chromatograms_metadata.parquet";
     private static final String SPECTRA_PEAKS = "spectra_peaks.parquet";
     private static final String TIME_ARRAY = "MS:1000595";
+    private static final String MINUTE = "UO:0000031";
     private static final String TIC = "MS:1000235";
     private static final String MEAN_DRIFT_TIME = "MS:1002477";
     private static final String MEAN_INVERSE_REDUCED_ION_MOBILITY = "MS:1003006";
     private static final String MS_LEVEL = "ms level";
     private static final double RELATIVE = 1e-15;
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @TempDir
     Path tmp;
@@ -100,12 +87,12 @@ class ArrayUnitConversionTest {
 
     /**
      * (a), (b) Current small.unpacked with its point-layout time column stored in {@code unit}: every chromatogram,
-     * the TIC among them, has the time of the unchanged member within a relative 1e-15, and the same intensity and
-     * ms level arrays. No unit and minutes leave the values as stored.
+     * the TIC among them, has the stored times in {@code unit} (minute for no unit), which in minutes are the time
+     * of the unchanged member within a relative 1e-15, and the same intensity and ms level arrays.
      */
     @ParameterizedTest(name = "unit {0}")
     @MethodSource("timeUnits")
-    void aChromatogramTimeInAnotherUnitIsReadInMinutes(String unit, DoubleUnaryOperator fromMinutes)
+    void aChromatogramTimeInAnotherUnitIsReadAsStoredInItsUnit(String unit, DoubleUnaryOperator fromMinutes)
             throws IOException {
         Path dir = copySmallUnpacked();
         Path data = dir.resolve(CHROMATOGRAMS_DATA);
@@ -121,28 +108,39 @@ class ArrayUnitConversionTest {
                 Chromatogram a = expected.get(c);
                 Chromatogram b = actual.get(c);
                 assertThat(b.id()).isEqualTo(a.id());
-                assertClose(b.time(), a.time(), RELATIVE, "time of " + a.id());
+                assertThat(b.timeUnit()).isEqualTo(unit == null ? MINUTE : unit);
+                double[] stored = new double[a.size()];
+                for (int i = 0; i < stored.length; i++) {
+                    stored[i] = fromMinutes.applyAsDouble(a.time()[i]);
+                }
+                assertThat(b.time()).as("stored time of %s", a.id()).containsExactly(stored);
+                assertClose(b.withTimeUnit(MINUTE).time(), a.time(), RELATIVE, "time of " + a.id());
                 assertThat(b.intensity()).as("intensity of %s", a.id()).isEqualTo(a.intensity());
                 assertThat(b.arrays().keySet()).as("arrays of %s", a.id()).isEqualTo(a.arrays().keySet());
                 assertThat(b.arrays().get(MS_LEVEL)).as("ms level of %s", a.id()).isEqualTo(a.arrays().get(MS_LEVEL));
             }
-            assertClose(edited.tic().orElseThrow().time(), original.tic().orElseThrow().time(), RELATIVE, "TIC");
+            assertClose(edited.tic().orElseThrow().withTimeUnit(MINUTE).time(), original.tic().orElseThrow().time(),
+                    RELATIVE, "TIC");
         }
     }
 
-    /** (c) A time column in a unit that is no time unit is rejected, naming the member, the column and the unit. */
+    /**
+     * (c) A time column in a unit that is no time unit is read as stored, with that unit (D-12a; before, it was
+     * rejected); {@link Chromatogram#withTimeUnit} refuses to convert it.
+     */
     @Test
-    void aChromatogramTimeInAnUnknownUnitIsRejected() throws IOException {
+    void aChromatogramTimeInAnUnknownUnitIsReadAsStored() throws IOException {
         Path dir = copySmallUnpacked();
         rewriteInPlace(dir.resolve(CHROMATOGRAMS_DATA), SignalEntity.CHROMATOGRAM,
                 Map.of("point.time", new Edit("UO:0000033", v -> v)));
 
-        try (MzPeakReader reader = MzPeakReader.open(dir)) {
-            assertThatThrownBy(reader::chromatograms)
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage(CHROMATOGRAMS_DATA + ": chromatogram time column point.time has the unit UO:0000033;"
-                            + " supported are minute (UO:0000031), second (UO:0000010), millisecond (UO:0000028)"
-                            + " and hour (UO:0000032)");
+        try (MzPeakReader original = MzPeakReader.open(SMALL_UNPACKED); MzPeakReader reader = MzPeakReader.open(dir)) {
+            Chromatogram read = reader.chromatograms().get(0);
+            assertThat(read.timeUnit()).isEqualTo("UO:0000033");
+            assertThat(read.time()).isEqualTo(original.chromatograms().get(0).time());
+            assertThatThrownBy(() -> read.withTimeUnit(MINUTE))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("from UO:0000033 to UO:0000031");
         }
     }
 
@@ -164,11 +162,11 @@ class ArrayUnitConversionTest {
 
     /**
      * Current small.chunked, whose chromatograms are in the chunk layout: the chunk start in milliseconds, the chunk
-     * end and the deltas in seconds. Each column is converted by its own unit, so the times are those of the
-     * unchanged member within a relative 1e-15.
+     * end and the deltas in seconds. The chromatograms are in seconds, the unit of the values column, the start
+     * converted to it, so in minutes the times are those of the unchanged member within a relative 1e-15.
      */
     @Test
-    void aChunkedChromatogramTimeIsConvertedColumnByColumn() {
+    void aChunkedChromatogramStartIsConvertedToTheUnitOfTheValues() {
         try (MzPeakSource source = MzPeakSource.open(SMALL_CHUNKED)) {
             InputFile metadata = source.inputFile(CHROMATOGRAMS_METADATA);
             InputFile data = source.inputFile(CHROMATOGRAMS_DATA);
@@ -185,7 +183,9 @@ class ArrayUnitConversionTest {
             assertThat(actual).hasSameSizeAs(expected);
             int points = 0;
             for (int c = 0; c < expected.size(); c++) {
-                assertClose(actual.get(c).time(), expected.get(c).time(), RELATIVE, "time of " + expected.get(c).id());
+                assertThat(actual.get(c).timeUnit()).isEqualTo("UO:0000010");
+                assertClose(actual.get(c).withTimeUnit(MINUTE).time(), expected.get(c).time(), RELATIVE,
+                        "time of " + expected.get(c).id());
                 assertThat(actual.get(c).intensity()).isEqualTo(expected.get(c).intensity());
                 points += expected.get(c).size();
             }
@@ -491,17 +491,6 @@ class ArrayUnitConversionTest {
 
     // ---- helpers -----------------------------------------------------------------------------------------------
 
-    /**
-     * How {@link #rewrite} changes one column: its array-index entry gets {@code unit} (null for none) and, unless
-     * null, {@code arrayType}; its values go through {@code values}, unless null.
-     */
-    private record Edit(String unit, String arrayType, DoubleUnaryOperator values) {
-
-        Edit(String unit, DoubleUnaryOperator values) {
-            this(unit, null, values);
-        }
-    }
-
     /** A CENTROID MS1 description of index 0 without scans or precursors. */
     private static SpectrumDescription centroid() {
         return new SpectrumDescription(0, "scan=1", 1, 1.0, null, SignalContinuity.CENTROID, 0, 0, List.of(),
@@ -551,114 +540,6 @@ class ArrayUnitConversionTest {
         for (int i = 0; i < expected.length; i++) {
             assertThat(Math.abs(actual[i] - expected[i])).as("%s[%d]: %s vs %s", what, i, actual[i], expected[i])
                     .isLessThanOrEqualTo(relative * Math.abs(expected[i]));
-        }
-    }
-
-    /** {@link #rewrite} of the member file {@code member} in place. */
-    private static void rewriteInPlace(Path member, SignalEntity entity, Map<String, Edit> edits) {
-        Path rewritten = member.resolveSibling(member.getFileName() + ".rewritten");
-        rewrite(new LocalInputFile(member), rewritten, entity, edits);
-        try {
-            Files.move(rewritten, member, StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    /**
-     * Writes {@code in} to {@code out} with parquet-java's Group API and the same schema: every cell of an edited
-     * column (a column path such as {@code point.time}; the items of a list or the fields of a struct below it
-     * included) through its {@link Edit#values()}, and the entry of each edited path in the
-     * {@code <entity>_array_index} footer changed as its {@link Edit} says. Every other column and footer key is
-     * kept (parquet-java writes its own {@code writer.model.name}).
-     */
-    private static void rewrite(InputFile in, Path out, SignalEntity entity, Map<String, Edit> edits) {
-        ParquetFooter footer = ParquetFooter.read(in);
-        MessageType schema = footer.schema();
-        Map<String, String> keyValue = new LinkedHashMap<>(footer.keyValue());
-        keyValue.remove("writer.model.name");
-        keyValue.put(entity.arrayIndexKey(), editIndex(keyValue.get(entity.arrayIndexKey()), edits));
-        List<Group> rows = new ArrayList<>();
-        ParquetGroups.forEach(in, rows::add);
-        int[] edited = {0};
-        try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(out))
-                .withConf(new PlainParquetConfiguration())
-                .withType(schema)
-                .withExtraMetaData(keyValue)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
-                .withCompressionCodec(CompressionCodecName.ZSTD)
-                .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
-                .build()) {
-            for (Group row : rows) {
-                Group copy = new SimpleGroup(schema);
-                copy(row, copy, "", edits, null, edited);
-                writer.write(copy);
-            }
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-        boolean editsValues = edits.values().stream().anyMatch(e -> e.values() != null);
-        assertThat(edited[0] > 0).as("edited cells of %s", edits.keySet()).isEqualTo(editsValues);
-    }
-
-    /** The array index JSON {@code json} with the entries of the edited paths changed. */
-    private static String editIndex(String json, Map<String, Edit> edits) {
-        try {
-            ObjectNode index = (ObjectNode) MAPPER.readTree(json);
-            int changed = 0;
-            for (JsonNode entry : index.path("entries")) {
-                Edit edit = edits.get(entry.path("path").asText());
-                if (edit != null) {
-                    ((ObjectNode) entry).put("unit", edit.unit());
-                    if (edit.arrayType() != null) {
-                        ((ObjectNode) entry).put("array_type", edit.arrayType());
-                    }
-                    changed++;
-                }
-            }
-            assertThat(changed).as("array index entries of %s", edits.keySet()).isEqualTo(edits.size());
-            return MAPPER.writeValueAsString(index);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    /**
-     * Copies every value of {@code src} into {@code dst}, recursively; a DOUBLE cell at or below an edited path goes
-     * through its edit (or {@code edit}, the one of an enclosing path), counted in {@code edited[0]}.
-     */
-    private static void copy(Group src, Group dst, String path, Map<String, Edit> edits, DoubleUnaryOperator edit,
-                             int[] edited) {
-        GroupType type = src.getType();
-        for (int f = 0; f < type.getFieldCount(); f++) {
-            Type field = type.getType(f);
-            String name = field.getName();
-            String fieldPath = path.isEmpty() ? name : path + "." + name;
-            Edit own = edits.get(fieldPath);
-            DoubleUnaryOperator fieldEdit = own != null ? own.values() : edit;
-            for (int i = 0; i < src.getFieldRepetitionCount(f); i++) {
-                if (!field.isPrimitive()) {
-                    copy(src.getGroup(f, i), dst.addGroup(name), fieldPath, edits, fieldEdit, edited);
-                    continue;
-                }
-                PrimitiveTypeName primitive = field.asPrimitiveType().getPrimitiveTypeName();
-                switch (primitive) {
-                    case INT32 -> dst.add(name, src.getInteger(f, i));
-                    case INT64 -> dst.add(name, src.getLong(f, i));
-                    case FLOAT -> dst.add(name, src.getFloat(f, i));
-                    case DOUBLE -> {
-                        double v = src.getDouble(f, i);
-                        if (fieldEdit != null) {
-                            v = fieldEdit.applyAsDouble(v);
-                            edited[0]++;
-                        }
-                        dst.add(name, v);
-                    }
-                    case BOOLEAN -> dst.add(name, src.getBoolean(f, i));
-                    case BINARY, FIXED_LEN_BYTE_ARRAY -> dst.add(name, src.getBinary(f, i));
-                    default -> throw new AssertionError("unexpected " + primitive + " field " + fieldPath);
-                }
-            }
         }
     }
 }

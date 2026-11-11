@@ -13,11 +13,12 @@ import java.util.Map;
  * and the arrays held in {@code arrays}, by reference, so two chromatograms with equal values in different arrays
  * are not equal.
  *
+ * <p>The times are as the file stores them, in {@link #timeUnit}; {@link #withTimeUnit} converts them.
+ *
  * @param index             0-based chromatogram index
  * @param id                chromatogram id (e.g. {@code "TIC"})
  * @param typeCurie         PSI-MS chromatogram type CURIE (e.g. {@code MS:1000235} = total ion current)
- * @param time              time axis (MS:1000595), in minutes, the unit of {@link CvTerms#DEFAULT_ARRAY_UNITS}: the
- *                          reader converts a time array stored in seconds, milliseconds or hours
+ * @param time              time axis (MS:1000595), in {@link #timeUnit}; the reader keeps the stored values
  * @param intensity         intensity axis (MS:1000515), parallel to {@link #time}
  * @param intensityUnit     unit CURIE of the intensity values as the file declares it (e.g. {@code MS:1000131} =
  *                          number of detector counts, {@code UO:0000269} = absorbance unit), or {@code null} when the
@@ -46,10 +47,27 @@ import java.util.Map;
  *                          {@link Precursor#precursorIndex()} of a chromatogram precursor names a chromatogram (the
  *                          chromatogram foreign key of the format), its {@link Precursor#precursorId()} may name a
  *                          spectrum. The isolation window of the product ion is not modelled
+ * @param timeUnit          unit CURIE of {@link #time}; never {@code null}: {@code UO:0000031} minute, the unit of
+ *                          {@link CvTerms#DEFAULT_ARRAY_UNITS}, when a {@code null} is passed. On read it is the unit
+ *                          the file declares for the time column, minute when it declares none
  */
 public record Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
                            String intensityUnit, Map<String, double[]> arrays, Polarity polarity,
-                           String dataProcessingRef, List<Param> parameters, List<Precursor> precursors) {
+                           String dataProcessingRef, List<Param> parameters, List<Precursor> precursors,
+                           String timeUnit) {
+
+    /** UO:0000031 minute, the default {@link #timeUnit}. */
+    private static final String MINUTE = "UO:0000031";
+
+    /**
+     * The time units {@link #withTimeUnit} converts among, with their length in milliseconds: minute, second,
+     * millisecond (UO:0000028) and hour (UO:0000032).
+     */
+    private static final Map<String, Long> MILLISECONDS = Map.of(
+            MINUTE, 60_000L,
+            "UO:0000010", 1_000L,
+            "UO:0000028", 1L,
+            "UO:0000032", 3_600_000L);
 
     /**
      * @throws IllegalArgumentException when {@code time} and {@code intensity} differ in length, or when
@@ -68,16 +86,25 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
         polarity = polarity == null ? Polarity.UNKNOWN : polarity;
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
         precursors = precursors == null ? List.of() : List.copyOf(precursors);
+        timeUnit = timeUnit == null ? MINUTE : timeUnit;
     }
 
-    /** A chromatogram without intensity unit and without further arrays. */
+    /** A chromatogram whose times are in minutes (UO:0000031). */
+    public Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
+                        String intensityUnit, Map<String, double[]> arrays, Polarity polarity,
+                        String dataProcessingRef, List<Param> parameters, List<Precursor> precursors) {
+        this(index, id, typeCurie, time, intensity, intensityUnit, arrays, polarity, dataProcessingRef, parameters,
+                precursors, MINUTE);
+    }
+
+    /** A chromatogram without intensity unit and without further arrays, whose times are in minutes (UO:0000031). */
     public Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity) {
         this(index, id, typeCurie, time, intensity, null, Map.of());
     }
 
     /**
      * A chromatogram of unknown polarity, under the run's default data processing, without Params and without
-     * precursors.
+     * precursors, whose times are in minutes (UO:0000031).
      */
     public Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
                         String intensityUnit, Map<String, double[]> arrays) {
@@ -87,6 +114,34 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
 
     public int size() {
         return time.length;
+    }
+
+    /**
+     * This chromatogram with its times in {@code unit}: {@code this} when it is {@link #timeUnit}, else a copy with
+     * every other component the same and each time converted. Supported are minute (UO:0000031), second
+     * (UO:0000010), millisecond (UO:0000028) and hour (UO:0000032); a time is multiplied by the whole ratio of the
+     * two units when the target unit is the smaller, else divided by it (seconds to minutes: divided by 60).
+     *
+     * @throws IllegalArgumentException when {@link #timeUnit} or {@code unit} is not one of these; the message names
+     *                                  both
+     */
+    public Chromatogram withTimeUnit(String unit) {
+        if (timeUnit.equals(unit)) {
+            return this;
+        }
+        Long from = MILLISECONDS.get(timeUnit);
+        Long to = unit == null ? null : MILLISECONDS.get(unit);
+        if (from == null || to == null) {
+            throw new IllegalArgumentException("cannot convert the times of chromatogram " + index + " from "
+                    + timeUnit + " to " + unit + "; supported are minute (UO:0000031), second (UO:0000010),"
+                    + " millisecond (UO:0000028) and hour (UO:0000032)");
+        }
+        double[] converted = new double[time.length];
+        for (int i = 0; i < time.length; i++) {
+            converted[i] = from > to ? time[i] * (double) (from / to) : time[i] / (double) (to / from);
+        }
+        return new Chromatogram(index, id, typeCurie, converted, intensity, intensityUnit, arrays, polarity,
+                dataProcessingRef, parameters, precursors, unit);
     }
 
     private static Map<String, double[]> copyArrays(Map<String, double[]> arrays, int length) {

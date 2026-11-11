@@ -363,6 +363,37 @@ class MzMLWriterTest {
         assertThat(arrayTerms(plain)).allSatisfy(t -> assertThat(t.get(0)).isEqualTo(NO_COMPRESSION));
     }
 
+    /**
+     * D-12a (V-21): small.unpacked's TIC in seconds ({@link Chromatogram#withTimeUnit}, as the reader gives a file
+     * that stores seconds) is written in minutes with {@code unitAccession="UO:0000031"}, never seconds labelled as
+     * minutes; it reads back as the fixture's minutes within a relative 1e-12. V-23 writes the stored unit instead.
+     */
+    @Test
+    void aChromatogramInSecondsIsWrittenInMinutes() throws IOException {
+        Chromatogram minutes;
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.unpacked.mzpeak"))) {
+            minutes = reader.chromatograms().get(0);
+        }
+        Chromatogram seconds = minutes.withTimeUnit("UO:0000010");
+        assertThat(seconds.time()[1]).isEqualTo(minutes.time()[1] * 60);
+        Contents contents = new Contents(metadata(), List.of(), List.of(known("MS"), known("UO")), List.of(),
+                List.of(), List.of(seconds));
+
+        for (Written w : write("seconds", contents)) {
+            String xml = Files.readString(w.file(), UTF_8);
+            assertThat(xml).contains("accession=\"MS:1000595\" name=\"time array\" unitAccession=\"UO:0000031\"");
+            assertThat(xml).doesNotContain("unitAccession=\"UO:0000010\"");
+            Chromatogram back = read(w.file()).chromatograms().get(0);
+            assertThat(back.timeUnit()).isEqualTo("UO:0000031");
+            assertThat(back.time()).hasSameSizeAs(minutes.time()).isNotEmpty();
+            for (int i = 0; i < minutes.size(); i++) {
+                assertThat(Math.abs(back.time()[i] - minutes.time()[i])).as("time[%d]", i)
+                        .isLessThanOrEqualTo(1e-12 * Math.abs(minutes.time()[i]));
+            }
+            assertThat(back.intensity()).containsExactly(minutes.intensity());
+        }
+    }
+
     // ---- (g) contract and publishing --------------------------------------------------------------------------
 
     @Test
