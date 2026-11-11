@@ -348,11 +348,12 @@ class SplitPrecursorsTest {
     }
 
     /**
-     * A collision-energy unit given as a JSON array names a column of per-row unit CURIEs (Rust PathOrCURIE), which
-     * is not resolved yet: the energy keeps its value and gets no unit, rather than the column path as its unit.
+     * A collision-energy unit given as a JSON array names a column of per-row unit CURIEs (Rust PathOrCURIE, D-9b);
+     * a path naming no column of the activation scope is refused, rather than read as no unit or as the path.
+     * {@link UnitColumnTest} reads existing unit columns.
      */
     @Test
-    void aCollisionEnergyUnitGivenAsAColumnPathGivesNoUnit() throws IOException {
+    void aCollisionEnergyUnitColumnThatDoesNotExistIsRefused() throws IOException {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
             ObjectNode index = (ObjectNode) new ObjectMapper().readTree(source.readManifestBytes());
             int edited = 0;
@@ -372,9 +373,10 @@ class SplitPrecursorsTest {
             MetadataTable.forEachRow(view.inputFile(entry.name()), entry, Facet.SPECTRUM_PRECURSOR, rows::add);
             FacetRow row = rows.stream().filter(r -> r.key() == 5).findFirst().orElseThrow();
 
-            assertThat(PrecursorRowDecoder.decode(row).activation().parameters())
-                    .filteredOn(p -> COLLISION_ENERGY.equals(p.accession()))
-                    .containsExactly(new Param("collision energy", COLLISION_ENERGY, 35.0, null));
+            assertThatThrownBy(() -> PrecursorRowDecoder.decode(row))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectra_metadata_precursors.parquet: unit column collision_energy_unit does not"
+                            + " exist");
         }
     }
 

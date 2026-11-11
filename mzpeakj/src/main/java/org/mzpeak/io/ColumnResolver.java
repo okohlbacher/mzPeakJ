@@ -15,7 +15,9 @@ import org.mzpeak.model.Param;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -327,10 +329,12 @@ final class ColumnResolver {
      * <ul>
      *   <li>a term-marker string: {@code Param(null, cell)}, the cell as accession;
      *   <li>a term-marker boolean: {@code Param(mapping name, mapping accession)}, only when TRUE;
-     *   <li>a mapped cell: {@code Param(mapping name, mapping accession, value, mapping unit)};
+     *   <li>a mapped cell: {@code Param(mapping name, mapping accession, value, unit)}, the unit as {@link #unitAt}
+     *       reads it;
      *   <li>an unmapped cell: {@code Param(field, null, value)}.
      * </ul>
-     * Values are Long for integers, Double for floats, String or Boolean.
+     * Values are Long for integers, Double for floats, String or Boolean. The unit columns that the mappings of this
+     * scope's fields name are consumed too.
      */
     List<Param> leftovers(Group row, Set<String> consumed) {
         Objects.requireNonNull(row, "row");
@@ -353,11 +357,12 @@ final class ColumnResolver {
 
     private List<Param> scalarCells(Group row, Set<String> consumed) {
         Set<String> structural = ColumnTable.structural(facet);
+        Set<String> unitColumns = unitColumns();
         List<Param> out = new ArrayList<>();
         for (Type type : row.getType().getFields()) {
             String field = type.getName();
             if (!type.isPrimitive() || type.isRepetition(Type.Repetition.REPEATED) || structural.contains(field)
-                    || consumed.contains(field) || !ParquetGroups.has(row, field)) {
+                    || consumed.contains(field) || unitColumns.contains(field) || !ParquetGroups.has(row, field)) {
                 continue;
             }
             Param p = leftover(row, type.asPrimitiveType());
@@ -393,7 +398,78 @@ final class ColumnResolver {
                 return present ? new Param(m.name(), m.accession(), null, null) : null;
             }
         }
-        return new Param(m.name(), m.accession(), value, m.unit());
+        return new Param(m.name(), m.accession(), value, unitAt(row, m));
+    }
+
+    /**
+     * The fields of this scope that the column_mapping (split layout only) names as the unit column of a field of
+     * this scope.
+     */
+    private Set<String> unitColumns() {
+        if (entry == null) {
+            return Set.of();
+        }
+        Set<String> out = new HashSet<>();
+        for (ColumnMapping m : entry.columnMapping()) {
+            if (m.unitPath() != null && field(m.path()) != null) {
+                out.add(lastSegment(m.unitPath()));
+            }
+        }
+        return out;
+    }
+
+    // ---- units ------------------------------------------------------------------------------------------------
+
+    /**
+     * The unit of the cell of {@code row} that {@code m} maps: {@code m.unit()} when {@code m} has no
+     * {@link ColumnMapping#unitPath() unit path}; else the cell of the unit column, the field of this scope named by
+     * the path's last segment (Rust {@code PathOrCURIE}): a string cell as the CURIE, a struct
+     * {@code {cv_id, accession}} cell as {@code MS:%07d} (cv_id 1) or {@code UO:%07d} (cv_id 2), a null cell as
+     * {@code null}.
+     *
+     * @throws MzPeakException if the unit column does not exist in this scope, is neither a string nor a struct, or
+     *                         its struct cell has another cv_id or no accession; the message names the member and the
+     *                         unit column
+     */
+    String unitAt(Group row, ColumnMapping m) {
+        String unitPath = m.unitPath();
+        if (unitPath == null) {
+            return m.unit();
+        }
+        String field = lastSegment(unitPath);
+        if (!scope.containsField(field)) {
+            throw new MzPeakException(member + ": unit column " + unitPath + " does not exist");
+        }
+        if (!ParquetGroups.has(row, field)) {
+            return null;
+        }
+        if (row.getType().getType(field).isPrimitive()) {
+            return stringValue(row, field);
+        }
+        Group curie = row.getGroup(field, 0);
+        Long cvId = longValue(curie, "cv_id");
+        String prefix = cvId == null ? null : cvId == 1 ? "MS" : cvId == 2 ? "UO" : null;
+        if (prefix == null) {
+            throw new MzPeakException(member + ": unit column " + unitPath + rowLabel(row) + " has cv_id " + cvId
+                    + "; supported are 1 (MS) and 2 (UO)");
+        }
+        Long accession = longValue(curie, "accession");
+        if (accession == null) {
+            throw new MzPeakException(member + ": unit column " + unitPath + rowLabel(row) + " has no accession");
+        }
+        return String.format(Locale.ROOT, "%s:%07d", prefix, accession);
+    }
+
+    /** {@code " row <key>"} when this scope holds the facet's row key and {@code row} has it; else empty. */
+    private String rowLabel(Group row) {
+        String key = FacetRow.keyColumn(scope, facet);
+        Long k = scope.containsField(key) ? longValue(row, key) : null;
+        return k == null ? "" : " row " + k;
+    }
+
+    /** The last segment of the dotted {@code path}. */
+    private static String lastSegment(String path) {
+        return path.substring(path.lastIndexOf('.') + 1);
     }
 
     // ---- paths ------------------------------------------------------------------------------------------------

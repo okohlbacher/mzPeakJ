@@ -1,7 +1,6 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
-import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
@@ -76,10 +75,10 @@ final class PrecursorRowDecoder {
     /**
      * The activation's Params, in this order: the dissociation method term marker (MS:1000044) as
      * {@code Param(name, cell)}, named from {@link CvTerms#DISSOCIATION_METHODS} (a null name for a CURIE it does not
-     * list); the collision energy (MS:1000045) as {@code Param("collision energy", MS:1000045, value, the mapping's
-     * unit)}; the scope's leftovers ({@link ColumnResolver#leftovers}); then the {@code parameters} list, without the
-     * entries whose accession one of those columns gave (a column wins over a list entry). In the packed layout only
-     * the list is present.
+     * list); the collision energy (MS:1000045) as {@code Param("collision energy", MS:1000045, value, unit)}, the unit
+     * as {@link ColumnResolver#unitAt} reads it; the scope's leftovers ({@link ColumnResolver#leftovers}); then the
+     * {@code parameters} list, without the entries whose accession one of those columns gave (a column wins over a
+     * list entry). In the packed layout only the list is present.
      */
     private static Activation activation(FacetRow activation) {
         ColumnResolver columns = activation.columns();
@@ -93,7 +92,7 @@ final class PrecursorRowDecoder {
         String energy = columns.resolve(COLLISION_ENERGY);
         Double value = columns.doubleValue(g, energy);
         if (value != null) {
-            String unit = columns.mapping(energy).map(ColumnMapping::unit).orElse(null);
+            String unit = columns.mapping(energy).map(m -> columns.unitAt(g, m)).orElse(null);
             out.add(new Param("collision energy", COLLISION_ENERGY, value, unit));
         }
         out.addAll(columns.leftovers(g, consumed(method, energy)));
