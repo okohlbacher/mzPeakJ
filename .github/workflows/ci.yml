@@ -21,5 +21,7 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
+      - name: Maven version
+        run: ./mvnw -v
       - name: Build and test
-        run: mvn -B --no-transfer-progress verify
+        run: ./mvnw -B --no-transfer-progress verify
