@@ -1,16 +1,23 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * The {@code mzpeak_index.json} manifest. Maps each member Parquet file to its role
@@ -19,7 +26,7 @@ import java.util.Optional;
  * ({@code data arrays}, {@code wavelength spectrum}) and the current ones ({@code data_arrays},
  * {@code wavelength_spectrum}) resolve alike; {@link Entry} keeps the strings as written.
  *
- * <p>Also parses the optional {@code metadata} object, which may carry:
+ * <p>Also parses the {@code metadata} object (required, as in the reference implementation), which may carry:
  * <ul>
  *   <li>{@code scan_settings_list} — imzML-derived pixel-raster settings ({@link ScanSettings})
  *   <li>{@code imaging} — mzML2mzPeak-specific imaging summary (exposed via {@link #isImaging()})
@@ -254,7 +261,10 @@ public final class MzPeakManifest {
         return imaging;
     }
 
-    /** Format version string from {@code metadata.version} (e.g. {@code "0.9.0"}); {@code null} if absent. */
+    /**
+     * Format version string from {@code metadata.version} (e.g. {@code "0.9.0"}); {@code null} if absent or not a
+     * JSON string, as Rust {@code FileIndex::version} reads it.
+     */
     public String version() {
         return version;
     }
@@ -265,37 +275,40 @@ public final class MzPeakManifest {
     }
 
     /**
-     * The {@code metadata} object as parsed, or {@code null} if it is absent or not an object. Shared, not copied:
-     * callers must not modify it.
+     * The {@code metadata} object as parsed; never {@code null} (a manifest without one is rejected). Shared, not
+     * copied: callers must not modify it.
      */
     JsonNode metadataJson() {
         return metadataJson;
     }
 
-    /** Parse {@code mzpeak_index.json} from a source (directory or ZIP). */
+    /**
+     * Parse {@code mzpeak_index.json} from a source (directory or ZIP). The manifest is checked first against the
+     * reference implementation's structs (Rust {@code FileIndex}, {@code FileEntry}, {@code MetadataColumn},
+     * {@code MetaParam}, deserialized by serde): a missing required field, a field of the wrong JSON type, an
+     * accession or unit that is not CURIE-shaped, or a known field given twice in the same object is rejected with
+     * a message naming the entry and field. Unknown keys, and the content of the {@code metadata} documents beyond
+     * their JSON type, are not checked.
+     *
+     * @throws MzPeakException if the manifest is not valid JSON or does not have the reference's shape
+     */
     public static MzPeakManifest fromSource(MzPeakSource source) {
         try {
+            byte[] bytes = source.readManifestBytes();
+            Strict strict = new Strict(source.describe());
+            strict.rejectDuplicateFields(bytes);
             ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(source.readManifestBytes());
+            JsonNode root = mapper.readTree(bytes);
+            strict.check(root);
             JsonNode filesNode = root.get("files");
-            if (filesNode == null || !filesNode.isArray()) {
-                throw new MzPeakException("mzpeak_index.json has no 'files' array in " + source.describe());
-            }
             List<Entry> entries = new ArrayList<>();
-            for (int i = 0; i < filesNode.size(); i++) {
-                JsonNode f = filesNode.get(i);
-                String name = text(f, "name");
-                if (name == null) {
-                    // both references reject a nameless entry at parse time (Rust FileEntry.name is required)
-                    throw new MzPeakException("mzpeak_index.json files[" + i + "] (" + text(f, "entity_type") + "/"
-                            + text(f, "data_kind") + ") has no name in " + source.describe());
-                }
+            for (JsonNode f : filesNode) {
                 JsonNode mapping = f.get("column_mapping");
-                if (mapping == null || mapping.isNull()) {
+                if (mapping == null) {
                     mapping = f.get("metadata_mapping");
                 }
                 entries.add(new Entry(
-                        name,
+                        text(f, "name"),
                         text(f, "entity_type"),
                         text(f, "data_kind"),
                         parseColumnMapping(mapping),
@@ -303,15 +316,11 @@ public final class MzPeakManifest {
                         text(f, "checksum")));
             }
 
-            // Parse optional metadata block
             JsonNode meta = root.get("metadata");
-            List<ScanSettings> scanSettings = parseScanSettingsList(meta);
-            boolean isImaging = isImagingFlag(meta);
-            String version = meta != null && meta.isObject() ? text(meta, "version") : null;
-            List<CvEntry> cvList = parseCvList(meta);
-
-            return new MzPeakManifest(entries, scanSettings, isImaging, version, cvList,
-                    meta != null && meta.isObject() ? meta : null);
+            JsonNode version = meta.get("version");
+            return new MzPeakManifest(entries, parseScanSettings(meta.get("scan_settings_list")),
+                    isImagingFlag(meta), version != null && version.isTextual() ? version.textValue() : null,
+                    parseCvList(meta), meta);
         } catch (IOException e) {
             throw new MzPeakException("Failed to parse mzpeak_index.json in " + source.describe(), e);
         }
@@ -343,11 +352,6 @@ public final class MzPeakManifest {
     }
 
     // ---- metadata parsing ------------------------------------------------------------------
-
-    private static List<ScanSettings> parseScanSettingsList(JsonNode meta) {
-        if (meta == null || !meta.isObject()) return List.of();
-        return parseScanSettings(meta.get("scan_settings_list"));
-    }
 
     /**
      * Parses a {@code scan_settings_list} document, from the manifest or a footer; anything but an array gives an
@@ -413,11 +417,11 @@ public final class MzPeakManifest {
         return v.asText();
     }
 
+    /** The mapping array of a file entry {@link Strict} accepted, or none if it is absent. */
     private static List<ColumnMapping> parseColumnMapping(JsonNode arr) {
-        if (arr == null || !arr.isArray()) return List.of();
+        if (arr == null) return List.of();
         List<ColumnMapping> out = new ArrayList<>();
         for (JsonNode c : arr) {
-            if (!c.isObject()) continue;
             JsonNode marker = c.get("term_marker");
             JsonNode unit = c.get("unit");
             boolean unitIsPath = unit != null && unit.isArray();
@@ -426,7 +430,7 @@ public final class MzPeakManifest {
                     dottedPath(c.get("path")),
                     text(c, "accession"),
                     unitIsPath ? null : dottedPath(unit),
-                    marker != null && marker.isBoolean() ? Boolean.valueOf(marker.booleanValue()) : null,
+                    marker != null ? Boolean.valueOf(marker.booleanValue()) : null,
                     unitIsPath ? dottedPath(unit) : null));
         }
         return out;
@@ -444,9 +448,8 @@ public final class MzPeakManifest {
     }
 
     private static List<CvEntry> parseCvList(JsonNode meta) {
-        if (meta == null || !meta.isObject()) return List.of();
         JsonNode arr = meta.get("cv_list");
-        if (arr == null || !arr.isArray()) return List.of();
+        if (arr == null) return List.of();
         List<CvEntry> out = new ArrayList<>();
         for (JsonNode cv : arr) {
             out.add(new CvEntry(text(cv, "id"), text(cv, "full_name"), text(cv, "uri"), text(cv, "version")));
@@ -455,9 +458,8 @@ public final class MzPeakManifest {
     }
 
     private static boolean isImagingFlag(JsonNode meta) {
-        if (meta == null || !meta.isObject()) return false;
         JsonNode imaging = meta.get("imaging");
-        if (imaging == null || !imaging.isObject()) return false;
+        if (imaging == null) return false;
         JsonNode flag = imaging.get("is_imaging");
         return flag != null && flag.isBoolean() && flag.asBoolean();
     }
@@ -465,5 +467,318 @@ public final class MzPeakManifest {
     private static String text(JsonNode node, String field) {
         JsonNode v = node.get(field);
         return v == null || v.isNull() ? null : v.asText();
+    }
+
+    // ---- strict validation -----------------------------------------------------------------
+
+    /** The struct levels of the reference manifest and the fields each knows (Rust serde structs). */
+    private enum Level {
+        /** {@code FileIndex}. */
+        ROOT(Set.of("files", "metadata")),
+        /** {@code FileEntry}; {@code metadata_mapping} is the alias of {@code column_mapping}. */
+        ENTRY(Set.of("name", "entity_type", "data_kind", "column_mapping", "parameters", "checksum")),
+        /** {@code MetadataColumn}. */
+        MAPPING(Set.of("name", "path", "accession", "unit", "term_marker")),
+        /** {@code MetaParam}. */
+        PARAM(Set.of("name", "accession", "value", "unit"));
+
+        private final Set<String> fields;
+
+        Level(Set<String> fields) {
+            this.fields = fields;
+        }
+    }
+
+    /**
+     * Checks a manifest against the reference implementation's structs ({@code src/archive/file_index.rs} and
+     * {@code src/param.rs}), so that a manifest the reference refuses is refused here too, with
+     * {@code MzPeakException("mzpeak_index.json <location>: <problem> in <source>")}. The location names the entry
+     * and field, e.g. {@code files[3] (spectra_metadata_scans.parquet).column_mapping[2].path}. Unknown keys are
+     * ignored, as serde does without {@code deny_unknown_fields}; the {@code metadata} documents are checked for
+     * their JSON type only (their content keeps its lenient reader), and {@code metadata.version} not at all.
+     */
+    private static final class Strict {
+
+        /** A CURIE by shape: a prefix and a local part, e.g. {@code MS:1000511}; the CV is not checked. */
+        private static final Pattern CURIE = Pattern.compile("^[A-Za-z][A-Za-z0-9_.-]*:[^\\s:]+$");
+
+        /** The {@code metadata} documents the reference reads as lists. */
+        private static final List<String> METADATA_LISTS = List.of("cv_list", "scan_settings_list",
+                "software_list", "sample_list", "instrument_configuration_list", "data_processing_method_list");
+
+        /** The {@code metadata} documents the reference reads as objects. */
+        private static final List<String> METADATA_OBJECTS = List.of("run", "file_description", "imaging");
+
+        private final String source;
+
+        Strict(String source) {
+            this.source = source;
+        }
+
+        // ---- duplicate fields (streaming) ----
+
+        /** An object or array of a struct level the duplicate check walks into. */
+        private static final class Frame {
+            /** The level of this object, or of the object items of this array. */
+            private final Level level;
+            private final String location;
+            private final boolean array;
+            private final Set<String> seen = new HashSet<>();
+            /** The last field name of this object. */
+            private String field;
+            /** The {@code name} of this file entry, once read. */
+            private String entryName;
+            /** The number of items of this array so far. */
+            private int items;
+
+            Frame(Level level, String location, boolean array) {
+                this.level = level;
+                this.location = location;
+                this.array = array;
+            }
+
+            String location() {
+                return entryName == null ? location : location + " (" + entryName + ")";
+            }
+        }
+
+        /**
+         * Rejects a known field given twice in the same object (serde's "duplicate field"), at the four struct
+         * levels of {@link Level}; {@code column_mapping} and {@code metadata_mapping} count as one field. A JSON
+         * tree keeps the last duplicate silently, so this streams over the bytes. Duplicates of unknown keys and
+         * inside {@code metadata} (a map in the reference, which keeps the last) are accepted, which is why
+         * Jackson's global duplicate detection is not used.
+         */
+        void rejectDuplicateFields(byte[] json) throws IOException {
+            try (JsonParser p = new ObjectMapper().getFactory().createParser(json)) {
+                Deque<Frame> stack = new ArrayDeque<>();
+                JsonToken t;
+                while ((t = p.nextToken()) != null) {
+                    Frame parent = stack.peek();
+                    if (t == JsonToken.FIELD_NAME) {
+                        field(parent, p.currentName());
+                    } else if (t.isStructEnd()) {
+                        stack.pop();
+                    } else {
+                        Frame child = child(parent, t, p);
+                        if (child != null) {
+                            stack.push(child);
+                        } else if (t.isStructStart()) {
+                            p.skipChildren();
+                        }
+                    }
+                }
+            }
+        }
+
+        private void field(Frame object, String name) {
+            object.field = name;
+            String canonical = object.level == Level.ENTRY && name.equals("metadata_mapping")
+                    ? "column_mapping" : name;
+            if (object.level.fields.contains(canonical) && !object.seen.add(canonical)) {
+                throw fail(object.location(), "duplicate field " + canonical);
+            }
+        }
+
+        /** The frame of the value at token {@code t} under {@code parent}, or {@code null} if it is not walked. */
+        private static Frame child(Frame parent, JsonToken t, JsonParser p) throws IOException {
+            if (parent == null) {
+                return t == JsonToken.START_OBJECT ? new Frame(Level.ROOT, "root", false) : null;
+            }
+            if (parent.array) {
+                int index = parent.items++;
+                return t == JsonToken.START_OBJECT
+                        ? new Frame(parent.level, parent.location + "[" + index + "]", false) : null;
+            }
+            if (t == JsonToken.START_ARRAY) {
+                Level items = itemLevel(parent.level, parent.field);
+                if (items == null) {
+                    return null;
+                }
+                return new Frame(items, parent.level == Level.ROOT ? parent.field
+                        : parent.location() + "." + parent.field, true);
+            }
+            if (parent.level == Level.ENTRY && t == JsonToken.VALUE_STRING && parent.field.equals("name")) {
+                parent.entryName = p.getText();
+            }
+            return null;
+        }
+
+        /** The level of the object items of the array in field {@code field} of a {@code level} object. */
+        private static Level itemLevel(Level level, String field) {
+            if (level == Level.ROOT) {
+                return field.equals("files") ? Level.ENTRY : null;
+            }
+            if (level == Level.ENTRY) {
+                return switch (field) {
+                    case "column_mapping", "metadata_mapping" -> Level.MAPPING;
+                    case "parameters" -> Level.PARAM;
+                    default -> null;
+                };
+            }
+            return null;
+        }
+
+        // ---- types (tree) ----
+
+        void check(JsonNode root) {
+            if (!root.isObject()) {
+                throw fail("root", "not an object" + found(root));
+            }
+            JsonNode files = root.get("files");
+            if (files == null) {
+                throw fail("files", "absent");
+            }
+            if (!files.isArray()) {
+                throw fail("files", "not an array" + found(files));
+            }
+            JsonNode meta = root.get("metadata");
+            if (meta == null) {
+                throw fail("metadata", "absent");
+            }
+            if (!meta.isObject()) {
+                throw fail("metadata", "not an object" + found(meta));
+            }
+            for (int i = 0; i < files.size(); i++) {
+                checkEntry(i, files.get(i));
+            }
+            for (String key : METADATA_LISTS) {
+                JsonNode v = meta.get(key);
+                if (v != null && !v.isArray()) {
+                    throw fail("metadata." + key, "not an array" + found(v));
+                }
+            }
+            for (String key : METADATA_OBJECTS) {
+                JsonNode v = meta.get(key);
+                if (v != null && !v.isObject()) {
+                    throw fail("metadata." + key, "not an object" + found(v));
+                }
+            }
+        }
+
+        private void checkEntry(int i, JsonNode f) {
+            String at = "files[" + i + "]";
+            if (!f.isObject()) {
+                throw fail(at, "not an object" + found(f));
+            }
+            String name = string(f, "name");
+            at += " (" + (name != null ? name : string(f, "entity_type") + "/" + string(f, "data_kind")) + ")";
+            requireString(at, f, "name");
+            requireString(at, f, "entity_type");
+            requireString(at, f, "data_kind");
+            String key = f.has("column_mapping") ? "column_mapping" : "metadata_mapping";
+            JsonNode mapping = f.get(key);
+            if (mapping != null) {
+                requireArray(at + "." + key, mapping);
+                for (int j = 0; j < mapping.size(); j++) {
+                    checkMapping(at + "." + key + "[" + j + "]", mapping.get(j));
+                }
+            }
+            JsonNode params = f.get("parameters");
+            if (params != null) {
+                requireArray(at + ".parameters", params);
+                for (int j = 0; j < params.size(); j++) {
+                    checkParam(at + ".parameters[" + j + "]", params.get(j));
+                }
+            }
+            JsonNode checksum = f.get("checksum");
+            if (checksum != null && !checksum.isNull() && !checksum.isTextual()) {
+                throw fail(at + ".checksum", "not a string or null" + found(checksum));
+            }
+        }
+
+        private void checkMapping(String at, JsonNode c) {
+            if (!c.isObject()) {
+                throw fail(at, "not an object" + found(c));
+            }
+            requireString(at, c, "name");
+            JsonNode path = c.get("path");
+            if (path == null) {
+                throw fail(at + ".path", "absent");
+            }
+            if (!path.isTextual() && !isStringArray(path)) {
+                throw fail(at + ".path", "not a string or an array of strings" + found(path));
+            }
+            requireCurieOrNull(at, c, "accession");
+            JsonNode unit = c.get("unit");
+            if (unit != null && !unit.isNull() && !isCurie(unit) && !isStringArray(unit)) {
+                throw fail(at + ".unit", "not a CURIE, null or an array of strings" + found(unit));
+            }
+            JsonNode marker = c.get("term_marker");
+            if (marker != null && !marker.isBoolean()) {
+                throw fail(at + ".term_marker", "not a boolean" + found(marker));
+            }
+        }
+
+        private void checkParam(String at, JsonNode p) {
+            if (!p.isObject()) {
+                throw fail(at, "not an object" + found(p));
+            }
+            JsonNode name = p.get("name");
+            if (name != null && !name.isNull() && !name.isTextual()) {
+                throw fail(at + ".name", "not a string or null" + found(name));
+            }
+            requireCurieOrNull(at, p, "accession");
+            requireCurieOrNull(at, p, "unit");
+        }
+
+        private void requireString(String at, JsonNode object, String field) {
+            JsonNode v = object.get(field);
+            if (v == null) {
+                throw fail(at + "." + field, "absent");
+            }
+            if (!v.isTextual()) {
+                throw fail(at + "." + field, v.isNull() ? "null" : "not a string" + found(v));
+            }
+        }
+
+        private void requireArray(String at, JsonNode v) {
+            if (!v.isArray()) {
+                throw fail(at, "not an array" + found(v));
+            }
+        }
+
+        /** The key is required (serde has no default for it); its value is a CURIE-shaped string or null. */
+        private void requireCurieOrNull(String at, JsonNode object, String field) {
+            JsonNode v = object.get(field);
+            if (v == null) {
+                throw fail(at + "." + field, "absent");
+            }
+            if (!v.isNull() && !isCurie(v)) {
+                throw fail(at + "." + field, "not a CURIE or null" + found(v));
+            }
+        }
+
+        private static boolean isCurie(JsonNode v) {
+            return v.isTextual() && CURIE.matcher(v.textValue()).matches();
+        }
+
+        private static boolean isStringArray(JsonNode v) {
+            if (!v.isArray()) {
+                return false;
+            }
+            for (JsonNode s : v) {
+                if (!s.isTextual()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** The value of {@code field} if it is a JSON string, else {@code null}. */
+        private static String string(JsonNode object, String field) {
+            JsonNode v = object.get(field);
+            return v != null && v.isTextual() ? v.textValue() : null;
+        }
+
+        /** What was found instead: the string itself, or the JSON type. */
+        private static String found(JsonNode v) {
+            return " (found " + (v.isTextual() ? v.toString() : v.getNodeType().name().toLowerCase(Locale.ROOT))
+                    + ")";
+        }
+
+        private MzPeakException fail(String location, String problem) {
+            return new MzPeakException("mzpeak_index.json " + location + ": " + problem + " in " + source);
+        }
     }
 }
