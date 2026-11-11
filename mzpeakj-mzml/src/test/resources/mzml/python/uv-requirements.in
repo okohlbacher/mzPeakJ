@@ -1,0 +1,8 @@
+# Top-level packages of read_mzml.py (JZ-11, PythonMzMLReaderTest); uv-requirements.txt is the lock compiled from this.
+# numpy and pynumpress as pinned in mzpeakj/src/test/resources/mzpeak/golden/uv-requirements.txt; lxml left open, so
+# the lock takes the newest release at compile time.
+pyteomics==5.0.2
+psims==1.4.0
+pynumpress==0.1.5
+numpy==2.5.4
+lxml
