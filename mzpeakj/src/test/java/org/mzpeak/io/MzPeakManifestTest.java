@@ -10,8 +10,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mzpeak.io.MzPeakManifest.ColumnMapping;
-import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.meta.ScanSettings;
 
@@ -20,6 +18,7 @@ import java.io.UncheckedIOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,6 +47,7 @@ class MzPeakManifestTest {
         assertThat(m.metadataJson()).isEqualTo(fixtureIndex().get("metadata"));
     }
 
+    /** A manifest without a {@code files} array is rejected (D-7; until then: "has no 'files' array"). */
     @Test
     void aManifestWithoutAFilesArrayIsRejected() {
         ObjectNode absent = fixtureIndex();
@@ -55,64 +55,64 @@ class MzPeakManifestTest {
         ObjectNode object = fixtureIndex();
         object.putObject("files").put("name", "spectra_data.parquet");
 
-        for (ObjectNode index : List.of(absent, object)) {
-            assertThatThrownBy(() -> parse(index)).isInstanceOf(MzPeakException.class)
-                    .hasMessage("mzpeak_index.json has no 'files' array in " + DESCRIPTION);
-        }
-    }
-
-    /** A {@code column_mapping} of JSON null counts as absent, so its {@code metadata_mapping} alias is read. */
-    @Test
-    void aNullColumnMappingFallsBackToMetadataMapping() {
-        ObjectNode index = fixtureIndex();
-        ObjectNode metadata = rawEntry(index, "spectra_metadata.parquet");
-        metadata.set("metadata_mapping", metadata.get("column_mapping"));
-        metadata.putNull("column_mapping");
-
-        Entry e = entry(parse(index), "spectra_metadata.parquet");
-
-        assertThat(e).isEqualTo(entry(parse(fixtureIndex()), "spectra_metadata.parquet"));
-        assertThat(e.columnMapping()).hasSize(12);
+        assertRejected(absent, "files: absent");
+        assertRejected(object, "files: not an array (found object)");
     }
 
     /**
-     * A {@code column_mapping} or {@code parameters} that is not an array reads as empty; a mapping item that is not
-     * an object is skipped; an absent {@code unit} or {@code path} is {@code null}, and so is a {@code term_marker}
-     * that is not a boolean.
+     * A {@code column_mapping} of JSON null is rejected, also beside its {@code metadata_mapping} alias, as serde
+     * rejects both (D-7). Until then a null mapping counted as absent and the alias was read.
      */
     @Test
-    void malformedEntryPartsAreLeftOut() {
-        ObjectNode index = fixtureIndex();
-        ObjectNode data = rawEntry(index, "spectra_data.parquet");
-        data.putObject("column_mapping").put("path", "mz");
-        data.putObject("parameters").put("name", "label");
-        ArrayNode mapping = rawEntry(index, "spectra_metadata_scans.parquet").putArray("column_mapping");
-        mapping.add("scan_start_time");
-        mapping.add(1);
-        mapping.addNull();
-        mapping.addArray().add("scan_start_time");
-        mapping.addObject().put("name", "scan start time").put("path", "scan_start_time")
-                .put("accession", "MS:1000016");
-        mapping.addObject().put("name", "filter string").putNull("path").put("accession", "MS:1000512")
-                .putNull("unit").putNull("term_marker");
-        mapping.addObject().put("name", "preset scan configuration").put("accession", "MS:1000616")
-                .put("term_marker", "true");
+    void aNullColumnMappingIsRejected() {
+        ObjectNode alone = fixtureIndex();
+        rawEntry(alone, "spectra_metadata.parquet").putNull("column_mapping");
+        ObjectNode withAlias = fixtureIndex();
+        ObjectNode metadata = rawEntry(withAlias, "spectra_metadata.parquet");
+        metadata.set("metadata_mapping", metadata.get("column_mapping"));
+        metadata.putNull("column_mapping");
 
-        MzPeakManifest m = parse(index);
-
-        Entry e = entry(m, "spectra_data.parquet");
-        assertThat(e.columnMapping()).isEmpty();
-        assertThat(e.parameters()).isEmpty();
-        assertThat(entry(m, "spectra_metadata_scans.parquet").columnMapping()).containsExactly(
-                new ColumnMapping("scan start time", "scan_start_time", "MS:1000016", null, null, null),
-                new ColumnMapping("filter string", null, "MS:1000512", null, null, null),
-                new ColumnMapping("preset scan configuration", null, "MS:1000616", null, null, null));
+        assertRejected(alone, "files[2] (spectra_metadata.parquet).column_mapping: not an array (found null)");
+        assertRejected(withAlias, "files[2] (spectra_metadata.parquet): duplicate field column_mapping");
     }
 
-    /** A {@code metadata} that is absent or not an object yields no version, CVs, scan settings or imaging flag. */
+    /**
+     * Malformed entry parts are rejected with their location (D-7): a {@code column_mapping} or {@code parameters}
+     * that is not an array, a mapping item that is not an object, a {@code path} that is null or absent and a
+     * {@code term_marker} that is not a boolean. Until then they read as empty, were skipped or read as null.
+     */
+    @Test
+    void malformedEntryPartsAreRejected() {
+        String data = "files[0] (spectra_data.parquet)";
+        String scans = "files[3] (spectra_metadata_scans.parquet).column_mapping[0]";
+        assertRejected(editedEntry("spectra_data.parquet", e -> e.putObject("column_mapping").put("path", "mz")),
+                data + ".column_mapping: not an array (found object)");
+        assertRejected(editedEntry("spectra_data.parquet", e -> e.putObject("parameters").put("name", "label")),
+                data + ".parameters: not an array (found object)");
+        assertRejected(editedEntry("spectra_metadata_scans.parquet",
+                        e -> e.putArray("column_mapping").add("scan_start_time")),
+                scans + ": not an object (found \"scan_start_time\")");
+        assertRejected(editedEntry("spectra_metadata_scans.parquet",
+                        e -> e.putArray("column_mapping").addObject().put("name", "filter string").putNull("path")
+                                .put("accession", "MS:1000512")),
+                scans + ".path: not a string or an array of strings (found null)");
+        assertRejected(editedEntry("spectra_metadata_scans.parquet",
+                        e -> e.putArray("column_mapping").addObject().put("name", "preset scan configuration")
+                                .put("accession", "MS:1000616").put("term_marker", "true")),
+                scans + ".path: absent");
+        assertRejected(editedEntry("spectra_metadata_scans.parquet",
+                        e -> e.putArray("column_mapping").addObject().put("name", "preset scan configuration")
+                                .put("path", "preset").put("accession", "MS:1000616").put("term_marker", "true")),
+                scans + ".term_marker: not a boolean (found \"true\")");
+    }
+
+    /**
+     * A {@code metadata} that is absent or not an object is rejected (D-7: Rust {@code FileIndex.metadata} is a
+     * required map). Until then it yielded no version, CVs, scan settings or imaging flag.
+     */
     @ParameterizedTest(name = "metadata = {0}")
     @ValueSource(strings = {"absent", "null", "[]", "\"0.9.0\"", "1"})
-    void metadataThatIsNotAnObjectIsIgnored(String metadata) {
+    void metadataThatIsNotAnObjectIsRejected(String metadata) {
         ObjectNode index = fixtureIndex();
         if (metadata.equals("absent")) {
             index.remove("metadata");
@@ -120,30 +120,25 @@ class MzPeakManifestTest {
             index.set("metadata", json(metadata));
         }
 
-        MzPeakManifest m = parse(index);
-
-        assertThat(m.files()).isEqualTo(parse(fixtureIndex()).files());
-        assertThat(m.version()).isNull();
-        assertThat(m.cvList()).isEmpty();
-        assertThat(m.scanSettingsList()).isEmpty();
-        assertThat(m.isImaging()).isFalse();
-        assertThat(m.metadataJson()).isNull();
+        assertRejected(index, "metadata: " + switch (metadata) {
+            case "absent" -> "absent";
+            case "null" -> "not an object (found null)";
+            case "[]" -> "not an object (found array)";
+            case "1" -> "not an object (found number)";
+            default -> "not an object (found " + metadata + ")";
+        });
     }
 
-    /** A {@code scan_settings_list} or {@code cv_list} that is not an array reads as empty. */
+    /** A {@code scan_settings_list} or {@code cv_list} that is not an array is rejected (D-7; it read as empty). */
     @Test
-    void metadataListsThatAreNotArraysAreEmpty() {
-        ObjectNode index = fixtureIndex();
-        ObjectNode metadata = (ObjectNode) index.get("metadata");
-        metadata.putObject("scan_settings_list").put("id", "settings");
-        metadata.putObject("cv_list").put("id", "MS");
+    void metadataListsThatAreNotArraysAreRejected() {
+        ObjectNode settings = fixtureIndex();
+        ((ObjectNode) settings.get("metadata")).putObject("scan_settings_list").put("id", "settings");
+        ObjectNode cvs = fixtureIndex();
+        ((ObjectNode) cvs.get("metadata")).putObject("cv_list").put("id", "MS");
 
-        MzPeakManifest m = parse(index);
-
-        assertThat(m.scanSettingsList()).isEmpty();
-        assertThat(m.cvList()).isEmpty();
-        assertThat(m.version()).isEqualTo("0.9.0");
-        assertThat(m.metadataJson()).isEqualTo(metadata);
+        assertRejected(settings, "metadata.scan_settings_list: not an array (found object)");
+        assertRejected(cvs, "metadata.cv_list: not an array (found object)");
     }
 
     /**
@@ -236,7 +231,6 @@ class MzPeakManifestTest {
 
     static Stream<Arguments> imagingFlags() {
         return Stream.of(
-                Arguments.of("true", false),
                 Arguments.of("{}", false),
                 Arguments.of("{\"is_imaging\": null}", false),
                 Arguments.of("{\"is_imaging\": \"true\"}", false),
@@ -252,6 +246,15 @@ class MzPeakManifestTest {
         ((ObjectNode) index.get("metadata")).set("imaging", json(imaging));
 
         assertThat(parse(index).isImaging()).isEqualTo(expected);
+    }
+
+    /** An {@code imaging} that is not an object is rejected (D-7; it read as not imaging before). */
+    @Test
+    void anImagingThatIsNotAnObjectIsRejected() {
+        ObjectNode index = fixtureIndex();
+        ((ObjectNode) index.get("metadata")).put("imaging", true);
+
+        assertRejected(index, "metadata.imaging: not an object (found boolean)");
     }
 
     /** The reader reports a dataset as imaging when the manifest flag is set, even without scan settings. */
@@ -277,6 +280,18 @@ class MzPeakManifestTest {
     }
 
     // ---- helpers ---------------------------------------------------------------------------
+
+    private static void assertRejected(ObjectNode index, String locationAndProblem) {
+        assertThatThrownBy(() -> parse(index)).isInstanceOf(MzPeakException.class)
+                .hasMessage("mzpeak_index.json " + locationAndProblem + " in " + DESCRIPTION);
+    }
+
+    /** A fresh copy of the fixture manifest with the entry {@code fileName} edited by {@code edit}. */
+    private static ObjectNode editedEntry(String fileName, Consumer<ObjectNode> edit) {
+        ObjectNode index = fixtureIndex();
+        edit.accept(rawEntry(index, fileName));
+        return index;
+    }
 
     /** A fresh, editable copy of the vendored {@code small.unpacked.mzpeak} manifest. */
     private static ObjectNode fixtureIndex() {
@@ -317,10 +332,5 @@ class MzPeakManifestTest {
             }
         }
         throw new AssertionError("no manifest entry " + fileName);
-    }
-
-    private static Entry entry(MzPeakManifest manifest, String fileName) {
-        return manifest.files().stream().filter(e -> fileName.equals(e.name())).findFirst()
-                .orElseThrow(() -> new AssertionError("no manifest entry " + fileName));
     }
 }

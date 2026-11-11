@@ -67,6 +67,16 @@ class FooterMetadataReaderTest {
         assertThat(FooterMetadataReader.scanSettings(null, () -> Map.of("scan_settings_list", " "))).isEmpty();
     }
 
+    /**
+     * A footer {@code scan_settings_list} that is not an array reads as empty: the footer documents keep their
+     * lenient reader, while the manifest rejects such a list (D-7).
+     */
+    @Test
+    void aFooterScanSettingsListThatIsNotAnArrayIsEmpty() {
+        assertThat(FooterMetadataReader.scanSettings(null,
+                () -> Map.of("scan_settings_list", "{\"id\": \"settings\"}"))).isEmpty();
+    }
+
     /** An index run that lacks any one field reads the footer once and takes only that field from its run. */
     @ParameterizedTest(name = "without {0}")
     @ValueSource(strings = {"id", "default_instrument_id", "default_data_processing_id", "default_source_file_id"})

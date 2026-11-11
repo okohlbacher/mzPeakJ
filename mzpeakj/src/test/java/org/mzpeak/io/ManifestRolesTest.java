@@ -284,7 +284,7 @@ class ManifestRolesTest {
             }
         });
         assertThat(position[0]).as(member).isNotNegative();
-        String expected = "mzpeak_index.json files[" + position[0] + "] (" + role[0] + ") has no name in ";
+        String expected = "mzpeak_index.json files[" + position[0] + "] (" + role[0] + ").name: absent in ";
 
         try (MzPeakSource source = MzPeakSource.open(dir)) {
             assertThatThrownBy(() -> MzPeakManifest.fromSource(source))

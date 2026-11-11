@@ -357,6 +357,7 @@ class WriterManifestConformanceTest {
 
         ObjectNode root = MAPPER.createObjectNode();
         root.set("files", files);
+        root.putObject("metadata"); // required since D-7, as in the reference
         Files.write(dir.resolve(INDEX), MAPPER.writeValueAsBytes(root));
         try (MzPeakSource source = MzPeakSource.open(dir)) {
             List<ColumnMapping> back = MzPeakManifest.fromSource(source).files().get(0).columnMapping();

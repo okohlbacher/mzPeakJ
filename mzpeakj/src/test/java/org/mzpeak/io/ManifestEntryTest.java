@@ -191,6 +191,10 @@ class ManifestEntryTest {
         assertThat(parsedTarget.unitPath()).isNull();
     }
 
+    /**
+     * A parameter's {@code unit} key is required (Rust {@code MetaParam.unit}, D-7); when it is null, the pin-era
+     * {@code unit_accession} beside it is read. A {@code unit_accession} without a {@code unit} key is rejected.
+     */
     @Test
     void parametersReadUnitElseUnitAccession(@TempDir Path tmp) throws IOException {
         Path copy = copyDataset(Fixtures.current("small.unpacked.mzpeak"), tmp);
@@ -199,18 +203,19 @@ class ManifestEntryTest {
         params.addObject().put("name", "scan start time").put("accession", "MS:1000016")
                 .put("value", 1.5).put("unit", "UO:0000031");
         params.addObject().put("name", "label").putNull("accession")
-                .put("value", "x").put("unit_accession", "UO:0000010");
+                .put("value", "x").putNull("unit").put("unit_accession", "UO:0000010");
         params.addObject().put("name", "both").putNull("accession")
                 .put("value", true).put("unit", "UO:0000031").put("unit_accession", "UO:0000010");
         params.addObject().put("name", "neither").putNull("accession").putNull("value").putNull("unit");
-        params.addObject().put("name", "serial").putNull("accession").put("value", "00123");
-        params.addObject().put("name", "version").putNull("accession").put("value", "1.10");
-        params.addObject().put("name", "suffix").putNull("accession").put("value", "5f");
-        params.addObject().put("name", "nan").putNull("accession").put("value", "NaN");
-        params.addObject().put("name", "count").putNull("accession").put("value", 42);
-        params.addObject().put("name", "list").putNull("accession").putArray("value").add(1).add("a");
-        params.addObject().put("name", "object").putNull("accession").putObject("value").put("k", "v");
-        params.addObject().put("name", "absent").putNull("accession");
+        params.addObject().put("name", "serial").putNull("accession").put("value", "00123").putNull("unit");
+        params.addObject().put("name", "version").putNull("accession").put("value", "1.10").putNull("unit");
+        params.addObject().put("name", "suffix").putNull("accession").put("value", "5f").putNull("unit");
+        params.addObject().put("name", "nan").putNull("accession").put("value", "NaN").putNull("unit");
+        params.addObject().put("name", "count").putNull("accession").put("value", 42).putNull("unit");
+        params.addObject().put("name", "list").putNull("accession").putNull("unit").putArray("value").add(1).add("a");
+        params.addObject().put("name", "object").putNull("accession").putNull("unit").putObject("value")
+                .put("k", "v");
+        params.addObject().put("name", "absent").putNull("accession").putNull("unit");
         writeIndex(copy, index);
 
         Entry e = entry(manifest(copy), "spectra_data.parquet");
@@ -228,6 +233,11 @@ class ManifestEntryTest {
                 new Param("list", null, "[1,\"a\"]", null),
                 new Param("object", null, "{\"k\":\"v\"}", null),
                 new Param("absent", null, null, null));
+
+        ((ObjectNode) params.get(1)).remove("unit");
+        writeIndex(copy, index);
+        assertThatThrownBy(() -> manifest(copy)).isInstanceOf(MzPeakException.class).hasMessage(
+                "mzpeak_index.json files[0] (spectra_data.parquet).parameters[1].unit: absent in " + copy);
     }
 
     @Test

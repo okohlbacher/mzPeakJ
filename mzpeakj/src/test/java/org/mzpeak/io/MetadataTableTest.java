@@ -382,7 +382,7 @@ class MetadataTableTest {
         chromatogram.addGroup("chromatogram").append("index", true);
         write("packed_chromatograms.parquet", chromatograms, chromatogram);
         Files.writeString(tmp.resolve("mzpeak_index.json"), "{\"files\": [{\"name\": \"packed_spectra.parquet\","
-                + " \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}]}");
+                + " \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}], \"metadata\": {}}");
 
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(src);
@@ -415,7 +415,7 @@ class MetadataTableTest {
         spectrum.addGroup("spectrum").append("index", true).append("MS_1000511_ms_level", 2);
         write("packed_spectra.parquet", spectra, spectrum);
         Files.writeString(tmp.resolve("mzpeak_index.json"), "{\"files\": [{\"name\": \"packed_spectra.parquet\","
-                + " \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}]}");
+                + " \"entity_type\": \"spectrum\", \"data_kind\": \"metadata\"}], \"metadata\": {}}");
 
         try (MzPeakSource src = MzPeakSource.open(tmp)) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(src);
