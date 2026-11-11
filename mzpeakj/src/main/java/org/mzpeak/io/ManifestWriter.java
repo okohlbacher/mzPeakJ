@@ -1,5 +1,7 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.core.util.DefaultIndenter;
+import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -42,6 +44,14 @@ final class ManifestWriter {
 
     /** The manifest keys whose values are CURIEs: the accessions and units of params and column mappings. */
     private static final List<String> CURIE_KEYS = List.of("accession", "unit", "unit_accession");
+
+    /**
+     * Jackson's default pretty printer with {@code "\n"} as the line feed of its object indenter, which by default
+     * follows the {@code line.separator} property; the array indenter is a single space and has no line feed. So
+     * the manifest bytes are the same on every platform.
+     */
+    private static final DefaultPrettyPrinter PRETTY_PRINTER = new DefaultPrettyPrinter()
+            .withObjectIndenter(DefaultIndenter.SYSTEM_LINEFEED_INSTANCE.withLinefeed("\n"));
 
     /**
      * How the manifest spells the roles of its members and the scan settings (design §11.4). Both dialects write the
@@ -113,7 +123,7 @@ final class ManifestWriter {
         for (CvEntry cv : KnownCvs.declare(used, plan.options().cvList(), plan.report())) {
             addCvEntry(cvList, cv);
         }
-        Files.write(directory.resolve(INDEX), mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(root));
+        Files.write(directory.resolve(INDEX), mapper.writer(PRETTY_PRINTER).writeValueAsBytes(root));
     }
 
     /**

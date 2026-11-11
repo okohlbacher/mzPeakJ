@@ -362,7 +362,7 @@ class WriterSnapshotTest {
      * next, and with it the footer bytes and the SHA-512 of every Parquet member. The Parquet members are pinned by
      * their content digests, and {@link WriterManifestConformanceTest} checks every checksum against its member.
      */
-    private static ContentDigest maskedIndex(Path out) {
+    static ContentDigest maskedIndex(Path out) {
         byte[] bytes;
         try (MzPeakSource source = MzPeakSource.open(out)) {
             bytes = source.readManifestBytes();
