@@ -96,8 +96,8 @@ class MzMLWriterSpectraTest {
     static Stream<Arguments> fixtures() {
         Map<Exclusion, Integer> dia = counts(ModelAssert.A_2, 1, ModelAssert.A_7, 9, ModelAssert.A_8, 1,
                 ModelAssert.A_18, 1);
-        Map<Exclusion, Integer> legacySmall = counts(ModelAssert.A_7, 48, ModelAssert.A_9, 48, ModelAssert.A_16, 48,
-                ModelAssert.A_17, 1);
+        // No A-16 for the legacy fixtures since V-17 (D-9a): their spectra read with their stored spectrum type.
+        Map<Exclusion, Integer> legacySmall = counts(ModelAssert.A_7, 48, ModelAssert.A_9, 48, ModelAssert.A_17, 1);
         Map<Exclusion, Integer> legacyChunked = new LinkedHashMap<>(legacySmall);
         legacyChunked.put(ModelAssert.A_1, 14);
         return Stream.of(
@@ -114,7 +114,7 @@ class MzMLWriterSpectraTest {
                 fixture("legacy", "small.numpress.mzpeak", legacySmall),
                 fixture("legacy", "small.unpacked.mzpeak", legacySmall),
                 fixture("legacy", "has_uv.mzpeak", counts(ModelAssert.A_7, 212 + 520, ModelAssert.A_9, 211,
-                        ModelAssert.A_16, 212, ModelAssert.A_17, 1)));
+                        ModelAssert.A_17, 1)));
     }
 
     @ParameterizedTest(name = "{0}")

@@ -77,8 +77,8 @@ final class SpectrumSummary {
     }
 
     /**
-     * Append the derived spectrum columns (observed m/z range, base peak, TIC), each of {@code v}, the values
-     * {@link #derive} gives for the spectrum, that is present.
+     * Append the packed spectrum summary columns (observed m/z range, base peak, TIC), each of {@code v} that is
+     * present: the values {@link #derive} gives for the spectrum, or those its Params hold.
      */
     static void writeDerivedColumns(Group spectrum, Values v) {
         addIfPresent(spectrum, "MS_1000528_lowest_observed_mz_unit_MS_1000040", v.lowestMz());

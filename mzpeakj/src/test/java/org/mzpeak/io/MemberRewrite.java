@@ -101,7 +101,8 @@ final class MemberRewrite {
         return fill.apply(out);
     }
 
-    private static void copyInto(Group from, Group to, String skip) {
+    /** Copies each field of {@code from} whose name is not {@code skip} into {@code to}, recursively. */
+    static void copyInto(Group from, Group to, String skip) {
         GroupType type = from.getType();
         for (int f = 0; f < type.getFieldCount(); f++) {
             Type field = type.getType(f);

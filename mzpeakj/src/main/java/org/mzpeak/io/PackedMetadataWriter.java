@@ -10,9 +10,11 @@ import org.apache.parquet.schema.Types;
 import org.mzpeak.io.ManifestWriter.Dialect;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.SplitMetadataWriter.Promotion;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
@@ -36,6 +38,7 @@ import static org.mzpeak.io.ParquetOutput.paramListField;
 import static org.mzpeak.io.ParquetOutput.scanWindowListField;
 import static org.mzpeak.io.ParquetOutput.writeParams;
 import static org.mzpeak.io.SpectrumSummary.writeDerivedColumns;
+import static org.mzpeak.io.SplitMetadataWriter.termOf;
 
 /**
  * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
@@ -186,8 +189,20 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                     spectrum.add("MS_1000465_scan_polarity", polarity);
                 }
                 spectrum.add("MS_1000525_spectrum_representation", continuityCurie(d));
-                spectrum.add("MS_1000559_spectrum_type", d.msLevel() > 1 ? "MS:1000580" : "MS:1000579");
-                writeDerivedColumns(spectrum, entry.summary());
+                // The spectrum type and the summary values as the split writer writes them (V-17): a Param the
+                // reader rebuilds from its column moves there and leaves the parameters list; the type is derived
+                // from the MS level only when the Params have none, the summary values only when they have none of
+                // the five.
+                Promotion params = new Promotion(d.parameters());
+                Param type = params.promote(termOf(SpectrumSummary.SPECTRUM_TYPES));
+                if (type != null) {
+                    spectrum.add("MS_1000559_spectrum_type", type.accession());
+                } else if (!params.hasAny(SpectrumSummary.SPECTRUM_TYPES)) {
+                    spectrum.add("MS_1000559_spectrum_type", SpectrumSummary.spectrumType(d.msLevel()));
+                }
+                List<Double> summary = SplitMetadataWriter.summary(entry.summary(), params);
+                writeDerivedColumns(spectrum, new SpectrumSummary.Values(summary.get(0), summary.get(1),
+                        summary.get(2), summary.get(3), summary.get(4)));
                 // Each count is the rows written to its file, and only for a file the spectrum is written to; a
                 // spectrum may go to both spectra_data and spectra_peaks, so both counts can be present.
                 if (entry.data()) {
@@ -196,7 +211,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 if (entry.peaks()) {
                     spectrum.add("MS_1003059_number_of_peaks", (long) entry.peakRows());
                 }
-                writeParams(spectrum, d.parameters());
+                writeParams(spectrum, params.rest());
 
                 ScanEvent firstScan = d.scans().isEmpty() ? null : d.scans().get(0);
                 populateScan(row.addGroup("scan"), entry.sourceIndex(), scanIndexCounter++, d.retentionTime(),

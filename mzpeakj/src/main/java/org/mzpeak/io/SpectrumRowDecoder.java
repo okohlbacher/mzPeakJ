@@ -36,8 +36,8 @@ final class SpectrumRowDecoder {
 
     /**
      * Decodes the spectrum row whose (non-negative) {@code index} is {@code idx}. Its Params are the
-     * {@code parameters} list, then the row's leftovers ({@link ColumnResolver#leftovers}, split layout only): its
-     * scalar columns that none of the fields below is read from, such as the summary columns and the
+     * {@code parameters} list, then the row's leftovers ({@link ColumnResolver#leftoversInBothLayouts}, in the packed
+     * layout too): its scalar columns that none of the fields below is read from, such as the summary columns and the
      * {@code spectrum_type} term marker. A column wins over a list entry of the same accession: such an entry is
      * dropped, as {@link PrecursorRowDecoder} does for the activation.
      */
@@ -61,7 +61,7 @@ final class SpectrumRowDecoder {
         b.numberOfPeaks = nPeaks == null ? 0 : nPeaks;
         b.spectrumParams = columns.params(g);
         b.mzDeltaModel = deltaModel(columns, g, consumed);
-        List<Param> leftovers = columns.leftovers(g, consumed);
+        List<Param> leftovers = columns.leftoversInBothLayouts(g, consumed);
         if (!leftovers.isEmpty()) {
             Set<String> columnAccessions = new HashSet<>();
             for (Param p : leftovers) {

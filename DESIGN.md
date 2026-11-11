@@ -235,9 +235,12 @@ precursor.
 `PackedMetadataReader` reads the four structs in one pass and feeds the same assembler (§2.3). The columns
 have no `column_mapping`; they are resolved by accession through the `ColumnTable` fallbacks, which hold the
 pin-era names such as `MS_1000511_ms_level`, `MS_1000525_spectrum_representation` or
-`isolation_window.MS_1000827_isolation_window_target_mz`. Packed scopes yield no leftovers: the legacy writer
-writes derived summary columns next to the `parameters` list, so leftovers would duplicate Params across a
-read–write–read cycle. The legacy delta model is `mz_delta_model` (§4.1).
+`isolation_window.MS_1000827_isolation_window_target_mz`. The packed `spectrum` struct yields its leftovers like
+a split table (V-17, D-9a): the `spectrum_type` marker and the summary columns become Params. The packed writer
+therefore treats them as the split writer does: a spectrum type or summary Param goes to its column and leaves the
+`parameters` list, and the type and summaries are derived only when the Params have none, so a read–write–read
+cycle keeps the Params as they are. The other packed scopes (scan, precursor, selected ion) yield no leftovers.
+The legacy delta model is `mz_delta_model` (§4.1).
 
 Legacy chromatogram metadata has the structs `chromatogram`, `precursor` and `selected_ion`; legacy
 wavelength-spectrum metadata has `spectrum` and `scan`.

@@ -301,8 +301,6 @@ class SplitSpectrumMetadataTest {
                 assertThat(currentHeader.subList(0, params)).as("spectrum %d", ld.index())
                         .isEqualTo(legacyHeader.subList(0, params));
                 assertThat(cd.parameters()).as("spectrum %d parameters", ld.index())
-                        .hasSizeGreaterThan(ld.parameters().size());
-                assertThat(cd.parameters().subList(0, ld.parameters().size())).as("spectrum %d parameters", ld.index())
                         .isEqualTo(ld.parameters());
 
                 assertThat(cd.scans()).hasSameSizeAs(ld.scans()).isNotEmpty();

@@ -467,9 +467,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     /**
      * The five summary values of a spectrum, in {@link #SUMMARY} order, each {@code null} when absent: {@code v},
      * those derived from its payload, when its Params have none of the five, else the Params promoted to their
-     * columns.
+     * columns. {@link PackedMetadataWriter} writes its summary columns by the same rule.
      */
-    private static List<Double> summary(SpectrumSummary.Values v, Promotion params) {
+    static List<Double> summary(SpectrumSummary.Values v, Promotion params) {
         if (!params.hasAny(SUMMARY_ACCESSIONS)) {
             return Arrays.asList(v.lowestMz(), v.highestMz(), v.basePeakMz(), v.basePeakIntensity(), v.tic());
         }
@@ -813,7 +813,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * is ever both a column and a parameter of the scope, except a {@link #mirror mirrored} one, which the reference
      * writes in both.
      */
-    private static final class Promotion {
+    static final class Promotion {
 
         private final List<Param> params;
         private final boolean[] promoted;
@@ -887,7 +887,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * A term the reader rebuilds from a term-marker cell as {@code Param(name, cell)}: one of {@code terms}, without
      * value or unit.
      */
-    private static Predicate<Param> termOf(Collection<String> terms) {
+    static Predicate<Param> termOf(Collection<String> terms) {
         return p -> terms.contains(p.accession()) && p.value() == null && p.unit() == null;
     }
 

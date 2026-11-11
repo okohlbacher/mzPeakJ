@@ -19,7 +19,6 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
-import org.mzpeak.mzml.ModelAssert.Exclusion;
 import org.mzpeak.mzml.ModelAssert.Model;
 
 import java.io.IOException;
@@ -36,7 +35,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -49,9 +47,9 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * <ul>
  *   <li><b>mzPeak fixtures</b> (all 13, zlib): m1 = toMzML(F), p2 = toMzPeak(m1), m2 = toMzML(p2), p3 = toMzPeak(m2),
  *       m3 = toMzML(p3). m2 and m3 are byte-identical and p2, p3 have equal {@link ContentDigest}s per member, for
- *       every F; the 8 current fixtures are normal already (m1 = m2 byte for byte); the 5 legacy ones gain exactly the
- *       five summary params per spectrum in p2 (A-16), the only difference between the models {@link MzMLReader} reads
- *       from m1 and m2.
+ *       every F; all 13 are normal already (m1 = m2 byte for byte). The 5 legacy ones are since V-17 (D-9a): their
+ *       spectra read with their stored spectrum type and five summary params, which m1 carries, so p2 derives none
+ *       (before, p2 gained the five summary params per spectrum, A-16).
  *   <li><b>mzML fixtures</b> (the 4 vendored ones): q1 = toMzPeak(X), m1 = toMzML(q1), q2 = toMzPeak(m1),
  *       m2 = toMzML(q2): m1 and m2 are byte-identical and q1, q2 have equal content digests; diaPASEF's m1 keeps
  *       exactly MS:1000505 and MS:1000285 of the five summary params, with the source values; tiny's run start time is
@@ -68,16 +66,6 @@ class MzMLFixpointTest {
 
     /** A member checksum in the manifest with its value. */
     private static final Pattern CHECKSUM = Pattern.compile("\"checksum\" : \"[0-9a-f]+\"");
-
-    private static final Pattern SPECTRUM_PARAM =Pattern.compile("spectrum\\[\\d+]\\.parameters\\[(.+)]");
-
-    /**
-     * A-16 narrowed to the summary params: a difference A-16 hides whose path names one of the five, so that a gained
-     * spectrum type (which m1 already carries) is not hidden.
-     */
-    private static final Exclusion A_16_SUMMARIES = new Exclusion("A_16_SUMMARIES",
-            "A-16 for the five summary params only: legacy small* 48 x 5, legacy has_uv 212 x 5",
-            d -> summaryPath(d.path()) && ModelAssert.A_16.hides().test(d));
 
     /** tiny's run start time, without zone, and as jmzML writes it under UTC (A-26). */
     private static final String TINY_START = "2007-06-27T15:23:45.00035";
@@ -131,19 +119,13 @@ class MzMLFixpointTest {
 
         assertThat(Files.readAllBytes(m3)).as(name + ": m3 = m2").isEqualTo(Files.readAllBytes(m2));
         assertThat(digests(p3)).as(name + ": p3 = p2").isEqualTo(digests(p2));
-        if (!legacy) {
-            assertThat(Files.readAllBytes(m2)).as(name + ": m2 = m1").isEqualTo(Files.readAllBytes(m1));
-            return;
+        assertThat(Files.readAllBytes(m2)).as(name + ": m2 = m1").isEqualTo(Files.readAllBytes(m1));
+        if (legacy) {
+            List<Spectrum> first = mzmlModel(m1).spectrumList();
+            assertThat(first.size()).isIn(48, 212);
+            assertThat(first).allSatisfy(s -> assertThat(summaries(s)).extracting(Param::accession)
+                    .containsExactly("MS:1000528", "MS:1000527", "MS:1000504", "MS:1000505", "MS:1000285"));
         }
-        assertThat(Files.readAllBytes(m2)).as(name + ": m2 differs from m1").isNotEqualTo(Files.readAllBytes(m1));
-        Model first = mzmlModel(m1);
-        int spectra = first.spectrumList().size();
-        assertThat(spectra).isIn(48, 212);
-        assertThat(first.spectrumList()).allSatisfy(s -> assertThat(s.description().parameters())
-                .extracting(Param::accession).doesNotContainAnyElementsOf(SUMMARIES));
-        ModelAssert.Result result = ModelAssert.assertEqual(name + ": m1 vs m2", first, mzmlModel(m2), STRICT,
-                A_16_SUMMARIES);
-        assertThat(result.hidden()).isEqualTo(Map.of("A_16_SUMMARIES", 5 * spectra));
     }
 
     /** The 4 vendored mzML fixtures. */
@@ -202,12 +184,6 @@ class MzMLFixpointTest {
     /** The params of {@code s} that are summary params, in order. */
     private static List<Param> summaries(Spectrum s) {
         return s.description().parameters().stream().filter(p -> p.accession() != null && SUMMARIES.contains(p.accession())).toList();
-    }
-
-    /** Whether {@code path} names spectrum params of one of the five summary accessions. */
-    private static boolean summaryPath(String path) {
-        Matcher m = SPECTRUM_PARAM.matcher(path);
-        return m.matches() && SUMMARIES.contains(m.group(1));
     }
 
     /**

@@ -25,6 +25,7 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.IsolationWindow;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
@@ -194,6 +195,47 @@ class PackedSpectrumMetadataCharacterizationTest {
                 "3|␀|0|NaN|UNKNOWN|UNKNOWN|0|0|[]|[]|[]",
                 "4|␀|0|NaN|UNKNOWN|UNKNOWN|0|0|[]|[]|[]");
         assertThat(decoded.deltaModels()).isEmpty();
+    }
+
+    /**
+     * D-9a: a packed spectrum struct's unconsumed scalar columns are Params, as the split read gives them. For each
+     * of the 48 spectra of legacy small.unpacked, the Params with one of the six accessions below are those of
+     * current small.unpacked's spectrum with the same index: same name, accession and unit, and the value compared
+     * as float, since the legacy base peak intensity and total ion current columns are FLOAT (float32) where the
+     * current ones are DOUBLE (the other summary columns are DOUBLE in both).
+     */
+    @Test
+    void packedSpectrumLeftoversMatchTheSplitRead() {
+        Set<String> accessions = Set.of("MS:1000579", "MS:1000580", "MS:1000528", "MS:1000527", "MS:1000504",
+                "MS:1000505", "MS:1000285");
+        try (MzPeakReader legacy = MzPeakReader.open(Fixtures.legacy("small.unpacked.mzpeak"));
+             MzPeakReader current = MzPeakReader.open(Fixtures.current("small.unpacked.mzpeak"))) {
+            assertThat(legacy.size()).isEqualTo(48);
+            for (int i = 0; i < 48; i++) {
+                List<Param> expected = only(current.getMetadata(i).orElseThrow().parameters(), accessions);
+                List<Param> actual = only(legacy.getMetadata(i).orElseThrow().parameters(), accessions);
+                assertThat(expected).as("current spectrum %d", i).hasSize(6);
+                assertThat(actual).as("legacy spectrum %d", i).hasSameSizeAs(expected);
+                for (int k = 0; k < expected.size(); k++) {
+                    Param e = expected.get(k);
+                    Param a = actual.get(k);
+                    assertThat(new Param(a.name(), a.accession(), null, a.unit())).as("spectrum %d param %d", i, k)
+                            .isEqualTo(new Param(e.name(), e.accession(), null, e.unit()));
+                    if (e.value() == null) {
+                        assertThat(a.value()).as("spectrum %d %s", i, e.accession()).isNull();
+                    } else {
+                        assertThat(a.value()).as("spectrum %d %s", i, e.accession()).isInstanceOf(Double.class);
+                        assertThat((float) (double) (Double) a.value()).as("spectrum %d %s", i, e.accession())
+                                .isEqualTo((float) (double) (Double) e.value());
+                    }
+                }
+            }
+        }
+    }
+
+    /** The Params of {@code params} whose accession is one of {@code accessions}, in list order. */
+    private static List<Param> only(List<Param> params, Set<String> accessions) {
+        return params.stream().filter(p -> accessions.contains(p.accession())).toList();
     }
 
     // ---- scan struct -----------------------------------------------------------------------------------------
