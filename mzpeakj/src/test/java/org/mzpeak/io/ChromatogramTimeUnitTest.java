@@ -55,7 +55,7 @@ class ChromatogramTimeUnitTest {
 
     // The digests of the chromatograms of each fixture, taken on the code before V-21.
     private static final String SMALL = "b0c18d39bc9630fe3de04717d552c57fc9a55b3b81769e38b61805b6c4a71857";
-    private static final String NUMPRESS = "95149d8f18461f72ec4776c06de5017803cece5f7dce0df345568dd46cafa1bd";
+    private static final String NUMPRESS = "50e8f5d204e694638b98bef06d7e65f16b4921680805763dd7b32f0ef3d5c0fd";
     private static final String HAS_UV = "0683e1579beb11c7920f004dd1d02b0b81d7cbd352d24ab4d382f63de1b1d7a6";
     private static final String DIA_PASEF = "da9176a14d8c67605f9321d928d9da3620b74e00c2f71f60f7662157c91e341e";
     /** No chromatograms: the SHA-256 of nothing. */
@@ -79,7 +79,8 @@ class ChromatogramTimeUnitTest {
 
     /**
      * Each fixture with chromatograms, the number it has and the SHA-256 of their index, id, time and intensity
-     * values ({@link #digest}).
+     * values ({@link #digest}). The MS-Numpress SLOF intensities of small.numpress are hashed rounded to float32
+     * ({@link SignalSnapshotTest#SLOF_FIXTURES}): their last bit depends on the platform's {@code Math.exp}.
      */
     static Stream<Arguments> fixtures() {
         return Stream.of(
@@ -105,7 +106,8 @@ class ChromatogramTimeUnitTest {
         try (MzPeakReader reader = MzPeakReader.open(fixture)) {
             List<Chromatogram> chromatograms = reader.chromatograms();
             assertThat(chromatograms).hasSize(count);
-            assertThat(digest(chromatograms)).isEqualTo(sha256);
+            boolean slof = SignalSnapshotTest.SLOF_FIXTURES.contains(fixture.getFileName().toString());
+            assertThat(digest(chromatograms, slof)).isEqualTo(sha256);
             assertThat(chromatograms).allSatisfy(c -> assertThat(c.timeUnit()).isEqualTo(MINUTE));
         }
     }
@@ -503,8 +505,11 @@ class ChromatogramTimeUnitTest {
         }
     }
 
-    /** The SHA-256 of the index, id, time and intensity bits of each of {@code chromatograms}, in order. */
-    static String digest(List<Chromatogram> chromatograms) {
+    /**
+     * The SHA-256 of the index, id, time and intensity bits of each of {@code chromatograms}, in order; with
+     * {@code slof} the intensities rounded to float32 ({@link SignalSnapshotTest.SignalDigest#float32}).
+     */
+    static String digest(List<Chromatogram> chromatograms, boolean slof) {
         MessageDigest sha;
         try {
             sha = MessageDigest.getInstance("SHA-256");
@@ -517,7 +522,7 @@ class ChromatogramTimeUnitTest {
             for (double t : c.time()) {
                 buffer.putLong(Double.doubleToRawLongBits(t));
             }
-            for (double v : c.intensity()) {
+            for (double v : slof ? SignalSnapshotTest.SignalDigest.float32(c.intensity()) : c.intensity()) {
                 buffer.putLong(Double.doubleToRawLongBits(v));
             }
             sha.update(buffer.array());
