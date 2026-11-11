@@ -38,7 +38,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * {@code -Dmzpeak.mzml.python=<uv>}, the path of a {@code uv} executable; without it every test is skipped. The
  * Python side is {@code src/test/resources/mzml/python/read_mzml.py} with the pinned requirements of
  * {@code uv-requirements.txt} next to it, run by
- * {@code uv run --no-project --with-requirements uv-requirements.txt python -I read_mzml.py}. pyteomics 5 parses PSI
+ * {@code uv run --no-project --python 3.13.12 --with-requirements uv-requirements.txt python -I read_mzml.py}: the
+ * lock {@code uv-requirements.txt} is compiled with hashes from {@code uv-requirements.in} (see its header) and CPython
+ * 3.13.12 is the golden environment's; {@link PythonEnvPinTest} pins both. pyteomics 5 parses PSI
  * formats only with a psims controlled vocabulary, so psims is pinned too (1.4.0, whose vendored PSI-MS 4.1.258 knows
  * every term the outputs use; 1.3.6's 4.1.172 lacks MS:1003812) and the script hands pyteomics that vendored OBO: no
  * remote OBO. For every spectrum it prints the id, MS level, n and the SHA-256 of the m/z (or wavelength) and
@@ -59,6 +61,8 @@ class PythonMzMLReaderTest {
 
     private static final String PROPERTY = "mzpeak.mzml.python";
     private static final long TIMEOUT_MINUTES = 30;
+    /** The CPython of the golden environment ({@code mzpeakj/src/test/resources/mzpeak/golden/README.md}). */
+    static final String PYTHON = "3.13.12";
 
     private static String uv;
 
@@ -264,9 +268,7 @@ class PythonMzMLReaderTest {
 
     /** Runs read_mzml.py on {@code files} through uv and returns its stdout lines; fails unless it exits with 0. */
     private List<String> run(List<Path> files, boolean values) throws IOException, InterruptedException {
-        Path script = resource("read_mzml.py");
-        List<String> command = new ArrayList<>(List.of(uv, "run", "--no-project", "--with-requirements",
-                resource("uv-requirements.txt").toString(), "python", "-I", script.toString()));
+        List<String> command = command(uv);
         if (values) {
             command.add("--values");
         }
@@ -285,8 +287,14 @@ class PythonMzMLReaderTest {
         return Files.readAllLines(stdout, StandardCharsets.UTF_8);
     }
 
+    /** The command that runs read_mzml.py through {@code uv}, before its options and files. */
+    static List<String> command(String uv) {
+        return new ArrayList<>(List.of(uv, "run", "--no-project", "--python", PYTHON, "--with-requirements",
+                resource("uv-requirements.txt").toString(), "python", "-I", resource("read_mzml.py").toString()));
+    }
+
     /** The file of the class-path resource {@code /mzml/python/<name>}. */
-    private static Path resource(String name) {
+    static Path resource(String name) {
         try {
             return Path.of(PythonMzMLReaderTest.class.getResource("/mzml/python/" + name).toURI());
         } catch (URISyntaxException e) {
