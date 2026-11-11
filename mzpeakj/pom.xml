@@ -34,11 +34,15 @@
     </dependency>
     <!-- parquet-java's classes statically reference Hadoop types, so hadoop-client-api must be on the
          classpath at runtime. It is a single self-contained shaded jar; we never use the Hadoop FileSystem,
-         Configuration, native libs, or any cluster setup. -->
+         Configuration, native libs, or any cluster setup. Its own snappy-java 1.1.10.4 always lost to
+         parquet-hadoop's; excluded so the enforcer floor (which also checks losing versions) passes. -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-client-api</artifactId>
       <version>3.5.0</version>
+      <exclusions>
+        <exclusion><groupId>org.xerial.snappy</groupId><artifactId>snappy-java</artifactId></exclusion>
+      </exclusions>
     </dependency>
 
     <!-- Pure-Java/self-contained-native ZSTD (mzPeak Parquet columns are ZSTD-compressed). Lets us supply

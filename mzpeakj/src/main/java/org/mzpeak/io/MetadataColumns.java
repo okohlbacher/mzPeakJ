@@ -335,8 +335,18 @@ final class MetadataColumns {
         if (!stats.hasNonNullValue()) {
             return new RowGroup(block.getRowCount(), nulls, null, null);
         }
+        // a NaN next to numbers: parquet-java (since 1.18) leaves it out of the bounds and counts it, and bounds that
+        // do not hold for every value are no bounds
+        if (stats.isNanCountSet() && stats.getNanCount() > 0) {
+            return new RowGroup(block.getRowCount(), nulls, null, null);
+        }
         double min = value(stats.genericGetMin(), c, "minimum");
         double max = value(stats.genericGetMax(), c, "maximum");
+        // a NaN bound kept because the footer orders the column by IEEE 754 total order: no bounds, as for the
+        // type-defined order
+        if (Double.isNaN(min) || Double.isNaN(max)) {
+            return new RowGroup(block.getRowCount(), nulls, null, null);
+        }
         return new RowGroup(block.getRowCount(), nulls, min, max);
     }
 
