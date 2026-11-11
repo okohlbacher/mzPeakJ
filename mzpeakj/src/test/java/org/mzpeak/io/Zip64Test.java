@@ -9,15 +9,22 @@ import org.mzpeak.model.Spectrum;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -26,7 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Reads ZIP archives whose end-of-central-directory record defers to a zip64 record (design §9.1). The archives
  * are written here from the members of the legacy {@code small.unpacked.mzpeak}: STORED, without extra fields,
  * the manifest last. A zip64 archive ends with the zip64 end-of-central-directory record, its locator and a
- * classic record whose fields carry the {@code 0xFFFF}/{@code 0xFFFFFFFF} sentinels.
+ * classic record whose fields carry the {@code 0xFFFF}/{@code 0xFFFFFFFF} sentinels. A central directory whose size
+ * does not suit its entry count, or exceeds {@link ZipIndex#MAX_DIRECTORY_BYTES}, is rejected before it is read (F-2).
  *
  * <p>{@code -Dmzpeak.zip64.file=<archive>} additionally opens a real zip64 archive, such as one above 4 GiB, and
  * reads the footer of its spectrum metadata member.
@@ -36,6 +44,8 @@ class Zip64Test {
     private static final Path UNPACKED = Fixtures.legacy("small.unpacked.mzpeak");
     private static final String INDEX = "mzpeak_index.json";
     private static final int SPECTRA = 48;
+    /** The end-of-central-directory search window: the record and the longest comment. */
+    private static final long MAX_TAIL = 22 + 0xFFFF;
 
     @Test
     void zip64EndOfCentralDirectoryReadsLikeTheDirectory(@TempDir Path tmp) throws IOException {
@@ -127,6 +137,78 @@ class Zip64Test {
         assertOpenFails(zip.save(tmp.resolve("entries.mzpeak")), "zip64", "entry count");
     }
 
+    /**
+     * F-2: a zip64 central directory of 100 MiB that lies inside a 3 GiB archive is rejected as too large for its
+     * 1,000 entries before it is read: no read larger than the end-record search window is requested.
+     */
+    @Test
+    void zip64CentralDirectoryOverTheCapIsRejectedBeforeItIsRead() {
+        Tail archive = Tail.zip64(1_000, 100L * 1024 * 1024);
+        assertDirectoryRejected(archive, "corrupt zip: central directory of 104857600 bytes for 1000 entries"
+                + " (allowed 46000..67108864)");
+        assertThat(archive.largestRead).as("largest read").isLessThanOrEqualTo(MAX_TAIL);
+    }
+
+    @Test
+    void zip64CentralDirectoryLargerThanItsEntriesCanBe() {
+        assertDirectoryRejected(Tail.zip64(10, 2_000_000), "corrupt zip: central directory of 2000000 bytes for"
+                + " 10 entries (allowed 460..1966510)");
+    }
+
+    @Test
+    void zip64CentralDirectorySmallerThanItsEntriesCanBe() {
+        assertDirectoryRejected(Tail.zip64(1_000, 45_999), "corrupt zip: central directory of 45999 bytes for"
+                + " 1000 entries (allowed 46000..67108864)");
+    }
+
+    @Test
+    void zip64EntryCountWhoseLowerBoundOverflows() {
+        long entries = 1L << 62;
+        assertDirectoryRejected(Tail.zip64(entries, 1024 * 1024), "corrupt zip: central directory of 1048576 bytes"
+                + " for " + entries + " entries (allowed 9223372036854775807..67108864)");
+    }
+
+    @Test
+    void classicCentralDirectoryOverTheCapIsRejectedBeforeItIsRead() {
+        Tail archive = Tail.classic(0xFFFF, 100L * 1024 * 1024);
+        assertDirectoryRejected(archive, "corrupt zip: central directory of 104857600 bytes for 65535 entries"
+                + " (allowed 3014610..67108864)");
+        assertThat(archive.largestRead).as("largest read").isLessThanOrEqualTo(MAX_TAIL);
+    }
+
+    /**
+     * A STORED copy of the current small archive with one more member whose central-directory header carries a
+     * 1,000-byte name, a 2,000-byte extra field and a 3,000-byte comment: long fields stay within the bounds.
+     */
+    @Test
+    void centralDirectoryHeaderWithLongFields(@TempDir Path tmp) throws IOException {
+        Path archive = tmp.resolve("long-fields.mzpeak");
+        try (ZipFile source = new ZipFile(Fixtures.current("small.mzpeak").toFile());
+             ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
+            for (ZipEntry entry : Collections.list(source.entries())) {
+                byte[] data;
+                try (InputStream in = source.getInputStream(entry)) {
+                    data = in.readAllBytes();
+                }
+                putStored(out, new ZipEntry(entry.getName()), data);
+            }
+            ZipEntry pad = new ZipEntry("pad/" + "a".repeat(1_000));
+            byte[] extra = new byte[2_000];
+            ByteBuffer.wrap(extra).order(ByteOrder.LITTLE_ENDIAN).putShort((short) 0x6666).putShort((short) 1_996);
+            pad.setExtra(extra);
+            pad.setComment("c".repeat(3_000));
+            putStored(out, pad, new byte[] {1, 2, 3});
+        }
+        Map<String, ZipIndex.Entry> index;
+        try (FileChannel channel = FileChannel.open(archive)) {
+            index = ZipIndex.read(channel);
+        }
+        assertThat(index).containsKey("pad/" + "a".repeat(1_000));
+        try (MzPeakReader reader = MzPeakReader.open(archive)) {
+            assertThat(reader.size()).isEqualTo(SPECTRA);
+        }
+    }
+
     @Test
     @EnabledIfSystemProperty(named = "mzpeak.zip64.file", matches = ".+")
     void opensTheZip64ArchiveNamedBySystemProperty() {
@@ -158,6 +240,24 @@ class Zip64Test {
             }
             StreamingReaderTest.assertReReadsExactly(zip, expected);
         }
+    }
+
+    private static void putStored(ZipOutputStream out, ZipEntry entry, byte[] data) throws IOException {
+        CRC32 crc = new CRC32();
+        crc.update(data);
+        entry.setMethod(ZipEntry.STORED);
+        entry.setSize(data.length);
+        entry.setCompressedSize(data.length);
+        entry.setCrc(crc.getValue());
+        out.putNextEntry(entry);
+        out.write(data);
+        out.closeEntry();
+    }
+
+    private static void assertDirectoryRejected(Tail archive, String message) {
+        assertThatThrownBy(() -> ZipIndex.read(archive))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage(message);
     }
 
     private static void assertOpenFails(Path dataset, String... fragments) {
@@ -285,6 +385,55 @@ class Zip64Test {
 
         Path save(Path target) throws IOException {
             return Files.write(target, bytes);
+        }
+    }
+
+    /**
+     * A 3 GiB archive of zeros that ends with the given records, built like {@link Archive#build} builds them; it
+     * records the largest read it is asked for.
+     */
+    private static final class Tail implements RandomAccessBytes {
+
+        private static final long SIZE = 3L << 30;
+
+        private final ZipIndexTest.Sparse bytes;
+        long largestRead;
+
+        private Tail(byte[] records) {
+            bytes = new ZipIndexTest.Sparse(SIZE).put(SIZE - records.length, records);
+        }
+
+        /** A zip64 record, its locator and a classic record of sentinels, naming a directory at offset 0. */
+        static Tail zip64(long entries, long cdSize) {
+            long record = SIZE - 98;
+            return new Tail(new Le()
+                    .i32(0x06064b50).i64(44).i16(45).i16(45).i32(0).i32(0).i64(entries).i64(entries).i64(cdSize).i64(0)
+                    .i32(0x07064b50).i32(0).i64(record).i32(1)
+                    .i32(0x06054b50).i16(0).i16(0).i16(0xFFFF).i16(0xFFFF).i32(-1).i32(-1).i16(0)
+                    .toByteArray());
+        }
+
+        /** A classic end record naming a directory at offset 0. */
+        static Tail classic(int entries, long cdSize) {
+            return new Tail(new Le()
+                    .i32(0x06054b50).i16(0).i16(0).i16(entries).i16(entries).i32((int) cdSize).i32(0).i16(0)
+                    .toByteArray());
+        }
+
+        @Override
+        public long size() {
+            return SIZE;
+        }
+
+        @Override
+        public int read(ByteBuffer dst, long position) throws IOException {
+            largestRead = Math.max(largestRead, dst.remaining());
+            return bytes.read(dst, position);
+        }
+
+        @Override
+        public void close() {
+            bytes.close();
         }
     }
 

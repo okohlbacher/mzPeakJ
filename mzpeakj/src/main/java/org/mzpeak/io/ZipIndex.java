@@ -16,7 +16,8 @@ import java.util.Map;
  * {@link RandomAccessBytes}, with positional reads only.
  *
  * <p>Members, offsets and the archive may exceed 4 GiB: per-entry zip64 extra fields and the zip64
- * end-of-central-directory record are read. The central directory itself must fit in 2 GiB.
+ * end-of-central-directory record are read. The central directory itself must fit in 2 GiB, and its size must suit
+ * its entry count (see {@link #MAX_DIRECTORY_BYTES}) before it is read into memory.
  *
  * <p>A name that occurs more than once maps to its last central-directory entry, as the ZIP specification has it
  * (RD-16); one WARNING per such name is logged.
@@ -40,6 +41,16 @@ final class ZipIndex {
     private static final int CDH_SIG = 0x02014b50;
     private static final int LFH_SIG = 0x04034b50;
     private static final long U32_MAX = 0xFFFFFFFFL;
+    /**
+     * The largest central directory read into memory, 64 MiB. An mzPeak archive has tens of members; 64 MiB holds at
+     * least 341 central-directory headers of the maximal size and about a million typical ones. A larger declared
+     * directory is rejected as corrupt before it is allocated.
+     */
+    static final long MAX_DIRECTORY_BYTES = 64L * 1024 * 1024;
+    /** The smallest central-directory header: the fixed fields without name, extra field or comment. */
+    private static final long MIN_HEADER_BYTES = 46;
+    /** The largest central-directory header: the fixed fields plus a name, extra field and comment of 65535 bytes. */
+    private static final long MAX_HEADER_BYTES = MIN_HEADER_BYTES + 3 * 0xFFFFL;
     /** The tail searched for the end-of-central-directory record before the longest possible tail is read. */
     private static final int EOCD_PROBE = 1024;
     private static final System.Logger LOG = System.getLogger(ZipIndex.class.getName());
@@ -209,6 +220,7 @@ final class ZipIndex {
         if (cdSize > Integer.MAX_VALUE || cdOffset > fileSize || cdSize > fileSize - cdOffset) {
             throw new MzPeakException("corrupt zip: central directory out of bounds");
         }
+        checkDirectorySize(cdSize, totalEntries);
         return new Directory(cdOffset, cdSize, totalEntries);
     }
 
@@ -237,7 +249,23 @@ final class ZipIndex {
         if (cdSize < 0 || cdOffset < 0 || cdOffset > recordOffset || cdSize > recordOffset - cdOffset) {
             throw new MzPeakException("corrupt zip64: central directory out of bounds");
         }
+        checkDirectorySize(cdSize, totalEntries);
         return new Directory(cdOffset, cdSize, totalEntries);
+    }
+
+    /**
+     * Rejects a central directory of {@code cdSize} bytes that cannot hold {@code entries} headers of 46 to 196,651
+     * bytes each, or that is larger than {@link #MAX_DIRECTORY_BYTES}, before it is read into memory. Both bounds are
+     * computed without overflow for any non-negative {@code entries}.
+     */
+    private static void checkDirectorySize(long cdSize, long entries) {
+        long lo = entries > Long.MAX_VALUE / MIN_HEADER_BYTES ? Long.MAX_VALUE : MIN_HEADER_BYTES * entries;
+        long hi = entries > MAX_DIRECTORY_BYTES / MAX_HEADER_BYTES
+                ? MAX_DIRECTORY_BYTES : Math.min(MAX_HEADER_BYTES * entries, MAX_DIRECTORY_BYTES);
+        if (cdSize < lo || cdSize > hi) {
+            throw new MzPeakException("corrupt zip: central directory of " + cdSize + " bytes for " + entries
+                    + " entries (allowed " + lo + ".." + hi + ")");
+        }
     }
 
     /** The offset of the end-of-central-directory record: the last one whose comment reaches the end of the file. */
