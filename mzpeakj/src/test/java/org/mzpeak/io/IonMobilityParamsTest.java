@@ -9,11 +9,15 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.Param;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -96,6 +100,66 @@ class IonMobilityParamsTest {
                 .containsExactly(params.get(0), new Param("ion mobility drift time", "MS:1002476", 0.5, "UO:0000028"));
         assertThat(IonMobilityParams.withTypedIonMobility(row(0.5, " "), params))
                 .containsExactly(params.get(0), new Param("ion mobility drift time", "MS:1002476", 0.5, "UO:0000028"));
+    }
+
+    /** A value that is not finite is dropped without a type, as without a value; the given list is returned as is. */
+    @Test
+    void aValueThatIsNotFiniteIsDroppedWithoutAType() {
+        List<Param> params = List.of(new Param("window group", null, 1L, null));
+        for (double value : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            assertThat(IonMobilityParams.withTypedIonMobility(row(value, null), params)).as("%s", value)
+                    .isSameAs(params);
+            assertThat(IonMobilityParams.withTypedIonMobility(row(value, " "), params)).as("%s", value)
+                    .isSameAs(params);
+        }
+    }
+
+    /**
+     * D-8: no row of a scans or selected-ions member of the 13 fixtures (split facet members and the packed structs
+     * of the legacy metadata members) has an ion mobility value without a type, so none of them is rejected.
+     */
+    @Test
+    void noFixtureRowHasAnIonMobilityValueWithoutAType() {
+        int[] counts = new int[2];
+        Stream.concat(Fixtures.CURRENT_NAMES.stream().map(Fixtures::current),
+                Fixtures.LEGACY_NAMES.stream().map(Fixtures::legacy)).forEach(dataset -> {
+            try (MzPeakSource source = MzPeakSource.open(dataset)) {
+                MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+                scanFacet(source, manifest, Facet.SPECTRUM_SCAN, Facet.SPECTRUM, dataset, counts);
+                scanFacet(source, manifest, Facet.SPECTRUM_SELECTED_ION, Facet.SPECTRUM, dataset, counts);
+                scanFacet(source, manifest, Facet.CHROMATOGRAM_SELECTED_ION, Facet.CHROMATOGRAM, dataset, counts);
+                scanFacet(source, manifest, Facet.WAVELENGTH_SCAN, Facet.WAVELENGTH_SPECTRUM, dataset, counts);
+            }
+        });
+        assertThat(counts[0]).as("rows scanned").isPositive();
+        assertThat(counts[1]).as("rows with an ion mobility value").isPositive();
+    }
+
+    /**
+     * Checks every row of {@code facet} in its split member, or in the packed struct of the {@code primary} member;
+     * {@code counts} gets the rows seen and the rows with a value.
+     */
+    private static void scanFacet(MzPeakSource source, MzPeakManifest manifest, Facet facet, Facet primary,
+                                  Path dataset, int[] counts) {
+        Optional<Entry> entry = facet.entry(manifest);
+        if (entry.isEmpty()) {
+            entry = primary.entry(manifest).filter(e -> {
+                MessageType schema = ParquetFooter.read(source.inputFile(e.name())).schema();
+                return schema.containsField(facet.packedStruct())
+                        && !schema.getType(facet.packedStruct()).isPrimitive();
+            });
+        }
+        entry.ifPresent(e -> MetadataTable.forEachRow(source.inputFile(e.name()), e, facet, row -> {
+            ColumnResolver columns = row.columns();
+            Double value = columns.doubleValue(row.group(), columns.resolveName("ion_mobility_value"));
+            String type = columns.stringValue(row.group(), columns.resolveName("ion_mobility_type"));
+            counts[0]++;
+            if (value != null) {
+                counts[1]++;
+                assertThat(type).as("%s %s %s row %d", dataset.getFileName(), e.name(), facet, row.key())
+                        .isNotBlank();
+            }
+        }));
     }
 
     /** The appended Param has the name and unit of visitor.rs:878-920; any other type keeps the generic name. */
