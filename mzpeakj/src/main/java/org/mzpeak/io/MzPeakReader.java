@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
@@ -11,6 +12,8 @@ import org.mzpeak.model.SignalSlice;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
+import java.lang.System.Logger.Level;
+import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -18,11 +21,14 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -80,18 +86,21 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
         private final boolean reconstructProfile;
         private final SignalMode signalMode;
+        private final boolean versionCheck;
 
-        private Options(boolean reconstructProfile, SignalMode signalMode) {
+        private Options(boolean reconstructProfile, SignalMode signalMode, boolean versionCheck) {
             this.reconstructProfile = reconstructProfile;
             this.signalMode = signalMode;
+            this.versionCheck = versionCheck;
         }
 
         /**
-         * The default options: null-marked profile points are reconstructed, and spectra are read from both signal
-         * members ({@link SignalMode#BOTH}).
+         * The default options: null-marked profile points are reconstructed, spectra are read from both signal
+         * members ({@link SignalMode#BOTH}), and the format version is checked unless the system property
+         * {@code mzpeak.reader.ignoreVersion} is {@code true} when this method is called.
          */
         public static Options defaults() {
-            return new Options(true, SignalMode.BOTH);
+            return new Options(true, SignalMode.BOTH, !Boolean.getBoolean(IGNORE_VERSION_PROPERTY));
         }
 
         /**
@@ -105,7 +114,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
         /** These options with {@link #reconstructProfile()} set to {@code reconstructProfile}, as a new instance. */
         public Options withReconstructProfile(boolean reconstructProfile) {
-            return new Options(reconstructProfile, signalMode);
+            return new Options(reconstructProfile, signalMode, versionCheck);
         }
 
         /**
@@ -122,25 +131,50 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
          * @throws NullPointerException if {@code signalMode} is {@code null}
          */
         public Options withSignalMode(SignalMode signalMode) {
-            return new Options(reconstructProfile, Objects.requireNonNull(signalMode, "signalMode"));
+            return new Options(reconstructProfile, Objects.requireNonNull(signalMode, "signalMode"), versionCheck);
+        }
+
+        /**
+         * Whether opening checks the manifest's {@code metadata.version}: a major version above 0 is refused with an
+         * {@link MzPeakException}, and a missing, non-string or unparseable version logs a WARNING and is read as
+         * 0.x. {@code false} skips both. Default {@code true}, unless the system property
+         * {@code mzpeak.reader.ignoreVersion} is {@code true} when {@link #defaults()} is called.
+         */
+        public boolean versionCheck() {
+            return versionCheck;
+        }
+
+        /** These options with {@link #versionCheck()} set to {@code versionCheck}, as a new instance. */
+        public Options withVersionCheck(boolean versionCheck) {
+            return new Options(reconstructProfile, signalMode, versionCheck);
         }
 
         @Override
         public boolean equals(Object o) {
             return o instanceof Options other && reconstructProfile == other.reconstructProfile
-                    && signalMode == other.signalMode;
+                    && signalMode == other.signalMode && versionCheck == other.versionCheck;
         }
 
         @Override
         public int hashCode() {
-            return 31 * Boolean.hashCode(reconstructProfile) + signalMode.hashCode();
+            return 31 * (31 * Boolean.hashCode(reconstructProfile) + signalMode.hashCode())
+                    + Boolean.hashCode(versionCheck);
         }
 
         @Override
         public String toString() {
-            return "Options[reconstructProfile=" + reconstructProfile + ", signalMode=" + signalMode + "]";
+            return "Options[reconstructProfile=" + reconstructProfile + ", signalMode=" + signalMode
+                    + ", versionCheck=" + versionCheck + "]";
         }
     }
+
+    private static final System.Logger LOG = System.getLogger(MzPeakReader.class.getName());
+
+    /** The system property that turns the format version check of {@link Options#defaults()} off. */
+    private static final String IGNORE_VERSION_PROPERTY = "mzpeak.reader.ignoreVersion";
+    /** {@code MAJOR.MINOR.PATCH} with an optional pre-release and build suffix, as semantic versioning writes it. */
+    private static final Pattern FORMAT_VERSION =
+            Pattern.compile("(\\d+)\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?");
 
     /** The lowest and highest observed m/z terms of the spectrum metadata. */
     private static final String LOWEST_OBSERVED_MZ = "MS:1000528";
@@ -262,13 +296,20 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      * reader. A failure to close it then is added to the thrown exception as suppressed, unless it is that same
      * exception.
      *
+     * <p>With {@link Options#versionCheck()} on, the manifest's {@code metadata.version} must have a major version
+     * of 0; a missing, non-string or unparseable version logs a WARNING and the dataset is read as 0.x.
+     *
      * @throws NullPointerException if {@code source} or {@code options} is {@code null}
+     * @throws MzPeakException if the version check is on and the format version's major is above 0
      */
     public static MzPeakReader open(MzPeakSource source, Options options) {
         Objects.requireNonNull(source, "source");
         try {
             Objects.requireNonNull(options, "options");
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+            if (options.versionCheck()) {
+                checkFormatVersion(manifest, source.describe());
+            }
             SpectrumMetadataDecoder.Decoded decoded = SpectrumMetadataDecoder.decode(source, manifest);
             // present: decode() throws when the manifest lists no spectrum metadata member
             String metadataFile = member(manifest, EntityType.SPECTRUM, DataKind.METADATA);
@@ -285,6 +326,34 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
                 }
             }
             throw e;
+        }
+    }
+
+    /**
+     * Check {@code metadata.version} of {@code manifest} (RD-18): a major version above 0 is refused; a missing,
+     * non-string or unparseable version (Rust {@code FileIndex::version} reads a non-string one as absent) logs one
+     * WARNING and the dataset is read as 0.x.
+     *
+     * @throws MzPeakException if the major version is above 0
+     */
+    private static void checkFormatVersion(MzPeakManifest manifest, String source) {
+        String version = manifest.version();
+        Matcher m = version == null ? null : FORMAT_VERSION.matcher(version);
+        if (m == null || !m.matches()) {
+            String shown;
+            if (version != null) {
+                shown = "'" + version + "'";
+            } else {
+                JsonNode node = manifest.metadataJson().get("version");
+                shown = node == null ? "null"
+                        : "null; JSON " + node.getNodeType().name().toLowerCase(Locale.ROOT);
+            }
+            LOG.log(Level.WARNING, () -> source + ": no parseable mzPeak format version (" + shown
+                    + "); reading as 0.x");
+        } else if (new BigInteger(m.group(1)).signum() > 0) {
+            throw new MzPeakException(source + ": mzPeak format version " + version + " is newer than the supported"
+                    + " major version 0; open with Options.withVersionCheck(false) or -D" + IGNORE_VERSION_PROPERTY
+                    + "=true to try anyway");
         }
     }
 
