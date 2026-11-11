@@ -3,6 +3,8 @@ package org.mzpeak.io;
 import org.apache.parquet.example.data.Group;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
@@ -22,6 +24,7 @@ import org.mzpeak.model.WavelengthSpectrum;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -84,20 +87,22 @@ class PackedMetadataWriterTest {
     }
 
     /**
-     * The spectrum type and summary columns of a packed row. Spectrum 0 (MS1) and the first MS2 spectrum of legacy
-     * small, whose Params hold none of them, get MS1 spectrum and MSn spectrum and the five values derived from their
-     * payload, with an empty parameters list. Spectrum 0 given a spectrum type Param (MSn spectrum) and a highest
-     * observed m/z Param of 1500.0 gets the same columns, and both Params stay in its parameters list.
+     * The spectrum type and summary columns of a packed row, written as the split writer writes them (V-17).
+     * Spectrum 0 (MS1) and the first MS2 spectrum of legacy small without Params get MS1 spectrum and MSn spectrum
+     * and the five values derived from their payload, with an empty parameters list. Spectrum 0 given a spectrum type
+     * Param (MSn spectrum) and a highest observed m/z Param of 1500.0 gets those two in their columns, no other
+     * summary value (none is derived when the Params hold one), and an empty parameters list. The MS2 spectrum given
+     * a spectrum type Param with a value, which its column cannot hold, gets no spectrum type column (none is derived
+     * when the Params hold one) and keeps the Param in its parameters list.
      */
     @Test
     void theSpectrumTypeAndSummaryColumnsOfAPackedRow(@TempDir Path tmp) {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
         List<Spectrum> spectra = new ArrayList<>(small.spectra);
         int ms2 = msnPositions(spectra).get(0);
+        spectra.set(0, withParams(spectra.get(0), List.of()));
+        spectra.set(ms2, withParams(spectra.get(ms2), List.of()));
         Spectrum first = spectra.get(0);
-        SpectrumDescription d = first.description();
-        assertThat(d.parameters()).isEmpty();
-        assertThat(spectra.get(ms2).description().parameters()).isEmpty();
         Param type = new Param("MSn spectrum", "MS:1000580", null, null);
         Param highest = new Param("highest observed m/z", "MS:1000527", 1500.0, "MS:1000040");
 
@@ -108,17 +113,56 @@ class PackedMetadataWriterTest {
         assertDerivedColumns(rows.get(0).getGroup("spectrum", 0), "MS:1000579", first);
         assertDerivedColumns(rows.get(ms2).getGroup("spectrum", 0), "MS:1000580", spectra.get(ms2));
 
-        spectra.set(0, with(first, new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
-                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
-                d.precursors(), List.of(type, highest))));
+        spectra.set(0, withParams(first, List.of(type, highest)));
+        Param valuedType = new Param("MSn spectrum", "MS:1000580", "x", null);
+        spectra.set(ms2, withParams(spectra.get(ms2), List.of(valuedType)));
         Path withParams = tmp.resolve("with-params.mzpeak");
         MzPeakWriter.writeDirectory(withParams, spectra, small.chromatograms, small.wavelengthSpectra,
                 small.scanSettings, small.fileMetadata, PACKED);
-        Group spectrum = rows(withParams.resolve(SPECTRA)).get(0).getGroup("spectrum", 0);
-        assertThat(ParquetGroups.optString(spectrum, "MS_1000559_spectrum_type")).isEqualTo("MS:1000579");
+        List<Group> withParamsRows = rows(withParams.resolve(SPECTRA));
+        Group valued = withParamsRows.get(ms2).getGroup("spectrum", 0);
+        assertThat(ParquetGroups.has(valued, "MS_1000559_spectrum_type")).isFalse();
+        assertThat(ParquetGroups.readParams(valued, "parameters")).containsExactly(valuedType);
+        Group spectrum = withParamsRows.get(0).getGroup("spectrum", 0);
+        assertThat(ParquetGroups.optString(spectrum, "MS_1000559_spectrum_type")).isEqualTo("MS:1000580");
         assertThat(ParquetGroups.optDouble(spectrum, "MS_1000527_highest_observed_mz_unit_MS_1000040"))
-                .isEqualTo(SpectrumSummary.derive(first).highestMz());
-        assertThat(ParquetGroups.readParams(spectrum, "parameters")).containsExactly(type, highest);
+                .isEqualTo(1500.0);
+        for (String summary : List.of("MS_1000528_lowest_observed_mz_unit_MS_1000040",
+                "MS_1000504_base_peak_mz_unit_MS_1000040", "MS_1000505_base_peak_intensity_unit_MS_1000131",
+                "MS_1000285_total_ion_current_unit_MS_1000131")) {
+            assertThat(ParquetGroups.has(spectrum, summary)).as(summary).isFalse();
+        }
+        assertThat(ParquetGroups.readParams(spectrum, "parameters")).isEmpty();
+        try (MzPeakReader reader = MzPeakReader.open(withParams)) {
+            assertThat(reader.getMetadata(0).orElseThrow().parameters()).containsExactly(
+                    new Param(null, "MS:1000580", null, null), highest);
+        }
+    }
+
+    static Stream<Path> allFixtures() {
+        return Stream.concat(Fixtures.LEGACY_NAMES.stream().map(Fixtures::legacy),
+                Fixtures.CURRENT_NAMES.stream().map(Fixtures::current));
+    }
+
+    /**
+     * V-17: every fixture, read, written packed and read again, gives every spectrum exactly the Params of its
+     * source, in the same order: the spectrum type and summary Params go to their columns and come back from them,
+     * none is written both as a column and in the parameters list, and none is derived for a spectrum that has them.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("allFixtures")
+    void aPackedRoundTripKeepsTheSpectrumParamsOfEveryFixture(Path fixture, @TempDir Path tmp) {
+        Source source = ForwardBackwardCorpusTest.readSource(fixture);
+        Path out = tmp.resolve("out.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, PACKED);
+
+        Source back = ForwardBackwardCorpusTest.readSource(out);
+        assertThat(back.spectra).hasSameSizeAs(source.spectra);
+        for (int i = 0; i < source.spectra.size(); i++) {
+            assertThat(back.spectra.get(i).description().parameters()).as("%s spectrum %d", fixture, i)
+                    .isEqualTo(source.spectra.get(i).description().parameters());
+        }
     }
 
     /** {@code spectrum} holds {@code type}, the summary values derived from {@code s} and no parameters. */
@@ -272,6 +316,12 @@ class PackedMetadataWriterTest {
         return with(s, new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(), d.polarity(),
                 d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(), precursors,
                 d.parameters()));
+    }
+
+    private static Spectrum withParams(Spectrum s, List<Param> params) {
+        SpectrumDescription d = s.description();
+        return with(s, new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(), d.polarity(),
+                d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(), d.precursors(), params));
     }
 
     private static Spectrum with(Spectrum s, SpectrumDescription d) {

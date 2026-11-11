@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * list carries, so no accession is ever both a column and a parameter of one scope.
  *
  * <p>Oracles: current small.unpacked (summary Params, spectrum types and CID activations from its split columns),
- * Example_Processed.img (imaging positions), legacy small.unpacked (no spectrum Params, so everything is derived),
+ * Example_Processed.img (imaging positions), legacy small.unpacked (its stored summaries and spectrum types, V-17),
  * their manifests, and spectra constructed from current small.unpacked.
  */
 class SplitWriterPromotionTest {
@@ -201,27 +201,92 @@ class SplitWriterPromotionTest {
         }
     }
 
-    /** (e): legacy small.unpacked has no spectrum Params, so the summary columns and the spectrum type are derived. */
+    /**
+     * (e): legacy small.unpacked's spectrum Params are its stored spectrum type and summary values (V-17, D-9a), so
+     * they are promoted, not derived; the same spectra without Params get derived summaries and spectrum types.
+     */
     @Test
-    void legacySmallGetsDerivedSummariesAndSpectrumTypes(@TempDir Path tmp) {
+    void legacySmallPromotesItsStoredSummariesAndSpectrumTypes(@TempDir Path tmp) {
         Source source = source(Fixtures.legacy("small.unpacked.mzpeak"));
         Path out = write(source.spectra, source, tmp.resolve("out.mzpeak"));
+        List<Spectrum> bare = new ArrayList<>();
+        for (Spectrum s : source.spectra) {
+            bare.add(withParams(s, List.of()));
+        }
+        Path derived = write(bare, source, tmp.resolve("derived.mzpeak"));
 
         List<Group> rows = rows(out.resolve(SPECTRA));
+        List<Group> derivedRows = rows(derived.resolve(SPECTRA));
         for (int i = 0; i < source.spectra.size(); i++) {
             Spectrum s = source.spectra.get(i);
-            Group row = rows.get(i);
+            List<Param> params = s.description().parameters();
             String where = "spectrum " + s.index();
-            assertThat(s.description().parameters()).as(where).isEmpty();
-            assertThat(ParquetGroups.optString(row, "spectrum_type")).as(where)
-                    .isEqualTo(s.description().msLevel() > 1 ? MSN_SPECTRUM : MS1_SPECTRUM);
-            Map<String, Double> expected = summary(s);
+            String type = s.description().msLevel() > 1 ? MSN_SPECTRUM : MS1_SPECTRUM;
+            assertThat(params).as(where).hasSize(6).contains(new Param(null, type, null, null));
+            Group row = rows.get(i);
+            assertThat(ParquetGroups.optString(row, "spectrum_type")).as(where).isEqualTo(type);
             for (Map.Entry<String, String> column : SUMMARY_COLUMNS.entrySet()) {
                 assertThat(ParquetGroups.optDouble(row, column.getValue())).as("%s: %s", where, column.getValue())
-                        .isEqualTo(expected.get(column.getKey()));
+                        .isEqualTo(Param.find(params, column.getKey()).orElseThrow().value());
             }
             assertThat(ParquetGroups.readParams(row, "parameters")).as(where).isEmpty();
+
+            Group derivedRow = derivedRows.get(i);
+            assertThat(ParquetGroups.optString(derivedRow, "spectrum_type")).as(where).isEqualTo(type);
+            assertSummary(derivedRow, summary(s));
+            assertThat(ParquetGroups.readParams(derivedRow, "parameters")).as(where).isEmpty();
         }
+    }
+
+    /**
+     * D-9a deviation (V-17, design §6 item 6): the spectrum Params of a legacy dataset hold its stored summary
+     * values, which a split write promotes instead of deriving. Legacy small.unpacked with spectrum 0's stored
+     * highest observed m/z rewritten to a stale 1500.0 writes and reads back 1500.0, not the value its arrays give;
+     * the same spectrum with the five summary Params removed before writing still gets the derived values.
+     */
+    @Test
+    void legacySplitWritePromotesStoredSummaries(@TempDir Path tmp) throws IOException {
+        Path dataset = MemberRewrite.copy(Fixtures.legacy("small.unpacked.mzpeak"), tmp.resolve("in"));
+        Path metadata = dataset.resolve(SPECTRA);
+        MemberRewrite.Member member = MemberRewrite.read(metadata);
+        Group first = member.rows.get(0);
+        Group spectrum = first.getGroup("spectrum", 0);
+        assertThat(ParquetGroups.optLong(spectrum, "index")).isEqualTo(0L);
+        String highest = "MS_1000527_highest_observed_mz_unit_MS_1000040";
+        assertThat(ParquetGroups.has(spectrum, highest)).isTrue();
+        PrimitiveTypeName type = spectrum.getType().getType(highest).asPrimitiveType().getPrimitiveTypeName();
+        member.rows.set(0, MemberRewrite.copyRow(first, member.schema, "spectrum", row -> {
+            Group stale = row.addGroup("spectrum");
+            MemberRewrite.copyInto(spectrum, stale, highest);
+            if (type == PrimitiveTypeName.FLOAT) {
+                stale.add(highest, 1500.0f);
+            } else {
+                stale.add(highest, 1500.0);
+            }
+            return row;
+        }));
+        MemberRewrite.write(member, metadata);
+
+        Source source = ForwardBackwardCorpusTest.readSource(dataset);
+        List<Spectrum> spectra = new ArrayList<>(source.spectra);
+        Spectrum s = spectra.get(0);
+        Double derived = summary(s).get("MS:1000527");
+        assertThat(derived).isNotNull().isNotEqualTo(1500.0);
+        assertThat(Param.find(s.description().parameters(), "MS:1000527")).contains(
+                new Param("highest observed m/z", "MS:1000527", 1500.0, "MS:1000040"));
+
+        Path out = write(spectra, source, tmp.resolve("out.mzpeak"));
+        assertThat(ParquetGroups.optDouble(rows(out.resolve(SPECTRA)).get(0), "highest_observed_mz"))
+                .isEqualTo(1500.0);
+        assertThat(Param.find(ForwardBackwardCorpusTest.readSource(out).spectra.get(0).description().parameters(),
+                "MS:1000527").orElseThrow().value()).isEqualTo(1500.0);
+
+        List<Param> withoutSummaries = new ArrayList<>(s.description().parameters());
+        withoutSummaries.removeIf(p -> SUMMARY_COLUMNS.containsKey(p.accession()));
+        assertThat(withoutSummaries).hasSize(s.description().parameters().size() - 5);
+        spectra.set(0, withParams(s, withoutSummaries));
+        Path derivedOut = write(spectra, source, tmp.resolve("derived.mzpeak"));
+        assertSummary(rows(derivedOut.resolve(SPECTRA)).get(0), summary(s));
     }
 
     /**

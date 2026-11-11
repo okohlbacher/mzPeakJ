@@ -178,9 +178,10 @@ class MzMLConversionTest {
     /**
      * Name, dataset, the exclusions of design 12.4 with the differences each hides, the number of spectra, the loss
      * lines of toMzML, the CVs of the mzML and of the mzPeak written from it, and whether the mzML of that mzPeak is
-     * byte-identical to the first (design 12.5: the current fixtures are normal; the legacy ones gain the summary params
-     * in the mzPeak). Legacy small declares no CV, so the mzML declares MS and UO (A-17, 2); Example_Processed uses
-     * IMS too (A-17, 3), declared after UO as CvEntry.known() orders them.
+     * byte-identical to the first (design 12.5: every fixture is normal; since V-17 (D-9a) the legacy ones too, whose
+     * spectra read with their stored spectrum type and summary params, so A-16 hides nothing and the mzPeak gains
+     * none). Legacy small declares no CV, so the mzML declares MS and UO (A-17, 2); Example_Processed uses IMS too
+     * (A-17, 3), declared after UO as CvEntry.known() orders them.
      */
     static Stream<Arguments> mzPeakFixtures() {
         Map<Exclusion, Integer> example = new LinkedHashMap<>();
@@ -189,7 +190,6 @@ class MzMLConversionTest {
         Map<Exclusion, Integer> legacy = new LinkedHashMap<>();
         legacy.put(ModelAssert.A_7, 48);
         legacy.put(ModelAssert.A_9, 48);
-        legacy.put(ModelAssert.A_16, 48 + 5 * 48); // a type and five summary params per spectrum
         legacy.put(ModelAssert.A_17, 1);
         return Stream.of(
                 arguments("small.mzpeak", Fixtures.current("small.mzpeak"), Map.of(ModelAssert.A_7, 48), 48L,
@@ -198,8 +198,8 @@ class MzMLConversionTest {
                         9L, List.of(MzMLWriter.A_17 + " (3)", MzMLWriter.A_7 + " (9)"), List.of("MS", "UO", "IMS"),
                         true),
                 arguments("legacy small.mzpeak", Fixtures.legacy("small.mzpeak"), legacy, 48L,
-                        List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_16 + " (48)", MzMLWriter.A_9 + " (48)",
-                                MzMLWriter.A_7 + " (48)"), List.of("MS", "UO"), false));
+                        List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_9 + " (48)", MzMLWriter.A_7 + " (48)"),
+                        List.of("MS", "UO"), true));
     }
 
     @ParameterizedTest(name = "{0}")

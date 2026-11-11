@@ -1130,19 +1130,20 @@ class ModelAssertTest {
     // ---- (f) legacy versus current ----------------------------------------------------------------------------------
 
     /**
-     * Legacy small.unpacked (29e59b2, packed layout) versus current small.unpacked (2ee2589). A_16 hides the type and
-     * the five summary params of every spectrum (48 x 6), A_17 the cv list. The retention times are equal (both read
-     * {@code spectrum.time}), so A_9 hides nothing here and is stale. Known fixture differences, not exclusions: the
-     * legacy scans store the start time as float32 (48, for example 0.004935000091791153 for 0.004935), and the legacy
+     * Legacy small.unpacked (29e59b2, packed layout) versus current small.unpacked (2ee2589). A_17 hides the cv list.
+     * Since V-17 (D-9a) the legacy spectra read with their stored type and five summary params, equal to the current
+     * ones, so A_16 hides nothing here and is stale (before, it hid 48 x 6). The retention times are equal (both read
+     * {@code spectrum.time}), so A_9 hides nothing here either. Known fixture differences, not exclusions: the legacy
+     * scans store the start time as float32 (48, for example 0.004935000091791153 for 0.004935), and the legacy
      * isolation windows lack the user param {@code ms level} = 1 of the 34 MS2 precursors (read since AP-7).
      */
     @Test
-    void legacySmallVersusCurrentSmallDiffersByA16A17AndKnownFixtureDifferences() {
+    void legacySmallVersusCurrentSmallDiffersByA17AndKnownFixtureDifferences() {
         Model legacy = Model.load(Fixtures.legacy("small.unpacked.mzpeak"));
 
-        Result result = ModelAssert.compare(legacy, small, STRICT, ModelAssert.A_16, ModelAssert.A_17);
+        Result result = ModelAssert.compare(legacy, small, STRICT, ModelAssert.A_17);
 
-        assertThat(result.hidden()).containsExactly(Map.entry("A_16", 288), Map.entry("A_17", 1));
+        assertThat(result.hidden()).containsExactly(Map.entry("A_17", 1));
         assertThat(result.stale()).isEmpty();
         assertThat(kinds(result)).containsExactly(
                 Map.entry("spectrum[].precursors[].isolationWindow.parameters[ms level]", 34),
@@ -1154,8 +1155,9 @@ class ModelAssertTest {
 
         Result withA9 = ModelAssert.compare(legacy, small, STRICT, ModelAssert.A_9, ModelAssert.A_16,
                 ModelAssert.A_17);
-        assertThat(withA9.stale()).containsExactly("A_9");
-        assertThat(withA9.report()).startsWith("stale exclusion A_9: it hides no difference\n82 differences\n");
+        assertThat(withA9.stale()).containsExactly("A_9", "A_16");
+        assertThat(withA9.report()).startsWith("stale exclusion A_9: it hides no difference\n"
+                + "stale exclusion A_16: it hides no difference\n82 differences\n");
         for (int i = 0; i < 48; i++) {
             assertThat(Double.compare(legacy.spectrumList().get(i).description().retentionTime(),
                     small.spectrumList().get(i).description().retentionTime())).isZero();

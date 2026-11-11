@@ -80,8 +80,8 @@ class MzMLRoundTripATest {
                     + " configuration") + " (1)",
             String.format(MzMLWriter.A_8, "spectrumList defaultDataProcessingRef (the first data processing)") + " (1)",
             a7(9));
-    private static final List<String> A_LEGACY_SMALL = List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_16 + " (48)",
-            MzMLWriter.A_9 + " (48)", a7(48));
+    private static final List<String> A_LEGACY_SMALL = List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_9 + " (48)",
+            a7(48));
 
     /** The A-7 line for {@code spectra} MS and wavelength spectra. */
     private static String a7(int spectra) {
@@ -91,8 +91,9 @@ class MzMLRoundTripATest {
     /**
      * The 13 fixtures with the A table of design 12.4, keyed by display name. The hidden counts are differences, not
      * spectra: A_1 hides two per peak list (peaks.size and numberOfPeaks; the 14 MS1 profile spectra of small.chunked
-     * carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_16 one
-     * spectrum type and five summary params per spectrum (48 or 212); A_2, A_8, A_17 and A_18 one each.
+     * carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_2, A_8,
+     * A_17 and A_18 one each. No fixture needs A_16 since V-17 (D-9a): the legacy spectra read with their stored
+     * spectrum type and five summary params (before, A_16 hid one type and five summary params per legacy spectrum).
      *
      * <p>Mapping-rule violations (design 6.4, 12.4): none for the outputs of any fixture. diaPASEF.ref and .grid lack
      * nothing the six rules check (IC 0 holds the instrument model MS:1003005 timsTOF Pro, every spectrum a spectrum
@@ -122,7 +123,7 @@ class MzMLRoundTripATest {
                 List.of(hides(ModelAssert.A_7, 9), hides(ModelAssert.A_17, 1)),
                 List.of(MzMLWriter.A_17 + " (3)", a7(9)), List.of("MS", "UO", "IMS"), List.of()));
         List<Hides> legacySmall = List.of(hides(ModelAssert.A_7, 48), hides(ModelAssert.A_9, 48),
-                hides(ModelAssert.A_16, 48 + 5 * 48), hides(ModelAssert.A_17, 1));
+                hides(ModelAssert.A_17, 1));
         for (String name : List.of("small.mzpeak", "small.numpress.mzpeak", "small.unpacked.mzpeak")) {
             f.put("legacy " + name, new Fixture(Fixtures.legacy(name), legacySmall, A_LEGACY_SMALL, msUo, List.of()));
         }
@@ -133,27 +134,20 @@ class MzMLRoundTripATest {
         f.put("legacy small.chunked.mzpeak", new Fixture(Fixtures.legacy("small.chunked.mzpeak"), legacyChunked,
                 legacyChunkedLosses, msUo, List.of()));
         f.put("legacy has_uv.mzpeak", new Fixture(Fixtures.legacy("has_uv.mzpeak"), List.of(hides(ModelAssert.A_7,
-                212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_16, 212 + 5 * 212),
-                hides(ModelAssert.A_17, 1)), List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_16 + " (212)",
-                MzMLWriter.A_9 + " (211)", a7(212 + 520)), msUo, List.of()));
+                212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_17, 1)),
+                List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_9 + " (211)", a7(212 + 520)), msUo, List.of()));
         return f;
     }
 
     /**
      * The loss lines of {@link MzMLConversion#toMzPeak} for the mzML written from the fixture {@code name}, after the
-     * reader's limit lines: B-11 for has_uv's 520 wavelength spectra, which follow its 212 MS spectra in the mzML;
-     * B-24 for the summary params the mzPeak writer adds to the spectra of the legacy fixtures, whose packed layout
-     * reads none back (A-16).
+     * reader's limit lines: B-11 for has_uv's 520 wavelength spectra, which follow its 212 MS spectra in the mzML.
+     * Since V-17 (D-9a) the legacy spectra carry their stored summary params into the mzML, so the mzPeak writer adds
+     * none and no B-24 line is given.
      */
     static List<String> back(String name) {
         String b11 = MzMLReader.B_11_INDEX + " (520)";
-        if (name.equals("legacy has_uv.mzpeak")) {
-            return List.of(b11, MzMLConversion.B_24_SUMMARY + " (212)");
-        }
-        if (name.startsWith("legacy small")) {
-            return List.of(MzMLConversion.B_24_SUMMARY + " (48)");
-        }
-        return name.equals("current has_uv.mzpeak") ? List.of(b11) : List.of();
+        return name.endsWith(" has_uv.mzpeak") ? List.of(b11) : List.of();
     }
 
     /** Every fixture, with zlib and without. */

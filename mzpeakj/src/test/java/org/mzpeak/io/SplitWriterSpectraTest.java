@@ -293,7 +293,8 @@ class SplitWriterSpectraTest {
 
     @Test
     void emptyParameterAndScanWindowListsAreWrittenAsEmptyListsNotNull(@TempDir Path tmp) {
-        // Every Example_Processed.img scan has no scan window; some legacy small.unpacked spectra have no params.
+        // Every Example_Processed.img scan has no scan window. Every legacy small.unpacked spectrum's Params are its
+        // spectrum type and summary values (V-17), which all move to their columns, so every parameters list is empty.
         Source imaging = source(Fixtures.current("Example_Processed.img.mzpeak"));
         Path img = write(imaging, Form.DIRECTORY, tmp.resolve("img.mzpeak"));
         List<Group> scanRows = rows(img.resolve("spectra_metadata_scans.parquet"));
@@ -305,15 +306,12 @@ class SplitWriterSpectraTest {
         Source small = source(Fixtures.legacy("small.unpacked.mzpeak"));
         Path out = write(small, Form.DIRECTORY, tmp.resolve("small.mzpeak"));
         List<Group> spectrumRows = rows(out.resolve("spectra_metadata.parquet"));
-        int empty = 0;
         for (int i = 0; i < small.spectra.size(); i++) {
             Group row = spectrumRows.get(i);
+            assertThat(small.spectra.get(i).description().parameters()).as("params of spectrum %d", i).hasSize(6);
             assertThat(ParquetGroups.has(row, "parameters")).as("parameters of row %d is not null", i).isTrue();
-            assertThat(ParquetGroups.groupList(row, "parameters"))
-                    .hasSameSizeAs(small.spectra.get(i).description().parameters());
-            empty += small.spectra.get(i).description().parameters().isEmpty() ? 1 : 0;
+            assertThat(ParquetGroups.groupList(row, "parameters")).as("parameters of row %d", i).isEmpty();
         }
-        assertThat(empty).as("legacy small.unpacked spectra without params").isPositive();
     }
 
     @Test
