@@ -41,8 +41,9 @@ import java.util.stream.Collectors;
  * converted (a chunk's deltas before they are summed). Any other unit throws an {@link MzPeakException} naming the
  * member, the column and the unit, before any row is read.
  *
- * <p>What cannot be decoded throws an {@link MzPeakException} instead of reading as wrong or empty arrays: a negative
- * index (an unsigned value of 2^31 or more in an INT32 column, or a uint64 with the high bit set); on the first decoded
+ * <p>What cannot be decoded throws an {@link MzPeakException} instead of reading as wrong or empty arrays: an index
+ * beyond the supported range (a negative value in a signed column, or a uint64 with the high bit set; an unsigned
+ * INT32 is read without sign extension, see {@link ParquetGroups#optIndexKey}); on the first decoded
  * row, a plan that names no time values column (point layout) or neither a value-bearing intensity column nor a SLOF
  * column; a chunk whose {@code chunk_encoding} is neither null nor MS:1003089 (delta); a chunk in which a chunk
  * transform column of the time axis (such as Numpress linear time) carries a value; and a chunk in which no intensity
@@ -84,6 +85,8 @@ final class ChromatogramDataDecoder {
     record Decoded(double[] time, double[] intensity, String intensityUnit, Map<String, double[]> arrays) {
     }
 
+    /** The member name in errors. */
+    private final String member;
     private final String prefix;
     private final String indexField;
     private final boolean chunked;
@@ -115,6 +118,7 @@ final class ChromatogramDataDecoder {
     private final DoubleUnaryOperator[] conversions;
 
     private ChromatogramDataDecoder(SignalPlan plan, String member) {
+        this.member = member;
         this.prefix = plan.prefix();
         this.indexField = plan.indexField();
         this.chunked = plan.layout() == SignalPlan.Layout.CHUNK;
@@ -213,13 +217,9 @@ final class ChromatogramDataDecoder {
         if (group == null) {
             return;
         }
-        Long idx = ParquetGroups.optLong(group, indexField);
+        Long idx = ParquetGroups.optIndexKey(group, indexField, member);
         if (idx == null) {
             return;
-        }
-        if (idx < 0) {
-            throw new MzPeakException(indexField + " " + idx + " is out of range (negative when read as a signed"
-                    + " integer: an unsigned value of 2^31 or more in an INT32 column, or of 2^63 or more)");
         }
         if (unreadablePlan != null) {
             throw new MzPeakException("the chromatogram signal plan " + unreadablePlan + ", so the rows of "

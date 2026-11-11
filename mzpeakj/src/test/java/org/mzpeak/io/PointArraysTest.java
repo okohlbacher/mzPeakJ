@@ -42,6 +42,9 @@ class PointArraysTest {
               }
             }""");
 
+    /** The data member name in errors. */
+    private static final String MEMBER = "wavelength_spectra_data.parquet";
+
     @TempDir
     Path tmp;
 
@@ -50,11 +53,11 @@ class PointArraysTest {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.current("has_uv.mzpeak"))) {
             InputFile data = wavelengthData(source);
             SignalPlan plan = plan(data);
-            assertThat(PointArrays.groupByIndex(data, plan)).as("the member's point rows").isNotEmpty();
+            assertThat(PointArrays.groupByIndex(data, plan, MEMBER)).as("the member's point rows").isNotEmpty();
 
             SignalPlan chunk = new SignalPlan(plan.entity(), plan.source(), SignalPlan.Layout.CHUNK, plan.prefix(),
                     plan.indexField(), plan.axis(), plan.intensities(), plan.extras());
-            assertThat(PointArrays.groupByIndex(data, chunk)).isEmpty();
+            assertThat(PointArrays.groupByIndex(data, chunk, MEMBER)).isEmpty();
         }
     }
 
@@ -64,13 +67,13 @@ class PointArraysTest {
             InputFile data = wavelengthData(source);
             SignalPlan plan = plan(data);
             assertThat(plan.axis().values()).isNotNull();
-            Map<Long, PointArrays.XY> stored = PointArrays.groupByIndex(data, plan);
+            Map<Long, PointArrays.XY> stored = PointArrays.groupByIndex(data, plan, MEMBER);
 
             SignalPlan.Axis axis = plan.axis();
             SignalPlan noValues = new SignalPlan(plan.entity(), plan.source(), plan.layout(), plan.prefix(),
                     plan.indexField(), new SignalPlan.Axis(axis.arrayType(), null, axis.start(), axis.end(),
                     axis.encoding(), axis.transformFields()), plan.intensities(), plan.extras());
-            Map<Long, PointArrays.XY> read = PointArrays.groupByIndex(data, noValues);
+            Map<Long, PointArrays.XY> read = PointArrays.groupByIndex(data, noValues, MEMBER);
 
             assertThat(read.keySet()).containsExactlyElementsOf(stored.keySet());
             stored.forEach((index, xy) -> {
@@ -91,7 +94,7 @@ class PointArraysTest {
                 point(rows, 1, 250.0, 3.5f));
         InputFile data = new LocalInputFile(file);
 
-        Map<Long, PointArrays.XY> read = PointArrays.groupByIndex(data, plan(data));
+        Map<Long, PointArrays.XY> read = PointArrays.groupByIndex(data, plan(data), MEMBER);
 
         assertThat(read.keySet()).containsExactly(0L, 1L);
         assertThat(read.get(0L).x()).containsExactly(200.0, 201.0);

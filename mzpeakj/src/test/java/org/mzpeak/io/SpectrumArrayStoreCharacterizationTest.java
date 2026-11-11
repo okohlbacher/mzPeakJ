@@ -194,7 +194,8 @@ class SpectrumArrayStoreCharacterizationTest {
         Path file = writePoints(POINT_SCHEMA, List.of(point(POINT_SCHEMA, -1L, p[0][0], p[0][1])), 100, true);
         assertThatThrownBy(() -> read(file, -1, false))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("spectrum_index exceeds supported range (uint64 high bit set): -1");
+                .hasMessage("spectrum signal member: uint64 column spectrum_index holds 18446744073709551615, beyond the"
+                        + " supported range (high bit set)");
     }
 
     @Test

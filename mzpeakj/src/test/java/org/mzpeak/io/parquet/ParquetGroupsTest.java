@@ -6,6 +6,7 @@ import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.schema.MessageTypeParser;
 import org.junit.jupiter.api.Test;
 import org.mzpeak.io.Fixtures;
+import org.mzpeak.io.MzPeakException;
 import org.mzpeak.model.Param;
 
 import java.io.FileNotFoundException;
@@ -71,6 +72,59 @@ class ParquetGroupsTest {
         assertThat(ParquetGroups.optInt(fraction, "d")).isEqualTo(42);
         assertThat(ParquetGroups.optInt(nanDouble, "d")).isNull();
         assertThat(ParquetGroups.optLong(fraction, "f")).isNull();
+    }
+
+    /**
+     * An index key is read by its column type: unsigned INT32 without sign extension, a signed (annotated or plain)
+     * or floating-point key as {@code optLong} reads it, and negative only where the column is signed.
+     */
+    @Test
+    void optIndexKeyReadsByTheColumnType() {
+        String schema = "message m { optional int32 u8 (INTEGER(8,false)); optional int32 u32 (INTEGER(32,false));"
+                + " optional int64 u64 (INTEGER(64,false)); optional int32 s32 (INTEGER(32,true)); optional int64 i64;"
+                + " optional float f; optional double d; }";
+        Group g = record(schema);
+        g.add("u8", 0xff);
+        g.add("u32", Integer.MIN_VALUE);
+        g.add("u64", Long.MAX_VALUE);
+        g.add("s32", 7);
+        g.add("i64", 1L << 40);
+        g.add("f", 3.5f);
+        g.add("d", Double.NaN);
+
+        assertThat(ParquetGroups.optIndexKey(g, "u8", "m")).isEqualTo(255L);
+        assertThat(ParquetGroups.optIndexKey(g, "u32", "m")).isEqualTo(1L << 31);
+        assertThat(ParquetGroups.optIndexKey(g, "u64", "m")).isEqualTo(Long.MAX_VALUE);
+        assertThat(ParquetGroups.optIndexKey(g, "s32", "m")).isEqualTo(7L);
+        assertThat(ParquetGroups.optIndexKey(g, "i64", "m")).isEqualTo(1L << 40);
+        assertThat(ParquetGroups.optIndexKey(g, "f", "m")).isEqualTo(3L);
+        assertThat(ParquetGroups.optIndexKey(g, "d", "m")).isNull();
+        assertThat(ParquetGroups.optIndexKey(g, "absent", "m")).isNull();
+        assertThat(ParquetGroups.optIndexKey(record(schema), "u32", "m")).isNull();
+    }
+
+    @Test
+    void optIndexKeyRefusesANegativeKeyNamingTheMemberAndTheColumnType() {
+        Group g = record("message m { optional int32 s32 (INTEGER(32,true)); optional int64 i64;"
+                + " optional double d; optional int64 u64 (INTEGER(64,false)); }");
+        g.add("s32", -2);
+        g.add("i64", Long.MIN_VALUE);
+        g.add("d", -1.5);
+        g.add("u64", -1L);
+
+        assertThatThrownBy(() -> ParquetGroups.optIndexKey(g, "s32", "member.parquet"))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("member.parquet: int32 column s32 holds the negative index -2");
+        assertThatThrownBy(() -> ParquetGroups.optIndexKey(g, "i64", "member.parquet"))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("member.parquet: int64 column i64 holds the negative index -9223372036854775808");
+        assertThatThrownBy(() -> ParquetGroups.optIndexKey(g, "d", "member.parquet"))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("member.parquet: double column d holds the negative index -1");
+        assertThatThrownBy(() -> ParquetGroups.optIndexKey(g, "u64", "member.parquet"))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("member.parquet: uint64 column u64 holds 18446744073709551615, beyond the supported range"
+                        + " (high bit set)");
     }
 
     @Test

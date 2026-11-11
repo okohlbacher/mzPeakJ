@@ -25,10 +25,11 @@ final class PointArrays {
      * order, as spectrum and chromatogram point rows are read. Null x is kept as {@code NaN}; an intensity without
      * any value as 0. A plan in chunk layout has no point rows and gives an empty map.
      *
-     * @throws MzPeakException when an index is negative: an unsigned value of 2^31 or more in an INT32 column, or of
-     *                         2^63 or more, which would miss its header
+     * @param member the name of the data member in errors
+     * @throws MzPeakException when an index is beyond the supported range, as {@link ParquetGroups#optIndexKey} reads
+     *                         it
      */
-    static Map<Long, XY> groupByIndex(InputFile dataFile, SignalPlan plan) {
+    static Map<Long, XY> groupByIndex(InputFile dataFile, SignalPlan plan, String member) {
         Map<Long, XY> out = new LinkedHashMap<>();
         if (plan.layout() != SignalPlan.Layout.POINT) {
             return out;
@@ -46,13 +47,9 @@ final class PointArrays {
             if (p == null) {
                 return;
             }
-            Long idx = ParquetGroups.optLong(p, indexField);
+            Long idx = ParquetGroups.optIndexKey(p, indexField, member);
             if (idx == null) {
                 return;
-            }
-            if (idx < 0) {
-                throw new MzPeakException(indexField + " " + idx + " is out of range (negative when read as a signed"
-                        + " integer: an unsigned value of 2^31 or more in an INT32 column, or of 2^63 or more)");
             }
             Double x = xField == null ? null : ParquetGroups.optDouble(p, xField);
             Double intensity = firstValue(p, intensityFields);
