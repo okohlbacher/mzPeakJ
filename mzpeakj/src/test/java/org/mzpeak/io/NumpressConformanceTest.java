@@ -14,6 +14,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
@@ -30,6 +31,7 @@ import org.mzpeak.model.meta.FileMetadata;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -108,6 +110,23 @@ class NumpressConformanceTest {
             }
         }
         assertThat(digest.summary()).isEqualTo(READ_BACK.get(encoding + " reconstructProfile=" + reconstructProfile));
+    }
+
+    /**
+     * D-5: SLOF intensities read back as the full doubles the Numpress decoder returns, not narrowed to float32 (the
+     * digests above round them to float32 only because their last bit depends on {@link Math#exp}). On current
+     * small.numpress, whose spectra_data stores SLOF intensities, at least one intensity of spectrum 0 is not
+     * representable as a float, in both reconstructProfile modes.
+     */
+    @ParameterizedTest(name = "reconstructProfile={0}")
+    @ValueSource(booleans = {false, true})
+    void slofIntensitiesOfCurrentSmallNumpressAreNotNarrowedToFloat(boolean reconstructProfile) {
+        try (MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.numpress.mzpeak"), reconstructProfile)) {
+            double[] intensity = reader.getSpectrum(0).orElseThrow().intensity();
+            assertThat(intensity).isNotEmpty();
+            assertThat(Arrays.stream(intensity).filter(v -> (double) (float) v != v).count())
+                    .as("intensities of spectrum 0 that float32 cannot hold").isPositive();
+        }
     }
 
     @ParameterizedTest

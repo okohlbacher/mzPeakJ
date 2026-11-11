@@ -7,6 +7,7 @@ import org.mzpeak.model.Spectrum;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,6 +49,21 @@ class NumpressPicTest {
                     assertThat(b.mz()[i]).isCloseTo(a.mz()[i], within(0.01));
                 }
             }
+        }
+    }
+
+    /**
+     * D-5: the reader keeps a decoded SLOF intensity as the full double {@code MSNumpress.decodeSlof} returns, never
+     * narrowed to float32: on current small.numpress (SLOF intensities) at least one intensity of spectrum 0 is not
+     * representable as a float.
+     */
+    @Test
+    void slofIntensitiesOfCurrentSmallNumpressAreFullDoubles() {
+        try (MzPeakReader r = MzPeakReader.open(Fixtures.current("small.numpress.mzpeak"))) {
+            double[] intensity = r.getSpectrum(0).orElseThrow().intensity();
+            assertThat(intensity).isNotEmpty();
+            assertThat(Arrays.stream(intensity).anyMatch(v -> (double) (float) v != v))
+                    .as("an intensity of spectrum 0 that float32 cannot hold").isTrue();
         }
     }
 
