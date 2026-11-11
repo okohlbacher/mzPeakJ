@@ -14,14 +14,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ColumnStatistics.RowGroup;
+import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MetadataColumns.Resolved;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.io.MzPeakWriter.MetadataLayout;
+import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
 import org.mzpeak.model.DoubleRange;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
@@ -29,6 +35,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.function.Function;
@@ -55,6 +62,7 @@ class ColumnStatisticsTest {
     private static final String HIGHEST_MZ = "MS:1000527";
     private static final String SCAN_START_TIME = "MS:1000016";
     private static final String FILTER_STRING = "MS:1000512";
+    private static final String ION_INJECTION_TIME = "MS:1000927";
     private static final String UNKNOWN = "MS:9999999";
     private static final String MZ_ARRAY = "MS:1000514";
     private static final String INTENSITY_ARRAY = "MS:1000515";
@@ -449,6 +457,52 @@ class ColumnStatisticsTest {
         }
     }
 
+    /**
+     * A row group mixing numbers and a NaN, as {@link MzPeakWriter} writes it in either layout, has no bounds and
+     * leaves the statistics incomplete: parquet-java (since 1.18) leaves the NaN out of the footer's minimum and
+     * maximum and counts it instead, so those bounds would not hold for the NaN. Here the ion injection time of the
+     * first scan of small is NaN; written unchanged, the same column has complete bounds.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(MetadataLayout.class)
+    void aRowGroupMixingNumbersAndANaNWrittenByMzPeakWriterHasNoBounds(MetadataLayout layout) {
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.mzpeak"));
+        Path unchanged = tmp.resolve("unchanged.mzpeak");
+        write(unchanged, source, layout);
+        Spectrum first = source.spectra.get(0);
+        SpectrumDescription d = first.description();
+        List<ScanEvent> scans = new ArrayList<>(d.scans());
+        ScanEvent s = scans.get(0);
+        scans.set(0, new ScanEvent(s.startTime(), Double.NaN, s.filterString(), s.presetScanConfiguration(),
+                s.instrumentConfigurationRef(), s.spectrumReference(), s.scanWindows(), s.parameters()));
+        source.spectra.set(0, new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(),
+                d.retentionTime(), d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
+                scans, d.precursors(), d.parameters()), first.mz(), first.intensity(), first.peaks(),
+                first.arrays(), first.peakArrays()));
+        Path withNaN = tmp.resolve("nan.mzpeak");
+        write(withNaN, source, layout);
+
+        try (MzPeakReader reader = MzPeakReader.open(unchanged)) {
+            ColumnStatistics bounded =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.SCANS, ION_INJECTION_TIME).orElseThrow();
+            assertThat(bounded.rowGroups()).hasSize(1);
+            assertThat(bounded.rowGroups().get(0).min()).isNotNull();
+            assertThat(bounded.complete()).isTrue();
+        }
+        try (MzPeakReader reader = MzPeakReader.open(withNaN)) {
+            ColumnStatistics stats =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.SCANS, ION_INJECTION_TIME).orElseThrow();
+            assertThat(stats.rowGroups()).hasSize(1);
+            RowGroup group = stats.rowGroups().get(0);
+            assertThat(group.nullCount()).isEqualTo(0L);
+            assertThat(group.min()).isNull();
+            assertThat(group.max()).isNull();
+            assertThat(stats.complete()).isFalse();
+            assertThat(stats.min()).isEmpty();
+            assertThat(stats.max()).isEmpty();
+        }
+    }
+
     /** Without a column for one of the two terms there is no observed m/z range, whichever term it is. */
     @ParameterizedTest(name = "{0} missing")
     @CsvSource({"MS:1000528, MS:1000527", "MS:1000527, MS:1000528"})
@@ -729,6 +783,12 @@ class ColumnStatisticsTest {
                 + " \"unit\": null},"
                 + "{\"name\": \"unsigned count\", \"path\": \"unsigned_count\", \"accession\": \"" + UNSIGNED_INT64
                 + "\", \"unit\": null}]}");
+    }
+
+    /** {@code source} written by {@link MzPeakWriter} as the directory {@code out} in {@code layout}. */
+    private static void write(Path out, Source source, MetadataLayout layout) {
+        MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, Options.defaults().withMetadataLayout(layout));
     }
 
     private void manifest(String entry) {

@@ -312,6 +312,26 @@ class MetadataColumnsTest {
      */
     @Test
     void aNaNMaximumNextToANumberGivesNoBounds() throws IOException {
+        assertNaNBoundGivesNoBounds(160.5, Double.NaN);
+    }
+
+    /**
+     * A NaN minimum next to a number as maximum, as IEEE 754 total order sorts a negative NaN below every number: the
+     * row group has no bounds either.
+     */
+    @Test
+    void aNaNMinimumNextToANumberGivesNoBounds() throws IOException {
+        assertNaNBoundGivesNoBounds(Double.longBitsToDouble(0xfff8000000000000L), 160.5);
+    }
+
+    // ---- helpers ---------------------------------------------------------------------------------------------
+
+    /**
+     * Writes a row group of 150.5 and one of the values {@code min} and {@code max} whose footer statistics, built
+     * without a NaN count, have the bounds {@code min} and {@code max}, one of which is NaN, and checks that the
+     * second row group has no bounds.
+     */
+    private void assertNaNBoundGivesNoBounds(double min, double max) throws IOException {
         assertThat(LOWEST_OBSERVED_MZ.getPrimitiveType().columnOrder()).isEqualTo(ColumnOrder.ieee754TotalOrder());
         ParquetFileWriter writer = lowLevelWriter();
         writeRowGroup(writer, 0L, 150.5);
@@ -323,10 +343,10 @@ class MetadataColumnsTest {
                 .putLong(1L).putLong(2L).array());
         // parquet-java's own statistics leave NaN out of the bounds; another writer may not
         Statistics<?> mzStats = Statistics.getBuilderForReading(LOWEST_OBSERVED_MZ.getPrimitiveType())
-                .withMin(BytesUtils.longToBytes(Double.doubleToRawLongBits(160.5)))
-                .withMax(BytesUtils.longToBytes(Double.doubleToRawLongBits(Double.NaN))).withNumNulls(0).build();
+                .withMin(BytesUtils.longToBytes(Double.doubleToRawLongBits(min)))
+                .withMax(BytesUtils.longToBytes(Double.doubleToRawLongBits(max))).withNumNulls(0).build();
         writeTwoValueChunk(writer, LOWEST_OBSERVED_MZ, mzStats, ByteBuffer.allocate(16)
-                .order(ByteOrder.LITTLE_ENDIAN).putDouble(160.5).putDouble(Double.NaN).array());
+                .order(ByteOrder.LITTLE_ENDIAN).putDouble(min).putDouble(max).array());
         writer.endBlock();
         writer.end(new HashMap<>());
         manifest(metadataEntry());
@@ -335,7 +355,7 @@ class MetadataColumnsTest {
             MzPeakManifest manifest = MzPeakManifest.fromSource(src);
             assertThat(MetadataColumns.valuesByIndex(manifest, src, EntityType.SPECTRUM, LOWEST_MZ))
                     .hasValueSatisfying(values -> assertThat(values).containsExactly(Map.entry(0L, 150.5),
-                            Map.entry(1L, 160.5), Map.entry(2L, Double.NaN)));
+                            Map.entry(1L, min), Map.entry(2L, max)));
             ColumnStatistics lowest = MetadataColumns.statistics(manifest, src, EntityType.SPECTRUM,
                     DataKind.METADATA, LOWEST_MZ).orElseThrow();
             assertThat(lowest.rowGroups()).containsExactly(new RowGroup(1, 0L, 150.5, 150.5),
@@ -343,8 +363,6 @@ class MetadataColumnsTest {
             assertThat(lowest.complete()).isFalse();
         }
     }
-
-    // ---- helpers ---------------------------------------------------------------------------------------------
 
     /**
      * A chunk of {@code column} of two non-null PLAIN values {@code values} in one v1 data page with the page
