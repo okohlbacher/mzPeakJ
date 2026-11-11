@@ -488,8 +488,7 @@ class SplitSpectrumMetadataTest {
             assertThat(s.parameters()).as(where + " typed ion mobility")
                     .filteredOn(p -> CvTerms.ION_MOBILITY_TYPES.contains(p.accession())).hasSize((int) listed);
         } else {
-            Object type = row.values().get("ion_mobility_type");
-            String accession = type == null ? "MS:1002476" : (String) type;
+            String accession = (String) row.values().get("ion_mobility_type");
             assertThat(s.parameters()).as(where + " typed ion mobility")
                     .anyMatch(p -> p.hasAccession(accession) && mobility.equals(p.value()));
         }

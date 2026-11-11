@@ -231,13 +231,15 @@ class PackedSpectrumMetadataCharacterizationTest {
             scan.add("ion_mobility_type", "MS:1002815");
         })).containsExactly(resolvingPower,
                 "(inverse reduced ion mobility drift time|MS:1002815|Double:1.25|MS:1002814)");
-        // no type, or a blank one: ion mobility drift time (FN-8: with its PSI-MS name and unit)
-        assertThat(scanParams(scan -> scan.add("ion_mobility_value", 1.25)))
-                .containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
-        assertThat(scanParams(scan -> {
+        // D-8: no type, or a blank one, is rejected
+        assertThatThrownBy(() -> scanParams(scan -> scan.add("ion_mobility_value", 1.25)))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("SPECTRUM_SCAN row with source_index 0 has ion_mobility_value 1.25")
+                .hasMessageContaining("no ion_mobility_type");
+        assertThatThrownBy(() -> scanParams(scan -> {
             scan.add("ion_mobility_value", 1.25);
             scan.add("ion_mobility_type", " ");
-        })).containsExactly(resolvingPower, "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
+        })).isInstanceOf(MzPeakException.class).hasMessageContaining("no ion_mobility_type");
         // a value that is not finite is dropped
         assertThat(scanParams(scan -> scan.add("ion_mobility_value", Double.NaN))).containsExactly(resolvingPower);
         assertThat(scanParams(scan -> scan.add("ion_mobility_value", Double.POSITIVE_INFINITY)))
@@ -251,6 +253,7 @@ class PackedSpectrumMetadataCharacterizationTest {
         assertThat(scanParams(scan -> {
             addParam(scan, "MS:1002477", "mean ion mobility drift time", 2.5);
             scan.add("ion_mobility_value", 1.25);
+            scan.add("ion_mobility_type", "MS:1002476");
         })).containsExactly(resolvingPower, "(mean ion mobility drift time|MS:1002477|Double:2.5|␀)",
                 "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)");
     }
@@ -262,6 +265,7 @@ class PackedSpectrumMetadataCharacterizationTest {
             scan.add(POSITION_Y, 4);
             scan.add(POSITION_X, 3);
             scan.add("ion_mobility_value", 1.25);
+            scan.add("ion_mobility_type", "MS:1002476");
         })).containsExactly(resolvingPower,
                 "(ion mobility drift time|MS:1002476|Double:1.25|UO:0000028)",
                 "(position x|IMS:1000050|Long:3|␀)",

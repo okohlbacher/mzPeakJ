@@ -50,7 +50,6 @@ class SplitLeftoversTest {
     private static final String COUNTS = "MS:1000131";
     private static final String POSITION_X = "IMS:1000050";
     private static final String POSITION_Y = "IMS:1000051";
-    private static final String DEFAULT_ION_MOBILITY_TYPE = "MS:1002476";
 
     /** Key and bookkeeping columns: never Params (design 4.2). */
     private static final Set<String> STRUCTURAL = Set.of("index", "id", "source_index", "spectrum_index",
@@ -465,8 +464,7 @@ class SplitLeftoversTest {
         if (value == null) {
             return null;
         }
-        Object type = row.get("ion_mobility_type");
-        String accession = type == null ? DEFAULT_ION_MOBILITY_TYPE : (String) type;
+        String accession = (String) row.get("ion_mobility_type");
         // FN-8: the name and unit of visitor.rs:878-920
         return switch (accession) {
             case "MS:1002476" -> new Param("ion mobility drift time", accession, value, "UO:0000028");
