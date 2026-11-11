@@ -7,6 +7,8 @@ import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
 import org.mzpeak.io.parquet.ParquetGroups;
 
@@ -19,6 +21,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -29,7 +32,7 @@ import java.util.TreeMap;
  *
  * <ul>
  *   <li><b>Parquet members</b> (both ends carry the {@code PAR1} magic): a SHA-256 over the schema
- *       ({@code MessageType.toString()}), the footer key-values sorted by key, the row-group count and every record
+ *       ({@link #schema}, the text of {@code MessageType.toString()} in any default locale), the footer key-values sorted by key, the row-group count and every record
  *       in file order. ZSTD page bytes, page layout and the {@code created_by} string do not enter it.
  *   <li><b>Other members</b> (the manifest): a SHA-256 over the raw bytes.
  * </ul>
@@ -115,7 +118,7 @@ public record ContentDigest(String member, String kind, String detail, String sh
         Map<String, String> keyValues = new TreeMap<>(footer.getKeyValueMetaData());
 
         put("schema", all);
-        put(footer.getSchema().toString(), all, schemaPart);
+        put(schema(footer.getSchema()), all, schemaPart);
         put("key_values", all);
         putLong(keyValues.size(), all, keyValuePart);
         for (Map.Entry<String, String> kv : keyValues.entrySet()) {
@@ -136,6 +139,58 @@ public record ContentDigest(String member, String kind, String detail, String sh
                 + " key_values=" + keyValues.size() + ":" + shortHex(keyValuePart)
                 + " records=" + shortHex(recordPart);
         return new ContentDigest(member, "parquet", detail, HEX.formatHex(all.digest()));
+    }
+
+    /**
+     * {@code schema} as {@code MessageType.toString()} renders it in the root locale. parquet-java 1.17.1 lowercases
+     * a primitive type name with the default locale ({@code PrimitiveType.writeToStringBuilder}), so under
+     * {@code tr_TR} {@code INT64} becomes {@code ınt64}; this walker lowercases with {@link Locale#ROOT} and is
+     * otherwise the same, so the digest does not depend on the locale and the pinned digests stay.
+     */
+    static String schema(MessageType schema) {
+        StringBuilder out = new StringBuilder("message ").append(schema.getName());
+        appendAnnotation(schema, out);
+        out.append(" {\n");
+        appendMembers(schema, "  ", out);
+        return out.append("}\n").toString();
+    }
+
+    /** {@code GroupType.membersDisplayString}: each field, a primitive one followed by {@code ;}, then a newline. */
+    private static void appendMembers(GroupType group, String indent, StringBuilder out) {
+        for (Type field : group.getFields()) {
+            out.append(indent).append(field.getRepetition().name().toLowerCase(Locale.ROOT));
+            if (field.isPrimitive()) {
+                PrimitiveType primitive = field.asPrimitiveType();
+                out.append(' ').append(primitive.getPrimitiveTypeName().name().toLowerCase(Locale.ROOT));
+                if (primitive.getPrimitiveTypeName() == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
+                    out.append('(').append(primitive.getTypeLength()).append(')');
+                }
+                out.append(' ').append(field.getName());
+                appendAnnotation(field, out);
+                appendId(field, out);
+                out.append(';');
+            } else {
+                out.append(" group ").append(field.getName());
+                appendAnnotation(field, out);
+                appendId(field, out);
+                out.append(" {\n");
+                appendMembers(field.asGroupType(), indent + "  ", out);
+                out.append(indent).append('}');
+            }
+            out.append('\n');
+        }
+    }
+
+    private static void appendAnnotation(Type type, StringBuilder out) {
+        if (type.getLogicalTypeAnnotation() != null) {
+            out.append(" (").append(type.getLogicalTypeAnnotation()).append(')');
+        }
+    }
+
+    private static void appendId(Type type, StringBuilder out) {
+        if (type.getId() != null) {
+            out.append(" = ").append(type.getId());
+        }
     }
 
     /** Appends {@code group} in the {@code Group.toString()} layout, with exact leaf values (class comment). */
