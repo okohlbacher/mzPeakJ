@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import java.io.IOException;
+import java.lang.System.Logger.Level;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
@@ -16,6 +17,9 @@ import java.util.Map;
  *
  * <p>Members, offsets and the archive may exceed 4 GiB: per-entry zip64 extra fields and the zip64
  * end-of-central-directory record are read. The central directory itself must fit in 2 GiB.
+ *
+ * <p>A name that occurs more than once maps to its last central-directory entry, as the ZIP specification has it
+ * (RD-16); one WARNING per such name is logged.
  */
 final class ZipIndex {
 
@@ -38,6 +42,7 @@ final class ZipIndex {
     private static final long U32_MAX = 0xFFFFFFFFL;
     /** The tail searched for the end-of-central-directory record before the longest possible tail is read. */
     private static final int EOCD_PROBE = 1024;
+    private static final System.Logger LOG = System.getLogger(ZipIndex.class.getName());
 
     private ZipIndex() {
     }
@@ -47,13 +52,23 @@ final class ZipIndex {
         return read(RandomAccessBytes.of(channel));
     }
 
-    /** The entries of the archive {@code bytes}, in central-directory order. Does not close {@code bytes}. */
+    /** {@link #read(String, RandomAccessBytes)}, naming the archive "zip archive" in warnings. */
     static Map<String, Entry> read(RandomAccessBytes bytes) throws IOException {
+        return read("zip archive", bytes);
+    }
+
+    /**
+     * The entries of the archive {@code bytes}, in central-directory order of each name's first occurrence; a
+     * duplicated name maps to its last entry. {@code description} names the archive in warnings. Does not close
+     * {@code bytes}.
+     */
+    static Map<String, Entry> read(String description, RandomAccessBytes bytes) throws IOException {
         long fileSize = bytes.size();
         Directory directory = directory(bytes, fileSize, locateEocd(bytes, fileSize));
 
         ByteBuffer cd = readAt(bytes, directory.offset(), (int) directory.size());
         Map<String, Entry> entries = new LinkedHashMap<>();
+        Map<String, Integer> occurrences = new LinkedHashMap<>();
         int p = 0;
         int limit = cd.limit();
         for (long i = 0; i < directory.entries(); i++) {
@@ -102,11 +117,13 @@ final class ZipIndex {
             if (dataOffset > fileSize || compressedSize > fileSize - dataOffset) {
                 throw new MzPeakException("corrupt zip entry '" + name + "': data range past end of archive");
             }
-            if (entries.putIfAbsent(name, new Entry(name, method, size, compressedSize, dataOffset)) != null) {
-                throw new MzPeakException("duplicate member '" + name + "' in zip archive");
+            if (entries.put(name, new Entry(name, method, size, compressedSize, dataOffset)) != null) {
+                occurrences.merge(name, 2, (n, one) -> n + 1);
             }
             p = (int) recordEnd;
         }
+        occurrences.forEach((name, n) -> LOG.log(Level.WARNING,
+                () -> description + ": member '" + name + "' occurs " + n + " times; using the last"));
         return entries;
     }
 

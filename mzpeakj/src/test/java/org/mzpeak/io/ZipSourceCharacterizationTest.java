@@ -151,7 +151,7 @@ class ZipSourceCharacterizationTest {
     }
 
     @Test
-    void duplicateMemberNamesThrow(@TempDir Path tmp) throws IOException {
+    void duplicateMemberNamesServeTheLastEntry(@TempDir Path tmp) throws IOException {
         // ZipOutputStream refuses duplicate names, so the copy is written as spectra_peaks.parqueX and renamed in
         // both its local header and its central-directory record.
         String alias = PEAKS.substring(0, PEAKS.length() - 1) + "X";
@@ -161,17 +161,21 @@ class ZipSourceCharacterizationTest {
         ByteBuffer le = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         int record = centralRecords(bytes).get(alias);
         int header = le.getInt(record + 42);
+        int original = le.getInt(centralRecords(bytes).get(PEAKS) + 42);
+        assertThat(original).isLessThan(header);
         bytes[record + 46 + alias.length() - 1] = 't';
         bytes[header + 30 + alias.length() - 1] = 't';
         Files.write(archive, bytes);
         assertThat(centralRecords(bytes)).doesNotContainKey(alias);
 
-        assertThatThrownBy(() -> MzPeakSource.open(archive))
-                .isInstanceOf(MzPeakException.class)
-                .hasMessage("duplicate member '" + PEAKS + "' in zip archive");
-        assertThatThrownBy(() -> MzPeakReader.open(archive))
-                .isInstanceOf(MzPeakException.class)
-                .hasMessage("duplicate member '" + PEAKS + "' in zip archive");
+        // RD-16: the last entry of a name wins; the copy's record follows the original's in the central directory
+        try (FileChannel ch = FileChannel.open(archive, StandardOpenOption.READ)) {
+            assertThat(ZipIndex.read(ch).get(PEAKS).dataOffset())
+                    .isEqualTo(header + 30 + PEAKS.length() + (le.getShort(header + 28) & 0xFFFF));
+        }
+        try (MzPeakReader reader = MzPeakReader.open(archive)) {
+            assertThat(reader.size()).isEqualTo(48);
+        }
     }
 
     @Test
