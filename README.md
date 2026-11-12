@@ -42,14 +42,16 @@ Python, and R. mzPeakJ is an unofficial demonstrator; an official Java implement
 
 ## Requirements & build
 
-- JDK 17+ and Maven 3.9+.
-- Set `JAVA_HOME` if `java` is not on your PATH:
+- JDK 17+ (CI builds on 17 and 21). Set `JAVA_HOME` if `java` is not on your PATH:
   ```bash
-  export JAVA_HOME=/opt/homebrew/opt/openjdk@25   # adjust to your JDK
+  export JAVA_HOME=/path/to/your/jdk
   ```
+- Maven: use the committed Maven Wrapper, `./mvnw` (`mvnw.cmd` on Windows), which downloads and checks Maven
+  3.9.16. A locally installed Maven works only from that version on: the build refuses an older one (enforcer
+  `requireMavenVersion`), since it needs the resolver's repository filter and trusted checksums.
 - Build and test (from the repository root, both modules):
   ```bash
-  mvn verify
+  ./mvnw verify
   ```
 
 The repository is a Maven reactor (parent `pom.xml`) with two modules:
@@ -57,23 +59,28 @@ The repository is a Maven reactor (parent `pom.xml`) with two modules:
 | Module | Artifact | Contents | Jars in `<module>/target/` |
 |---|---|---|---|
 | `mzpeakj/` | `org.mzpeak:mzpeakj` | the mzPeak library (reader, writer, CLI, examples) | `mzpeakj-<version>.jar`, `mzpeakj-<version>-all.jar` (self-contained), `mzpeakj-<version>-tests.jar` (test helpers) |
-| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML ↔ mzPeak converter on top of the library, through jmzML 1.7.11 as is: `MzMLReader` (mzML → mzPeakJ model), `MzMLWriter` (model → plain mzML) and `MzMLConversion` (both directions) in `org.mzpeak.mzml`, and the CLI `org.mzpeak.mzml.cli.MzPeakConvert` (see [mzML conversion](#mzml-conversion)) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library, converter, jmzML and the JAXB runtime, self-contained; no `Main-Class`: run the CLI with `-cp`) |
+| `mzpeakj-mzml/` | `org.mzpeak:mzpeakj-mzml` | mzML ↔ mzPeak converter on top of the library, through jmzML 1.7.11 as is: `MzMLReader` (mzML → mzPeakJ model), `MzMLWriter` (model → plain mzML) and `MzMLConversion` (both directions) in `org.mzpeak.mzml`, and the CLI `org.mzpeak.mzml.cli.MzPeakConvert` (see [mzML conversion](#mzml-conversion)) | `mzpeakj-mzml-<version>.jar`, `mzpeakj-mzml-<version>-all.jar` (library, converter, jmzML and the JAXB runtime, self-contained; runs the CLI with `java -jar`) |
 
-`mvn -pl mzpeakj verify` builds and tests the library alone. The mzML module needs the library from the same
+`./mvnw -pl mzpeakj verify` builds and tests the library alone. The mzML module needs the library from the same
 build: select it with `-pl mzpeakj-mzml -am`, never with `-pl mzpeakj-mzml` alone (Maven would then look for
 `org.mzpeak:mzpeakj` in a repository).
 
 `mzpeakj-mzml` resolves jmzML 1.7.11, xxindex 0.23 and their pride parent POMs from the EBI repository
 <https://www.ebi.ac.uk/Tools/maven/repos/content/groups/ebi-repo/> (declared in its POM, checksum policy `fail`);
-they are not on Maven Central. Without access to that repository, or a `~/.m2` that holds them already, the root
-build fails in `mzpeakj-mzml`; `mvn -pl mzpeakj verify` still builds and tests the library.
+they are not on Maven Central. `.mvn/maven.config` restricts that repository to their three group ids
+(`uk.ac.ebi.jmzml`, `uk.ac.ebi.pride.architectural`, `psidev.psi.tools`), denies the other repositories that
+dependency POMs declare (listed in [.mvn/rrf/README.md](.mvn/rrf/README.md)), and checks the artifacts taken from
+the EBI repository against checksums committed in `.mvn/checksums/`; the build fails when these settings are not
+active, and `tools/check-repo-policy.sh` checks the policy in CI. Without access
+to that repository, or a `~/.m2` that holds them already, the root build fails in `mzpeakj-mzml`;
+`./mvnw -pl mzpeakj verify` still builds and tests the library.
 
 The build is self-contained: it never calls Hadoop FileSystem, Configuration, native libraries, or any
 cluster setup (see [DESIGN.md](DESIGN.md) §6).
 
 ### Test coverage
 
-`mvn verify` also measures test coverage with [JaCoCo](https://www.jacoco.org/) (only the project's own
+`./mvnw verify` also measures test coverage with [JaCoCo](https://www.jacoco.org/) (only the project's own
 `org.mzpeak` and `ms.numpress` classes are instrumented) and enforces it in each module: `jacoco:check` fails
 the build unless every `org.mzpeak` class of the module has 100% line, branch and method coverage. No
 `org.mzpeak` class is excluded. The vendored `ms.numpress` codec of the library, which stays unchanged, is held
@@ -86,11 +93,11 @@ written before the check runs, so it is there when the check fails: open `index.
 and class to the source, where red lines were never run and yellow lines have a branch that was never taken;
 `jacoco.csv` has one row per class with the missed and covered counts, and `jacoco.xml` the same per line for
 tools. JaCoCo appends to `target/jacoco.exec`, so a run without `clean` can report an earlier run's coverage:
-take coverage evidence only from `mvn clean verify`. The gate needs the whole test suite: pass
+take coverage evidence only from `./mvnw clean verify`. The gate needs the whole test suite: pass
 `-Djacoco.skip=true` for quick local runs, such as a single test:
 
 ```bash
-mvn -pl mzpeakj-mzml -am -Djacoco.skip=true -Dsurefire.failIfNoSpecifiedTests=false -Dtest=MzMLTermsTest test
+./mvnw -pl mzpeakj-mzml -am -Djacoco.skip=true -Dsurefire.failIfNoSpecifiedTests=false -Dtest=MzMLTermsTest test
 ```
 
 (`-pl mzpeakj -am` for a library test). See [DESIGN.md](DESIGN.md) §9.5.
@@ -140,10 +147,23 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
 }
 ```
 
-Units: `Chromatogram.time()` is in minutes, and the drift-time ion mobility arrays among the extra arrays of
-spectra and chromatograms (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156) are in
-milliseconds, converted from the unit the file's array index declares. Up to mzPeakJ 0.10.3 these values came in
-the file's unit.
+Units: retention times and scan start times are in minutes. `Chromatogram.time()` is as the file stores it, in
+`Chromatogram.timeUnit()` (a unit CURIE, minute UO:0000031 when the file declares none); `withTimeUnit` converts
+among minute, second (UO:0000010), millisecond (UO:0000028) and hour (UO:0000032). Up to mzPeakJ 0.11 the reader
+converted chromatogram times to minutes:
+
+```java
+Chromatogram tic = reader.tic().orElseThrow();                 // with the reader of the example above
+String unit = tic.timeUnit();                                  // e.g. "UO:0000010" for a file storing seconds
+double[] minutes = tic.withTimeUnit("UO:0000031").time();      // the same chromatogram, times in minutes
+```
+
+`Chromatogram` gained `timeUnit` as its 12th record component: `equals`, `hashCode` and `toString` include it, the
+old constructors still compile (and give minute), but a Java 21 record pattern written against the 11 components
+(`case Chromatogram(var index, …, var precursors)`) needs a 12th one. The drift-time ion mobility arrays among the
+extra arrays of spectra and chromatograms (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156)
+are in milliseconds, converted from the unit the file's array index declares. Up to mzPeakJ 0.10.3 these values came
+in the file's unit.
 
 #### Options, range queries and the other reader features
 
@@ -157,7 +177,8 @@ explicit signal modes, no implicit TIC/BPC by chromatogram index, …).
 // Options: stored profile points only, and only one of the two signal members
 MzPeakReader.Options options = MzPeakReader.Options.defaults()
         .withReconstructProfile(false)                      // default: true
-        .withSignalMode(MzPeakReader.SignalMode.PROFILE);   // BOTH (default), PROFILE or CENTROID
+        .withSignalMode(MzPeakReader.SignalMode.PROFILE)    // BOTH (default), PROFILE or CENTROID
+        .withVersionCheck(true);                            // refuse a format major version above 0 (default)
 try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"), options)) {
     // PROFILE: mz()/intensity() hold the data arrays or are empty, peaks() is empty. A spectrum read in
     // PROFILE or CENTROID mode is a partial view: do not pass it to MzPeakWriter.
@@ -206,10 +227,39 @@ try (MzPeakReader reader = MzPeakReader.open(MzPeakSource.zip("data/run.mzpeak",
 }
 // An unpacked dataset whose members a MemberOpener opens one by one, e.g. objects under a URL prefix:
 // MzPeakReader.open(MzPeakSource.unpacked("https://host/run.mzpeak/", name -> openObject(name)))
+
+// Integrity: compare each member with the SHA-512 checksum in the manifest (never done on open)
+IntegrityReport report = MzPeakReader.verifyIntegrity(Path.of("data/run.mzpeak"));  // or reader.verifyIntegrity()
+System.out.println(report.outcome());                  // VALID, INVALID or UNVERIFIABLE (a checksum is missing)
+for (IntegrityReport.MemberResult m : report.failures()) {   // MISMATCH and MISSING_MEMBER, in manifest order
+    System.out.println(m.name() + ": " + m.status());
+}
 ```
 
 Grid-encoded spectra (`MS:1003826`, such as `diaPASEF.grid`) need no option: they decode like the other chunk
-layouts. Manifest checksums are not verified yet.
+layouts. `verifyIntegrity(Path)` reads only the manifest and the members, so it also reports a corrupt member that
+`open` would refuse; unlike the reference readers it checks every member even when one checksum is missing.
+
+What the reader accepts and refuses (details in [DESIGN.md](DESIGN.md) §1–§5):
+
+- **Manifests** are parsed as strictly as the Rust reader's serde does: a missing required field, a field of the
+  wrong JSON type, an accession or unit that is not CURIE-shaped, a known field given twice or content after the
+  document is rejected with a message naming the entry and field. Up to 0.11 such manifests were read leniently.
+- **Format version**: a `metadata.version` with a major version above 0 is refused unless the version check is off
+  (`Options.withVersionCheck(false)` or `-Dmzpeak.reader.ignoreVersion=true`); a missing or unparseable one logs a
+  warning.
+- **Datasets without spectrum metadata** (chromatograms only) open with 0 spectra.
+- **ZIP archives**: a member name that occurs twice resolves to the last entry, with a warning; a central directory
+  whose size does not fit its entry count, or exceeds 64 MiB, is refused before it is read.
+- **Ion mobility**: an `ion_mobility_value` without `ion_mobility_type` throws, as the Rust reader panics there (up
+  to 0.11 it was read as drift time).
+- **Unit columns**: a column mapping whose unit is a column path gets its unit per row, for leftover Params and the
+  collision energy.
+- **Signal keys** stored as unsigned 32-bit integers of 2³¹ and above read correctly.
+- **Legacy packed spectra** keep their unconsumed columns (spectrum type, the summary values) as Params, as the split
+  read of the same data does.
+- Facet rows whose `source_index` names no spectrum are dropped silently, as in the Rust reader; Numpress intensities
+  are full doubles, never narrowed to float.
 
 ### Writing
 
@@ -258,11 +308,13 @@ Without a row-group size, the `mzpeak.writer.rowGroupSize` system property appli
 - **`SPLIT`**, the default, writes the current mzPeak layout. Each metadata facet gets its own table:
   `spectra_metadata` with its `_scans`, `_precursors` and `_selected_ions` tables, and likewise for
   chromatograms and wavelength spectra. Every scan, precursor and selected ion of a spectrum is written. The
-  manifest uses the current dialect, with column mappings. The HEAD reference Python reader reads this output.
+  manifest uses the current dialect, with column mappings. The HEAD reference Python reader and the Rust
+  reference reader read this output; both are checked (the Rust reader in CI, see the writer notes).
 - **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
   and only the first scan and the primary precursor of a spectrum; no wavelength-spectrum Params, and no
   chromatogram polarity, data processing reference, Params or precursors (one WARNING for each kind dropped).
-  Use it only for readers of that era; the current Python reader rejects it.
+  Since 0.12.0 a spectrum type or summary term it writes as a column no longer stays in the `parameters` list as
+  well. Use it only for readers of that era; the current Python and Rust readers reject it.
 
 #### Round-trip example (read → write)
 
@@ -298,17 +350,39 @@ Writer notes:
   as an invented peak (a deviation from the spec's routing).
 - An m/z, chromatogram time or wavelength axis that is not ascending is written re-sorted, with one WARNING per
   entity. The sort orders rows by `Double.compare`, so rows with a NaN move to the end.
-- Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The Numpress layout
-  takes only finite m/z of at least 0 that its fixed point encodes (see `SignalEncoding.NUMPRESS`; sorted m/z up
-  to 21474.83 always are) and refuses any other before anything is written. The point layout writes every m/z,
-  but reads a NaN m/z back interpolated, as its null marker; so transition data without a product-ion m/z
-  (SRM/MRM) keeps its NaN m/z in neither layout.
+- Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The Numpress layout takes
+  only finite m/z of at least 0 that its fixed point encodes (see `SignalEncoding.NUMPRESS`; sorted m/z up to
+  21474.83 always are) and only finite intensities of at least 0 (PIC: rounding to at most 2147483647), and refuses
+  any other value, naming the spectrum, before anything is written. The point layout writes every m/z, but reads a
+  NaN m/z back interpolated, as its null marker; so transition data without a product-ion m/z (SRM/MRM) keeps its
+  NaN m/z in neither layout.
 - Extra signal arrays are written: those of spectra (`arrays()` and `peakArrays()`, such as per-peak ion
   mobility) as extra columns of `spectra_data` and `spectra_peaks` in both signal encodings, those of
   chromatograms (such as the TIC's `ms level`) as extra columns of `chromatograms_data`, which holds the
   intensities of each chromatogram intensity unit in a column of their own, so the unit is kept (a chromatogram
   without points reads back without one). The default `SPLIT` layout also writes chromatogram polarity, data
   processing reference, Params and precursors, and wavelength-spectrum Params.
+- Chromatogram times are written as given, with their `timeUnit` declared, and read back in that unit.
+  Chromatograms of different time units in one dataset are refused before anything is written; convert them first
+  with `Chromatogram.withTimeUnit`.
+- In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
+  one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
+  full scan schema, and `chromatograms_metadata` carries empty `auxiliary_arrays` with its `ARROW:schema` entry, as
+  the reference writes them.
+- Every reference in the file-level documents resolves: a run default or software reference that names nothing
+  gets a stub entity of that id (an instrument configuration, data processing, source file or software), with one
+  WARNING each; files whose references resolve are written unchanged. diaPASEF.ref and diaPASEF.grid, whose run
+  names instrument configuration 1 while only 0 exists, are written with a stub configuration 1.
+- A `SPLIT` write of a legacy (packed) dataset keeps the summary values it stores (observed m/z range, base peak,
+  TIC) instead of deriving them from the arrays, since the reader now gives them as Params; a spectrum without them
+  still gets derived values. This deviates from a default of the 0.12.0 design round, see
+  [docs/design-decisions.md](docs/design-decisions.md).
+- Imaging output follows the Rust reference as before (IMS CV, `opt_IMS_1000050_position_x`/`_y` columns).
+- The Rust reference reader (`mzpeak_prototyping` at HUPO-PSI/mzPeak `2ee2589`) reads the `SPLIT` output: the CI job
+  `rust-reader` builds [`tools/rdump`](tools/rdump/README.md) and compares every main signal array (m/z, intensity,
+  time, wavelength) and every centroid peak it reads with mzPeakJ's read, peak intensities as float32
+  (`RustReaderAcceptanceTest`). Extra arrays such as per-peak ion mobility are not compared, since Rust does not
+  expose them, and for a dataset written without chromatograms Rust reports its own derived TIC and BPC. Its known issues are in [docs/upstream-issues.md](docs/upstream-issues.md).
 - Not yet written: the delta-`chunk` layout and chunked chromatograms; the m/z + intensity payload is preserved
   in full. A `PACKED` write logs one WARNING for each kind of content that layout drops (see above).
 - Known limits of the HEAD Python reader (HUPO-PSI/mzPeak `2ee2589`) on mzPeakJ's output: it loses the
@@ -402,19 +476,21 @@ Writes `retention_time,intensity` CSV rows (MS1 by default). Tolerance via `--to
 The module `mzpeakj-mzml` converts mzML 1.1 to mzPeak and mzPeak to mzML through jmzML 1.7.11 as is
 (`org.mzpeak.mzml.MzMLConversion`; `MzMLReader` and `MzMLWriter` are public too). `MzMLConversion.toMzPeak`
 writes the mzML's cv list: it replaces the cv list of the `MzPeakWriter.Options` it is given. The command-line tool
-runs from the module's self-contained jar, which `mvn verify` (or `mvn -DskipTests package`) builds:
+runs from the module's self-contained jar, which `./mvnw verify` (or `./mvnw -DskipTests package`) builds. Its
+manifest names the main class `org.mzpeak.mzml.cli.MzPeakConvert` and enables native access for the zstd library, so
+`java -jar` needs no further flags:
 
 ```bash
-java [-Xmx...] -cp mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar org.mzpeak.mzml.cli.MzPeakConvert \
-    [--help] [options] <input> <output>
+java [-Xmx...] -jar mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar [--help] [options] <input> <output>
 
 jar=$(ls mzpeakj-mzml/target/mzpeakj-mzml-*-all.jar)
-java -cp "$jar" org.mzpeak.mzml.cli.MzPeakConvert mzpeakj-mzml/src/test/resources/mzml/tiny.pwiz.1.1.mzML /tmp/tiny.mzpeak
-java -Xmx2g -cp "$jar" org.mzpeak.mzml.cli.MzPeakConvert mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/small.mzML
+java -jar "$jar" mzpeakj-mzml/src/test/resources/mzml/tiny.pwiz.1.1.mzML /tmp/tiny.mzpeak
+java -Xmx2g -jar "$jar" mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/small.mzML
 ```
 
-On JDK 24 and later, `--enable-native-access=ALL-UNNAMED` before `-cp` silences the JDK's warning about the native
-zstd library, as `run-example.sh` does.
+The jar bundles only the 81 classes of fastutil that jmzML uses. Chromatogram times keep their unit in both
+directions; when an mzML holds chromatograms of different time units, the later ones are converted to the unit of the
+first (loss B-15). The [mzML converter page](docs/mzml-converter.md) gives the full mapping.
 
 The direction comes from the names, case-insensitive:
 
@@ -527,9 +603,9 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 ### What is lost
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
-kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
-converted to minutes or lost array data processing refs, and A-1 … A-33 for mzPeak → mzML, such as required content
-synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
+kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, scan
+start times converted to minutes or lost array data processing refs, and A-1 … A-33 for mzPeak → mzML, such as required
+content synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
 [losses section of the mzML converter design](docs/mzml-converter.md#losses) lists each loss and which class counts
 it; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
 Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
@@ -613,7 +689,7 @@ classes statically reference Hadoop types — but it is never actually invoked.
   `file_description`, `instrument_configuration_list`, `software_list`, `data_processing_method_list`,
   `sample_list`, `run` and `scan_settings_list`; writers also copy them into the Parquet footer key-value map,
   which mzPeakJ reads for any document the manifest lacks.
-- **Legacy layout** (upstream `29e59b2` and earlier, mzPeakJ output so far): the roles are spelled
+- **Legacy layout** (upstream `29e59b2` and earlier, mzPeakJ's `PACKED` output): the roles are spelled
   `data arrays` and `wavelength spectrum`, and `spectra_metadata.parquet` holds **packed parallel tables** —
   `spectrum` / `scan` / `precursor` / `selected_ion` struct columns joined by `source_index`, where rows with a
   null struct or `source_index` are placeholders. mzPeakJ reads both layouts.
@@ -635,8 +711,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
   params (facet join by `source_index`), `double[]` m/z + intensity, centroid peaks, extra arrays such as
   per-peak ion mobility, and profile reconstruction of null-marked points using the stored m/z delta-model
   polynomial (linear interpolation fallback when no model is stored).
-- Chromatograms (TIC, DAD/absorption, …) — point and chunk time-axis layouts both decoded, with their intensity
-  unit and per-point extra arrays (`Chromatogram.arrays()`, such as the TIC's `ms level`).
+- Chromatograms (TIC, DAD/absorption, …) — point and chunk time-axis layouts both decoded, with their time and
+  intensity units and per-point extra arrays (`Chromatogram.arrays()`, such as the TIC's `ms level`).
 - Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type.
 - File/run metadata from the manifest, with the Parquet footer as fallback: instrument configuration,
   software, run, source files, sample, data processing (read + written).
@@ -650,14 +726,16 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - Streaming reader — only the row groups covering a requested spectrum are decoded; bounded memory.
 - Reader API ([DESIGN.md](DESIGN.md) §8.2): reader options and signal modes (both members, profile only,
   centroid only), range queries by time or index with m/z, ion-mobility and MS-level filters, metadata column
-  statistics and observed m/z and time ranges, a TIC and BPC derived from the spectrum metadata, and a storage SPI
-  (`RandomAccessBytes`, `MzPeakSource.zip` / `MzPeakSource.unpacked`) for remote or custom storage.
+  statistics and observed m/z and time ranges, a TIC and BPC derived from the spectrum metadata, a storage SPI
+  (`RandomAccessBytes`, `MzPeakSource.zip` / `MzPeakSource.unpacked`) for remote or custom storage, a format version
+  check, and an integrity check of the members against their SHA-512 checksums (`verifyIntegrity`).
 - Writing: ZSTD Parquet (point layout + Numpress chunk layout with SLOF or PIC intensity), directory and
   STORED ZIP, format version `0.9.0`, in the split metadata layout that the HEAD Python reader reads (the
   pin-era packed layout on request). Round-trips the metadata schema — derived spectrum columns, precursor
   activation, scan windows, typed ion-mobility + imaging-position columns, wavelength (UV/DAD) facets, the
   imaging `scan_settings_list`, the extra signal arrays of spectra and chromatograms and the chromatogram
-  intensity unit. The opt-in
+  time and intensity units. The split output is read by the HEAD Python reader and by the Rust reference reader
+  (checked in CI). The opt-in
   `mzpeak-validate` gate currently fails (validator 0.9.25 predates the array-index schema; whether the CV
   list of `PACKED` output must declare IMS is undecided), so validation is not claimed.
 - Runnable example tools: file summary, spectrum extractor, DTA converter, XIC extractor.
@@ -681,7 +759,7 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
-- **Integrity**: the manifest's SHA-512 checksums are not verified on read.
+- **Integrity**: the manifest's SHA-512 checksums are verified only on request (`verifyIntegrity`), not on open.
 - **Grid models**: the timsTOF grid accessions `MS:9999001` and `MS:9999002` are provisional; grids are
   decoded in spectrum signal members only.
 - **Predicate/page-level pushdown** within a row group (whole row groups are skipped by min/max stats, but all pages within a selected group are decoded).
@@ -709,8 +787,8 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - mzML test fixtures and the PSI mzML schemas (`mzpeakj-mzml/src/test/resources/mzml/`)
 - CC BY 4.0 PSI-MS instrument-model accessions (`mzpeakj-mzml/src/main/resources/org/mzpeak/mzml/`, also in the
   converter's jars)
-- in the two `-all` jars only, the runtime libraries: parquet-java 1.17.1, Jackson 2.18.2, hadoop-client-api 3.5.0,
-  snappy-java 1.1.10.7, aircompressor 2.0.2 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
+- in the two `-all` jars only, the runtime libraries: parquet-java 1.18.2, Jackson 2.23.0, hadoop-client-api 3.5.0,
+  snappy-java 1.1.10.12, aircompressor 2.0.3 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
   jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);
   slf4j-api and slf4j-nop 1.7.33 (MIT); and the native code compiled into the native libraries of two of them:
   zstd 1.5.7 in zstd-jni's (BSD-3-Clause; zstd is dual-licensed BSD or GPLv2), snappy 1.1.10 (BSD-3-Clause) and

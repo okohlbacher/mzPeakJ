@@ -49,8 +49,8 @@ library stays free of jmzML, JAXB and logging frameworks; an enforcer rule fails
 
 ## Command line
 
-The module's shaded jar `mzpeakj-mzml-<version>-all.jar` (built by `mvn verify` or `mvn -DskipTests package`) runs
-with `-jar`; its manifest names the main class and enables native access for the zstd library:
+The module's shaded jar `mzpeakj-mzml-<version>-all.jar` (built by `./mvnw verify` or `./mvnw -DskipTests package`)
+runs with `-jar`; its manifest names the main class and enables native access for the zstd library:
 
 ```bash
 java [-Xmx...] -jar mzpeakj-mzml-<version>-all.jar [--help] [options] <input> <output>
