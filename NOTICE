@@ -19,25 +19,27 @@ Runtime libraries bundled in the self-contained jars
   Files: mzpeakj/target/mzpeakj-<version>-all.jar and mzpeakj-mzml/target/mzpeakj-mzml-<version>-all.jar (the
          plain jars bundle none of them); the converter's jar also bundles org.mzpeak:mzpeakj (this project, MIT).
   Each -all jar carries the licence and notice files of these libraries (META-INF/LICENSE, LICENSE.txt, NOTICE,
-  NOTICE.txt and FastDoubleParser-LICENSE, in the converter's jar also LICENSE.md and NOTICE.md, the files of
-  several jars concatenated), this project's LICENSE and NOTICE as META-INF/LICENSE.mzpeakj and
-  META-INF/NOTICE.mzpeakj, and the licence texts in licenses/ as META-INF/LICENSE.<file name>.
+  NOTICE.txt, FastDoubleParser-LICENSE, FastDoubleParser-ThirdParty-LICENSE and Schubfach-LICENSE, in the
+  converter's jar also LICENSE.md and NOTICE.md, the files of several jars concatenated), this project's LICENSE
+  and NOTICE as META-INF/LICENSE.mzpeakj and META-INF/NOTICE.mzpeakj, and the licence texts in licenses/ as
+  META-INF/LICENSE.<file name>.
 
   org.apache.parquet:parquet-hadoop, parquet-column, parquet-common, parquet-encoding,
-    parquet-format-structures, parquet-jackson 1.17.1      Apache License 2.0 (licenses/Apache-2.0.txt);
+    parquet-format-structures, parquet-jackson 1.18.2      Apache License 2.0 (licenses/Apache-2.0.txt);
                                                            parquet-jackson bundles Jackson with FastDoubleParser
                                                            and Schubfach (MIT), see its LICENSE and NOTICE files
-  com.fasterxml.jackson.core:jackson-core, jackson-databind,
-    jackson-annotations 2.18.2                             Apache License 2.0; jackson-core bundles
-                                                           FastDoubleParser (see its FastDoubleParser files)
+  com.fasterxml.jackson.core:jackson-core, jackson-databind
+    2.23.0, jackson-annotations 2.23                       Apache License 2.0; jackson-core bundles
+                                                           FastDoubleParser and Schubfach (MIT), see its
+                                                           FastDoubleParser and Schubfach files
   org.apache.hadoop:hadoop-client-api 3.5.0                Apache License 2.0, with the third-party code it lists
                                                            in its LICENSE.txt and NOTICE.txt
-  org.xerial.snappy:snappy-java 1.1.10.7                   Apache License 2.0; its native libraries (libsnappyjava)
+  org.xerial.snappy:snappy-java 1.1.10.12                  Apache License 2.0; its native libraries (libsnappyjava)
                                                            embed snappy 1.1.10 (Copyright 2011 Google Inc.), BSD
                                                            3-Clause License (licenses/BSD-3-Clause-snappy.txt),
                                                            and bitshuffle 0.3.4 (Copyright (c) 2014 Kiyoshi
                                                            Masui), MIT License (licenses/MIT-bitshuffle.txt)
-  io.airlift:aircompressor 2.0.2                           Apache License 2.0
+  io.airlift:aircompressor 2.0.3                           Apache License 2.0
   commons-pool:commons-pool 1.6                            Apache License 2.0
   com.github.luben:zstd-jni 1.5.7-3                        BSD 2-Clause License (licenses/BSD-2-Clause-zstd-jni.txt);
                                                            its native libraries (libzstd-jni) embed zstd 1.5.7
