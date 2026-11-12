@@ -688,9 +688,12 @@ class MzMLReaderRunTest {
                 .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
     }
 
-    /** A tic without its time array drops its intensity array too (B-9) and reads with the default unit minute. */
+    /**
+     * A tic without its time array drops its intensity array too (B-9) and, without times, takes the run's
+     * chromatogram time unit, the sic's seconds (V-23 review).
+     */
     @Test
-    void anIntensityOnlyChromatogramReadsInMinutes(@TempDir Path dir) throws IOException {
+    void anIntensityOnlyChromatogramTakesTheRunsTimeUnit(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> removeFirstArray(s, "id=\"tic\""));
 
         Run run = read(file);
@@ -698,9 +701,45 @@ class MzMLReaderRunTest {
         Chromatogram tic = run.chromatograms.get(0);
         assertThat(tic.time()).isEmpty();
         assertThat(tic.intensity()).isEmpty();
-        assertThat(tic.timeUnit()).isEqualTo("UO:0000031");
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
         assertThat(run.reader.warnings())
                 .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
+    }
+
+    /** A tic without binaryDataArrayList takes the run's chromatogram time unit, the sic's seconds (V-23 review). */
+    @Test
+    void aChromatogramWithoutArraysTakesTheRunsTimeUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, MzMLReaderRunTest::withoutTicArrays);
+
+        Run run = read(file);
+
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.time()).isEmpty();
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
+        assertThat(run.chromatograms.get(1).timeUnit()).isEqualTo("UO:0000010");
+    }
+
+    /**
+     * Without a time unit declared by any chromatogram, the tic without arrays and the sic's time array without unit
+     * read in minutes.
+     */
+    @Test
+    void chromatogramsReadInMinutesWhenNoneDeclaresATimeUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(withoutTicArrays(s), "id=\"sic\"",
+                " unitCvRef=\"UO\" unitAccession=\"UO:0000010\" unitName=\"second\"", ""));
+
+        Run run = read(file);
+
+        assertThat(run.chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
+        assertThat(run.chromatograms.get(0).time()).isEmpty();
+        assertThat(run.chromatograms.get(1).time()).isEqualTo(seconds(10));
+    }
+
+    /** {@code s} with the tic's binaryDataArrayList removed. */
+    private static String withoutTicArrays(String s) {
+        int start = s.indexOf("<binaryDataArrayList", s.indexOf("id=\"tic\""));
+        int end = s.indexOf("</binaryDataArrayList>", start) + "</binaryDataArrayList>".length();
+        return s.substring(0, start) + s.substring(end);
     }
 
     @Test

@@ -269,6 +269,11 @@ public final class MzMLReader {
     private Set<String> wavelengthIds = Collections.emptySet();
     /** True while {@link #survey()} runs the mapping: arrays are not decoded. */
     private boolean surveying;
+    /**
+     * The run's chromatogram time unit, the first unit a chromatogram's time array declares, null for none; filled by
+     * {@link #survey()} and given to a chromatogram without time array or time unit (D-12c).
+     */
+    private String chromatogramTimeUnit;
     /** The list defaults of data processing, and the next MS, wavelength and chromatogram index of a pass. */
     private String spectrumListDefault;
     private String chromatogramListDefault;
@@ -820,8 +825,10 @@ public final class MzMLReader {
     /**
      * A chromatogram (design 5.8): its type and polarity promoted; its data processing (its own, else the list's
      * {@code listDefault}) kept when it differs from the spectrumList's; its precursor; its product dropped (B-27); its
-     * time as stored with the time array's unit as {@code timeUnit} (minute without unit or time array, D-12c), also
-     * when B-9 drops the time array, and its intensity unit as given.
+     * time as stored with the time array's unit as {@code timeUnit} (D-12c), also when B-9 drops the time array, and
+     * its intensity unit as given. A time array without unit is in minutes. A chromatogram without time array or time
+     * unit, which has no times, takes the run's chromatogram time unit, so it cannot conflict with the others in the
+     * writer's same-time-unit check; minute when no chromatogram declares one.
      */
     private Consumer<Visitor> chromatogram(uk.ac.ebi.jmzml.model.mzml.Chromatogram c, String listDefault) {
         List<Param> params = new ArrayList<>(params(c));
@@ -836,11 +843,19 @@ public final class MzMLReader {
         }
         note(B_27, c.getProduct() == null ? 0 : 1);
         Signal signal = classify(Kind.CHROMATOGRAM, arrays(c.getBinaryDataArrayList(), c.getDefaultArrayLength()));
+        String timeUnit = signal.axisUnit();
+        if (surveying) {
+            if (chromatogramTimeUnit == null) {
+                chromatogramTimeUnit = timeUnit;
+            }
+        } else if (timeUnit == null && signal.axis() == null) {
+            timeUnit = chromatogramTimeUnit;
+        }
         Chromatogram chromatogram = new Chromatogram(chromatogramIndex++, c.getId(),
                 type == null ? null : type.accession(), values(signal.axis()), values(signal.intensity()),
                 signal.intensity() == null ? null : signal.intensity().array().unit(), values(signal.extras()),
                 polarity, Objects.equals(processing, spectrumListDefault) ? null : processing, params, precursors,
-                Objects.requireNonNullElse(signal.axisUnit(), MINUTE));
+                Objects.requireNonNullElse(timeUnit, MINUTE));
         return v -> v.chromatogram(chromatogram);
     }
 

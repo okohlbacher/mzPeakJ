@@ -772,6 +772,54 @@ class MzMLConversionTest {
                 .containsExactly("UO:0000010", "UO:0000010");
     }
 
+    /**
+     * D-12c (V-23 review): the tic without its time array loses its intensity array too (B-9) and, without times,
+     * takes the run's chromatogram time unit, the sic's seconds, so the conversion succeeds and the empty tic reads
+     * back in seconds.
+     */
+    @Test
+    void anIntensityOnlyChromatogramConvertsWithTheRunsTimeUnit() throws IOException {
+        Path file = tinyWith(s -> {
+            int start = s.indexOf("<binaryDataArray ", s.indexOf("id=\"tic\""));
+            int end = s.indexOf("</binaryDataArray>", start) + "</binaryDataArray>".length();
+            return s.substring(0, start) + s.substring(end);
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLReader.B_9 + " (1)");
+        assertEmptyTicInSeconds(b);
+    }
+
+    /**
+     * D-12c (V-23 review): the tic without binaryDataArrayList has no arrays to lose and, without times, takes the
+     * run's chromatogram time unit, the sic's seconds, so the conversion succeeds and the empty tic reads back in
+     * seconds.
+     */
+    @Test
+    void aChromatogramWithoutArraysConvertsWithTheRunsTimeUnit() throws IOException {
+        Path file = tinyWith(s -> {
+            int start = s.indexOf("<binaryDataArrayList", s.indexOf("id=\"tic\""));
+            int end = s.indexOf("</binaryDataArrayList>", start) + "</binaryDataArrayList>".length();
+            return s.substring(0, start) + s.substring(end);
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLReader.B_9));
+        assertEmptyTicInSeconds(b);
+    }
+
+    private static void assertEmptyTicInSeconds(B b) throws IOException {
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(0, 10);
+            assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
+                    .containsExactly("UO:0000010", "UO:0000010");
+        }
+        assertThat(model(b.mzml).chromatograms()).extracting(Chromatogram::timeUnit)
+                .containsExactly("UO:0000010", "UO:0000010");
+    }
+
     @Test
     void toMzMLRefusesAnExistingTargetBeforeItOpensTheInput() throws IOException {
         Path target = Files.writeString(dir.resolve("exists.mzML"), "kept");
