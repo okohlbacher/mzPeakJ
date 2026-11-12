@@ -294,7 +294,7 @@
           </execution>
           <!-- Fail-closed guard of .mvn/maven.config (design D-2): the resolver's group filter (.mvn/rrf: ebi-repo
                serves only jmzML's groups, every POM-declared repository is denied) and its trusted checksums
-               (.mvn/checksums: the jmzML jar) are user properties that only maven.config sets, with paths under
+               (.mvn/checksums: every artifact from ebi-repo) are user properties that only maven.config sets, with paths under
                ${session.rootDirectory}. A Maven older than the wrapper's, a build that does not read maven.config,
                a basedir left uninterpolated or a deleted filter or summary file fails here, before any module
                resolves its compile dependencies, instead of silently filtering and checking nothing.

@@ -38,3 +38,23 @@ Denied as well, though not reported in those runs:
 
 A new dependency that brings another repository: add `groupId-<id>.txt` with `org.mzpeak.repository-denied`, list it
 here, and rerun `tools/check-repo-policy.sh`.
+
+## Trusted checksums
+
+`.mvn/maven.config` also turns on the resolver's trusted checksums with `.mvn/checksums` as the summary-file basedir:
+`checksums.sha512` and `checksums.sha1` hold the SHA-512 and SHA-1 of every artifact `ebi-repo` serves, and a
+resolved artifact whose digest differs fails the build, naming the artifact. Artifacts from `central` are not pinned
+(`failIfMissing=false`).
+
+| artifact | files |
+|---|---|
+| `uk.ac.ebi.jmzml:jmzml:1.7.11` | jar, pom |
+| `psidev.psi.tools:xxindex:0.23` | jar, pom |
+| `uk.ac.ebi.pride.architectural:pride-core:1.0.1` | pom (parent of jmzML, xxindex and the two below) |
+| `uk.ac.ebi.pride.architectural:pride-logging:1.0.0` | pom (a `type` pom dependency of jmzML) |
+| `uk.ac.ebi.pride.architectural:pride-xml-handling:1.0.3` | pom (a `type` pom dependency of jmzML) |
+
+Recorded with `./mvnw -B -Dmaven.repo.local=<fresh dir> -Daether.artifactResolver.postProcessor.trustedChecksums.record=true
+verify -DskipTests` on empty summary files, pruned to these artifacts, and checked against the `.sha1` files the
+repository serves. A changed jmzML or xxindex version: record again the same way, prune, update this table and the
+count `tools/check-repo-policy.sh` expects.
