@@ -638,6 +638,58 @@ class MzMLReaderRunTest {
                         + " converted to UO:0000031");
     }
 
+    /**
+     * The tic's time array in minutes, milliseconds, hours and without unit (the sic stays in seconds): it is read in
+     * minutes, each converted array counted as B-15 next to the sic's and scan=21's start time.
+     */
+    @Test
+    void chromatogramTimeArraysAreReadInMinutes(@TempDir Path dir) throws IOException {
+        String second = " unitCvRef=\"UO\" unitAccession=\"UO:0000010\" unitName=\"second\"";
+        double[] asStored = new double[15];
+        double[] fromMilliseconds = new double[15];
+        double[] fromHours = new double[15];
+        for (int i = 0; i < 15; i++) {
+            asStored[i] = i;
+            fromMilliseconds[i] = i / 60_000.0;
+            fromHours[i] = i * 60.0;
+        }
+        List<Arguments> cases = List.of(
+                arguments(" unitCvRef=\"UO\" unitAccession=\"UO:0000031\" unitName=\"minute\"", asStored, 2),
+                arguments(" unitCvRef=\"UO\" unitAccession=\"UO:0000028\" unitName=\"millisecond\"",
+                        fromMilliseconds, 3),
+                arguments(" unitCvRef=\"UO\" unitAccession=\"UO:0000032\" unitName=\"hour\"", fromHours, 3),
+                arguments("", asStored, 2));
+        for (Arguments c : cases) {
+            String unit = (String) c.get()[0];
+            Path file = tinyWith(dir, s -> replaceAfter(s, "id=\"tic\"", second, unit));
+
+            Run run = read(file);
+
+            Chromatogram tic = run.chromatograms.get(0);
+            assertThat(tic.timeUnit()).as(unit).isEqualTo("UO:0000031");
+            assertThat(tic.time()).as(unit).containsExactly((double[]) c.get()[1]);
+            assertThat(run.chromatograms.get(1).timeUnit()).isEqualTo("UO:0000031");
+            assertThat(run.chromatograms.get(1).time()).isEqualTo(minutes(10));
+            assertThat(run.reader.warnings()).as(unit)
+                    .contains("B-15 times converted to minutes and drift times to milliseconds (" + c.get()[2] + ")");
+        }
+    }
+
+    /** A tic without its intensity array drops its time array too (B-9) and reads with the default unit minute. */
+    @Test
+    void aTimeOnlyChromatogramReadsInMinutes(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(s, "name=\"time array\""));
+
+        Run run = read(file);
+
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.time()).isEmpty();
+        assertThat(tic.intensity()).isEmpty();
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000031");
+        assertThat(run.reader.warnings())
+                .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
+    }
+
     @Test
     void aScanStartTimeInNanometersIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20, "unitCvRef=\"UO\" unitAccession=\"UO:0000031\"",
