@@ -1,0 +1,8 @@
+https://github.com/HUPO-PSI/mzPeak-specification @ 98800705d647ea8d2a6581420b3eab248b20857a (schema/, copied verbatim)
+ms_run.json                    91588e97ff8a312ed0265b8d6251a1c173412f3eba2122e3f5fb90cf8ddb53e4
+software.json                  e50a7ba3b141bdd039e8714b302fc540a2ae4f6bf9c7829ce42e9e40aaf5c702
+data_processing.json           ad48690fbe8159b6161d050c2983c97249e4b5a35499e73db327fa85fa503c52
+instrument_configuration.json  f611ddb297e24dd117411d22cccbae89835512e4b7e801516045e9a61ba314f2
+file_description.json          d4d7864bf8fba907cf22d1cf528880984b5daf6364a4731b9dfa2ca6dbe0b991
+The SHA-256 of each file follows its name. SpecSchemaCheck (src/test/java/org/mzpeak/io) checks the footer documents
+mzPeakJ writes against their required keys and property types.
