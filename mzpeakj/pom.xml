@@ -77,13 +77,27 @@
         <artifactId>maven-shade-plugin</artifactId>
       </plugin>
       <!-- mzpeakj-<version>-tests.jar: the test classes (Fixtures, ContentDigest, ChildJvm, ...) for the
-           converter's tests, without the fixtures, which the converter reads from this module's directory. -->
+           converter's tests, without the fixtures, which the converter reads from this module's directory.
+           Both jars are made right after their classes are compiled, not at package: with the resolver's trusted
+           checksums on (.mvn/maven.config), the converter resolving this module in a reactor build that stops
+           before package (`mvn test`, `mvn compile`) would otherwise get the target/classes directory, which the
+           resolver cannot hash ("java.io.IOException: Is a directory"). The compiler plugin is named first so that
+           its compile goal, which sets the module's file to target/classes, runs before the jar goal. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
         <executions>
           <execution>
+            <id>default-jar</id>
+            <phase>compile</phase>
+          </execution>
+          <execution>
             <id>test-jar</id>
+            <phase>test-compile</phase>
             <goals><goal>test-jar</goal></goals>
             <configuration>
               <includes>

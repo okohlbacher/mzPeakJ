@@ -61,9 +61,12 @@ jobs:
           echo "Downloaded corpus to ${CORPUS_DIR}"
           find "${CORPUS_DIR}" -name '*.mzpeak' | sort | sed 's|'"${CORPUS_DIR}/"'||'
 
+      - name: Maven version
+        run: ./mvnw -v
+
       - name: Run corpus + round-trip tests
         run: |
-          mvn -B --no-transfer-progress test \
+          ./mvnw -B --no-transfer-progress test \
             -Dmzpeak.roundtrip=true \
             -Dmzpeak.corpus.dir="${CORPUS_DIR}" \
             -Dmzpeak.validator.command=mzpeak-validate
