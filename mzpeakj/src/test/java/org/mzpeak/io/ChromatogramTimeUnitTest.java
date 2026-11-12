@@ -271,6 +271,29 @@ class ChromatogramTimeUnitTest {
     }
 
     /**
+     * (c) The chunk start and the time values in the same unit that is not converted, UO:0000029: nothing needs
+     * converting, so the member opens (design §3.12), the time unit is UO:0000029 and the times are as stored.
+     */
+    @Test
+    void aStartAndValuesInTheSameUnconvertedUnitPassThrough() {
+        try (MzPeakSource source = MzPeakSource.open(SMALL_CHUNKED)) {
+            InputFile metadata = source.inputFile(CHROMATOGRAMS_METADATA);
+            InputFile data = source.inputFile(CHROMATOGRAMS_DATA);
+            Path rewritten = tmp.resolve(CHROMATOGRAMS_DATA);
+            Map<String, Edit> edits = new HashMap<>();
+            edits.put("chunk.time_chunk_start", new Edit("UO:0000029", v -> v));
+            edits.put("chunk.time_chunk_values", new Edit("UO:0000029", v -> v));
+            rewrite(data, rewritten, SignalEntity.CHROMATOGRAM, edits);
+
+            Chromatogram expected = ChromatogramStore.load(metadata, data).all().get(0);
+            Chromatogram actual = ChromatogramStore.load(metadata, new LocalInputFile(rewritten)).all().get(0);
+            assertThat(actual.timeUnit()).isEqualTo("UO:0000029");
+            assertThat(actual.time()).isNotEmpty().containsExactly(expected.time());
+            assertThat(actual.intensity()).isEqualTo(expected.intensity());
+        }
+    }
+
+    /**
      * The time unit of a plan: of the values column, else of the start column, else minute; a column without a unit
      * gives minute, and a unit that is not converted is kept.
      */
