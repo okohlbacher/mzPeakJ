@@ -240,6 +240,51 @@ class RunReferenceConformanceTest {
     }
 
     /**
+     * Without a default instrument the run names the first configuration's id, also when no configuration is 0: no
+     * stub configuration and no warning.
+     */
+    @Test
+    void aRunWithoutDefaultInstrumentNamesTheFirstConfigurationAlsoWhenItIsNotZero() throws IOException {
+        FileMetadata fixture = fileMetadata(Fixtures.legacy("small.mzpeak"));
+        List<InstrumentConfiguration> configurations = new ArrayList<>();
+        for (InstrumentConfiguration c : fixture.instrumentConfigurations()) {
+            configurations.add(new InstrumentConfiguration(c.id() + 3, c.components(), c.softwareReference(),
+                    c.parameters()));
+        }
+        assertThat(configurations).extracting(InstrumentConfiguration::id).containsExactly(3, 4);
+        FileMetadata meta = new FileMetadata(fixture.fileDescription(), configurations,
+                fixture.dataProcessingMethods(), fixture.samples(), fixture.software(),
+                run(fixture, fixture.run().defaultDataProcessingId(), fixture.run().defaultSourceFileId(), null));
+
+        Serialized out = serialize(meta);
+
+        assertThat(json(out.footer, "run").path("default_instrument_id").asInt()).isEqualTo(3);
+        assertThat(json(out.footer, "instrument_configuration_list")).extracting(c -> c.path("id").asInt())
+                .containsExactly(3, 4);
+        assertThat(out.warnings).isEmpty();
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+    }
+
+    /** Several references to the same undeclared software add one stub of it, with one warning. */
+    @Test
+    void severalReferencesToOneUndeclaredSoftwareAddOneStub() throws IOException {
+        FileMetadata fixture = fileMetadata(Fixtures.legacy("small.mzpeak"));
+        FileMetadata meta = withMethodSoftware(withConfiguration(withConfiguration(fixture, 0, "X"), 1, "X"), "X");
+
+        Serialized out = serialize(meta);
+
+        JsonNode software = json(out.footer, "software_list");
+        assertThat(software).hasSize(fixture.software().size() + 1);
+        assertThat(software).filteredOn(s -> "X".equals(s.path("id").asText())).extracting(JsonNode::toString)
+                .containsExactly("{\"id\":\"X\",\"version\":\"\",\"parameters\":[]}");
+        assertThat(out.warnings).containsExactly("software_list: added the stub software X, which"
+                + " instrument_configuration_list[0].software_reference" + UNDECLARED);
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+    }
+
+    /**
      * A software without an id cannot be named: a configuration without software names the first software with an id,
      * and without one the stub software, so every configuration keeps its required software_reference.
      */
