@@ -187,6 +187,44 @@ class ManifestStrictnessTest {
                 : root.equals("1") ? "number" : "array") + ")");
     }
 
+    /** An empty or whitespace-only manifest has no root value; Jackson reads it as a missing node. */
+    @ParameterizedTest(name = "manifest = \"{0}\"")
+    @ValueSource(strings = {"", " \n\t "})
+    void anEmptyManifestIsRejected(String json) throws IOException {
+        Path copy = copyWith(json);
+
+        assertRejected(copy, "root", "not an object (found missing)");
+    }
+
+    /** serde_json::from_reader refuses anything but whitespace after the document; so does the manifest parser. */
+    @Test
+    void aSecondObjectAfterTheManifestIsRejected() throws IOException {
+        Path copy = copyWith(compact(fixtureIndex()) + "\n{}");
+
+        assertRejected(copy, "root", "content after the JSON document");
+    }
+
+    @Test
+    void aScalarAfterTheManifestIsRejected() throws IOException {
+        Path copy = copyWith(compact(fixtureIndex()) + " 1");
+
+        assertRejected(copy, "root", "content after the JSON document");
+    }
+
+    @Test
+    void aScalarRootFollowedByAnObjectIsRejectedAsTrailingContent() throws IOException {
+        Path copy = copyWith("1 " + compact(fixtureIndex()));
+
+        assertRejected(copy, "root", "content after the JSON document");
+    }
+
+    @Test
+    void trailingWhitespaceIsAccepted() throws IOException {
+        Path copy = copyWith(compact(fixtureIndex()) + " \r\n\t\n");
+
+        assertThat(manifest(copy).files()).hasSize(manifest(SMALL).files().size());
+    }
+
     /** CURIE-shaped means a prefix of a letter, then letters, digits, '_', '.' or '-', a colon and a local part. */
     @ParameterizedTest(name = "accession = {0}")
     @ValueSource(strings = {"MS:", ":1000512", "1MS:1000512", "MS:1000:512", "MS:1000 512", "M S:1000512",
