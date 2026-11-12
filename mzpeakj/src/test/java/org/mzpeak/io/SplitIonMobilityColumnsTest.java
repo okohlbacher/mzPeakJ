@@ -148,6 +148,51 @@ class SplitIonMobilityColumnsTest {
                 new Param("FAIMS compensation voltage", "MS:1001581", 35.0, "UO:0000218"));
     }
 
+    /**
+     * Only Params with an ion mobility type count against the promotion: a scan and a selected ion that also hold
+     * another CV Param still move their ion mobility to the columns and keep the other Param in the list.
+     */
+    @Test
+    void anotherCvParamInTheScopeDoesNotStopThePromotion(@TempDir Path tmp) {
+        Source dia = ForwardBackwardCorpusTest.readSource(Fixtures.current("diaPASEF.ref.mzpeak"));
+        Param filter = new Param("filter string", "MS:1000512", "FTMS + p NSI Full ms", null);
+        Param possibleCharge = new Param("possible charge state", "MS:1000633", 2L, null);
+        List<Spectrum> spectra = withScanParams(dia.spectra, 1, params -> append(params, filter));
+        int at = -1;
+        for (int i = 0; i < spectra.size() && at < 0; i++) {
+            List<Precursor> precursors = spectra.get(i).description().precursors();
+            if (!precursors.isEmpty() && !precursors.get(0).selectedIons().isEmpty()
+                    && only(precursors.get(0).selectedIons().get(0).parameters()) != null) {
+                at = i;
+            }
+        }
+        assertThat(at).as("a spectrum whose first selected ion has MS:1002815").isGreaterThanOrEqualTo(0);
+        spectra.set(at, withFirstSelectedIonParams(spectra.get(at), params -> append(params, possibleCharge)));
+        Param scanMobility = only(spectra.get(1).description().scans().get(0).parameters());
+        Param ionMobility = only(spectra.get(at).description().precursors().get(0).selectedIons().get(0)
+                .parameters());
+
+        Path out = write(spectra, dia.chromatograms, dia, tmp.resolve("out.mzpeak"));
+
+        Group scan = rows(out.resolve(SCANS)).get(1);
+        assertThat(ParquetGroups.optDouble(scan, VALUE)).isEqualTo(scanMobility.value());
+        assertThat(ParquetGroups.optString(scan, TYPE)).isEqualTo(INVERSE_K0);
+        assertThat(ParquetGroups.readParams(scan, "parameters"))
+                .containsExactly(new Param("window group", null, 1L, null), filter);
+        Group ion = null;
+        for (Group row : rows(out.resolve(SELECTED_IONS))) {
+            if (ParquetGroups.readParams(row, "parameters").contains(possibleCharge)) {
+                assertThat(ion).as("one selected ion with the extra Param").isNull();
+                ion = row;
+            }
+        }
+        assertThat(ion).isNotNull();
+        assertThat(ParquetGroups.optDouble(ion, VALUE)).isEqualTo(ionMobility.value());
+        assertThat(ParquetGroups.optString(ion, TYPE)).isEqualTo(INVERSE_K0);
+        assertThat(ParquetGroups.readParams(ion, "parameters"))
+                .noneMatch(q -> CvTerms.ION_MOBILITY_TYPES.contains(q.accession())).contains(possibleCharge);
+    }
+
     @Test
     void aChromatogramSelectedIonWritesBothColumns(@TempDir Path tmp) {
         Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
@@ -256,6 +301,22 @@ class SplitIonMobilityColumnsTest {
                 scans, d.precursors(), d.parameters());
         out.set(at, new Spectrum(description, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays()));
         return out;
+    }
+
+    /** {@code s} with the Params of the first selected ion of its first precursor changed by {@code change}. */
+    private static Spectrum withFirstSelectedIonParams(Spectrum s, UnaryOperator<List<Param>> change) {
+        SpectrumDescription d = s.description();
+        Precursor p = d.precursors().get(0);
+        List<SelectedIon> ions = new ArrayList<>(p.selectedIons());
+        SelectedIon ion = ions.get(0);
+        ions.set(0, new SelectedIon(ion.mz(), ion.charge(), ion.intensity(), change.apply(ion.parameters())));
+        List<Precursor> precursors = new ArrayList<>(d.precursors());
+        precursors.set(0, new Precursor(p.precursorIndex(), p.precursorId(), p.isolationWindow(), ions,
+                p.activation()));
+        SpectrumDescription description = new SpectrumDescription(d.index(), d.id(), d.msLevel(),
+                d.retentionTime(), d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
+                d.scans(), precursors, d.parameters());
+        return new Spectrum(description, s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
     }
 
     private static Path write(List<Spectrum> spectra, List<Chromatogram> chromatograms, Source s, Path out) {
