@@ -147,7 +147,7 @@ these ids.
 | D-1 | Update every dependency with known advisories to the newest fixed version: Jackson 2.23.0, parquet 1.18.2 (with fixed snappy-java and aircompressor and a newer shaded Jackson), assertj 3.27.7; enforcer floors fail the build on a vulnerable version | Jackson 2.18.2 had HIGH advisories, and the fixes exist on three branches, so the floor is the chosen version itself |
 | D-2 | Restrict the EBI repository to jmzML's group ids, deny POM-declared repositories, fail closed when the filter is not active, pin the jmzML jar's checksum; Maven pinned by the Maven Wrapper (`./mvnw`, 3.9.x) | the EBI repository must not serve any other artifact; the resolver filter has no prefix wildcard, so the groups are listed exactly |
 | D-3 | Converter jar: of fastutil only the classes jmzML needs (81 instead of 11,781), `Main-Class` and `Enable-Native-Access` in the manifest, so that `java -jar mzpeakj-mzml-<version>-all.jar <in> <out>` works | about 15 MB smaller; `minimizeJar` was rejected because it could drop classes loaded by name |
-| D-4 | CLAUDE.md describes the current state and the agent-team process | it described an earlier state. Planned for 0.12.0; not yet done when this page was written |
+| D-4 | CLAUDE.md describes the current state and the agent-team process | it described an earlier state |
 | D-5 | Numpress intensities stay full doubles; no float32 narrowing | the difference is at most 5.95e-8 relative, and arrays are `double[]` throughout |
 | D-6 | Split facet rows whose `source_index` names no spectrum are dropped silently | as the Rust reader does |
 | D-7 | Manifest parsing as strict as the Rust reader's serde: malformed manifests are rejected with a message naming the entry and field, duplicate known fields included | a tolerant reader let a wrongly typed document shadow a valid one |
@@ -156,11 +156,11 @@ these ids.
 | D-10 | Recover the read-path slowdown by resolving metadata columns once per member; bar 0.90 × base on the metadata path, not lowered | measured on the 295,811-spectrum Astral file: 2674 ms → 2232 ms (0.835 × base) |
 | D-11 | The Numpress encoder rejects non-finite m/z or intensity and negative SLOF/PIC intensities, with the spectrum index, before anything is written | the vendored codec encodes such values as garbage without an error |
 | D-12 | Chromatograms carry their time unit (`Chromatogram.timeUnit()`); the reader returns times as stored, the writer writes the unit, conversion only on request (`withTimeUnit`); the converter keeps the unit (D-12c) | the writer declared minutes for values in the file's unit |
-| D-13 | Close every known write loss: ion mobility columns in scans and selected ions, wavelength scans with the full scan schema, chromatogram auxiliary arrays | the values must survive a round trip in the columns readers look at. Planned for 0.12.0; not yet in the code when this page was written |
+| D-13 | Close every known write loss: ion mobility columns in scans and selected ions, wavelength scans with the full scan schema, chromatogram auxiliary arrays | the values must survive a round trip in the columns readers look at |
 | D-14 | Imaging output keeps following the Rust reference (IMS URI, `opt_` names, no `is_imaging`) | the reference is the only producer; the profile is a draft |
 | D-15 | Duplicate ZIP member names: the last wins, with a warning; archives without spectrum metadata open; a manifest major version above 0 is rejected (`Options.withVersionCheck`) | as the Rust reader; a future major version is a different format |
 | D-16 | `verifyIntegrity()` checks the SHA-512 member checksums and reports per member (`IntegrityReport`) | the checksums were written but never checked |
-| D-17 | No dangling run, software or data-processing references in written footers | the spec schemas require them to resolve. Planned for 0.12.0; not yet in the code when this page was written |
+| D-17 | No dangling run, software or data-processing references in written footers | the spec schemas require them to resolve |
 | D-18 | The pinned Rust reference reader is built in CI and reads every split output mzPeakJ writes ([known issues](upstream-issues.md)) | "readable by the Rust reference" becomes a tested claim |
 | D-19 | The converter stays as decided on 2026-11-09 (jmzML as is) | see above |
 | D-20 | The converter design and these decisions are committed under `docs/`; the working files of the design rounds stay out of git | the long round files are not documentation |

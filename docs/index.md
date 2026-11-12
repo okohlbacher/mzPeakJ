@@ -102,7 +102,7 @@ CLI (no classpath assembly needed with the shaded jar):
 
 ```bash
 java --enable-native-access=ALL-UNNAMED \
-  -cp mzpeakj-0.10.3-all.jar org.mzpeak.cli.MzPeakInfo run.mzpeak
+  -cp mzpeakj-0.12.0-all.jar org.mzpeak.cli.MzPeakInfo run.mzpeak
 # or with the helper script:
 ./run-example.sh org.mzpeak.examples.MzPeakFileInfo run.mzpeak -s
 ```
@@ -154,7 +154,7 @@ compatibility layout (`MetadataLayout.PACKED`); by default it writes the split l
 
 ## Status
 
-Current version: **0.10.3** (see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
+Current version: **0.12.0** ([release notes](releases/0.12.0.md); see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
 read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact delta-model reconstruction;
