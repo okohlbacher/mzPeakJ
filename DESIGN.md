@@ -920,8 +920,9 @@ those written, and every main signal array (m/z, intensity, time, wavelength) an
 mzPeakJ's read (times, wavelengths, plain, Numpress linear and PIC values bit for bit; m/z within 1e-4, since Rust
 fills null-marked m/z less precisely; SLOF intensities within 2 ulp of `j + 1`, because Java's `Math.exp` and the
 platform libm may differ by one ulp; peak intensities as the float32 nearest to mzPeakJ's value, the type of
-`mzpeaks::CentroidPeak`). Extra arrays, such as per-peak ion mobility, are not compared: Rust does not expose them
-(R-7). The only failures allowed are the known
+`mzpeaks::CentroidPeak`). Extra arrays are not compared; per-peak ion mobility could not be, since Rust does not
+expose it (R-7). The TIC and BPC records Rust derives are checked only for being retrieved without error or panic.
+The only failures allowed are the known
 issues R-1 to R-3 of the Rust reader ([docs/upstream-issues.md](docs/upstream-issues.md)), each expected exactly
 where it applies and required to occur, so that a fixed one is noticed. The `PACKED` output is not read by the
 current Rust reader (R-9).
