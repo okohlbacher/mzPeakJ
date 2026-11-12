@@ -385,7 +385,7 @@ class MzMLReaderRunTest {
                 ARRAY_DP_LOST + " (10)",
                 "B-10 spectrum@spotID lost (1)",
                 "B-10 spectrum@sourceFileRef lost (1)",
-                "B-15 times converted to minutes and drift times to milliseconds (3)",
+                "B-15 times converted to minutes and drift times to milliseconds (1)",
                 "B-27 chromatogram products dropped (1)"));
         assertThat(run.reader.survey()).isEqualTo(new MzMLReader.Survey(
                 List.of("scan=19", "scan=20", "scan=21", "sample=1 period=1 cycle=22 experiment=1"), List.of(),
@@ -443,7 +443,9 @@ class MzMLReaderRunTest {
         assertThat(tic.index()).isZero();
         assertThat(tic.id()).isEqualTo("tic");
         assertThat(tic.typeCurie()).isEqualTo("MS:1000235");
-        assertThat(tic.time()).isEqualTo(minutes(15));
+        // D-12c: the time array as stored, in seconds, and its unit
+        assertThat(tic.time()).isEqualTo(seconds(15));
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
         assertThat(tic.intensityUnit()).isEqualTo("MS:1000131");
         assertThat(tic.dataProcessingRef()).isEqualTo("CompassXtract_x0020_processing");
         assertThat(tic.polarity()).isEqualTo(Polarity.UNKNOWN);
@@ -452,18 +454,19 @@ class MzMLReaderRunTest {
         Chromatogram sic = run.chromatograms.get(1);
         assertThat(sic.index()).isEqualTo(1);
         assertThat(sic.typeCurie()).isEqualTo("MS:1000627");
-        assertThat(sic.time()).isEqualTo(minutes(10));
+        assertThat(sic.time()).isEqualTo(seconds(10));
+        assertThat(sic.timeUnit()).isEqualTo("UO:0000010");
         assertThat(sic.dataProcessingRef()).isNull();
         assertThat(sic.precursors()).containsExactly(new Precursor(null, null, new IsolationWindow(456.7, null, null),
                 List.of(), new Activation(List.of(new Param("collision-induced dissociation", "MS:1000133", null,
                         null)))));
     }
 
-    /** {@code 0 .. n-1} seconds in minutes. */
-    private static double[] minutes(int n) {
+    /** {@code 0 .. n-1} seconds. */
+    private static double[] seconds(int n) {
         double[] t = new double[n];
         for (int i = 0; i < n; i++) {
-            t[i] = i / 60.0;
+            t[i] = i;
         }
         return t;
     }
@@ -636,6 +639,107 @@ class MzMLReaderRunTest {
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage(prefix(file, "chromatogram #0 (tic)") + "its MS:1000595 array in unit UO:0000018 cannot be"
                         + " converted to UO:0000031");
+    }
+
+    /**
+     * D-12c (V-23): the tic's time array in minutes, milliseconds, hours and without unit (the sic stays in seconds)
+     * is read as stored with its unit as {@code timeUnit}, minute for none; chromatogram times are not converted, so
+     * B-15 counts scan=21's start time only.
+     */
+    @Test
+    void chromatogramTimeArraysKeepTheirUnit(@TempDir Path dir) throws IOException {
+        String second = " unitCvRef=\"UO\" unitAccession=\"UO:0000010\" unitName=\"second\"";
+        List<List<String>> cases = List.of(
+                List.of(" unitCvRef=\"UO\" unitAccession=\"UO:0000031\" unitName=\"minute\"", "UO:0000031"),
+                List.of(" unitCvRef=\"UO\" unitAccession=\"UO:0000028\" unitName=\"millisecond\"", "UO:0000028"),
+                List.of(" unitCvRef=\"UO\" unitAccession=\"UO:0000032\" unitName=\"hour\"", "UO:0000032"),
+                List.of("", "UO:0000031"));
+        for (List<String> c : cases) {
+            String unit = c.get(0);
+            Path file = tinyWith(dir, s -> replaceAfter(s, "id=\"tic\"", second, unit));
+
+            Run run = read(file);
+
+            Chromatogram tic = run.chromatograms.get(0);
+            assertThat(tic.timeUnit()).as(unit).isEqualTo(c.get(1));
+            assertThat(tic.time()).as(unit).containsExactly(seconds(15));
+            assertThat(run.chromatograms.get(1).timeUnit()).isEqualTo("UO:0000010");
+            assertThat(run.chromatograms.get(1).time()).isEqualTo(seconds(10));
+            assertThat(run.reader.warnings()).as(unit)
+                    .contains("B-15 times converted to minutes and drift times to milliseconds (1)");
+        }
+    }
+
+    /**
+     * A tic without its intensity array drops its time array too (B-9) and keeps the unit its time array declares,
+     * seconds, as the sic's (V-23 review).
+     */
+    @Test
+    void aTimeOnlyChromatogramKeepsItsTimeArraysUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(s, "name=\"time array\""));
+
+        Run run = read(file);
+
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.time()).isEmpty();
+        assertThat(tic.intensity()).isEmpty();
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
+        assertThat(run.reader.warnings())
+                .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
+    }
+
+    /**
+     * A tic without its time array drops its intensity array too (B-9) and, without times, takes the run's
+     * chromatogram time unit, the sic's seconds (V-23 review).
+     */
+    @Test
+    void anIntensityOnlyChromatogramTakesTheRunsTimeUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(s, "id=\"tic\""));
+
+        Run run = read(file);
+
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.time()).isEmpty();
+        assertThat(tic.intensity()).isEmpty();
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
+        assertThat(run.reader.warnings())
+                .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
+    }
+
+    /** A tic without binaryDataArrayList takes the run's chromatogram time unit, the sic's seconds (V-23 review). */
+    @Test
+    void aChromatogramWithoutArraysTakesTheRunsTimeUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, MzMLReaderRunTest::withoutTicArrays);
+
+        Run run = read(file);
+
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.time()).isEmpty();
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
+        assertThat(run.chromatograms.get(1).timeUnit()).isEqualTo("UO:0000010");
+    }
+
+    /**
+     * Without a time unit declared by any chromatogram, the tic without arrays and the sic's time array without unit
+     * read in minutes.
+     */
+    @Test
+    void chromatogramsReadInMinutesWhenNoneDeclaresATimeUnit(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(withoutTicArrays(s), "id=\"sic\"",
+                " unitCvRef=\"UO\" unitAccession=\"UO:0000010\" unitName=\"second\"", ""));
+
+        Run run = read(file);
+
+        assertThat(run.chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
+        assertThat(run.chromatograms.get(0).time()).isEmpty();
+        assertThat(run.chromatograms.get(1).time()).isEqualTo(seconds(10));
+    }
+
+    /** {@code s} with the tic's binaryDataArrayList removed. */
+    private static String withoutTicArrays(String s) {
+        int start = s.indexOf("<binaryDataArrayList", s.indexOf("id=\"tic\""));
+        int end = s.indexOf("</binaryDataArrayList>", start) + "</binaryDataArrayList>".length();
+        return s.substring(0, start) + s.substring(end);
     }
 
     @Test
@@ -898,7 +1002,7 @@ class MzMLReaderRunTest {
                 "B-21 lost array params other than array type, data type and compression (1)",
                 "B-10 spectrum@spotID lost (1)",
                 "B-10 spectrum@sourceFileRef lost (1)",
-                "B-15 times converted to minutes and drift times to milliseconds (3)",
+                "B-15 times converted to minutes and drift times to milliseconds (1)",
                 "B-27 chromatogram products dropped (1)"));
     }
 
@@ -962,7 +1066,7 @@ class MzMLReaderRunTest {
             assertThat(run.spectra.get(0).arrays().get("MS:1002477")).as(unit).containsExactly(expected);
             assertThat(run.reader.survey().spectrumArrays()).containsExactly("MS:1002477");
             assertThat(run.reader.warnings())
-                    .contains("B-15 times converted to minutes and drift times to milliseconds (4)");
+                    .contains("B-15 times converted to minutes and drift times to milliseconds (2)");
         }
     }
 

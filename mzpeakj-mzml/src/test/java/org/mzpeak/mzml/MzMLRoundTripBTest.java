@@ -67,6 +67,10 @@ class MzMLRoundTripBTest {
      *       wrote in scan order and the mzPeak writer sorts by m/z; its 18 userParam units are lost in M1 already
      *       (L-4). Its B-14 line counts 18 unitless summary params and 8 unitless collision energies.
      * </ul>
+     * B-15 counts converted scan start times and drift time arrays only: chromatogram time arrays keep their unit
+     * (D-12c), so tiny's line counts scan=21's start time in seconds, no longer its two chromatograms' time arrays in
+     * seconds (3 before V-23), and diaPASEF's its 9 scan start times in seconds, no longer its two chromatograms' time
+     * arrays (11 before V-23).
      */
     static Stream<Arguments> fixtures() {
         String b3 = MzMLReader.B_3 + " (1)";
@@ -79,7 +83,7 @@ class MzMLRoundTripBTest {
                                 MzMLReader.B_21_PROCESSING + " (10)",
                                 String.format(MzMLReader.B_10, "spotID") + " (1)",
                                 String.format(MzMLReader.B_10, "sourceFileRef") + " (1)",
-                                MzMLReader.B_15 + " (3)",
+                                MzMLReader.B_15 + " (1)",
                                 MzMLReader.B_27 + " (1)"),
                         List.of(String.format(MzMLWriter.A_26, "2007-06-27T15:23:45.00035", "2007-06-27T15:23:45Z")
                                 + " (1)")),
@@ -89,7 +93,7 @@ class MzMLRoundTripBTest {
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_17_PARAMS + " (212)",
                                 MzMLReader.B_11_INDEX + " (520)"), List.of()),
                 arguments(MzMLFixtures.DIAPASEF, Map.of(ModelAssert.B_22, 3 * 9), List.of(9L, 0L, 2L),
-                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (11)",
+                        List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (9)",
                                 MzMLReader.B_14_UNIT + " (26)"), List.of()));
     }
 

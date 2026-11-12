@@ -149,8 +149,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * <p><b>Arrays</b> (design 5.7) are encoded by jmzML as 64-bit floats, zlib-compressed unless the writer was opened
  * without zlib; an empty array is never compressed (jmzML's encoder does not return on one). A key of
  * {@link CvTerms#ARRAY_TYPES} is written as that array type, every other key as MS:1000786 'non-standard data array'
- * with the key as its value; each with its unit from {@link CvTerms#DEFAULT_ARRAY_UNITS}, a chromatogram's intensity
- * with its {@code intensityUnit}.
+ * with the key as its value; each with its unit from {@link CvTerms#DEFAULT_ARRAY_UNITS}, a chromatogram's time
+ * as stored with its {@code timeUnit} (D-12c) and its intensity with its {@code intensityUnit}.
  *
  * <p><b>Spectra</b> (design 5.4-5.7) are written with their m/z, intensity and extra arrays, the length of the m/z
  * array as their default array length, and their cvParams in a fixed order: the spectrum types, else MS1 or MSn
@@ -449,7 +449,7 @@ public final class MzMLWriter implements AutoCloseable {
             x.setPrecursorList(precursors);
         }
         note(A_1, spectrum.peaks().isEmpty() || rowCopy(spectrum) ? 0 : 1);
-        x.setBinaryDataArrayList(arrays(MZ_ARRAY, spectrum.mz(), spectrum.intensity(), COUNTS, spectrum.arrays()));
+        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(), COUNTS, spectrum.arrays()));
         add(list, x);
     }
 
@@ -488,8 +488,8 @@ public final class MzMLWriter implements AutoCloseable {
                 rest));
         params(x, rest);
         spectrumMust(x);
-        x.setBinaryDataArrayList(arrays(WAVELENGTH_ARRAY, spectrum.wavelength(), spectrum.intensity(), COUNTS,
-                Map.of()));
+        x.setBinaryDataArrayList(arrays(WAVELENGTH_ARRAY, NANOMETER, spectrum.wavelength(), spectrum.intensity(),
+                COUNTS, Map.of()));
         add(list, x);
     }
 
@@ -640,7 +640,7 @@ public final class MzMLWriter implements AutoCloseable {
     /**
      * The CV prefixes of every accession and unit the contents put into the document, in first-seen order: those of
      * the header params, the scan settings, the announced spectrum prefixes and the chromatograms (their type,
-     * intensity unit, params and first precursor). Array keys are not accessions: a key outside
+     * intensity unit, time unit, params and first precursor). Array keys are not accessions: a key outside
      * {@link CvTerms#ARRAY_TYPES} is written as MS:1000786.
      */
     private Set<String> prefixes(FileMetadata m, FileMetadata.FileDescription d, MsRun run) {
@@ -667,6 +667,7 @@ public final class MzMLWriter implements AutoCloseable {
         used.addAll(spectrumPrefixes);
         for (Chromatogram c : contents.chromatograms()) {
             add.accept(List.of(new Param(null, c.typeCurie(), null, c.intensityUnit())));
+            used.add(prefix(c.timeUnit()));
             add.accept(c.parameters());
             c.precursors().stream().limit(1).forEach(p -> precursorParams(p, add));
         }
@@ -1090,9 +1091,8 @@ public final class MzMLWriter implements AutoCloseable {
                     precursor::setExternalSpectrumID, precursor::setSourceFileRef);
             x.setPrecursor(precursor);
         }
-        // V-23 replaces this conversion: the time array is written in minutes, the unit arrays() declares for it.
-        x.setBinaryDataArrayList(arrays(TIME_ARRAY, c.withTimeUnit(MINUTE).time(), c.intensity(),
-                c.intensityUnit(), c.arrays()));
+        x.setBinaryDataArrayList(arrays(TIME_ARRAY, c.timeUnit(), c.time(), c.intensity(), c.intensityUnit(),
+                c.arrays()));
         return x;
     }
 
@@ -1355,13 +1355,13 @@ public final class MzMLWriter implements AutoCloseable {
     // ---- arrays (design 5.7) -------------------------------------------------------------------------------------
 
     /**
-     * The arrays of a spectrum or chromatogram: its axis array {@code axis} in its default unit, its intensity in
+     * The arrays of a spectrum or chromatogram: its axis array {@code axis} in {@code axisUnit}, its intensity in
      * {@code intensityUnit}, then the extras in map order, each in its default unit if it has one.
      */
-    private BinaryDataArrayList arrays(String axis, double[] axisValues, double[] intensity, String intensityUnit,
-                                       Map<String, double[]> extras) {
+    private BinaryDataArrayList arrays(String axis, String axisUnit, double[] axisValues, double[] intensity,
+                                       String intensityUnit, Map<String, double[]> extras) {
         BinaryDataArrayList list = new BinaryDataArrayList();
-        list.getBinaryDataArray().add(array(axis, axisValues, CvTerms.DEFAULT_ARRAY_UNITS.get(axis)));
+        list.getBinaryDataArray().add(array(axis, axisValues, axisUnit));
         list.getBinaryDataArray().add(array(INTENSITY_ARRAY, intensity, intensityUnit));
         extras.forEach((key, values) -> list.getBinaryDataArray()
                 .add(array(key, values, CvTerms.DEFAULT_ARRAY_UNITS.get(key))));

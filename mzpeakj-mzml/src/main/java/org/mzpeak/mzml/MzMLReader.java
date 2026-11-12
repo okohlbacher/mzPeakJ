@@ -246,7 +246,8 @@ public final class MzMLReader {
     private static final DoubleUnaryOperator AS_IS = v -> v;
     /**
      * Per model unit that values in other units are converted to (design 5.5, 5.7): times to minutes from seconds,
-     * milliseconds and hours; drift times to milliseconds from seconds and minutes.
+     * milliseconds and hours; drift times to milliseconds from seconds and minutes. A chromatogram's time array is not
+     * converted (D-12c), but only these four time units are accepted for it.
      */
     private static final Map<String, Map<String, DoubleUnaryOperator>> CONVERSIONS = Map.of(
             MINUTE, Map.of("UO:0000010", v -> v / 60, MILLISECOND, v -> v / 60_000, "UO:0000032", v -> v * 60),
@@ -268,6 +269,11 @@ public final class MzMLReader {
     private Set<String> wavelengthIds = Collections.emptySet();
     /** True while {@link #survey()} runs the mapping: arrays are not decoded. */
     private boolean surveying;
+    /**
+     * The run's chromatogram time unit, the first unit a chromatogram's time array declares, null for none; filled by
+     * {@link #survey()} and given to a chromatogram without time array or time unit (D-12c).
+     */
+    private String chromatogramTimeUnit;
     /** The list defaults of data processing, and the next MS, wavelength and chromatogram index of a pass. */
     private String spectrumListDefault;
     private String chromatogramListDefault;
@@ -819,7 +825,10 @@ public final class MzMLReader {
     /**
      * A chromatogram (design 5.8): its type and polarity promoted; its data processing (its own, else the list's
      * {@code listDefault}) kept when it differs from the spectrumList's; its precursor; its product dropped (B-27); its
-     * time in minutes and its intensity unit as given.
+     * time as stored with the time array's unit as {@code timeUnit} (D-12c), also when B-9 drops the time array, and
+     * its intensity unit as given. A time array without unit is in minutes. A chromatogram without time array or time
+     * unit, which has no times, takes the run's chromatogram time unit, so it cannot conflict with the others in the
+     * writer's same-time-unit check; minute when no chromatogram declares one.
      */
     private Consumer<Visitor> chromatogram(uk.ac.ebi.jmzml.model.mzml.Chromatogram c, String listDefault) {
         List<Param> params = new ArrayList<>(params(c));
@@ -834,11 +843,19 @@ public final class MzMLReader {
         }
         note(B_27, c.getProduct() == null ? 0 : 1);
         Signal signal = classify(Kind.CHROMATOGRAM, arrays(c.getBinaryDataArrayList(), c.getDefaultArrayLength()));
+        String timeUnit = signal.axisUnit();
+        if (surveying) {
+            if (chromatogramTimeUnit == null) {
+                chromatogramTimeUnit = timeUnit;
+            }
+        } else if (timeUnit == null && signal.axis() == null) {
+            timeUnit = chromatogramTimeUnit;
+        }
         Chromatogram chromatogram = new Chromatogram(chromatogramIndex++, c.getId(),
                 type == null ? null : type.accession(), values(signal.axis()), values(signal.intensity()),
                 signal.intensity() == null ? null : signal.intensity().array().unit(), values(signal.extras()),
                 polarity, Objects.equals(processing, spectrumListDefault) ? null : processing, params, precursors,
-                MINUTE);
+                Objects.requireNonNullElse(timeUnit, MINUTE));
         return v -> v.chromatogram(chromatogram);
     }
 
@@ -990,8 +1007,11 @@ public final class MzMLReader {
     private record Kept(Array array, DoubleUnaryOperator conversion) {
     }
 
-    /** The arrays kept of a spectrum or chromatogram: axis and intensity (both or neither) and the extras by key. */
-    private record Signal(Kept axis, Kept intensity, Map<String, Kept> extras) {
+    /**
+     * The arrays kept of a spectrum or chromatogram: axis and intensity (both or neither) and the extras by key; and
+     * the unit of the first axis array, null for none or no unit, also when B-9 drops it.
+     */
+    private record Signal(Kept axis, Kept intensity, Map<String, Kept> extras, String axisUnit) {
     }
 
     /**
@@ -1048,7 +1068,8 @@ public final class MzMLReader {
     /**
      * The one classification of an entity's arrays, which {@link #survey()} and {@link #read(Visitor)} share
      * (design 8.1): from attributes and terms only, it keeps the first axis and intensity array (in the model's unit,
-     * else rejected; a chromatogram's intensity in any unit) and the extra arrays it can carry, and drops the rest:
+     * else rejected; a chromatogram's time as stored in a unit the model converts, its intensity in any unit) and the
+     * extra arrays it can carry, and drops the rest:
      * arrays without type (B-21), ASCII arrays (B-21), all arrays when the axis or intensity array is missing (B-9),
      * a second array of a key (B-29), extras of wavelength spectra (B-28), extras in a unit that is not their key's
      * default and cannot be converted to it (B-21) and extras whose declared length differs from the axis array's
@@ -1074,18 +1095,20 @@ public final class MzMLReader {
         Array axis = first(usable, kind.axis);
         Array intensity = first(usable, INTENSITY_ARRAY);
         DoubleUnaryOperator axisConversion = axis == null ? null : mainConversion(axis);
+        String axisUnit = axis == null ? null : axis.unit();
         DoubleUnaryOperator intensityConversion = intensity == null || kind == Kind.CHROMATOGRAM ? AS_IS
                 : mainConversion(intensity);
         Map<String, Kept> extras = new LinkedHashMap<>();
         if (axis == null || intensity == null) {
             note(B_9, usable.isEmpty() ? 0 : 1);
-            return new Signal(null, null, extras);
+            return new Signal(null, null, extras, axisUnit);
         }
         if (axis.length() != intensity.length()) {
             throw error("its " + axis.key() + " and " + INTENSITY_ARRAY + " arrays declare different lengths, "
                     + axis.length() + " and " + intensity.length());
         }
-        Kept axisKept = kept(axis, axisConversion);
+        // D-12c: a chromatogram's time array is checked for its unit above but kept as stored, in that unit
+        Kept axisKept = kept(axis, kind == Kind.CHROMATOGRAM ? AS_IS : axisConversion);
         Kept intensityKept = kept(intensity, intensityConversion);
         for (Array a : usable) {
             if (a == axis || a == intensity) {
@@ -1106,7 +1129,7 @@ public final class MzMLReader {
                 extras.put(a.key(), kept(a, conversion));
             }
         }
-        return new Signal(axisKept, intensityKept, extras);
+        return new Signal(axisKept, intensityKept, extras, axisUnit);
     }
 
     /** The first of {@code arrays} with {@code key}, else null. */
