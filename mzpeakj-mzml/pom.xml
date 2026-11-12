@@ -92,10 +92,121 @@
 
   <build>
     <plugins>
-      <!-- mzpeakj-mzml-<version>-all.jar (configuration in the parent POM). -->
+      <!-- mzpeakj-mzml-<version>-all.jar (configuration in the parent POM), runnable with `java -jar` (design D-3):
+           the manifest names the CLI and enables native access for zstd-jni and snappy-java (JDK 22+ warns
+           otherwise). Of fastutil only the 81 classes jmzML needs are kept: EscapingXMLUtilities references
+           it.unimi.dsi.fastutil.chars.CharOpenHashSet, the only fastutil class jmzML or xxindex reference, and the
+           list below is its transitive closure inside fastutil 6.5.1, from
+             jdeps -filter:none -verbose:class fastutil-6.5.1.jar
+           (the edges `A -> B` with both in it.unimi.dsi.fastutil, followed from CharOpenHashSet). Not minimizeJar,
+           which would also drop the classes JAXB, parquet and Jackson load by reflection. ExecutableJarIT checks the
+           count. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default</id>
+            <configuration>
+              <transformers combine.children="append">
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>org.mzpeak.mzml.cli.MzPeakConvert</mainClass>
+                  <manifestEntries>
+                    <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                  </manifestEntries>
+                </transformer>
+              </transformers>
+              <filters combine.children="append">
+                <filter>
+                  <artifact>it.unimi.dsi:fastutil</artifact>
+                  <includes>
+                    <include>it/unimi/dsi/fastutil/Arrays.class</include>
+                    <include>it/unimi/dsi/fastutil/BidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/Hash.class</include>
+                    <include>it/unimi/dsi/fastutil/Hash$Strategy.class</include>
+                    <include>it/unimi/dsi/fastutil/HashCommon.class</include>
+                    <include>it/unimi/dsi/fastutil/Stack.class</include>
+                    <include>it/unimi/dsi/fastutil/Swapper.class</include>
+                    <include>it/unimi/dsi/fastutil/booleans/BooleanArrays.class</include>
+                    <include>it/unimi/dsi/fastutil/booleans/BooleanArrays$1.class</include>
+                    <include>it/unimi/dsi/fastutil/booleans/BooleanArrays$ArrayHashStrategy.class</include>
+                    <include>it/unimi/dsi/fastutil/booleans/BooleanComparator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharBidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharCollection.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharList.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharList$1.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharList$CharSubList.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharList$CharSubList$1.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharListIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/AbstractCharSet.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharArrayList.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharArrayList$1.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharArrays.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharArrays$1.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharArrays$ArrayHashStrategy.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharBidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharCollection.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharComparator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterable.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$ArrayIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$EmptyIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$IntervalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$IteratorConcatenator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$IteratorWrapper.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$ListIteratorWrapper.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$SingletonIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$UnmodifiableBidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$UnmodifiableIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharIterators$UnmodifiableListIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharList.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharListIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharOpenHashSet.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharOpenHashSet$1.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharOpenHashSet$SetIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharSet.class</include>
+                    <include>it/unimi/dsi/fastutil/chars/CharStack.class</include>
+                    <include>it/unimi/dsi/fastutil/ints/IntArrays.class</include>
+                    <include>it/unimi/dsi/fastutil/ints/IntArrays$1.class</include>
+                    <include>it/unimi/dsi/fastutil/ints/IntArrays$ArrayHashStrategy.class</include>
+                    <include>it/unimi/dsi/fastutil/ints/IntComparator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectBidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectCollection.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectList.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectList$1.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectList$ObjectSubList.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectList$ObjectSubList$1.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/AbstractObjectListIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectArrayList.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectArrayList$1.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectArrays.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectArrays$1.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectArrays$ArrayHashStrategy.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectBidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectCollection.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterable.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$ArrayIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$EmptyIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$IteratorConcatenator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$IteratorWrapper.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$ListIteratorWrapper.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$SingletonIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$UnmodifiableBidirectionalIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$UnmodifiableIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectIterators$UnmodifiableListIterator.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectList.class</include>
+                    <include>it/unimi/dsi/fastutil/objects/ObjectListIterator.class</include>
+                  </includes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <!-- Guards the exclusions of jmzML above: its pride-logging parent POM declares logback-core, logback-classic
            and jcl-over-slf4j, which must stay out, and so must every other logging framework, SLF4J binding or
@@ -139,6 +250,28 @@
           <systemPropertyVariables>
             <!-- root of the library's fixtures, read by org.mzpeak.io.Fixtures -->
             <mzpeak.test.resources>${project.basedir}/../mzpeakj/src/test/resources</mzpeak.test.resources>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+      <!-- ExecutableJarIT runs the -all jar of package with `java -jar` (design D-3). The test JVM gets the surefire
+           options, so @{argLine} carries the JaCoCo agent; the jar's child JVMs run no instrumented code. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.5.2</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
+          <systemPropertyVariables>
+            <mzpeak.test.resources>${project.basedir}/../mzpeakj/src/test/resources</mzpeak.test.resources>
+            <mzpeak.mzml.all.jar>${project.build.directory}/${project.artifactId}-${project.version}-all.jar</mzpeak.mzml.all.jar>
           </systemPropertyVariables>
         </configuration>
       </plugin>

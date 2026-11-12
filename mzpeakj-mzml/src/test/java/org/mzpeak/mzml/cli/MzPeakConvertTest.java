@@ -481,7 +481,8 @@ class MzPeakConvertTest {
         assertThat(r.code()).isZero();
         assertThat(r.err()).isEmpty();
         List<String> lines = r.out().lines().toList();
-        assertThat(lines.get(0)).isEqualTo(MzPeakConvert.USAGE);
+        assertThat(lines.get(0)).isEqualTo(MzPeakConvert.USAGE).isEqualTo("usage: java [-Xmx...] -jar"
+                + " mzpeakj-mzml-<version>-all.jar [--help] [options] <input> <output>");
         assertThat(lines).containsSubsequence(indented(MzMLReader.LIMITS))
                 .containsSubsequence(indented(MzMLWriter.LIMITS))
                 .contains("  -Xmx >= expected mzML size + 13 KB per spectrum + 1 GB",

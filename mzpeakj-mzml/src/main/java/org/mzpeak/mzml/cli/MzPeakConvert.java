@@ -28,8 +28,7 @@ import java.util.function.IntConsumer;
  * {@link MzMLConversion}:
  *
  * <pre>{@code
- *   java [-Xmx...] -cp mzpeakj-mzml-<version>-all.jar org.mzpeak.mzml.cli.MzPeakConvert \
- *       [--help] [options] <input> <output>
+ *   java [-Xmx...] -jar mzpeakj-mzml-<version>-all.jar [--help] [options] <input> <output>
  * }</pre>
  *
  * The direction comes from the names, case-insensitive: an input ending in {@code .mzML} is written to an output
@@ -58,8 +57,8 @@ import java.util.function.IntConsumer;
 public final class MzPeakConvert {
 
     /** The usage line, the first of the help and the second of every usage error. */
-    static final String USAGE = "usage: java [-Xmx...] -cp mzpeakj-mzml-<version>-all.jar"
-            + " org.mzpeak.mzml.cli.MzPeakConvert [--help] [options] <input> <output>";
+    static final String USAGE =
+            "usage: java [-Xmx...] -jar mzpeakj-mzml-<version>-all.jar [--help] [options] <input> <output>";
     /** The memory rule of design 7 for mzML output, which holds the whole document in memory (L-9). */
     private static final String MEMORY = "-Xmx >= expected mzML size + 13 KB per spectrum + 1 GB";
     /** The memory rule of design 7 for mzPeak output: jmzML's index and the mzPeak writer's entries per spectrum. */
