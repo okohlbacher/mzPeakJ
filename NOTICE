@@ -128,6 +128,18 @@ HUPO-PSI mzML XML schemas (test resources, unmodified)
     THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF
     MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 
+HUPO-PSI mzPeak specification JSON schemas (test resources, unmodified)
+  Files: mzpeakj/src/test/resources/spec-schema/ms_run.json
+         mzpeakj/src/test/resources/spec-schema/software.json
+         mzpeakj/src/test/resources/spec-schema/data_processing.json
+         mzpeakj/src/test/resources/spec-schema/instrument_configuration.json
+         mzpeakj/src/test/resources/spec-schema/file_description.json
+  Source: https://github.com/HUPO-PSI/mzPeak-specification (commit 98800705, schema/), copied unmodified (SHA-256
+          values in mzpeakj/src/test/resources/spec-schema/SOURCE.txt)
+  Copyright (C) 2026 HUPO Proteomics Standards Initiative (PSI)
+  Licensed under Creative Commons Attribution-NoDerivatives 4.0 International (CC BY-ND 4.0,
+  https://creativecommons.org/licenses/by-nd/4.0/).
+
 PSI-MS controlled vocabulary (instrument-model accessions, a resource of mzpeakj-mzml and its -all jar)
   Files: mzpeakj-mzml/src/main/resources/org/mzpeak/mzml/ms-instrument-models.txt
   Source: psi-ms.obo data-version 4.2.11 (https://github.com/HUPO-PSI/psi-ms-CV), derived: the accessions of the
