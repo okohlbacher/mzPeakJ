@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.mzpeak.io.parquet.ParquetGroups;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -231,12 +230,13 @@ final class SpecSchemaCheck {
         };
     }
 
+    /**
+     * The schema {@code file} of {@code spec-schema/}, next to the fixture directories (as {@link Fixtures} finds them,
+     * also from the converter's tests, whose test jar of the library holds classes only).
+     */
     private static JsonNode schema(String file) {
-        try (InputStream in = SpecSchemaCheck.class.getResourceAsStream("/spec-schema/" + file)) {
-            if (in == null) {
-                throw new IllegalStateException("no schema resource spec-schema/" + file);
-            }
-            return MAPPER.readTree(in);
+        try {
+            return MAPPER.readTree(Fixtures.CURRENT.resolveSibling("spec-schema").resolve(file).toFile());
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
