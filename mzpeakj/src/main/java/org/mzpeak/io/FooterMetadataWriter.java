@@ -7,25 +7,54 @@ import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.Contact;
 import org.mzpeak.model.meta.FileMetadata.DataProcessing;
+import org.mzpeak.model.meta.FileMetadata.FileDescription;
 import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
+import org.mzpeak.model.meta.FileMetadata.MsRun;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.meta.FileMetadata.ProcessingMethod;
 import org.mzpeak.model.meta.FileMetadata.Sample;
 import org.mzpeak.model.meta.FileMetadata.Software;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 
+import java.lang.System.Logger.Level;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Serializes a {@link FileMetadata} back into the per-document JSON strings stored in the Parquet footer
  * key-value metadata (symmetric to {@link FooterMetadataReader}); the result is passed to the writer's
- * {@code withExtraMetaData}. Only non-empty documents are emitted.
+ * {@code withExtraMetaData}, and the manifest's {@code metadata} holds the same documents. Only non-empty documents
+ * are emitted.
+ *
+ * <p>Every reference between the documents resolves, and the keys the specification's schemas require are present
+ * (WR-9, D-17); what is missing is synthesized, never refused:
+ * <ul>
+ *   <li>the run's id defaults to {@code mzpeakj_run}; its default instrument to the first instrument configuration,
+ *       its default data processing to the first data processing, its default source file to the first source file;
+ *       without such an entity to {@code 0}, {@code mzpeakj_export} and {@code mzpeakj_source};
+ *   <li>a run default, or a {@code software_reference} of an instrument configuration or a processing method, that
+ *       names no entity of its list gets a stub entity of that id at the end of the list: an instrument configuration
+ *       without components and params, a data processing without methods, a source file {@code unknown} at
+ *       {@code file:///unknown} without params (with a file description holding only it when the metadata has none),
+ *       a software with an empty version and no params;
+ *   <li>an instrument configuration without a software (a stub one included) names the first configuration's
+ *       software, else the first software, else the stub software {@code mzpeakj_software};
+ *   <li>a software without a version is written with the empty version.
+ * </ul>
+ * Each stub is logged once as a WARNING naming its document, its id and the reference that names it.
  */
 final class FooterMetadataWriter {
 
+    private static final System.Logger LOG = System.getLogger(FooterMetadataWriter.class.getName());
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String RUN_ID = "mzpeakj_run";
+    private static final String DATA_PROCESSING_ID = "mzpeakj_export";
+    private static final String SOURCE_FILE_ID = "mzpeakj_source";
+    private static final String SOFTWARE_ID = "mzpeakj_software";
 
     private FooterMetadataWriter() {
     }
@@ -35,55 +64,90 @@ final class FooterMetadataWriter {
         if (meta == null) {
             return kv;
         }
-        // Pre-compute effective required-field ids so run can reference them and the synthetic
-        // sentinel entries are added to the respective lists consistently.
-        // default_data_processing_id: required by mzPeak spec
-        String effectiveDpId = null;
-        // default_source_file_id: required by mzPeak spec
-        String effectiveSfId = null;
-        if (meta.run() != null) {
-            effectiveDpId = meta.run().defaultDataProcessingId();
-            if (effectiveDpId == null && !meta.dataProcessingMethods().isEmpty()) {
-                effectiveDpId = meta.dataProcessingMethods().get(0).id();
+        List<Software> software = new ArrayList<>(meta.software());
+        Set<String> softwareIds = new HashSet<>();
+        software.forEach(s -> softwareIds.add(s.id()));
+        List<InstrumentConfiguration> configurations = new ArrayList<>(meta.instrumentConfigurations());
+        List<DataProcessing> processing = new ArrayList<>(meta.dataProcessingMethods());
+        FileDescription description = meta.fileDescription();
+        List<SourceFile> sources = new ArrayList<>(description == null ? List.of() : description.sourceFiles());
+        MsRun run = meta.run();
+        ObjectNode runJson = null;
+        if (run != null) {
+            int instrumentId = run.defaultInstrumentId() != null ? run.defaultInstrumentId()
+                    : configurations.isEmpty() ? 0 : configurations.get(0).id();
+            if (configurations.stream().noneMatch(ic -> ic.id() == instrumentId)) {
+                configurations.add(new InstrumentConfiguration(instrumentId, List.of(), null, List.of()));
+                warnStub("instrument_configuration_list", "instrument configuration " + instrumentId,
+                        "run.default_instrument_id");
             }
-            if (effectiveDpId == null) {
-                effectiveDpId = "mzpeakj_export"; // sentinel; corresponding DP entry synthesised below
+            // default_data_processing_id: required by mzPeak spec
+            String dpId = run.defaultDataProcessingId();
+            if (dpId == null && !processing.isEmpty()) {
+                dpId = processing.get(0).id();
             }
-            effectiveSfId = meta.run().defaultSourceFileId();
-            boolean hasSources = meta.fileDescription() != null
-                    && !meta.fileDescription().sourceFiles().isEmpty();
-            if (effectiveSfId == null && hasSources) {
-                effectiveSfId = meta.fileDescription().sourceFiles().get(0).id();
+            if (dpId == null) {
+                dpId = DATA_PROCESSING_ID;
             }
-            if (effectiveSfId == null) {
-                effectiveSfId = "mzpeakj_source"; // sentinel; corresponding source entry synthesised below
+            String effectiveDpId = dpId;
+            if (processing.stream().noneMatch(dp -> effectiveDpId.equals(dp.id()))) {
+                processing.add(new DataProcessing(effectiveDpId, List.of()));
+                warnStub("data_processing_method_list", "data processing " + effectiveDpId,
+                        "run.default_data_processing_id");
+            }
+            // default_source_file_id: required by mzPeak spec
+            String sfId = run.defaultSourceFileId();
+            if (sfId == null && !sources.isEmpty()) {
+                sfId = sources.get(0).id();
+            }
+            if (sfId == null) {
+                sfId = SOURCE_FILE_ID;
+            }
+            String effectiveSfId = sfId;
+            if (sources.stream().noneMatch(sf -> effectiveSfId.equals(sf.id()))) {
+                sources.add(new SourceFile(effectiveSfId, "unknown", "file:///unknown", List.of()));
+                warnStub("file_description", "source file " + effectiveSfId, "run.default_source_file_id");
+            }
+            runJson = MAPPER.createObjectNode();
+            runJson.put("id", run.id() != null ? run.id() : RUN_ID);
+            runJson.put("default_instrument_id", instrumentId);
+            runJson.put("default_data_processing_id", effectiveDpId);
+            runJson.put("default_source_file_id", effectiveSfId);
+            putText(runJson, "start_time", run.startTime());
+            putParams(runJson, run.parameters());
+        }
+        String defaultSoftware = defaultSoftware(meta);
+        for (int i = 0; i < configurations.size(); i++) {
+            InstrumentConfiguration ic = configurations.get(i);
+            String reference = ic.softwareReference() != null ? ic.softwareReference() : defaultSoftware;
+            requireSoftware(reference, "instrument_configuration_list[" + i + "].software_reference", software,
+                    softwareIds);
+            configurations.set(i, new InstrumentConfiguration(ic.id(), ic.components(), reference, ic.parameters()));
+        }
+        for (int i = 0; i < processing.size(); i++) {
+            List<ProcessingMethod> methods = processing.get(i).methods();
+            for (int j = 0; j < methods.size(); j++) {
+                requireSoftware(methods.get(j).softwareReference(), "data_processing_method_list[" + i + "].methods["
+                        + j + "].software_reference", software, softwareIds);
             }
         }
-        if (meta.run() != null) {
-            ObjectNode run = MAPPER.createObjectNode();
-            putText(run, "id", meta.run().id());
-            if (meta.run().defaultInstrumentId() != null) {
-                run.put("default_instrument_id", meta.run().defaultInstrumentId());
-            }
-            putText(run, "default_data_processing_id", effectiveDpId);
-            putText(run, "default_source_file_id", effectiveSfId);
-            putText(run, "start_time", meta.run().startTime());
-            putParams(run, meta.run().parameters());
-            kv.put("run", run.toString());
+
+        if (runJson != null) {
+            kv.put("run", runJson.toString());
         }
-        if (!meta.software().isEmpty()) {
+        if (!software.isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();
-            for (Software s : meta.software()) {
+            for (Software s : software) {
                 ObjectNode n = arr.addObject();
                 putText(n, "id", s.id());
-                putText(n, "version", s.version());
+                n.put("version", s.version() != null ? s.version() : "");
                 putParams(n, s.parameters());
             }
             kv.put("software_list", arr.toString());
         }
-        if (!meta.instrumentConfigurations().isEmpty()) {
+        if (!configurations.isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();
-            for (InstrumentConfiguration ic : meta.instrumentConfigurations()) {
+            for (InstrumentConfiguration ic : configurations) {
                 ObjectNode n = arr.addObject();
                 n.put("id", ic.id());
                 putText(n, "software_reference", ic.softwareReference());
@@ -98,31 +162,20 @@ final class FooterMetadataWriter {
             }
             kv.put("instrument_configuration_list", arr.toString());
         }
-        // Always emit a data_processing_method_list; if none came from the source, synthesise
-        // a minimal sentinel entry so the run's default_data_processing_id is satisfiable.
-        {
+        if (!processing.isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();
-            if (!meta.dataProcessingMethods().isEmpty()) {
-                for (DataProcessing dp : meta.dataProcessingMethods()) {
-                    ObjectNode n = arr.addObject();
-                    putText(n, "id", dp.id());
-                    ArrayNode methods = n.putArray("methods");
-                    for (ProcessingMethod m : dp.methods()) {
-                        ObjectNode mn = methods.addObject();
-                        mn.put("order", m.order());
-                        putText(mn, "software_reference", m.softwareReference());
-                        putParams(mn, m.parameters());
-                    }
-                }
-            } else if (meta.run() != null) {
-                // Sentinel: the run references "mzpeakj_export" so we must declare it.
+            for (DataProcessing dp : processing) {
                 ObjectNode n = arr.addObject();
-                n.put("id", "mzpeakj_export");
-                n.putArray("methods");
+                putText(n, "id", dp.id());
+                ArrayNode methods = n.putArray("methods");
+                for (ProcessingMethod m : dp.methods()) {
+                    ObjectNode mn = methods.addObject();
+                    mn.put("order", m.order());
+                    putText(mn, "software_reference", m.softwareReference());
+                    putParams(mn, m.parameters());
+                }
             }
-            if (arr.size() > 0) {
-                kv.put("data_processing_method_list", arr.toString());
-            }
+            kv.put("data_processing_method_list", arr.toString());
         }
         if (!meta.samples().isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();
@@ -134,30 +187,22 @@ final class FooterMetadataWriter {
             }
             kv.put("sample_list", arr.toString());
         }
-        if (meta.fileDescription() != null) {
+        // A run always names a source file, so without a file description one is written to declare its stub.
+        if (description != null || !sources.isEmpty()) {
             ObjectNode fd = MAPPER.createObjectNode();
-            putParamsArray(fd, "contents", meta.fileDescription().contents());
-            ArrayNode sources = fd.putArray("source_files");
-            for (SourceFile sf : meta.fileDescription().sourceFiles()) {
-                ObjectNode sn = sources.addObject();
+            putParamsArray(fd, "contents", description == null ? null : description.contents());
+            ArrayNode sourceArray = fd.putArray("source_files");
+            for (SourceFile sf : sources) {
+                ObjectNode sn = sourceArray.addObject();
                 putText(sn, "id", sf.id());
                 putText(sn, "name", sf.name());
                 putText(sn, "location", sf.location());
                 putParams(sn, sf.parameters());
             }
-            // If the sentinel source was used (no real source files), add a minimal stub so the
-            // run's default_source_file_id reference is satisfiable by the validator.
-            if ("mzpeakj_source".equals(effectiveSfId) && meta.fileDescription().sourceFiles().isEmpty()) {
-                ObjectNode sn = sources.addObject();
-                sn.put("id", "mzpeakj_source");
-                sn.put("name", "unknown");
-                sn.put("location", "file:///unknown");
-                sn.putArray("parameters");
-            }
             // Left out when empty, as the reference serialises FileDescription.contacts (skip_serializing_if empty).
-            if (!meta.fileDescription().contacts().isEmpty()) {
+            if (description != null && !description.contacts().isEmpty()) {
                 ArrayNode contacts = fd.putArray("contacts");
-                for (Contact c : meta.fileDescription().contacts()) {
+                for (Contact c : description.contacts()) {
                     ObjectNode cn = contacts.addObject();
                     putText(cn, "contact_name", c.name());
                     putText(cn, "contact_affiliation", c.affiliation());
@@ -167,6 +212,35 @@ final class FooterMetadataWriter {
             kv.put("file_description", fd.toString());
         }
         return kv;
+    }
+
+    /**
+     * The software an instrument configuration without one names: the first configuration's software, else the
+     * first software, else the stub software.
+     */
+    private static String defaultSoftware(FileMetadata meta) {
+        List<InstrumentConfiguration> configurations = meta.instrumentConfigurations();
+        if (!configurations.isEmpty() && configurations.get(0).softwareReference() != null) {
+            return configurations.get(0).softwareReference();
+        }
+        if (!meta.software().isEmpty()) {
+            return meta.software().get(0).id();
+        }
+        return SOFTWARE_ID;
+    }
+
+    /** Adds a stub software {@code id} to {@code software} when {@code id} is not null and names none of them. */
+    private static void requireSoftware(String id, String reference, List<Software> software,
+                                        Set<String> softwareIds) {
+        if (id != null && softwareIds.add(id)) {
+            software.add(new Software(id, "", List.of()));
+            warnStub("software_list", "software " + id, reference);
+        }
+    }
+
+    private static void warnStub(String document, String stub, String reference) {
+        LOG.log(Level.WARNING, document + ": added the stub " + stub + ", which " + reference
+                + " names but the file metadata does not declare");
     }
 
     private static void putParams(ObjectNode owner, List<Param> params) {

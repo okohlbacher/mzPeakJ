@@ -38,6 +38,7 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -482,15 +483,29 @@ class ForwardBackwardCorpusTest {
         String runA = a.run() == null ? null : a.run().id();
         String runB = b.run() == null ? null : b.run().id();
         eq(diffs, "fileMetadata.run.id", runA, runB);
-        eq(diffs, "fileMetadata.software.size", a.software().size(), b.software().size());
-        eq(diffs, "fileMetadata.instrumentConfigurations.size",
-                a.instrumentConfigurations().size(), b.instrumentConfigurations().size());
-        eq(diffs, "fileMetadata.dataProcessingMethods.size",
-                a.dataProcessingMethods().size(), b.dataProcessingMethods().size());
+        // The writer appends a stub for what a reference names but the source lacks (WR-9), so each written list is
+        // the source's list followed by stubs only.
+        sizeWithStubs(diffs, "fileMetadata.software.size", a.software().size(), b.software(),
+                s -> "".equals(s.version()) && s.parameters().isEmpty());
+        sizeWithStubs(diffs, "fileMetadata.instrumentConfigurations.size", a.instrumentConfigurations().size(),
+                b.instrumentConfigurations(), ic -> ic.components().isEmpty() && ic.parameters().isEmpty());
+        sizeWithStubs(diffs, "fileMetadata.dataProcessingMethods.size", a.dataProcessingMethods().size(),
+                b.dataProcessingMethods(), dp -> dp.methods().isEmpty());
         eq(diffs, "fileMetadata.samples.size", a.samples().size(), b.samples().size());
         int srcFilesA = a.fileDescription() == null ? 0 : a.fileDescription().sourceFiles().size();
-        int srcFilesB = b.fileDescription() == null ? 0 : b.fileDescription().sourceFiles().size();
-        eq(diffs, "fileMetadata.fileDescription.sourceFiles.size", srcFilesA, srcFilesB);
+        List<FileMetadata.SourceFile> srcFilesB = b.fileDescription() == null ? List.of()
+                : b.fileDescription().sourceFiles();
+        sizeWithStubs(diffs, "fileMetadata.fileDescription.sourceFiles.size", srcFilesA, srcFilesB,
+                sf -> "unknown".equals(sf.name()) && "file:///unknown".equals(sf.location())
+                        && sf.parameters().isEmpty());
+    }
+
+    /** A diff unless {@code written} is {@code size} entries followed by entries that are stubs only. */
+    private static <T> void sizeWithStubs(List<String> diffs, String tag, int size, List<T> written,
+                                          Predicate<T> stub) {
+        if (written.size() < size || !written.subList(size, written.size()).stream().allMatch(stub)) {
+            diffs.add(tag + ": src=" + size + " out=" + written.size() + " (beyond the source only WR-9 stubs)");
+        }
     }
 
     private static void compareScanSettings(List<String> diffs, List<ScanSettings> a, List<ScanSettings> b) {

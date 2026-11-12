@@ -1,5 +1,7 @@
 package org.mzpeak.examples;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,7 +28,9 @@ import org.mzpeak.model.meta.FileMetadata.Software;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
@@ -41,7 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class MzPeakFileInfoTest {
 
-    private static final String USAGE = "Usage: MzPeakFileInfo <in.mzpeak> [-s]   (-s adds intensity statistics)";
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String USAGE ="Usage: MzPeakFileInfo <in.mzpeak> [-s]   (-s adds intensity statistics)";
 
     @Test
     void summarizesAnArchiveWithoutStatistics() {
@@ -245,7 +250,7 @@ class MzPeakFileInfoTest {
                 "  MS:1000810 (ion current chromatogram): 1",
                 "  unknown (?): 1",
                 "",
-                "Run: ",
+                "Run: mzpeakj_run",
                 "Software:",
                 "  - mzpeakj-test",
                 "Instrument configurations:",
@@ -394,7 +399,7 @@ class MzPeakFileInfoTest {
      * with the only MS1 point, one empty centroid spectrum. MS2: a precursor without selected ion and activation, a
      * charged precursor whose dissociation methods (CID, HCD) have no name, and no precursor. MS3: an uncharged
      * precursor, no retention time and no points. Then an ion current and an untyped chromatogram, and file metadata
-     * with an unnamed run, a software without version, an unknown component without named parameters, a resolution
+     * with an unnamed run (which the writer names mzpeakj_run), a software without version, an unknown component without named parameters, a resolution
      * and a source file without name. Written in the packed layout, which keeps the methods nameless.
      */
     private static Path writeEdgeCases(Path dir) {
@@ -431,6 +436,16 @@ class MzPeakFileInfoTest {
         // writer would name them (the Rust reader needs a name).
         MzPeakWriter.writeDirectory(dir, spectra, chromatograms, List.of(), List.of(), metadata,
                 MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
+        // The writer names the run mzpeakj_run and writes the software's version as "" (WR-9); a version-less
+        // software, as another writer may store it, is restored in the manifest, which the reader prefers.
+        Path index = dir.resolve("mzpeak_index.json");
+        try {
+            ObjectNode manifest = (ObjectNode) MAPPER.readTree(index.toFile());
+            ((ObjectNode) manifest.path("metadata").path("software_list").get(0)).remove("version");
+            MAPPER.writeValue(index.toFile(), manifest);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
         return dir;
     }
 

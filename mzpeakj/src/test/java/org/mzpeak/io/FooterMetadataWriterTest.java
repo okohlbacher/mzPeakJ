@@ -26,7 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The file metadata documents {@link FooterMetadataWriter} serializes, for what the other writer tests leave out:
  * no file metadata at all; a run without default instrument, default source file or file description, and a dataset
- * rewritten with the sentinel source file its first write declared; Param values of every type; Param lists that are
+ * rewritten with the sentinel source file its first write declared (WR-9: declared also without a file description);
+ * Param values of every type; Param lists that are
  * null; and a component of unknown type. Each is written with {@link MzPeakWriter} and read back with
  * {@link MzPeakReader}.
  *
@@ -59,8 +60,9 @@ class FooterMetadataWriterTest {
 
     /**
      * A run without default instrument and default source file, and a file description without source files: the
-     * run names the sentinel source file, which the file description declares, and no default instrument. Written
-     * again as read back, the dataset keeps that one sentinel source file instead of declaring a second.
+     * run names the sentinel source file, which the file description declares, and the first instrument configuration
+     * as default instrument (WR-9). Written again as read back, the dataset keeps that one sentinel source file instead
+     * of declaring a second.
      */
     @Test
     void theSentinelSourceFileIsDeclaredOnceAlsoWhenTheDatasetIsRewritten(@TempDir Path tmp) throws IOException {
@@ -73,11 +75,12 @@ class FooterMetadataWriterTest {
                 run.parameters()));
 
         JsonNode runJson = json(FooterMetadataWriter.serialize(meta), "run");
-        assertThat(runJson.has("default_instrument_id")).isFalse();
+        int first = fixture.instrumentConfigurations().get(0).id();
+        assertThat(runJson.path("default_instrument_id").asInt()).isEqualTo(first);
         assertThat(runJson.path("default_source_file_id").asText()).isEqualTo("mzpeakj_source");
 
         FileMetadata once = fileMetadata(write(tmp.resolve("once.mzpeak"), small, meta));
-        assertThat(once.run()).isEqualTo(new MsRun(run.id(), null, run.defaultDataProcessingId(), "mzpeakj_source",
+        assertThat(once.run()).isEqualTo(new MsRun(run.id(), first, run.defaultDataProcessingId(), "mzpeakj_source",
                 run.startTime(), run.parameters()));
         assertThat(once.fileDescription().sourceFiles()).containsExactly(SENTINEL_SOURCE);
 
@@ -90,10 +93,10 @@ class FooterMetadataWriterTest {
 
     /**
      * A run without default source file and file metadata without a file description: the run names the sentinel
-     * source file, and no file description is written to declare it.
+     * source file, and a file description without contents is written to declare it (WR-9).
      */
     @Test
-    void withoutFileDescriptionTheSentinelSourceFileIsNamedButNotDeclared(@TempDir Path tmp) throws IOException {
+    void withoutFileDescriptionTheSentinelSourceFileIsDeclaredInAFileDescriptionOfItsOwn(@TempDir Path tmp) throws IOException {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
         FileMetadata fixture = small.fileMetadata;
         MsRun run = fixture.run();
@@ -102,12 +105,14 @@ class FooterMetadataWriterTest {
                 run.defaultInstrumentId(), run.defaultDataProcessingId(), null, run.startTime(), run.parameters()));
 
         Map<String, String> kv = FooterMetadataWriter.serialize(meta);
-        assertThat(kv).doesNotContainKey("file_description");
+        assertThat(json(kv, "file_description").toString())
+                .isEqualTo("{\"contents\":[],\"source_files\":[{\"id\":\"mzpeakj_source\",\"name\":\"unknown\","
+                        + "\"location\":\"file:///unknown\",\"parameters\":[]}]}");
         assertThat(json(kv, "run").path("default_source_file_id").asText()).isEqualTo("mzpeakj_source");
         assertThat(json(kv, "run").path("default_instrument_id").asInt()).isEqualTo(run.defaultInstrumentId());
 
         FileMetadata back = fileMetadata(write(tmp.resolve("out.mzpeak"), small, meta));
-        assertThat(back.fileDescription()).isNull();
+        assertThat(back.fileDescription()).isEqualTo(new FileDescription(List.of(), List.of(SENTINEL_SOURCE)));
         assertThat(back.run().defaultSourceFileId()).isEqualTo("mzpeakj_source");
         assertThat(back.run().defaultInstrumentId()).isEqualTo(run.defaultInstrumentId());
     }
