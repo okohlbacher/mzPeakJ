@@ -13,6 +13,11 @@ import org.mzpeak.io.Golden.Line;
 import org.mzpeak.io.InteropOutputs.Output;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.CvTerms;
+import org.mzpeak.model.Param;
+import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 
@@ -120,6 +125,28 @@ class UpstreamInteropTest {
             "reader = MzPeakFile(sys.argv[1])",
             "data = reader.chromatogram_data[0]",
             "print(json.dumps({str(k): [float(x) for x in v] for k, v in data.items() if isinstance(v, np.ndarray)}))",
+            "");
+
+    /** V-24: the ion mobility columns of the scans and selected-ion frames, in row order, a null cell as null. */
+    private static final String ION_MOBILITY_PROBE = String.join("\n",
+            "\"\"\"Ion mobility columns of one archive (mzPeakJ UpstreamInteropTest, V-24).\"\"\"",
+            "import json",
+            "import sys",
+            "",
+            "import pandas as pd",
+            "from mzpeak import MzPeakFile",
+            "",
+            "reader = MzPeakFile(sys.argv[1])",
+            "",
+            "def cells(frame, column, convert):",
+            "    return [None if pd.isna(v) else convert(v) for v in frame[column]]",
+            "",
+            "print(json.dumps({",
+            "    \"scan_values\": cells(reader.scans, \"ion_mobility_value\", float),",
+            "    \"scan_types\": cells(reader.scans, \"ion_mobility_type\", str),",
+            "    \"ion_values\": cells(reader.selected_ions, \"ion_mobility_value\", float),",
+            "    \"ion_types\": cells(reader.selected_ions, \"ion_mobility_type\", str),",
+            "}))",
             "");
 
     /**
@@ -296,6 +323,51 @@ class UpstreamInteropTest {
         JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
         assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
         assertThat(counts.path("chromatograms").asInt()).isEqualTo(1);
+    }
+
+    /**
+     * D-13 (V-24): diaPASEF.ref written split as an archive: the Python reader reads the {@code ion_mobility_value}
+     * and {@code ion_mobility_type} columns of the scans and selected ions, in row order, with the values of the
+     * source's ion mobility Params and MS:1002815, and nothing for spectrum 0's scan, which has none.
+     */
+    @Test
+    void thePythonReaderReadsTheIonMobilityColumns() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("ion-mobility"));
+        ForwardBackwardCorpusTest.Source dia = ForwardBackwardCorpusTest.readSource(
+                Fixtures.current("diaPASEF.ref.mzpeak"));
+        Path archive = dir.resolve("diaPASEF.ref.mzpeak");
+        MzPeakWriter.writeArchive(archive, dia.spectra, dia.chromatograms, dia.wavelengthSpectra, dia.scanSettings,
+                dia.fileMetadata, MzPeakWriter.Options.defaults());
+        List<Double> scanValues = new ArrayList<>();
+        List<String> scanTypes = new ArrayList<>();
+        List<Double> ionValues = new ArrayList<>();
+        List<String> ionTypes = new ArrayList<>();
+        for (Spectrum s : dia.spectra) {
+            for (ScanEvent scan : s.description().scans()) {
+                boolean has = scan.ionMobilityValue().isPresent();
+                scanValues.add(has ? scan.ionMobilityValue().getAsDouble() : null);
+                scanTypes.add(has ? scan.ionMobilityType() : null);
+            }
+            for (Precursor p : s.description().precursors()) {
+                for (SelectedIon ion : p.selectedIons()) {
+                    boolean has = ion.ionMobilityValue().isPresent();
+                    ionValues.add(has ? ion.ionMobilityValue().getAsDouble() : null);
+                    ionTypes.add(has ? ion.parameters().stream().map(Param::accession)
+                            .filter(CvTerms.ION_MOBILITY_TYPES::contains).findFirst().orElseThrow() : null);
+                }
+            }
+        }
+        assertThat(scanTypes).containsOnly(null, "MS:1002815").filteredOn(t -> t != null).hasSize(8);
+        assertThat(ionTypes).containsOnly("MS:1002815").hasSize(8);
+        Path script = Files.writeString(tmp.resolve("ion_mobility.py"), ION_MOBILITY_PROBE, StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "ion-mobility.json");
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(nullableDoubles(read.path("scan_values"))).as("%s", read).isEqualTo(scanValues);
+        assertThat(nullableStrings(read.path("scan_types"))).as("%s", read).isEqualTo(scanTypes);
+        assertThat(nullableDoubles(read.path("ion_values"))).as("%s", read).isEqualTo(ionValues);
+        assertThat(nullableStrings(read.path("ion_types"))).as("%s", read).isEqualTo(ionTypes);
     }
 
     @Test
@@ -520,6 +592,22 @@ class UpstreamInteropTest {
         List<Long> values = new ArrayList<>();
         for (JsonNode n : array) {
             values.add(n.asLong());
+        }
+        return values;
+    }
+
+    private static List<Double> nullableDoubles(JsonNode array) {
+        List<Double> values = new ArrayList<>();
+        for (JsonNode n : array) {
+            values.add(n.isNull() ? null : n.asDouble());
+        }
+        return values;
+    }
+
+    private static List<String> nullableStrings(JsonNode array) {
+        List<String> values = new ArrayList<>();
+        for (JsonNode n : array) {
+            values.add(n.isNull() ? null : n.asText());
         }
         return values;
     }

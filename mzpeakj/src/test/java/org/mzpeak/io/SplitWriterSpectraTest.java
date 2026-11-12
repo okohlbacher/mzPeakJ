@@ -147,6 +147,7 @@ class SplitWriterSpectraTest {
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",
                 "scan_start_time optional DOUBLE -", "preset_scan_configuration optional INT32 -",
                 "filter_string optional BINARY string", "ion_injection_time optional DOUBLE -",
+                "ion_mobility_value optional DOUBLE -", "ion_mobility_type optional BINARY string",
                 "instrument_configuration_id optional INT32 -", "spectrum_reference optional BINARY string",
                 "parameters optional group list", "scan_windows optional group list");
 
