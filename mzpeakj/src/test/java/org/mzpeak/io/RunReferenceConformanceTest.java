@@ -359,7 +359,9 @@ class RunReferenceConformanceTest {
 
     /**
      * (f) Every file metadata document of every dataset {@link InteropOutputs} writes, in the split and the packed
-     * layout, in the manifest and in each member's footer, passes the schema check and resolves.
+     * layout, in the manifest and in each member's footer, passes the schema check and resolves. Exactly the manifest
+     * and the spectrum and wavelength spectrum metadata members hold them ({@link SpecSchemaCheck#fileMetadataPlaces}),
+     * each the manifest's documents.
      */
     @Test
     void everyDocumentInteropOutputsWritesConformsAndResolves(@TempDir Path tmp) {
@@ -375,8 +377,10 @@ class RunReferenceConformanceTest {
                 assertThat(places).as(output.name()).isEmpty();
                 continue;
             }
-            assertThat(places).as(output.name()).containsKey("mzpeak_index.json");
+            assertThat(places.keySet()).as(output.name())
+                    .containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(output.path()));
             places.forEach((place, documents) -> {
+                assertThat(documents).as(output.name() + " " + place).isEqualTo(places.get("mzpeak_index.json"));
                 assertThat(documents).as(output.name() + " " + place).containsKey("run");
                 SpecSchemaCheck.violations(documents).forEach(v -> problems.add(output + " " + place + ": " + v));
                 SpecSchemaCheck.unresolved(documents).forEach(u -> problems.add(output + " " + place + ": " + u));

@@ -16,8 +16,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * WR-9 (D-17), case (e): the datasets the converter writes from the mzML fixtures tiny.pwiz.1.1 and small carry file
- * metadata documents, in the manifest and in every member's footer, that pass the specification's schemas and whose
- * references all resolve ({@link SpecSchemaCheck}, in this package of the core library's tests).
+ * metadata documents, in the manifest and in the footer of every spectrum metadata member (each the manifest's), that
+ * pass the specification's schemas and whose references all resolve ({@link SpecSchemaCheck}, in this package of the
+ * core library's tests).
  */
 class ConverterReferenceConformanceTest {
 
@@ -29,9 +30,10 @@ class ConverterReferenceConformanceTest {
         MzMLConversion.toMzPeak(mzml, out, true, MzPeakWriter.Options.defaults());
 
         Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
-        assertThat(places).containsKey("mzpeak_index.json");
+        assertThat(places.keySet()).containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(out));
         List<String> problems = new ArrayList<>();
         places.forEach((place, documents) -> {
+            assertThat(documents).as(place).isEqualTo(places.get("mzpeak_index.json"));
             assertThat(documents).as(place).containsKeys("run", "software_list", "instrument_configuration_list",
                     "data_processing_method_list", "file_description");
             SpecSchemaCheck.violations(documents).forEach(v -> problems.add(place + ": " + v));

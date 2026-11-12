@@ -404,6 +404,7 @@ class RustReaderAcceptanceTest {
                 assertThat(w.has("none") || w.has("panic")).as("%s: %s", at, w.path("panic")).isFalse();
                 assertThat(w.path("id").asText()).as(at).isEqualTo(expected.id());
                 // R-3: the retention time of a wavelength spectrum reads as 0.0
+                assertThat(w.path("rt").isNumber()).as("%s: rt %s", at, w.path("rt")).isTrue();
                 assertThat(w.path("rt").asDouble()).as("%s: R-3 rt", at).isEqualTo(0.0);
                 if (expected.time() != 0.0) {
                     issues.add("R-3");
