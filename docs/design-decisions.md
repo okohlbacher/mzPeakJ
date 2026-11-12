@@ -170,11 +170,13 @@ these ids.
 | F-4 | `ContentDigest` renders locale-independently, manifests use LF line ends | the schema digest failed under `tr_TR`, and the manifest used the platform's line separator |
 | F-5 | The Python oracle environment of the opt-in mzML checks is pinned by a lock file (CPython 3.13.12) | reproducible oracle results |
 
-Kept as they are (the main session's "keep as is" defaults of 2026-11-11, not overruled): split datasets may hold packed-shaped facet members;
-`<entity>_count` is archive-wide, as the reference writes it; the packed writer stays frozen; the Numpress dispatch on
-an empty linear column keeps failing loudly; `ColumnStatistics.RowGroup` keeps nullable values; signal decode errors
-stay per row-group run; the converter's class sizes are accepted. One item of the list, "a split round trip of a legacy
-file derives summary values", is reversed by D-9a (below).
+Kept as they are (the main session's "keep as is" defaults of 2026-11-11, not overruled): split datasets may hold
+packed-shaped facet members; `<entity>_count` is archive-wide, as the reference writes it; the packed writer stays
+frozen, apart from V-17 (D-9a): a spectrum type or summary Param now goes to its column and leaves the `parameters`
+list, and the type and summaries are derived only when the Params have none; the Numpress dispatch on an empty linear
+column keeps failing loudly; `ColumnStatistics.RowGroup` keeps nullable values; signal decode errors stay per row-group
+run; the converter's class sizes are accepted. One item of the list, "a split round trip of a legacy file derives
+summary values", is reversed by D-9a (below).
 
 ## 2026-11-11: defaults of the 0.12.0 round
 

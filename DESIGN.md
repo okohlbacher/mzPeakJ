@@ -51,15 +51,46 @@ Members, offsets and the archive itself may exceed 4 GiB:
   record; a violation throws an `MzPeakException` that names zip64.
 - A sentinel without a locator is accepted only as an entry count of exactly 65535 with the size and offset in
   range. The central directory itself must fit in 2 GiB.
-- A member name that occurs twice throws.
+- **Central-directory bound** (F-2). Before the directory is read into memory, its declared size is checked
+  against its entry count `n`, on the zip64 and the classic path alike: a central header has at least 46 and at most
+  46 + 3 × 65,535 = 196,651 bytes, and an mzPeak archive has tens of members, so the size must lie in
+  `46·n .. min(196,651·n, 64 MiB)` (`ZipIndex.MAX_DIRECTORY_BYTES`). Otherwise `corrupt zip: central directory of
+  <size> bytes for <n> entries (allowed <lo>..<hi>)` is thrown before any buffer is allocated, so a corrupt record
+  cannot force a large allocation.
+- **Duplicate member names** (RD-16). A name that occurs more than once maps to its **last** central-directory
+  entry, as the ZIP specification has it, and one WARNING per such name is logged (`<archive>: member '<name>'
+  occurs <n> times; using the last`). Up to 0.11 a duplicate name threw.
 
 ### 1.2 Manifest and roles
 
 The manifest lists every member under `files`. Each entry carries `name`, `entity_type`, `data_kind`,
 `column_mapping` (alias `metadata_mapping`; see §2.2), `parameters` and `checksum` (lowercase hex SHA-512 of the
 member). The `metadata` object carries the format `version`, the `cv_list`, the `scan_settings_list` and the
-file-level documents (§7). An entry without a `name` makes the parser throw, naming its position and role, as both
-references reject it.
+file-level documents (§7).
+
+**Strict parsing** (D-7). `MzPeakManifest.fromSource` checks the manifest against the Rust reference's structs, as
+serde deserializes them (`FileIndex`, `FileEntry`, `MetadataColumn`, `MetaParam`), before it builds any entry. It
+rejects, with `MzPeakException("mzpeak_index.json <location>: <problem> in <source>")` naming the entry and field
+(for example `files[3] (spectra_metadata_scans.parquet).column_mapping[2].path`): a missing `files` or `metadata`; an
+entry without a string `name`, `entity_type` or `data_kind`; a column mapping whose `path` is neither a string nor a
+list of strings, or whose `accession` key is missing; a parameter without its `accession` and `unit` keys; an
+accession or unit that is not CURIE-shaped (`prefix:local`; the CV itself is not checked, unlike in Rust, so that
+terms of other CVs stay readable); a field of the wrong JSON type, including the `metadata` documents (`cv_list`,
+`scan_settings_list`, … must be arrays, `run`, `file_description` and `imaging` objects; their content keeps the
+lenient reader of §7); a known field given twice in one object ("duplicate field", as serde says; duplicate unknown
+keys and duplicate keys inside `metadata` are accepted, as serde accepts them); and content after the JSON document.
+Unknown keys are ignored. Up to 0.11 such manifests were read leniently.
+
+**Format version** (RD-18). `metadata.version` is parsed as `MAJOR.MINOR.PATCH` (with an optional suffix). A major
+version above 0 makes `open` throw (`<source>: mzPeak format version 1.0.0 is newer than the supported major version
+0; open with Options.withVersionCheck(false) or -Dmzpeak.reader.ignoreVersion=true to try anyway`); a missing,
+non-string (Rust reads it as absent) or unparseable version logs one WARNING and the dataset is read as 0.x. The
+legacy manifests and Example_Processed.img have no version, so they open with that WARNING.
+
+**Datasets without spectrum metadata** (RD-17). A manifest that lists no spectrum metadata member, such as a dataset
+of chromatograms only, opens with 0 spectra: the iterator is empty, the observed ranges, `encodedTic()`,
+`encodedBpc()` and the spectrum column statistics are empty, and chromatograms and file metadata read as usual. A
+member that the manifest lists but the dataset lacks still throws.
 
 The role `(entity_type, data_kind)` identifies a member. **Resolve members by role, never by file name.**
 `MzPeakManifest` parses both strings as the Rust reference does (`FromStr`): lowercased and trimmed, with
@@ -87,8 +118,9 @@ Any other value, including `other` and an absent one, parses to `OTHER`, which n
 | wavelength_spectrum / scans | `wavelength_spectra_metadata_scans.parquet` | not decoded (§10) |
 | wavelength_spectrum / data_arrays | `wavelength_spectra_data.parquet` | `WavelengthSpectrumStore` (§3.5) |
 
-Members of other roles (products, provenance, signature, proprietary, other) are ignored. Checksums are parsed
-but not verified on read (§10); `UpstreamFixtureIntegrityTest` verifies those of the vendored examples.
+Members of other roles (products, provenance, signature, proprietary, other) are ignored. Checksums are not
+verified when a dataset is opened; `MzPeakReader.verifyIntegrity()` checks them on request (§8.2), and
+`UpstreamFixtureIntegrityTest` and `VerifyIntegrityTest` check those of the vendored examples.
 
 **Legacy.** Pin-era manifests spell the roles `data arrays` and `wavelength spectrum` (with a space), have no
 `column_mapping`, `parameters` or `checksum`, and list a single metadata member per entity, which holds all
@@ -138,8 +170,9 @@ facets, found by role; a facet member the manifest does not list is legal and co
 **Join rule.** Rows are joined strictly by key: a spectrum by its `index`, every facet row by its
 `source_index`. **Never join by row position** — the facet tables are not row-aligned with the spectrum table
 (current small has 48 spectra but 34 precursor rows). A null key throws, as do a uint64 key with the high bit
-set and a repeated spectrum index. Facet rows whose `source_index` matches no spectrum are dropped, as in the
-Rust reference.
+set and a repeated spectrum index. Facet rows whose `source_index` matches no spectrum are dropped silently,
+without an exception or a WARNING, as in the Rust reference (D-6; `SplitOrphanFacetRowsTest`, and for the packed
+layout `PackedSpectrumMetadataCharacterizationTest.facetsOfAnAbsentSpectrumAreDropped`).
 
 **Column resolution.** Every metadata column is resolved by accession through `ColumnResolver`, in this order,
 taking only a field directly in the current scope:
@@ -152,6 +185,13 @@ taking only a field directly in the current scope:
 
 Steps 2 to 4 never take a field that the member's `column_mapping` assigns to another accession.
 
+**Resolved once per member** (D-10). A `ColumnResolver` serves one member scope of one single-threaded decode and
+memoizes what it resolves: its child scopes, each accession's field, each field's mapping and term-marker flag, and
+a leftover plan per row type, so a row only reads its cells. On a 295,811-spectrum Orbitrap Astral DIA file (1.09 GB,
+OpenJDK 27.0.1, `-Xmx16g`, medians of interleaved runs), opening it and decoding all descriptions took 2.23 s
+instead of 2.67 s in 0.11.1 (0.835×), which recovers the slowdown of the split-layout reader; the signal path is
+unchanged (0.996×), and the decoded descriptions are identical.
+
 `ColumnTable` is the constant column identity of the nine facets, shared by reader and writer. Its canonical
 rows are the union of the `column_mapping`s of the 8 current example manifests, copied verbatim. Paths are
 dotted and omit list and element levels (`scan_windows.scan_window_lower_limit`). Example_Processed.img stores
@@ -162,15 +202,23 @@ example `spectrum_representation` = `MS:1000128` or `activation.dissociation_met
 boolean term marker holds presence flags; only TRUE counts.
 
 A mapping's `unit` is a unit CURIE when given as a string. Given as a JSON array, it is the path of a column of
-per-row unit CURIEs (Rust `PathOrCURIE`), kept apart as `ColumnMapping.unitPath`; that column is not resolved
-yet, so the mapped values have no unit.
+per-row units (Rust `PathOrCURIE`), kept apart as `ColumnMapping.unitPath`, as the Rust writer writes a column
+`<field>` with a sibling `<field>_unit` (D-9b). The unit is read per row from the sibling column named by the path's
+last segment, in the same scope: a string cell is the CURIE, a struct cell `{cv_id, accession}` is `MS:%07d` for
+cv_id 1 and `UO:%07d` for cv_id 2, a null cell gives no unit. Another cv_id throws (`<member>: unit column <path>
+row <k> has cv_id <n>; supported are 1 (MS) and 2 (UO)`), and so does a path that names no column of the scope
+(`… unit column <path> does not exist`; the Rust reader logs an error and treats the unit as unknown). The leftover
+Params and the collision energy take their unit so; the unit column itself is consumed and never becomes a Param.
+The scan start time still throws for a unit column (table below). Up to 0.11 a unit column was not read, and the
+mapped values had no unit.
 
 **Typed reads** go through `ParquetGroups` and are unsigned-aware: uint8, uint16 and uint32 cells are not
 sign-extended; a uint64 cell with the high bit set throws. A column of the wrong shape or physical type (a scalar
 where a struct or a list is expected, a struct where a scalar is, a non-numeric list) throws an `MzPeakException`
 that names the member and the column, in both layouts.
 
-**Leftovers.** Scalar columns that no decoder consumes become Params (split layout only). Only primitive,
+**Leftovers.** Scalar columns that no decoder consumes become Params (in the split layout, and of the legacy packed
+layout only in the `spectrum` struct, §2.4). Only primitive,
 non-repeated fields directly in the scope are visited. Structural columns (`ColumnTable.structural`: keys such
 as `index`, `id`, `source_index`, `scan_index` or `precursor_index`, and bookkeeping columns such as
 `parameters`, `auxiliary_arrays`, `number_of_auxiliary_arrays`, `data_processing_id` or the spec's
@@ -195,7 +243,7 @@ Leftovers of the precursor scope have no place in the model; they are logged at 
 |---|---|
 | `SpectrumRowDecoder` | `index`, `id`, `time`; MS:1000511 ms level (default 0), MS:1000465 polarity, the MS:1000525 representation marker, MS:1003060 / MS:1003059 declared counts (default 0); the delta model (§4.1); `parameters`; leftovers (a column wins over a list entry with the same accession) |
 | `ScanRowDecoder` | MS:1000016 scan start time in minutes (converted from its mapping's unit: second, millisecond or hour; another unit, or a unit column, throws), MS:1000927 ion injection time, MS:1000512 filter string, MS:1000616 preset scan configuration; `instrument_configuration_id`; `spectrum_reference`; `scan_windows` (MS:1000501/MS:1000500, a window needs both); `parameters`; typed ion mobility (§5); IMS:1000050/51 positions as Long Params when the list lacks them; leftovers |
-| `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29, then `parameters` and leftovers); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
+| `PrecursorRowDecoder` | `precursor_index`, `precursor_id`; `isolation_window` (MS:1000827/28/29, then `parameters` and leftovers); activation Params in this order: the MS:1000044 dissociation-method marker, MS:1000045 as 'collision energy' with the mapping's unit or its row's unit column, activation-scope leftovers, then `parameters` (a column wins over a list entry with the same accession) |
 | `SelectedIonRowDecoder` | MS:1000744 (a row without it is skipped), MS:1000041, MS:1000042, `parameters`, typed ion mobility, leftovers |
 
 ### 2.3 One assembler for both layouts
@@ -236,11 +284,24 @@ precursor.
 have no `column_mapping`; they are resolved by accession through the `ColumnTable` fallbacks, which hold the
 pin-era names such as `MS_1000511_ms_level`, `MS_1000525_spectrum_representation` or
 `isolation_window.MS_1000827_isolation_window_target_mz`. The packed `spectrum` struct yields its leftovers like
-a split table (V-17, D-9a): the `spectrum_type` marker and the summary columns become Params. The packed writer
-therefore treats them as the split writer does: a spectrum type or summary Param goes to its column and leaves the
-`parameters` list, and the type and summaries are derived only when the Params have none, so a read–write–read
-cycle keeps the Params as they are. The other packed scopes (scan, precursor, selected ion) yield no leftovers.
-The legacy delta model is `mz_delta_model` (§4.1).
+a split table (V-17, D-9a): the `spectrum_type` marker and the summary columns become Params, so a legacy spectrum
+reads with the Params the split read of the same data gives (up to 0.11 they were dropped). The other packed scopes
+(scan, precursor, selected ion) yield no leftovers. The legacy delta model is `mz_delta_model` (§4.1).
+
+Two writer consequences, both since V-17 (0.12.0):
+
+- **The packed writer no longer repeats in the `parameters` list a term it writes as a column.** It treats the
+  spectrum type and the summaries as the split writer does: a spectrum type or summary Param goes to its column and
+  leaves the list, and the type and summaries are derived only when the Params have none. Up to 0.11 it wrote derived
+  columns and left the same terms in the list, which, with the reader now taking the columns, would have doubled them
+  on every packed read–write–read cycle; now that cycle keeps the Params as they are.
+- **A `SPLIT` write of a legacy dataset keeps the stored summary values** (lowest and highest observed m/z, base
+  peak m/z and intensity, total ion current, float32 widened to double) instead of deriving them from the arrays, since
+  the spectra now carry them as Params. This deviates from a "keep as is" default of the 0.12.0 round, which said that
+  a split round trip of a legacy file derives them; keeping derivation would have contradicted D-9 or needed a
+  provenance flag in the public model. `SplitWriterPromotionTest.legacySplitWritePromotesStoredSummaries` pins it, and
+  a spectrum whose Params hold none of the five still gets derived values. See
+  [docs/design-decisions.md](docs/design-decisions.md).
 
 Legacy chromatogram metadata has the structs `chromatogram`, `precursor` and `selected_ion`; legacy
 wavelength-spectrum metadata has `spectrum` and `scan`.
@@ -373,7 +434,8 @@ to small.unpacked for all 48 spectra (`LayoutEquivalenceTest`).
 encodes the **full absolute arrays** with no chunk_start, no delta and no null marking — decode and append
 1:1. It is lossy by design (linear m/z is near-lossless; SLOF intensity is log-scaled uint16; PIC is
 integer-only). The SLOF encoder chooses `fixedPoint = floor(65535 / log(max_intensity + 1))` per chunk so the
-encoded values fit in uint16; this is transparent to the reader.
+encoded values fit in uint16; this is transparent to the reader. Decoded SLOF and PIC intensities stay full
+doubles, never narrowed to float32 (D-5; `NumpressConformanceTest`, `NumpressPicTest`).
 
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
 misdecoded: a grid chunk without a grid or with an unknown `grid_type` (below), an unknown `chunk_encoding`,
@@ -446,6 +508,15 @@ carries a value and no SLOF column decodes to values but another intensity chunk
 column, another transform, or one that names none), a negative index, and, on the first row, a plan without a
 time values column (point layout) or without any intensity source.
 
+**Time unit** (D-12). Chromatogram times are returned as stored, in `Chromatogram.timeUnit()`: the unit of the
+time values column's plan entry, else (a chunk layout without a values column) that of the chunk start column, and
+minute (UO:0000031) when the chosen entry names none. A chunk start column in another unit than the values column
+is converted to it, both among minute, second, millisecond and hour; another unit of either throws before any row is
+read. Any other single unit is passed through with the stored values. `Chromatogram.withTimeUnit(unit)` converts
+among the four units on request. Up to 0.11 the reader converted chromatogram times to minutes. The TIC and BPC
+derived from the spectrum metadata (`encodedTic()`, `encodedBpc()`) are in minutes, as are retention times and scan
+start times.
+
 `Chromatogram.intensityUnit()` is the unit of the plan entry that supplied the values (null for an INFERRED
 plan or mixed units). Wavelength spectra are dense point rows (`WavelengthSpectrumStore`, `PointArrays`), read
 like chromatogram point rows: the first non-null value among the intensity columns in index order; a
@@ -472,7 +543,9 @@ examples and of has_uv carries a per-point `ms level` array (`MS:1000786`): 48 o
 `chunk_secondary` in small.chunked, 212 in has_uv. has_uv's 'DAD1 A' has none.
 
 **Nulls and drops.** A null cell reads as NaN; an entity whose cells of a key are all NaN gets no entry for
-that key. With `reconstructProfile=false` the points dropped from `mz()` are dropped from the extras too. An
+that key. At a null-marked m/z that the fill reconstructs (§4.2), an extra keeps the cell stored in that row, not an
+interpolated value (`NullFilledExtraArrayTest`). With `reconstructProfile=false` the points dropped from `mz()` are
+dropped from the extras too. An
 extra whose list or grid length does not match its chunk, whose grid has an unknown `grid_type` or cannot be
 decoded (§3.3), whose other transform column (a Numpress one, not decoded for extras) carries a value, or whose
 cells are not numbers is dropped with a WARNING (once per member and key). m/z and intensity are never dropped,
@@ -566,8 +639,16 @@ order:
   table order); `ionMobilityType()` is the type of that Param. Typed `ion_mobility_value`/`ion_mobility_type`
   columns of scans and selected ions become such a Param (`IonMobilityParams`) when the list holds none, with
   the PSI-MS name and unit the Rust reader gives the type (MS:1002815 'inverse reduced ion mobility drift time'
-  in MS:1002814, for example; another type is 'ion mobility value' without a unit); a value without a type is
-  MS:1002476 (drift time, in milliseconds).
+  in MS:1002814, for example; another type is 'ion mobility value' without a unit). A finite value whose type is
+  null or blank throws (D-8): `<member>: <facet> row with <key column> <k> has ion_mobility_value <v> but no
+  ion_mobility_type`, where the Rust reader panics; up to 0.11 it was read as MS:1002476 drift time. A null or
+  non-finite value, or a row whose list already holds an ion mobility type, never uses the columns.
+- The split writer fills these columns (V-24, D-13): `ion_mobility_value` and `ion_mobility_type` follow
+  `ion_injection_time` in the scans and `peak_intensity` in the selected ions, in the reference's order and without a
+  column mapping. A scan's or ion's Param moves there only when it is its scope's one ion mobility Param, has one of
+  the four types whose name and unit the reader fixes (MS:1002476, MS:1002815, MS:1001581, MS:1003371) with that unit,
+  and a finite Double or Long value (read back as Double); otherwise both cells are null and the Param stays in the
+  list. A value is never written without a type. The packed writer does not write them.
 - `Spectrum.ionMobility()` looks for an ion mobility array key (§3.6).
 - `Activation.methods()` reports only `DISSOCIATION_METHODS`, which also name the dissociation-method marker's
   Param. MS:1002631 (EThcD) is a child of MS:1003181 'combined dissociation method', not of MS:1000044: it is
@@ -605,9 +686,13 @@ The spec allows physical-type variance:
 
 **mzPeakJ rule:** never assume a physical type. `ParquetGroups` dispatches on the actual
 `PrimitiveTypeName` via `optDouble`/`optLong`/`doubleListNullable`, and navigates list structure by field
-*position* so element names (`element`/`item`/`list`) are irrelevant. Index columns (uint64) are read as
-signed Java `long`; values with the high bit set are rejected with a clear error. Metadata cells go through
-`ColumnResolver`, which adds the unsigned handling of §2.2.
+*position* so element names (`element`/`item`/`list`) are irrelevant. The index keys of the signal members
+(`spectrum_index`, `chromatogram_index`, `wavelength_spectrum_index`) are read unsigned-aware
+(`ParquetGroups.optIndexKey`, F-1): an INT32 with an unsigned annotation is read without sign extension, so a uint32
+key of 2³¹ or more reads correctly (up to 0.11 it read as negative and was rejected); a uint64 key with the high bit
+set throws (`<member>: uint64 column <field> holds <value>, beyond the supported range (high bit set)`), and so does a
+negative key of a signed column (`<member>: <type> column <field> holds the negative index <v>`). Metadata cells go
+through `ColumnResolver`, which adds the unsigned handling of §2.2.
 
 ---
 
@@ -650,6 +735,24 @@ footer.
 `ms_run.json` still lists it under `required`, and the Rust reader, which accepts either name, rejects a run
 that has both as a duplicate field.
 
+**No dangling references** (WR-9, D-17). `FooterMetadataWriter` writes every reference between the documents so that
+it resolves, and every key the spec schemas (`ms_run.json`, `software.json`, `data_processing.json`,
+`instrument_configuration.json`, `file_description.json`) require; what is missing is synthesized, never refused, with
+one WARNING per stub naming its document, its id and the reference:
+
+- the run's id defaults to `mzpeakj_run`; its default instrument, data processing and source file to the first of
+  their lists, and without one to a stub: instrument configuration `0`, data processing `mzpeakj_export`, source
+  file `mzpeakj_source` (`unknown` at `file:///unknown`, with a `file_description` holding it when there is none);
+- a run default or a `software_reference` that names no entity of its list gets a stub of that id; so a non-null
+  `default_instrument_id` without its configuration keeps its value and gains a stub configuration, as for
+  diaPASEF.ref and diaPASEF.grid, whose runs name configuration 1 while only 0 exists;
+- a configuration without a software names the first configuration's software, else the first software, else the
+  stub `mzpeakj_software`; a software without a version is written with `""`.
+
+Datasets whose references resolve are written unchanged. Spectrum and chromatogram `data_processing_ref` cells are
+not checked. `RunReferenceConformanceTest` checks the written documents against copies of the spec schemas
+(`mzpeakj/src/test/resources/spec-schema/`).
+
 ---
 
 ## 8. Architecture
@@ -671,8 +774,8 @@ org.mzpeak.model.meta        file/run-level metadata records
 
 org.mzpeak.io                reading + writing
   public       MzPeakReader · MzPeakWriter · MzPeakManifest · MzPeakSource · MzPeakException
-               RandomAccessBytes · SignalQuery · ColumnStatistics (§8.2)
-  containers   DirectorySource · ZipSource · ZipIndex · UnpackedSource
+               RandomAccessBytes · SignalQuery · ColumnStatistics · IntegrityReport (§8.2)
+  containers   DirectorySource · ZipSource · ZipIndex · UnpackedSource · MzPeakSources (integrity)
   metadata     SpectrumMetadataDecoder (shape dispatch) · MetadataShape · ParquetFooter
                Facet · ColumnTable · ColumnResolver · FacetRow · MetadataTable
                SplitMetadataReader · PackedMetadataReader (legacy) · SpectrumFacetAssembler
@@ -707,20 +810,21 @@ members lazily on first use. The decoders take `(MzPeakSource, MzPeakManifest)` 
 role.
 
 **Modules.** The library above is the reactor module `mzpeakj/`. The second module, `mzpeakj-mzml/`
-(`org.mzpeak.mzml`), is an mzML reader (mzML → mzPeakJ model, read-only: `MzMLReader`, `MzMLTerms`, `Losses`).
-It reads the header and the run region (spectra, chromatograms and their arrays) through jmzML 1.7.11 as is, the
-arrays decoded by jmzML's codec (the own StAX code and `BinaryCodec` are gone).
-There is no mzML writer, `MzMLConversion` or `MzPeakConvert` CLI yet, and the module's `-all` jar has no
-entry point. The maintainer gates GATE-Q28..Q31 and Q33 were answered by the decisions of 2026-11-09: jmzML as is
-(plain mzML output written as a whole document, jmzML's codec with three own guards, lenient input), resolved from
-the EBI repository, and the CLI in `org.mzpeak.mzml.cli`.
+(`org.mzpeak.mzml`), converts mzML ↔ mzPeak on the library's public API through jmzML 1.7.11 as is: `MzMLReader`
+(mzML → model), `MzMLWriter` (model → plain mzML, the whole document built in memory), `MzMLConversion` (both
+directions, with the loss report) and the CLI `org.mzpeak.mzml.cli.MzPeakConvert`. Its `-all` jar names the CLI as
+`Main-Class` and carries `Enable-Native-Access: ALL-UNNAMED`, so `java -jar mzpeakj-mzml-<version>-all.jar <in>
+<out>` runs it; of fastutil it bundles only the 81 classes jmzML needs. jmzML and its parents come from the EBI
+repository, which the build restricts to their group ids, with pinned checksums. The mapping, the losses, the limits
+and the memory rule are in [docs/mzml-converter.md](docs/mzml-converter.md).
 
 ### 8.1 Writer
 
 `MzPeakWriter`'s public overloads delegate to one pipeline, whose settings are `MzPeakWriter.Options` (signal
 encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` validates the input before any
 I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
-precursor), numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
+precursor; chromatograms of one time unit; for Numpress, values the codecs can encode), numbers each entity 0..n-1
+in index order and remaps `precursor_index`, routes the spectra
 (CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
 re-sorts a main axis that is not ascending (by `Double.compare`, so rows with a NaN move to the end) and decides
 which members are written. A CENTROID spectrum with a non-finite m/z keeps both files, a deviation from §11.5:
@@ -730,8 +834,11 @@ written, in both layouts and both signal encodings, without a row when every spe
 Rust reference readers open it unconditionally. `DatasetWriter` then writes the metadata members, the signal
 members (point layout, or MS-Numpress chunks of up to 500 points, never one of a single point unless the
 spectrum has one, with linear m/z and SLOF or PIC intensity), chromatograms and wavelength spectra in point
-layout, and the manifest last; `ArchivePacker` packs a directory into a STORED ZIP whose last entry is the
-manifest. It streams each member twice, through a CRC-32 and then into the archive, so no member is held in memory
+layout, and the manifest last. The Numpress encoder checks each chunk again with the planner's predicate
+(`NumpressRange`, D-11), so an unencodable value (non-finite or negative m/z or intensity, a PIC count of 2³¹ or
+more) throws with the spectrum index even for an internal caller that skipped the planner. `ArchivePacker` packs a
+directory into a STORED ZIP whose last entry is the manifest.
+It streams each member twice, through a CRC-32 and then into the archive, so no member is held in memory
 and a member may exceed 2 GiB (`ZipOutputStream` adds zip64 fields above 4 GiB). Every entry gets the time
 2000-01-01T00:00 through `setTimeLocal` and no extra field. 1980-01-01T00:00 is avoided: it is the JDK's marker
 for a time before 1980, which keeps the time as an instant in the default time zone and writes it as an
@@ -747,39 +854,71 @@ zone too.
   its `_scans` table. The manifest is in the current dialect: underscore roles, a `column_mapping` for every
   CV-mapped column, scan settings with `unit` and an `id` (one without gets `scan_settings_<position>`, made
   unique, with a WARNING, since the Rust reader needs it). Every scan, precursor and selected ion is written, and
-  a Param moves to its standardized column only where the reader rebuilds it unchanged.
+  a Param moves to its standardized column only where the reader rebuilds it unchanged. Since 0.12.0 (D-13) the
+  scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (§5); `wavelength_spectra_metadata_scans`
+  has the spectrum-scan schema and its six mappings, as the reference writes it (the spectrum's time as
+  `scan_start_time`, the other typed columns null, empty `parameters` and `scan_windows`); and
+  `chromatograms_metadata` carries empty `auxiliary_arrays` with `number_of_auxiliary_arrays` 0 and the
+  `ARROW:schema` hint, as `spectra_metadata` and `wavelength_spectra_metadata` do. `WriteLossAuditTest` checks that
+  every column of the reference fixtures' metadata members exists in the written ones, apart from a listed few with
+  their reasons.
 - `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
   `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
   `wavelength spectrum`, empty column mappings, only the first scan and the primary precursor of a spectrum,
   no wavelength-spectrum Params (one WARNING; the pin-era wavelength schema has no `parameters` list), and no
   chromatogram polarity, data processing reference, Params or precursors (one WARNING).
-  Isolation-window Params go to the pin-era `isolation_window.parameters` list.
-  The HEAD Python reader rejects it ("Old concatenated storage layout not supported").
+  Isolation-window Params go to the pin-era `isolation_window.parameters` list. Since V-17 (0.12.0) a spectrum
+  type or summary term written as a column no longer stays in the `parameters` list as well (§2.4); otherwise the
+  layout is frozen. The HEAD Python reader rejects it ("Old concatenated storage layout not supported"), and so
+  does the current Rust reader (upstream issue R-9).
 
 Both layouts get format version 0.9.0, the `cv_list`, a SHA-512 checksum and an empty `parameters` list per
 manifest entry, the array index and the entity and data-point counts in every signal footer, and the file-level
-documents in both the manifest and the `spectra_metadata.parquet` footer.
+documents in both the manifest and the `spectra_metadata.parquet` footer. Chromatogram times are written as given,
+with their `timeUnit` declared on the time column, so they read back in that unit; `chromatograms_data` declares one
+time unit, so chromatograms of different units are refused before anything is written (`chromatograms 0
+(UO:0000031) and 2 (UO:0000010) have different time units; convert one with Chromatogram.withTimeUnit before
+writing`; a session refuses at `addChromatogram`). Up to 0.11 the writer declared minutes.
+
+**Imaging** (D-14). Imaging output keeps following the Rust reference, unchanged in 0.12.0: the IMS CV entry with the
+URI of the imzML master branch (`KnownCvs`), the positions in `opt_IMS_1000050_position_x` and
+`opt_IMS_1000051_position_y`, and no `metadata.imaging.is_imaging` flag (an mzML2mzPeak extension that the reader
+reads and the reference does not write).
 
 **Determinism.** Within one JVM, the same input and options give the same bytes. Across JVM runs, the ZIP layer
 and the content of every member are the same, but the footers of the Parquet members can differ: parquet-java
-1.17.1 collects the encodings of each column chunk in a `HashSet` of enum constants
+collects the encodings of each column chunk in a `HashSet` of enum constants
 (`ParquetFileWriter.startColumn`) and writes them in its iteration order
 (`ParquetMetadataConverter.toFormatEncodings`). Enum constants hash by identity, so that order can change from
 one run to the next, and with it the member's bytes, its checksum in the manifest and its CRC in an archive. In
-the MZ-9 investigation, 2 of 12 JVM runs writing current small.unpacked differed so; with the encodings of each
-column chunk sorted, all 12 gave the same bytes for every member, so nothing in mzPeakJ adds to it. mzPeakJ
-therefore claims determinism of member content (`ContentDigest`), not of Parquet bytes. `DeterminismProcessTest`
+the MZ-9 investigation (parquet-java 1.17.1), 2 of 12 JVM runs writing current small.unpacked differed so; with
+the encodings of each column chunk sorted, all 12 gave the same bytes for every member, so nothing in mzPeakJ
+adds to it. mzPeakJ therefore claims determinism of member content (`ContentDigest`), not of Parquet bytes. `DeterminismProcessTest`
 writes current small.unpacked, has_uv and Example_Processed.img as archives in six child JVMs each and compares
 the ZIP entries (order, method, time, extra fields, sizes), the `ContentDigest` of every Parquet member and the
 manifest with its checksums masked; it also packs fixed members in three time zones and compares the bytes, and
-writes current small.unpacked in two time zones.
+writes current small.unpacked in two time zones. The manifest is written with LF line ends whatever the platform's
+`line.separator`, and `ContentDigest` renders the schema locale-independently, so neither depends on the platform
+(F-4; `ContentDigestPortabilityTest` runs a child JVM under `tr_TR` with CRLF line separators).
 
 **Readers.** The default output is readable by the HEAD Python reader. The opt-in `UpstreamInteropTest` checks
 this on legacy small.unpacked and current small.unpacked, has_uv, Example_Processed.img and diaPASEF.ref
 (archive and directory), the Numpress SLOF and PIC archives of current small, the `ExtractSpectra` MS2
 subset and current small without scans. The Python reader's arrays pass the golden rules against mzPeakJ's
-read of each source, its counts match, and `check_archive_integrity()` returns `(True, [])`. Readability by the
-Rust reference is untested.
+read of each source, its counts match, and `check_archive_integrity()` returns `(True, [])`.
+
+The split output is also read by the Rust reference reader (`mzpeak_prototyping` at `2ee2589`), checked in CI on
+every push to `main` and every pull request: the job `rust-reader` builds [`tools/rdump`](tools/rdump/README.md), a
+dumper on the reference's public API, and runs `RustReaderAcceptanceTest` (WR-13). Every split output of
+`UpstreamInteropTest`'s set (as archive and directory), plus has_uv in both fixture sets, current small with an
+untyped chromatogram, with a chromatogram in seconds and with an integer collision energy, and diaPASEF.ref with its
+ion mobility columns, is opened by Rust: the counts equal the written ones, MS levels and scan start times equal
+those written, and every array equals mzPeakJ's read (times, wavelengths, plain, Numpress linear and PIC values bit
+for bit; m/z within 1e-4, since Rust fills null-marked m/z less precisely; SLOF intensities within 2 ulp of `j + 1`,
+because Java's `Math.exp` and the platform libm may differ by one ulp). The only failures allowed are the known
+issues R-1 to R-3 of the Rust reader ([docs/upstream-issues.md](docs/upstream-issues.md)), each expected exactly
+where it applies and required to occur, so that a fixed one is noticed. The `PACKED` output is not read by the
+current Rust reader (R-9).
 
 Known limits of the HEAD Python reader (2ee2589) on that output, left to the maintainer's upstream reports and
 pinned by no test, since a test would pin an upstream bug: it loses the selected ions of precursors whose
@@ -791,8 +930,10 @@ cannot open a dataset with 0 spectra, such as one written for a chromatogram-onl
 
 **Not written:** the delta-`chunk` layout, chunked chromatograms and null-marked profiles (the reconstructed
 arrays are written). The extra signal arrays of spectra and chromatograms (spectrum ion mobility, the TIC's
-`ms level`) and the chromatogram intensity unit are written, and so are, in `SPLIT`, chromatogram
-polarity, data processing reference, Params and precursors and wavelength-spectrum Params. A `PACKED` write logs
+`ms level`, the intensities of each chromatogram intensity unit in a column of their own), the chromatogram
+intensity and time units are written, and so are, in `SPLIT`, chromatogram polarity, data processing reference,
+Params and precursors, wavelength-spectrum Params, the ion mobility columns of scans and selected ions, the full
+wavelength scan schema and the chromatogram auxiliary arrays (D-13). A `PACKED` write logs
 one WARNING for each kind of content it drops: scans, precursors and selected ions beyond the first of a
 spectrum, wavelength-spectrum Params, and chromatogram polarity, data processing reference, Params and
 precursors.
@@ -810,8 +951,9 @@ signal readers and the source even when one of them fails and throws the first f
 methods that read the dataset throw `IllegalStateException` (spectra, chromatograms, wavelength spectra, queries,
 footer-backed metadata not cached yet); what the reader holds in memory stays available.
 `MzPeakReader.Options` is an immutable final class with value equality: `Options.defaults()`,
-`withReconstructProfile(boolean)` (default `true`, §4.2) and `withSignalMode(SignalMode)` (default `BOTH`).
-`options()` returns the options a reader was opened with.
+`withReconstructProfile(boolean)` (default `true`, §4.2), `withSignalMode(SignalMode)` (default `BOTH`) and
+`withVersionCheck(boolean)` (default `true` unless the system property `mzpeak.reader.ignoreVersion` is `true` when
+`defaults()` is called; §1.2). `options()` returns the options a reader was opened with.
 
 | `SignalMode` | Members read | `mz()`, `intensity()`, `arrays()` | `peaks()`, `peakArrays()` |
 |---|---|---|---|
@@ -860,7 +1002,17 @@ arrays with the reader's cache, like `Spectrum.mz()`.
 **Extra arrays.** `Spectrum.arrays()`, `peakArrays()`, `array(String)`, `ionMobility()` and
 `ionMobilityArrayType()` (§3.6). `Chromatogram.arrays()` holds a chromatogram's other per-point arrays, parallel
 to `time()`, such as the `ms level` array of the small* and has_uv TICs, and `Chromatogram.intensityUnit()` the
-unit CURIE of its intensities (§3.5). The 5-argument `Chromatogram` constructor sets no unit and no arrays.
+unit CURIE of its intensities (§3.5). The 5-argument `Chromatogram` constructor sets no intensity unit and no arrays.
+
+**Chromatogram time unit** (D-12). `Chromatogram` has a 12th record component, `timeUnit`, the unit CURIE of
+`time()`, never null: a null passed is UO:0000031 minute. The times are as stored (§3.5);
+`withTimeUnit(String unit)` returns the chromatogram with every other component the same and the times converted
+(itself when the unit is already `unit`) among minute, second (UO:0000010), millisecond (UO:0000028) and hour
+(UO:0000032), and throws `IllegalArgumentException` naming both units for any other. The 5-, 7- and 11-argument
+constructors keep their signatures and give minute. Changes for callers of 0.11: code that relied on minutes calls
+`withTimeUnit("UO:0000031")`; `equals`, `hashCode` and `toString` include `timeUnit`; and the change is **not
+source-compatible for record patterns**: a Java 21 deconstruction pattern written against the 11 components
+(`case Chromatogram(var index, var id, …, var precursors)`) no longer compiles and needs a 12th component.
 
 **Isolation windows.** `IsolationWindow.parameters()` holds the window's other CV and user params, read and
 written in both metadata layouts (§2.2, §8.1); the 3-argument constructor sets an empty list.
@@ -881,13 +1033,32 @@ What a reader expects of any `MzPeakSource` (member names, concurrent streams, o
 Javadoc. `FileSliceInputFile(RandomAccessBytes, long, long)` gives parquet-java a member as a slice of such bytes.
 
 **Manifest.** `MzPeakManifest.ColumnMapping` has a sixth component, `unitPath`: the path of a column that holds a
-unit CURIE per row, for a `unit` given as a JSON array of segments. The 6-argument canonical constructor sets it,
-and the 5-argument one leaves it null. `equals` and `hashCode` include it.
+unit per row, for a `unit` given as a JSON array of segments, which the reader resolves per row (§2.2). The
+6-argument canonical constructor sets it, and the 5-argument one leaves it null. `equals` and `hashCode` include it.
+`MzPeakManifest.fromSource` rejects malformed manifests (§1.2).
 
 **Grids** need no API: grid chunks decode like the other chunk encodings (§3.3).
 
-**Integrity.** There is no integrity check yet: the manifest's SHA-512 checksums are parsed but not verified on
-read (§10).
+**Integrity** (RD-19). `verifyIntegrity()` checks the members of an open reader, and the static
+`MzPeakReader.verifyIntegrity(Path)` a directory or archive without opening a reader: it reads only the manifest,
+decodes no metadata and checks no version, so a corrupt member that `open` would refuse is reported, not thrown.
+Nothing is verified on `open`. The result is an `IntegrityReport(outcome, members)`, one
+`MemberResult(name, status, expected, actual)` per manifest entry in manifest order, with `actual` the SHA-512 of
+the member's bytes (128 lowercase hex characters; null for a missing member) and `expected` the manifest's checksum
+(compared case-insensitively) or null:
+
+| `Status` | Meaning |
+|---|---|
+| `MATCH` | the checksums are equal |
+| `MISMATCH` | they differ |
+| `MISSING_CHECKSUM` | the manifest declares none |
+| `MISSING_MEMBER` | the dataset has no such member |
+
+The `Outcome` is `INVALID` if any member is `MISMATCH` or `MISSING_MEMBER`, else `UNVERIFIABLE` if any is
+`MISSING_CHECKSUM` (every legacy fixture: pin-era manifests have no checksums), else `VALID` (every current fixture
+and every dataset mzPeakJ writes). `valid()` is `outcome() == VALID`; `failures()` lists the `MISMATCH` and
+`MISSING_MEMBER` results. A member is missing only when the source says so (a ZIP without the entry, a directory
+without the regular file, an `unpacked` opener returning `null`); any other read failure throws `MzPeakException`.
 
 **Deviations from the reference readers.** All are deliberate; the tests named pin them:
 
@@ -911,8 +1082,14 @@ read (§10).
   statistics of the MS:1000016 scan start time column; mzPeakJ takes the retention times it holds in memory: a
   spectrum's `time`, else its earliest scan start time (§2.3). Both give (0.004935, 0.487236666667) on current
   small (`ColumnStatisticsTest`).
-- **No integrity check yet.** The Rust and Python readers verify the manifest checksums
-  (`check_archive_integrity`); mzPeakJ does not (above).
+- **Integrity checks every member.** The Rust and Python readers' `check_archive_integrity` gives no answer as
+  soon as one checksum is missing, which hides a mismatch of another member; mzPeakJ checks every member and reports
+  `INVALID` whenever one mismatches or is missing, `UNVERIFIABLE` only otherwise (`VerifyIntegrityTest`).
+- **Manifest CURIEs by shape.** The strict manifest check (§1.2) follows serde's structs, but checks an accession or
+  unit only for the CURIE shape; Rust's `CURIE::from_str` also requires a CV that mzdata knows and a numeric
+  accession, which would reject valid terms of other CVs (`ManifestStrictnessTest`).
+- **A unit column that does not exist throws.** The Rust reader logs an error and reads the unit as unknown; mzPeakJ
+  fails loudly (§2.2, `UnitColumnTest`).
 - **Grid m/z and the Python reader.** The timsTOF m/z model keeps the fused multiply-add of `convert_f64`; the
   HEAD Python reader computes without it, so its diaPASEF.grid m/z differ from mzPeakJ's, within relative
   1e-12 (`GridDecodeTest`, `GridModelsTest`).
@@ -924,10 +1101,12 @@ read (§10).
 The default build runs every test on the vendored fixtures and never needs Python, Rust or the corpus:
 
 ```
-mvn -B -Dmzpeak.corpus.dir=/nonexistent-mzpeak-corpus verify
+./mvnw -B -Dmzpeak.corpus.dir=/nonexistent-mzpeak-corpus clean verify
 ```
 
-CI runs `mvn verify` on JDK 17 and 21 via GitHub Actions.
+CI (GitHub Actions) runs `./mvnw verify` on JDK 17 and 21, the Rust reference reader check (`rust-reader`, §8.1)
+and the repository policy check (`repo-policy`: only Maven Central and, for jmzML's groups, the EBI repository
+serve anything; `tools/check-repo-policy.sh`).
 
 ### 9.1 Fixture sets
 
@@ -1019,12 +1198,15 @@ expected values and says why.
   - `UpstreamInteropTest`: `-Dmzpeak.upstream.python=<python/ of a HUPO-PSI/mzPeak checkout at 2ee2589>`,
     with `uv` installed, reads mzPeakJ's output with the HEAD Python reader (§8.1) in the pinned environment
     of the golden generator (§9.2);
+  - `RustReaderAcceptanceTest`: `-Dmzpeak.rust.rdump=<rdump binary>` reads mzPeakJ's split output with the Rust
+    reference reader (§8.1); build the binary with
+    `cargo build --release --locked --manifest-path tools/rdump/Cargo.toml` (CI job `rust-reader`);
   - `Zip64Test`: `-Dmzpeak.zip64.file=<archive>` also opens a real zip64 archive;
   - `IonMobilityAndActivationTermsTest`: `-Dmzpeak.psims.obo=<path>` regenerates the CV tables (§5).
 
 ### 9.5 Coverage gate
 
-`mvn verify` runs the tests under the JaCoCo agent, which instruments only `org.mzpeak.*` and
+`./mvnw verify` runs the tests under the JaCoCo agent, which instruments only `org.mzpeak.*` and
 `ms.numpress.*`, writes the report and then runs `jacoco:check` (root `pom.xml`, execution `check`, inherited by
 both modules, `mzpeakj` and `mzpeakj-mzml` (§8)):
 
@@ -1049,7 +1231,8 @@ it, by removing the dead code and saying why in the commit message; never by an 
 
 The gate needs the whole suite. For quick local runs, such as one test with
 `-pl mzpeakj -am -Dsurefire.failIfNoSpecifiedTests=false -Dtest=...`, pass `-Djacoco.skip=true`, which skips
-the agent, the report and the check. `mvn test` and `mvn package` stop before `verify` and never run the check.
+the agent, the report and the check. `./mvnw test` and `./mvnw package` stop before `verify` and never run the
+check.
 
 ---
 
@@ -1061,15 +1244,14 @@ the agent, the report and the check. `mvn test` and `mvn package` stop before `v
   (the reconstructed arrays are written). The `PACKED` layout writes only the first scan and the primary
   precursor of a spectrum, with a WARNING when it drops more, and no wavelength-spectrum Params and no
   chromatogram polarity, data processing reference, Params or precursors, with a WARNING each.
-  Whether the Rust reference reads mzPeakJ's output is untested.
-- **Integrity.** Manifest checksums are not verified on read, unlike in the Rust and Python readers (§8.2).
+  The Rust reference reads the split output (checked in CI, §8.1) but not the `PACKED` one (R-9).
+- **Integrity.** Manifest checksums are verified only on request (`verifyIntegrity()`), never on `open` (§8.2).
 - **Byte determinism.** The Parquet members, and with them their checksums and CRCs, can differ between JVM runs
   in the order of a column chunk's encodings in the footer, which parquet-java takes from a `HashSet` (§8.1);
   their content does not.
-- **ZIP.** A duplicate member name throws instead of resolving to the last one.
-- **Dataset checks.** A dataset without a spectrum metadata member throws; the format version is not checked.
 - **Metadata not decoded:** products facets; the wavelength scans facet; precursor-scope leftovers;
-  leftover Params in the legacy packed layout.
+  leftover Params of the legacy packed scan, precursor and selected-ion structs (those of the `spectrum` struct are
+  read, §2.4); a scan start time whose unit is given by a unit column (it throws).
 - **Precursor join.** The reference-identical join (precursors in reverse, last precursor for unmatched ions,
   orphan ions dropped, null-m/z ions kept) is not ported (§2.3).
 - **Null fill.** The reference readers' local-median rule is not ported (§4.3).
@@ -1084,9 +1266,11 @@ the agent, the report and the check. `mvn test` and `mvn package` stop before `v
 
 ## 11. Tooling notes
 
-- Build: `export JAVA_HOME=/opt/homebrew/opt/openjdk@25 && mvn verify`
+- Build: `./mvnw verify` with a JDK 17 or newer on `JAVA_HOME` or the `PATH`; the Maven Wrapper fetches Maven
+  3.9.16, and a local Maven must be at least that version (the enforcer refuses an older one).
 - Run an example: `./run-example.sh org.mzpeak.examples.MzPeakFileInfo mzpeakj/src/test/resources/mzpeak/small.mzpeak`
 - Inspect a fixture: `./run-example.sh org.mzpeak.cli.MzPeakInfo mzpeakj/src/test/resources/mzpeak/has_uv.mzpeak`
 - Re-deriving golden values: see `mzpeakj/src/test/resources/mzpeak/golden/README.md` (§9.2)
-- Javadoc: `mvn -pl mzpeakj javadoc:javadoc -Ddoclint=none` → `mzpeakj/target/reports/apidocs`. Without `-Ddoclint=none` the goal
-  writes the pages but fails on doclint errors in the vendored `ms.numpress` sources and in `ScanSettings`.
+- Javadoc: `./mvnw -pl mzpeakj javadoc:javadoc -Ddoclint=none` → `mzpeakj/target/reports/apidocs`. Without
+  `-Ddoclint=none` the goal writes the pages but fails on doclint errors in the vendored `ms.numpress` sources and in
+  `ScanSettings`.
