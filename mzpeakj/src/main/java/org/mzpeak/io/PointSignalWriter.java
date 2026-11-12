@@ -46,7 +46,7 @@ final class PointSignalWriter {
      * with its intensity and extra columns.
      */
     private static final ArrayIndex WAVELENGTH_DATA_INDEX = pointIndex(SignalEntity.WAVELENGTH_SPECTRUM, "wavelength",
-            WAVELENGTH_INTENSITY, List.of());
+            ArrayIndex.NANOMETER_UNIT, WAVELENGTH_INTENSITY, List.of());
 
     /** The values of no extra column, for the rows of wavelength_spectra_data. */
     private static final double[][] NO_EXTRA_VALUES = new double[0][];
@@ -54,11 +54,11 @@ final class PointSignalWriter {
     private PointSignalWriter() {
     }
 
-    private static ArrayIndex pointIndex(SignalEntity entity, String xField, List<IntensityColumn> intensities,
-                                         List<ExtraColumn> extras) {
+    private static ArrayIndex pointIndex(SignalEntity entity, String xField, String xUnit,
+                                         List<IntensityColumn> intensities, List<ExtraColumn> extras) {
         ArrayIndex.Builder builder = ArrayIndex.builder(ArrayIndex.POINT_PREFIX, entity)
                 .index(entity.indexField())
-                .axis(xField, BufferFormat.POINT, null);
+                .axis(xField, BufferFormat.POINT, null, xUnit);
         for (IntensityColumn intensity : intensities) {
             if (intensity.primary()) {
                 builder.intensity(intensity.column(), BufferFormat.POINT, null, intensity.unit());
@@ -92,7 +92,7 @@ final class PointSignalWriter {
      */
     static SignalFile openSpectrumPoints(Path file, List<ExtraColumn> extras, Options options) throws IOException {
         return new SignalFile(file, pointSchema("spectrum_index", "mz", SPECTRUM_INTENSITY, extras),
-                pointIndex(SignalEntity.SPECTRUM, "mz", SPECTRUM_INTENSITY, extras), options);
+                pointIndex(SignalEntity.SPECTRUM, "mz", ArrayIndex.MZ_UNIT, SPECTRUM_INTENSITY, extras), options);
     }
 
     /**
@@ -129,13 +129,15 @@ final class PointSignalWriter {
     /**
      * Write the plan's chromatograms_data rows: each chromatogram's time and intensity in the order of its
      * {@link WritePlan.SignalArrays}, the intensity in the column of its unit ({@link WritePlan#intensityColumn}),
-     * with the values of the plan's extra columns from its {@link Chromatogram#arrays()} in the same order.
+     * with the values of the plan's extra columns from its {@link Chromatogram#arrays()} in the same order. The time
+     * column is declared in the plan's {@link WritePlan#chromatogramTimeUnit()}, the times written as given.
      */
     static void writeChromatogramData(Path file, WritePlan plan) throws IOException {
         List<IntensityColumn> intensities = plan.chromatogramIntensities();
         List<ExtraColumn> extras = plan.chromatogramExtras();
         try (SignalFile out = new SignalFile(file, pointSchema("chromatogram_index", "time", intensities, extras),
-                pointIndex(SignalEntity.CHROMATOGRAM, "time", intensities, extras), plan.options())) {
+                pointIndex(SignalEntity.CHROMATOGRAM, "time", plan.chromatogramTimeUnit(), intensities, extras),
+                plan.options())) {
             out.setEntityCount(plan.chromatograms().size());
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
                 Chromatogram c = entry.source();

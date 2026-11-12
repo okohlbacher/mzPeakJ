@@ -85,11 +85,12 @@ final class NumpressSignalWriter {
                                          List<ExtraColumn> extras) {
         ArrayIndex.Builder builder = ArrayIndex.builder(ArrayIndex.CHUNK_PREFIX, SignalEntity.SPECTRUM)
                 .index("spectrum_index")
-                .axis("mz_chunk_start", BufferFormat.CHUNK_START, null)
-                .axis("mz_chunk_end", BufferFormat.CHUNK_END, null)
-                .axis("mz_chunk_values", BufferFormat.CHUNK_VALUES, null)
-                .axis("chunk_encoding", BufferFormat.CHUNK_ENCODING, null)
-                .axis("mz_numpress_linear_bytes", BufferFormat.CHUNK_TRANSFORM, MSNumpress.ACC_NUMPRESS_LINEAR)
+                .axis("mz_chunk_start", BufferFormat.CHUNK_START, null, ArrayIndex.MZ_UNIT)
+                .axis("mz_chunk_end", BufferFormat.CHUNK_END, null, ArrayIndex.MZ_UNIT)
+                .axis("mz_chunk_values", BufferFormat.CHUNK_VALUES, null, ArrayIndex.MZ_UNIT)
+                .axis("chunk_encoding", BufferFormat.CHUNK_ENCODING, null, ArrayIndex.MZ_UNIT)
+                .axis("mz_numpress_linear_bytes", BufferFormat.CHUNK_TRANSFORM, MSNumpress.ACC_NUMPRESS_LINEAR,
+                        ArrayIndex.MZ_UNIT)
                 .intensity(intensityColumn, BufferFormat.CHUNK_TRANSFORM, intensityTransform, ArrayIndex.COUNTS_UNIT);
         for (ExtraColumn extra : extras) {
             builder.extra(extra.column(), extra.arrayType(), extra.arrayName(), extra.unit(),

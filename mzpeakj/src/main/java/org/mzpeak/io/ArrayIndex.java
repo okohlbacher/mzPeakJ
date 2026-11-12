@@ -47,6 +47,10 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     static final String FLOAT64_DATA = "MS:1000523";
     /** MS:1000131, number of detector counts: the unit of spectrum intensities. */
     static final String COUNTS_UNIT = "MS:1000131";
+    /** MS:1000040, m/z: the unit of the m/z axis. */
+    static final String MZ_UNIT = "MS:1000040";
+    /** UO:0000018, nanometer: the unit of the wavelength axis. */
+    static final String NANOMETER_UNIT = "UO:0000018";
     /** The {@code buffer_priority} of every entry the writer records but a secondary intensity's. */
     private static final String PRIMARY = "primary";
 
@@ -236,20 +240,15 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
         }
 
         /**
-         * A column of the main axis, at sorting rank 1: the entity's axis as 64-bit floats in its unit, m/z
-         * (MS:1000514) in MS:1000040, time (MS:1000595) in minutes (UO:0000031) or wavelength (MS:1000617) in
-         * nanometers (UO:0000018).
+         * A column of the main axis, at sorting rank 1: the entity's axis as 64-bit floats in {@code unit}, m/z
+         * (MS:1000514) in {@link #MZ_UNIT}, time (MS:1000595) in the chromatograms' time unit
+         * ({@link WritePlan#chromatogramTimeUnit()}) or wavelength (MS:1000617) in {@link #NANOMETER_UNIT}.
          */
-        Builder axis(String field, BufferFormat format, String transform) {
+        Builder axis(String field, BufferFormat format, String transform, String unit) {
             String name = switch (context) {
                 case SPECTRUM -> "m/z array";
                 case CHROMATOGRAM -> "time array";
                 case WAVELENGTH_SPECTRUM -> "wavelength array";
-            };
-            String unit = switch (context) {
-                case SPECTRUM -> "MS:1000040";
-                case CHROMATOGRAM -> "UO:0000031";
-                case WAVELENGTH_SPECTRUM -> "UO:0000018";
             };
             return add(field, context.defaultAxis(), name, FLOAT64_DATA, unit, format, transform, 1, PRIMARY);
         }

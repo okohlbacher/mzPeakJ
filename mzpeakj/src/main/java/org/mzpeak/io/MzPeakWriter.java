@@ -48,10 +48,10 @@ import java.util.stream.Stream;
  * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
  * own. A read &rarr; write cycle keeps everything {@link MzPeakReader} exposes, except the intensity unit of a
  * chromatogram without points: the reader takes a chromatogram's unit from the column that holds its values, so such
- * a chromatogram reads back without one. Chromatogram time is written in minutes and declared so (UO:0000031): a
- * chromatogram in another {@link Chromatogram#timeUnit()} is converted with {@link Chromatogram#withTimeUnit}, so it
- * reads back in minutes; one in a unit that method does not convert is refused with its
- * {@link IllegalArgumentException}.
+ * a chromatogram reads back without one. Chromatogram times are written as given and declared in their
+ * {@link Chromatogram#timeUnit()}, so they read back in that unit. chromatograms_data declares one time unit:
+ * chromatograms of different time units are refused with an {@link MzPeakException} before anything is written;
+ * {@link Chromatogram#withTimeUnit} converts one beforehand.
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -154,6 +154,8 @@ public final class MzPeakWriter {
      * other one {@code intensity_} followed by the unit with each character other than an ASCII letter or digit as
      * {@code _} ({@code intensity_UO_0000269}), or {@code intensity_unitless} for chromatograms without a unit, made
      * unique. A chromatogram's row holds its intensity in the column of its unit and null in the others.
+     * chromatograms_data declares its time column in the {@link Chromatogram#timeUnit()} of the chromatograms, which
+     * must all have the same one, and holds their times as given.
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum
@@ -779,12 +781,16 @@ public final class MzPeakWriter {
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code chromatogram} is {@code null}
-         * @throws IllegalArgumentException if {@link Chromatogram#withTimeUnit} cannot convert its times to minutes
+         * @throws MzPeakException       if its {@link Chromatogram#timeUnit()} differs from that of the first
+         *                               chromatogram added; it is not added
          */
         public void addChromatogram(Chromatogram chromatogram) {
             requireOpen();
-            // V-22 replaces this conversion: the times are written in minutes, as ArrayIndex declares them.
-            chromatograms.add(Objects.requireNonNull(chromatogram, "chromatogram").withTimeUnit("UO:0000031"));
+            Objects.requireNonNull(chromatogram, "chromatogram");
+            if (!chromatograms.isEmpty()) {
+                WritePlanner.requireSameTimeUnit(chromatograms.get(0), chromatogram);
+            }
+            chromatograms.add(chromatogram);
         }
 
         /**

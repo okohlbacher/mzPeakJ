@@ -223,10 +223,11 @@ final class ManifestWriter {
      * isolation window, activation and selected ions; the array type and unit of every extra column of the spectrum
      * signal files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key
      * that is not a CURIE is written as MS:1000786); the chromatogram types, the accession and unit of every param
-     * of a chromatogram, and of each of its precursors' isolation window, activation and selected ions; the unit of
-     * every intensity column of chromatograms_data, that is every intensity unit of a chromatogram; the array type and
-     * unit of every extra column of chromatograms_data, that is every CURIE key of the chromatograms'
-     * {@code arrays()}; and the accession and unit of every param of a wavelength spectrum. The packed layout writes
+     * of a chromatogram, and of each of its precursors' isolation window, activation and selected ions; the time unit
+     * of the chromatograms; the unit of every intensity column of chromatograms_data, that is every intensity unit
+     * of a chromatogram; the array type and unit of every extra column of chromatograms_data, that is every CURIE
+     * key of the chromatograms' {@code arrays()}; and the accession and unit of every param of a wavelength
+     * spectrum. The packed layout writes
      * only a spectrum's first scan and primary precursor and selected ion, and no chromatogram precursor or
      * chromatogram or wavelength-spectrum param, but the prefixes of the others count too. The other CURIEs the
      * writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params give
@@ -250,6 +251,9 @@ final class ManifestWriter {
             addPrefix(entry.source().typeCurie(), used);
             addParamPrefixes(entry.source().parameters(), used);
             addPrecursorPrefixes(entry.source().precursors(), used);
+        }
+        if (plan.writesChromatograms()) {
+            addPrefix(plan.chromatogramTimeUnit(), used);
         }
         for (IntensityColumn intensity : plan.chromatogramIntensities()) {
             addPrefix(intensity.unit(), used);

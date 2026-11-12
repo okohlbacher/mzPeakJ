@@ -10,17 +10,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.MemberRewriter.Edit;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
-import org.mzpeak.io.MzPeakWriter.Options;
-import org.mzpeak.io.MzPeakWriter.Session;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
-import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -32,7 +28,6 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.DoubleUnaryOperator;
 import java.util.stream.Stream;
 
@@ -44,8 +39,8 @@ import static org.mzpeak.io.MemberRewriter.rewriteInPlace;
 /**
  * D-12a (V-21): {@link Chromatogram#timeUnit()}. The reader keeps the stored chromatogram times and reports their
  * unit, the unit of the time values column, else of the chunk start column, else minute; {@link
- * Chromatogram#withTimeUnit} converts. Until V-22 and V-23 the writers convert every chromatogram to minutes, the
- * unit they declare, so a chromatogram in seconds is never written with a minute label.
+ * Chromatogram#withTimeUnit} converts. The writer writes the time unit (V-22,
+ * {@link WriterChromatogramTimeUnitTest}).
  *
  * <p>Every vendored fixture stores its chromatogram times in minutes, so its chromatograms read the same values
  * before and after the reader stopped converting to minutes: the digests below were taken on the code before V-21.
@@ -338,49 +333,13 @@ class ChromatogramTimeUnitTest {
                 List.of(), List.of()).timeUnit()).isEqualTo(MINUTE);
     }
 
-    // ---- (e) the writers at the V-21 head ----------------------------------------------------------------------
+    // ---- (e) the precursor copy -------------------------------------------------------------------------------
 
     /**
-     * (e) The seconds copy of (b) read and written in both layouts, by a batch write and by a session, reads back in
-     * minutes (UO:0000031, as the writer declares) with the fixture's minutes within 1e-12: converted, not
-     * mislabelled.
-     */
-    @ParameterizedTest(name = "{0}")
-    @EnumSource(MetadataLayout.class)
-    void aChromatogramInSecondsIsWrittenInMinutes(MetadataLayout layout) throws IOException {
-        Path dir = secondsCopy();
-        Options options = Options.defaults().withMetadataLayout(layout);
-        Chromatogram fixture;
-        Chromatogram seconds;
-        try (MzPeakReader original = MzPeakReader.open(SMALL_UNPACKED); MzPeakReader reader = MzPeakReader.open(dir)) {
-            fixture = original.chromatograms().get(0);
-            seconds = reader.chromatograms().get(0);
-        }
-        assertThat(seconds.timeUnit()).isEqualTo(SECOND);
-        Path batch = tmp.resolve("batch.mzpeak");
-        MzPeakWriter.writeDirectory(batch, List.of(), List.of(seconds), List.of(), List.of(), FileMetadata.EMPTY,
-                options);
-        Path session = tmp.resolve("session.mzpeak");
-        try (Session s = MzPeakWriter.openDirectory(session, FileMetadata.EMPTY, List.of(), Set.of(), options)) {
-            s.addChromatogram(seconds);
-            s.finish();
-        }
-        assertThat(seconds.time()).as("the caller's chromatogram is not modified")
-                .containsExactly(scaled(fixture.time(), v -> v * 60));
-        for (Path written : List.of(batch, session)) {
-            try (MzPeakReader back = MzPeakReader.open(written)) {
-                Chromatogram c = back.chromatograms().get(0);
-                assertThat(c.timeUnit()).as("%s", written).isEqualTo(MINUTE);
-                assertClose(c.time(), fixture.time(), written + " time");
-                assertThat(c.intensity()).as("%s", written).isEqualTo(fixture.intensity());
-            }
-        }
-    }
-
-    /**
-     * (e) A seconds chromatogram whose precursor names a chromatogram written under another index is written
-     * (SPLIT) in minutes with the renumbered precursor; the package-private copy that remaps its precursors keeps
-     * its time unit (the 12-argument copy).
+     * (e) The package-private copy that remaps a chromatogram's precursors keeps its time unit (the 12-argument
+     * copy); a seconds chromatogram whose precursor names a chromatogram written under another index is written
+     * (SPLIT) in seconds with the renumbered precursor. Until V-22 the writer converted it to minutes;
+     * {@link WriterChromatogramTimeUnitTest} pins the writer's time unit.
      */
     @Test
     void aRemappedPrecursorKeepsTheTimeUnitOfItsCopy() {
@@ -401,26 +360,10 @@ class ChromatogramTimeUnitTest {
         MzPeakWriter.writeDirectory(out, List.of(), List.of(parent, child));
         try (MzPeakReader back = MzPeakReader.open(out)) {
             List<Chromatogram> read = back.chromatograms();
-            assertThat(read).extracting(Chromatogram::timeUnit).containsExactly(MINUTE, MINUTE);
-            assertThat(read.get(0).time()).containsExactly(1);
-            assertThat(read.get(1).time()).containsExactly(2, 3);
+            assertThat(read).extracting(Chromatogram::timeUnit).containsExactly(SECOND, SECOND);
+            assertThat(read.get(0).time()).containsExactly(60);
+            assertThat(read.get(1).time()).containsExactly(120, 180);
             assertThat(read.get(1).precursors().get(0).precursorIndex()).isEqualTo(0L);
-        }
-    }
-
-    /** (e) A chromatogram in a unit the writers cannot convert to minutes is refused, by a batch and a session. */
-    @Test
-    void aChromatogramInAnUnknownUnitIsRefusedByTheWriters() {
-        Chromatogram unknown = chromatogram(new double[] {1}, "UO:0000033");
-        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("batch.mzpeak"), List.of(),
-                List.of(unknown)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageStartingWith("cannot convert the times of chromatogram 7 from UO:0000033 to UO:0000031;");
-        try (Session s = MzPeakWriter.openDirectory(tmp.resolve("session.mzpeak"), FileMetadata.EMPTY, List.of(),
-                Set.of(), Options.defaults())) {
-            assertThatThrownBy(() -> s.addChromatogram(unknown))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageStartingWith("cannot convert the times of chromatogram 7 from UO:0000033 to");
         }
     }
 
