@@ -21,12 +21,13 @@ import java.util.List;
  * {@code 0xFFFFFFFF}, the message length, the message padded to 8 bytes) and base64-encoded, as Arrow writers store it.
  *
  * <p>The Rust reference reader casts the columns of {@code auxiliary_arrays} to 64-bit-offset lists and strings
- * ({@code data}, {@code parameters} and {@code data_processing_id}) and panics on every wavelength spectrum when they
- * are not: without this key arrow-rs reads a Parquet list as a 32-bit-offset list and a string as {@code Utf8}. The
- * hint therefore gives {@code auxiliary_arrays} exactly the types of the reference's has_uv; every other field gets the
- * type arrow-rs infers from the Parquet schema without a hint, so no other column is read differently. arrow-rs takes a
- * list or struct hint only when it matches the Parquet field's shape and child names, and a primitive hint only where
- * it can change the inferred type, so a hint mirroring the schema is safe.
+ * ({@code data}, {@code parameters} and {@code data_processing_id}) and panics on every wavelength spectrum or
+ * chromatogram of a member with {@code auxiliary_arrays} when they are not (backlog R-8): without this key arrow-rs
+ * reads a Parquet list as a 32-bit-offset list and a string as {@code Utf8}. The hint therefore gives
+ * {@code auxiliary_arrays} exactly the types of the reference's has_uv; every other field gets the type arrow-rs infers
+ * from the Parquet schema without a hint, so no other column is read differently. arrow-rs takes a list or struct hint
+ * only when it matches the Parquet field's shape and child names, and a primitive hint only where it can change the
+ * inferred type, so a hint mirroring the schema is safe.
  *
  * <p>Inference covers the types the split writer uses: BOOLEAN, INT32 and INT64 without annotation or with an integer
  * annotation, DOUBLE, BINARY as string, structs, and standard three-level lists.

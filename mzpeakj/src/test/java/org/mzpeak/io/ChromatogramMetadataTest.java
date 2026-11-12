@@ -116,7 +116,8 @@ class ChromatogramMetadataTest {
 
         List<Group> rows = rows(out.resolve(METADATA));
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName()).containsExactly("index", "id",
-                "scan_polarity", "chromatogram_type", "data_processing_ref", "number_of_data_points", "parameters");
+                "scan_polarity", "chromatogram_type", "data_processing_ref", "number_of_data_points", "parameters",
+                "auxiliary_arrays", "number_of_auxiliary_arrays");
         assertThat(rows.get(0).getInteger("scan_polarity", 0)).isEqualTo(1);
         assertThat(rows.get(0).getString("data_processing_ref", 0)).isEqualTo(DATA_PROCESSING);
         assertThat(ParquetGroups.readParams(rows.get(0), "parameters")).containsExactly(SOURCE_PARAM, MS_LEVEL);
@@ -140,7 +141,8 @@ class ChromatogramMetadataTest {
 
         List<Group> rows = rows(out.resolve(METADATA));
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName()).containsExactly("index", "id",
-                "scan_polarity", "chromatogram_type", "number_of_data_points", "parameters");
+                "scan_polarity", "chromatogram_type", "number_of_data_points", "parameters", "auxiliary_arrays",
+                "number_of_auxiliary_arrays");
         assertThat(rows.get(0).getInteger("scan_polarity", 0)).isEqualTo(-1);
         assertThat(ParquetGroups.has(rows.get(1), "scan_polarity")).isFalse();
         assertThat(chromatograms(out)).extracting(Chromatogram::polarity)

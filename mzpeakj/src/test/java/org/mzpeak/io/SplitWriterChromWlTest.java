@@ -36,10 +36,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * WR-6: the chromatogram and wavelength-spectrum metadata of the split layout written by {@link SplitMetadataWriter}
- * (design §11.8). chromatograms_metadata has one row per chromatogram with its type as a term marker, and
- * chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the spectrum facets' fields and no
- * rows; wavelength_spectra_metadata has one row per wavelength spectrum, and wavelength_spectra_metadata_scans one
- * scan per wavelength spectrum whose start time is the spectrum's time. Each member is written only when the plan has
+ * (design §11.8). chromatograms_metadata has one row per chromatogram with its type as a term marker and, since V-25,
+ * empty auxiliary arrays, and chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the
+ * spectrum facets' fields and no rows; wavelength_spectra_metadata has one row per wavelength spectrum, and
+ * wavelength_spectra_metadata_scans, with the spectrum-scan schema since V-25, one scan per wavelength spectrum whose
+ * start time is the spectrum's time. Each member is written only when the plan has
  * entities of its kind, and is read back by role, its layout detected from its schema.
  *
  * <p>Oracles: has_uv, the only fixture with wavelength spectra, in both sets (2 chromatograms, TIC and 'DAD1 A', and
@@ -111,7 +112,8 @@ class SplitWriterChromWlTest {
         assertThat(columns(schema(out, CHROMATOGRAMS))).containsExactly(
                 "index required INT64 uint64", "id optional BINARY string", "scan_polarity optional INT32 -",
                 "chromatogram_type optional BINARY string", "number_of_data_points optional INT64 uint64",
-                "parameters optional group list");
+                "parameters optional group list", "auxiliary_arrays optional group list",
+                "number_of_auxiliary_arrays optional INT32 uint32");
         // The chromatogram facets have the fields of the spectrum facets.
         assertThat(schema(out, CHROMATOGRAM_PRECURSORS).getFields())
                 .isEqualTo(schema(out, "spectra_metadata_precursors.parquet").getFields());
@@ -125,9 +127,16 @@ class SplitWriterChromWlTest {
                 "lambda_max optional DOUBLE -", "base_peak_intensity optional DOUBLE -",
                 "total_ion_current optional DOUBLE -", "parameters optional group list",
                 "auxiliary_arrays optional group list", "number_of_auxiliary_arrays optional INT32 uint32");
+        // V-25: the wavelength scans have the spectrum-scan schema, as in the reference.
+        assertThat(schema(out, WAVELENGTH_SCANS).getFields())
+                .isEqualTo(schema(out, "spectra_metadata_scans.parquet").getFields());
         assertThat(columns(schema(out, WAVELENGTH_SCANS))).containsExactly(
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",
-                "scan_start_time optional DOUBLE -", "parameters optional group list");
+                "scan_start_time optional DOUBLE -", "preset_scan_configuration optional INT32 -",
+                "filter_string optional BINARY string", "ion_injection_time optional DOUBLE -",
+                "ion_mobility_value optional DOUBLE -", "ion_mobility_type optional BINARY string",
+                "instrument_configuration_id optional INT32 -", "spectrum_reference optional BINARY string",
+                "parameters optional group list", "scan_windows optional group list");
 
         List<Group> chromatogramRows = rows(out.resolve(CHROMATOGRAMS));
         assertThat(chromatogramRows).hasSameSizeAs(source.chromatograms);
@@ -141,6 +150,9 @@ class SplitWriterChromWlTest {
             assertThat(row.getLong("number_of_data_points", 0)).isEqualTo(c.size());
             assertThat(ParquetGroups.has(row, "parameters")).as("parameters of %s is not null", c.id()).isTrue();
             assertThat(ParquetGroups.groupList(row, "parameters")).isEmpty();
+            assertThat(ParquetGroups.has(row, "auxiliary_arrays")).as("auxiliary_arrays of %s", c.id()).isTrue();
+            assertThat(ParquetGroups.groupList(row, "auxiliary_arrays")).isEmpty();
+            assertThat(row.getInteger("number_of_auxiliary_arrays", 0)).isZero();
         }
         assertThat(rows(out.resolve(CHROMATOGRAM_PRECURSORS))).isEmpty();
         assertThat(rows(out.resolve(CHROMATOGRAM_SELECTED_IONS))).isEmpty();
@@ -177,6 +189,8 @@ class SplitWriterChromWlTest {
             assertThat(scan.getDouble("scan_start_time", 0)).isEqualTo(w.time());
             assertThat(ParquetGroups.has(scan, "parameters")).as("parameters of scan %d is not null", i).isTrue();
             assertThat(ParquetGroups.groupList(scan, "parameters")).isEmpty();
+            assertThat(ParquetGroups.has(scan, "scan_windows")).as("scan_windows of scan %d is not null", i).isTrue();
+            assertThat(ParquetGroups.groupList(scan, "scan_windows")).isEmpty();
         }
         WavelengthSpectrum w0 = source.wavelengthSpectra.get(0);
         assertThat(w0.id()).isEqualTo("merged=212 row=0");
@@ -187,7 +201,8 @@ class SplitWriterChromWlTest {
 
     /**
      * The chromatogram members carry {@code chromatogram_count}, the wavelength members the file metadata of
-     * spectra_metadata and {@code wavelength_spectrum_count}, as current has_uv's do.
+     * spectra_metadata and {@code wavelength_spectrum_count}, as current has_uv's do; chromatograms_metadata and
+     * wavelength_spectra_metadata also their Arrow schema hint.
      */
     @Test
     void theFootersCarryTheEntityCounts(@TempDir Path tmp) {
@@ -203,6 +218,11 @@ class SplitWriterChromWlTest {
             assertThat(fileMetadata).containsKey("run");
             for (String member : CHROMATOGRAM_MEMBERS) {
                 Map<String, String> footer = withoutWriterModel(dataset.inputFile(member));
+                if (member.equals(CHROMATOGRAMS)) {
+                    // V-25: the member with auxiliary_arrays carries its Arrow schema hint (R-8)
+                    assertThat(footer.remove(ArrowSchemaHint.KEY)).isEqualTo(ArrowSchemaHint.encode(schema(out,
+                            CHROMATOGRAMS)));
+                }
                 assertThat(footer).as("footer of %s", member).containsExactly(Map.entry("chromatogram_count", "2"));
             }
             for (String member : WAVELENGTH_MEMBERS) {
@@ -241,7 +261,9 @@ class SplitWriterChromWlTest {
         assertThat(mappedPaths(entry(written, WAVELENGTH))).containsExactly("spectrum_type",
                 "spectrum_representation", "lowest_observed_wavelength", "highest_observed_wavelength",
                 "number_of_data_points", "lambda_max", "base_peak_intensity", "total_ion_current");
-        assertThat(mappedPaths(entry(written, WAVELENGTH_SCANS))).containsExactly("scan_start_time");
+        assertThat(mappedPaths(entry(written, WAVELENGTH_SCANS))).containsExactly("scan_start_time",
+                "preset_scan_configuration", "filter_string", "ion_injection_time",
+                "scan_windows.scan_window_lower_limit", "scan_windows.scan_window_upper_limit");
         for (String member : WAVELENGTH_MEMBERS) {
             List<JsonNode> currentRows = list(entry(current, member).path("column_mapping"));
             assertThat(list(entry(written, member).path("column_mapping"))).as("column_mapping of %s", member)

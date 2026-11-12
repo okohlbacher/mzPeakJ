@@ -1,12 +1,15 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.example.data.Group;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -16,8 +19,11 @@ import org.mzpeak.model.meta.FileMetadata.MsRun;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -27,18 +33,72 @@ import static org.assertj.core.api.Assertions.assertThat;
  * V-25 (design §4.4, D-13): the remaining write losses of the split layout, audited against the reference outputs.
  * Each of current small.unpacked, has_uv, diaPASEF.ref and Example_Processed.img is read, written SPLIT and read back:
  * <ul>
+ *   <li>(a) every column of every metadata member the fixture has exists in the written member, except those of
+ *       {@link #EXCUSED}, each with its reason;
  *   <li>(b) what mzPeakJ reads back equals what it read from the fixture (Canonical forms, exact arrays): spectrum
  *       descriptions, signal arrays and peaks with their extra arrays, chromatograms with their extra arrays, units
- *       and Params, wavelength spectra, scan settings and file metadata.
+ *       and Params, wavelength spectra, scan settings and file metadata;
+ *   <li>(c) has_uv's written wavelength scans hold the spectrum-scan columns, an empty {@code scan_windows} and the
+ *       stored times.
  * </ul>
  */
 class WriteLossAuditTest {
 
     private static final Options SPLIT = Options.defaults().withMetadataLayout(MetadataLayout.SPLIT);
 
+    /**
+     * The columns of a reference metadata member a written member may lack, with the reason. Nothing else may be
+     * missing; in particular not {@code ion_mobility_value}, {@code ion_mobility_type}, {@code scan_windows},
+     * {@code auxiliary_arrays} or {@code number_of_auxiliary_arrays}.
+     */
+    private static final Map<String, String> EXCUSED = Map.of(
+            "data_processing_id", "written only for an entity that has a data processing reference, and no entity of "
+                    + "these fixtures has one (checked against the reference's cells)",
+            "polynomial_delta_coordinate_interpolation", "mzPeakJ writes the reconstructed arrays, not null-marked "
+                    + "profiles with interpolation coefficients (DESIGN §8.1)");
+
+    /** The metadata members of each fixture: Example_Processed.img has no chromatograms, has_uv wavelength spectra. */
+    private static final Map<String, Integer> METADATA_MEMBERS = Map.of("small.unpacked.mzpeak", 7,
+            "has_uv.mzpeak", 9, "diaPASEF.ref.mzpeak", 7, "Example_Processed.img.mzpeak", 4);
+
     static Stream<String> fixtures() {
         return Stream.of("small.unpacked.mzpeak", "has_uv.mzpeak", "diaPASEF.ref.mzpeak",
                 "Example_Processed.img.mzpeak");
+    }
+
+    // ---- (a) schemas --------------------------------------------------------------------------------------------
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fixtures")
+    void everyReferenceMetadataColumnIsWrittenButTheExcusedOnes(String name, @TempDir Path tmp) {
+        Path fixture = Fixtures.current(name);
+        Path out = write(ForwardBackwardCorpusTest.readSource(fixture), tmp.resolve("out.mzpeak"));
+
+        Map<String, List<String>> missing = new TreeMap<>();
+        int members = 0;
+        try (MzPeakSource reference = MzPeakSource.open(fixture); MzPeakSource written = MzPeakSource.open(out)) {
+            Set<String> writtenNames = names(MzPeakManifest.fromSource(written));
+            for (Entry entry : MzPeakManifest.fromSource(reference).files()) {
+                if (!isMetadata(entry)) {
+                    continue;
+                }
+                members++;
+                assertThat(writtenNames).as("%s: written members", name).contains(entry.name());
+                ParquetFooter ref = ParquetFooter.read(reference.inputFile(entry.name()));
+                List<String> have = ParquetFooter.read(written.inputFile(entry.name())).topLevelFields();
+                for (String column : ref.topLevelFields()) {
+                    if (!have.contains(column)) {
+                        missing.computeIfAbsent(column, k -> new ArrayList<>()).add(entry.name());
+                        if (column.equals("data_processing_id")) {
+                            assertNoCell(reference, entry.name(), column);
+                        }
+                    }
+                }
+            }
+        }
+        assertThat(members).as("%s: metadata members", name).isEqualTo(METADATA_MEMBERS.get(name));
+        assertThat(missing.keySet()).as("%s: reference columns not written, by member: %s", name, missing)
+                .isSubsetOf(EXCUSED.keySet());
     }
 
     // ---- (b) read, write, read ----------------------------------------------------------------------------------
@@ -116,12 +176,73 @@ class WriteLossAuditTest {
                 .containsExactly("MS:1000131", "UO:0000269");
     }
 
+    // ---- (c) has_uv's wavelength scans --------------------------------------------------------------------------
+
+    @Test
+    void hasUvWavelengthScansHaveTheScanSchemaAnEmptyScanWindowListAndTheStoredTimes(@TempDir Path tmp) {
+        Path fixture = Fixtures.current("has_uv.mzpeak");
+        Source source = ForwardBackwardCorpusTest.readSource(fixture);
+        Path out = write(source, tmp.resolve("out.mzpeak"));
+        String member = "wavelength_spectra_metadata_scans.parquet";
+
+        List<Double> stored = new ArrayList<>();
+        try (MzPeakSource reference = MzPeakSource.open(fixture)) {
+            ParquetGroups.forEach(reference.inputFile(member),
+                    row -> stored.add(ParquetGroups.optDouble(row, "scan_start_time")));
+        }
+        List<Group> rows = new ArrayList<>();
+        ParquetGroups.forEach(out.resolve(member), rows::add);
+        assertThat(rows).hasSize(520).hasSameSizeAs(stored);
+        for (int i = 0; i < rows.size(); i++) {
+            Group row = rows.get(i);
+            String what = "wavelength scan " + i;
+            assertThat(row.getLong("source_index", 0)).as(what).isEqualTo(source.wavelengthSpectra.get(i).index());
+            assertThat(row.getLong("scan_index", 0)).as(what).isEqualTo(i);
+            assertThat(ParquetGroups.optDouble(row, "scan_start_time")).as(what).isEqualTo(stored.get(i))
+                    .isEqualTo(source.wavelengthSpectra.get(i).time());
+            assertThat(ParquetGroups.has(row, "scan_windows")).as("%s scan_windows is not null", what).isTrue();
+            assertThat(ParquetGroups.groupList(row, "scan_windows")).as(what).isEmpty();
+            assertThat(ParquetGroups.groupList(row, "parameters")).as(what).isEmpty();
+            for (String empty : List.of("preset_scan_configuration", "filter_string", "ion_injection_time",
+                    "ion_mobility_value", "ion_mobility_type", "instrument_configuration_id", "spectrum_reference")) {
+                assertThat(ParquetGroups.has(row, empty)).as("%s %s", what, empty).isFalse();
+            }
+        }
+        try (MzPeakSource reference = MzPeakSource.open(fixture); MzPeakSource written = MzPeakSource.open(out)) {
+            assertThat(ParquetFooter.read(written.inputFile(member)).topLevelFields())
+                    .isEqualTo(ParquetFooter.read(reference.inputFile(member)).topLevelFields());
+        }
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
 
     private static Path write(Source s, Path out) {
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, s.wavelengthSpectra, s.scanSettings,
                 s.fileMetadata, SPLIT);
         return out;
+    }
+
+    /** A metadata member: one that holds an entity's metadata or a facet of it, not signal. */
+    private static boolean isMetadata(Entry entry) {
+        return switch (entry.kind()) {
+            case METADATA, SCANS, PRECURSORS, SELECTED_IONS -> true;
+            default -> false;
+        };
+    }
+
+    private static Set<String> names(MzPeakManifest manifest) {
+        Set<String> out = new HashSet<>();
+        for (Entry e : manifest.files()) {
+            out.add(e.name());
+        }
+        return out;
+    }
+
+    /** The reference's {@code column} of {@code member} is null in every row: no entity has the value. */
+    private static void assertNoCell(MzPeakSource reference, String member, String column) {
+        List<Boolean> set = new ArrayList<>();
+        ParquetGroups.forEach(reference.inputFile(member), row -> set.add(ParquetGroups.has(row, column)));
+        assertThat(set).as("%s %s cells", member, column).doesNotContain(true);
     }
 
     /**

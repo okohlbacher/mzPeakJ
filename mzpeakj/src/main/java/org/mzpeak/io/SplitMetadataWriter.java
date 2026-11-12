@@ -109,12 +109,13 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * <ul>
  *   <li>chromatograms_metadata: one row per chromatogram with its index, id, {@code scan_polarity} (1, -1, or null
  *       when unknown), its type as a term marker, its {@code data_processing_ref} (the spec's spelling; the column is
- *       there only when some chromatogram has one), its point count and its {@code parameters}, none promoted to a
- *       column; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the schemas of the
- *       spectrum facets and are written as those are, keyed by the chromatogram's index: one row per precursor of
- *       every chromatogram, with the {@code precursor_index} the planner maps through the chromatogram numbering,
- *       and one row per selected ion, in the same order and with the same promotions. Chromatogram products are not
- *       modelled, and no products member is written;
+ *       there only when some chromatogram has one), its point count, its {@code parameters}, none promoted to a
+ *       column, and, as in spectra_metadata, empty auxiliary arrays; chromatograms_metadata_precursors and
+ *       chromatograms_metadata_selected_ions have the schemas of the spectrum facets and are written as those are,
+ *       keyed by the chromatogram's index: one row per precursor of every chromatogram, with the
+ *       {@code precursor_index} the planner maps through the chromatogram numbering, and one row per selected ion, in
+ *       the same order and with the same promotions. Chromatogram products are not modelled, and no products member
+ *       is written;
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, spectrum type,
  *       representation, lowest and highest observed wavelength, point count, lambda max, base peak intensity and
  *       total ion current, in the reference's column order, its {@code parameters} and, as in spectra_metadata,
@@ -124,15 +125,18 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       TIC move to their columns, which the reader appends to the Params in that order, after the list, as it reads
  *       them from the reference's has_uv, so a read, write and read keeps every Param in its order;
  *       wavelength_spectra_metadata_scans: one row per
- *       wavelength spectrum, keyed by {@code source_index} with a global {@code scan_index}, whose
- *       {@code scan_start_time} is the spectrum's time, with an empty {@code parameters} list.
+ *       wavelength spectrum, with the schema and column mapping of spectra_metadata_scans without imaging positions,
+ *       as in the reference: keyed by {@code source_index} with a global {@code scan_index}, whose
+ *       {@code scan_start_time} is the spectrum's time, the other typed columns null and empty {@code parameters}
+ *       and {@code scan_windows} lists.
  * </ul>
  * As in the reference's output, the chromatogram members carry {@code chromatogram_count} as their only footer
- * key-value, and the wavelength members the plan's file metadata and {@code wavelength_spectrum_count}. The reader
- * finds every member by role and detects its layout from its own schema. spectra_metadata and
- * wavelength_spectra_metadata also carry an {@code ARROW:schema} key-value ({@link ArrowSchemaHint}), which types
- * {@code auxiliary_arrays} as the reference does for Arrow readers; the Rust reader fails on every wavelength spectrum
- * without it.
+ * key-value besides the Arrow hint, and the wavelength members the plan's file metadata and
+ * {@code wavelength_spectrum_count}. The reader finds every member by role and detects its layout from its own
+ * schema. spectra_metadata, chromatograms_metadata and wavelength_spectra_metadata, the members with
+ * {@code auxiliary_arrays}, also carry an {@code ARROW:schema} key-value ({@link ArrowSchemaHint}), which types
+ * {@code auxiliary_arrays} as the reference does for Arrow readers; the Rust reader fails on every entity of such a
+ * member without it.
  *
  * <p>No {@code parameters} item is written with an accession but no name, which the Rust reader cannot read: such a
  * Param that no column takes, as a term-marker cell the reader gives as {@code Param(null, CURIE)}, is written with
@@ -313,13 +317,6 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
             .named("wavelength_spectra_metadata");
 
-    private static final MessageType WAVELENGTH_SCAN_SCHEMA = Types.buildMessage()
-            .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
-            .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
-            .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_SCAN_START_TIME))
-            .addField(paramListField())
-            .named("wavelength_spectra_metadata_scans");
-
     private static final List<ColumnMapping> SPECTRUM_MAPPING = mapping(Facet.SPECTRUM,
             Set.of(MS_LEVEL, SCAN_POLARITY, REPRESENTATION, SPECTRUM_TYPE, LOWEST_MZ, HIGHEST_MZ, N_POINTS, N_PEAKS,
                     BASE_PEAK_MZ, BASE_PEAK_INTENSITY, TIC));
@@ -341,8 +338,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final List<ColumnMapping> WAVELENGTH_MAPPING = mapping(Facet.WAVELENGTH_SPECTRUM,
             Set.of(WAVELENGTH_TYPE, WAVELENGTH_REPRESENTATION, LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH,
                     WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC));
+    /** The wavelength scans have the spectrum-scan schema and map its columns, as the reference does (V-25). */
     private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
-            Set.of(WAVELENGTH_SCAN_START_TIME));
+            sameColumns(Facet.WAVELENGTH_SCAN, SCAN_COLUMNS));
 
     /** See {@link #termNames()}. */
     private static final Map<String, String> TERM_NAMES = termNames();
@@ -500,23 +498,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      */
     private static void writeScans(Path file, WritePlan plan, Map<String, String> footer, List<Column> positions)
             throws IOException {
-        Types.GroupBuilder<MessageType> builder = Types.buildMessage()
-                .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
-                .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
-                .optional(PrimitiveTypeName.DOUBLE).named(field(SCAN_START_TIME))
-                .optional(PrimitiveTypeName.INT32).named(field(PRESET_SCAN_CONFIGURATION))
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(FILTER_STRING))
-                .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME))
-                .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ION_MOBILITY_TYPE)
-                .optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID)
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(SPECTRUM_REFERENCE)
-                .addField(paramListField())
-                .addField(scanWindowListField());
-        for (Column position : positions) {
-            builder = builder.optional(PrimitiveTypeName.INT32).named(field(position));
-        }
-        MessageType schema = builder.named("spectra_metadata_scans");
+        MessageType schema = scanSchema("spectra_metadata_scans", positions);
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         long scanIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
@@ -577,6 +559,30 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 }
             }
         }
+    }
+
+    /**
+     * The scan schema named {@code name}: the typed columns, {@code parameters} and {@code scan_windows}, then the
+     * {@code positions} columns. Spectrum and wavelength-spectrum scans share it, as in the reference.
+     */
+    private static MessageType scanSchema(String name, List<Column> positions) {
+        Types.GroupBuilder<MessageType> builder = Types.buildMessage()
+                .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
+                .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
+                .optional(PrimitiveTypeName.DOUBLE).named(field(SCAN_START_TIME))
+                .optional(PrimitiveTypeName.INT32).named(field(PRESET_SCAN_CONFIGURATION))
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(FILTER_STRING))
+                .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME))
+                .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ION_MOBILITY_TYPE)
+                .optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID)
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(SPECTRUM_REFERENCE)
+                .addField(paramListField())
+                .addField(scanWindowListField());
+        for (Column position : positions) {
+            builder = builder.optional(PrimitiveTypeName.INT32).named(field(position));
+        }
+        return builder.named(name);
     }
 
     // ---- spectra_metadata_precursors and chromatograms_metadata_precursors -------------------------------------
@@ -695,9 +701,12 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         MessageType schema = builder
                 .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(CHROMATOGRAM_POINTS))
                 .addField(paramListField())
+                .addField(auxiliaryArrayListField())
+                .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
                 .named("chromatograms_metadata");
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
-        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
+        try (ParquetWriter<Group> writer = openWriter(file, schema, withSchemaHint(footer, schema),
+                plan.options())) {
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
                 Chromatogram c = entry.source();
                 Group row = factory.newGroup();
@@ -717,6 +726,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 }
                 row.add(field(CHROMATOGRAM_POINTS), (long) c.size());
                 params(row, c.parameters());
+                noAuxiliaryArrays(row);
                 writer.write(row);
             }
         }
@@ -767,15 +777,18 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     }
 
     /**
-     * Writes one scan per wavelength spectrum, its time as the {@code scan_start_time}, with a global
-     * {@code scan_index}. The empty {@code parameters} list is there for the HEAD Python reader, which reads it from
-     * every scan of a spectrum it returns.
+     * Writes one scan per wavelength spectrum, with the spectrum-scan schema ({@link #scanSchema}, without imaging
+     * positions) as the reference does: its time as the {@code scan_start_time}, a global {@code scan_index}, the
+     * other typed columns null and empty {@code parameters} and {@code scan_windows} lists. The empty
+     * {@code parameters} list is there for the HEAD Python reader, which reads it from every scan of a spectrum it
+     * returns.
      */
     private static void writeWavelengthScans(Path file, WritePlan plan, Map<String, String> footer)
             throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(WAVELENGTH_SCAN_SCHEMA);
+        MessageType schema = scanSchema("wavelength_spectra_metadata_scans", List.of());
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         long scanIndex = 0;
-        try (ParquetWriter<Group> writer = openWriter(file, WAVELENGTH_SCAN_SCHEMA, footer, plan.options())) {
+        try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
                 double time = entry.source().time();
                 Group row = factory.newGroup();
@@ -785,6 +798,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     row.add(field(WAVELENGTH_SCAN_START_TIME), time);
                 }
                 params(row, List.of());
+                row.addGroup(SCAN_WINDOWS);
                 writer.write(row);
             }
         }
