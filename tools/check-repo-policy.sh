@@ -5,8 +5,8 @@
 #   1. every artifact was downloaded from `central` or `ebi-repo` (a repository a dependency POM declares and that
 #      serves anything fails here, so a missing .mvn/rrf/groupId-<id>.txt cannot go unnoticed);
 #   2. `ebi-repo` was asked only for uk/ac/ebi/jmzml/, uk/ac/ebi/pride/architectural/ and psidev/psi/tools/;
-#   3. the resolver loaded the group filter of ebi-repo and both trusted-checksum summary files, from
-#      <root>/.mvn/rrf and <root>/.mvn/checksums.
+#   3. the resolver loaded the group filter of ebi-repo and both trusted-checksum summary files (7 entries each:
+#      every artifact ebi-repo serves), from <root>/.mvn/rrf and <root>/.mvn/checksums.
 #
 # Usage: tools/check-repo-policy.sh            (with the Maven Wrapper)
 #        MVN=mvn tools/check-repo-policy.sh    (with another Maven, e.g. the local one)
@@ -52,7 +52,7 @@ grep -qE '\[INFO\] Loaded 3 group(Id| rules) for remote repository ebi-repo$' "$
 grep -qxF "[DEBUG] aether.remoteRepositoryFilter.groupId.basedir: $ROOT/.mvn/rrf" "$LOG" \
   || fail "the group filter basedir is not $ROOT/.mvn/rrf"
 for alg in sha512 sha1; do
-  grep -qxF "[INFO] Loaded 1 trusted checksums from $ROOT/.mvn/checksums/checksums.$alg" "$LOG" \
+  grep -qxF "[INFO] Loaded 7 trusted checksums from $ROOT/.mvn/checksums/checksums.$alg" "$LOG" \
     || fail "the trusted checksums were not loaded from $ROOT/.mvn/checksums/checksums.$alg"
 done
 

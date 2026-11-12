@@ -20,8 +20,10 @@
        local repository were resolved with; a checksum mismatch fails the build. Three more guards (design D-2):
        the resolver's group filter (.mvn/maven.config, .mvn/rrf/groupId-ebi-repo.txt) lets this repository serve only
        uk.ac.ebi.jmzml, uk.ac.ebi.pride.architectural and psidev.psi.tools and denies every repository the
-       dependency POMs declare; the resolver's trusted checksums (.mvn/checksums) pin the jmzML jar's SHA-512 and
-       SHA-1; and JmzmlArtifactTest (JUnit) pins the SHA-256 of the jmzML jar on the test classpath.
+       dependency POMs declare; the resolver's trusted checksums (.mvn/checksums) pin the SHA-512 and SHA-1 of
+       every artifact this repository serves: the jmzML jar and POM, the xxindex 0.23 jar and POM and the parent POMs
+       pride-core 1.0.1, pride-logging 1.0.0 and pride-xml-handling 1.0.3 (list in .mvn/rrf/README.md); and
+       JmzmlArtifactTest (JUnit) pins the SHA-256 of the jmzML jar on the test classpath.
        tools/check-repo-policy.sh checks on a fresh local repository that only central and this repository, for
        those groups, download anything. -->
   <repositories>
