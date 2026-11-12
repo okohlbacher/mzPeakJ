@@ -529,8 +529,9 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
 kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, times
 converted to minutes or lost array data processing refs, and A-1 … A-33 for mzPeak → mzML, such as required content
-synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. Section 6 of the mzML converter design
-lists each loss with its reason; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
+synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
+[losses section of the mzML converter design](docs/mzml-converter.md#losses) lists each loss and which class counts
+it; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
 Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
 A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`, which the library does not
 read). The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
