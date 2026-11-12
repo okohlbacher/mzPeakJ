@@ -96,6 +96,26 @@ class UnitColumnTest {
         }
     }
 
+    /** A null struct cell gives the collision energy no unit too; the other rows read UO:0000266. */
+    @Test
+    void aNullStructUnitCellGivesNoUnit(@TempDir Path tmp) throws IOException {
+        Path copy = precursorsWithUnitColumn(tmp, STRUCT_UNIT, (activation, k) -> {
+            if (k != 0) {
+                activation.addGroup(ENERGY_UNIT).append("cv_id", 2).append("accession", 266);
+            }
+        });
+        List<Group> rows = MemberRewrite.read(copy.resolve(PRECURSORS)).rows;
+        long first = ParquetGroups.optLong(rows.get(0), "source_index");
+        long second = ParquetGroups.optLong(rows.get(1), "source_index");
+        assertThat(second).isNotEqualTo(first);
+        try (MzPeakReader reader = MzPeakReader.open(copy)) {
+            assertThat(collisionEnergies(reader.getMetadata(first).orElseThrow()))
+                    .containsExactly(new Param("collision energy", COLLISION_ENERGY, 35.0, null));
+            assertThat(collisionEnergies(reader.getMetadata(second).orElseThrow()))
+                    .extracting(Param::unit).containsExactly(ELECTRONVOLT);
+        }
+    }
+
     /** A struct cell with a cv_id other than 1 (MS) or 2 (UO) is refused, as the Rust reader does. */
     @Test
     void aStructUnitWithAnotherCvIdIsRefused(@TempDir Path tmp) throws IOException {

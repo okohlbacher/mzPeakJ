@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.mzpeak.model.Param;
@@ -287,8 +288,8 @@ public final class MzPeakManifest {
      * reference implementation's structs (Rust {@code FileIndex}, {@code FileEntry}, {@code MetadataColumn},
      * {@code MetaParam}, deserialized by serde): a missing required field, a field of the wrong JSON type, an
      * accession or unit that is not CURIE-shaped, or a known field given twice in the same object is rejected with
-     * a message naming the entry and field. Unknown keys, and the content of the {@code metadata} documents beyond
-     * their JSON type, are not checked.
+     * a message naming the entry and field; so is any content but whitespace after the document. Unknown keys, and
+     * the content of the {@code metadata} documents beyond their JSON type, are not checked.
      *
      * @throws MzPeakException if the manifest is not valid JSON or does not have the reference's shape
      */
@@ -297,7 +298,7 @@ public final class MzPeakManifest {
             byte[] bytes = source.readManifestBytes();
             Strict strict = new Strict(source.describe());
             strict.rejectDuplicateFields(bytes);
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = new ObjectMapper().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
             JsonNode root = mapper.readTree(bytes);
             strict.check(root);
             JsonNode filesNode = root.get("files");
@@ -547,14 +548,22 @@ public final class MzPeakManifest {
          * levels of {@link Level}; {@code column_mapping} and {@code metadata_mapping} count as one field. A JSON
          * tree keeps the last duplicate silently, so this streams over the bytes. Duplicates of unknown keys and
          * inside {@code metadata} (a map in the reference, which keeps the last) are accepted, which is why
-         * Jackson's global duplicate detection is not used.
+         * Jackson's global duplicate detection is not used. A second root value is rejected too, as
+         * {@code serde_json::from_reader} rejects anything but whitespace after the document.
          */
         void rejectDuplicateFields(byte[] json) throws IOException {
             try (JsonParser p = new ObjectMapper().getFactory().createParser(json)) {
                 Deque<Frame> stack = new ArrayDeque<>();
+                boolean rootSeen = false;
                 JsonToken t;
                 while ((t = p.nextToken()) != null) {
                     Frame parent = stack.peek();
+                    if (parent == null) {
+                        if (rootSeen) {
+                            throw fail("root", "content after the JSON document");
+                        }
+                        rootSeen = true;
+                    }
                     if (t == JsonToken.FIELD_NAME) {
                         field(parent, p.currentName());
                     } else if (t.isStructEnd()) {

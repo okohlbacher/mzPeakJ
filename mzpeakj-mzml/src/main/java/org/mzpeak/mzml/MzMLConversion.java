@@ -41,7 +41,10 @@ import java.util.function.Supplier;
  * into a {@link MzPeakWriter.Session} opened with the header's file metadata, scan settings and cv list and the
  * survey's extra array keys. Before a spectrum is added, the selected ions of each of its precursors that shares its
  * precursor index (its parent) with an earlier precursor of the spectrum are moved to the first of them, which keeps
- * its own first; every isolation window and activation stays (design 5.6, B-19). It counts what the mzPeak read
+ * its own first; every isolation window and activation stays (design 5.6, B-19). The times of a chromatogram whose
+ * time unit differs from the first chromatogram's are converted into that unit and counted (B-15), since the mzPeak
+ * writer refuses chromatograms of different time units; the reader refuses a time unit that
+ * {@link Chromatogram#withTimeUnit} cannot convert, so every chromatogram converts. It counts what the mzPeak read
  * changes (design 6.1): extra arrays of spectra and chromatograms without a value other than NaN, empty ones included,
  * which it drops (B-26); spectra with a NaN m/z, which it interpolates (B-34); non-finite values of file-level params,
  * which come back as the Strings {@code Infinity}, {@code -Infinity} or {@code NaN} (B-35); chromatograms without
@@ -67,6 +70,8 @@ import java.util.function.Supplier;
 public final class MzMLConversion {
 
     // The losses of design 6.1 toMzPeak counts itself, one line each after the reader's.
+    static final String B_15_CHROMATOGRAM_TIMES = "B-15 chromatogram times converted to the time unit of the first"
+            + " chromatogram";
     static final String B_19 = "B-19 selected ions moved to the first precursor of their spectrum with the same parent";
     static final String B_24_TYPE = "B-24 spectrum types added by the mzPeak writer to spectra without one";
     static final String B_24_SUMMARY = "B-24 summary params (m/z range, base peak, total ion current) added by the"
@@ -206,6 +211,8 @@ public final class MzMLConversion {
         long spectra;
         long wavelengthSpectra;
         long chromatograms;
+        /** The time unit of the first chromatogram, into which every later one is converted; null before it. */
+        private String timeUnit;
 
         Adding(MzPeakWriter.Session session, Losses losses) {
             this.session = session;
@@ -232,6 +239,11 @@ public final class MzMLConversion {
 
         @Override
         public void chromatogram(Chromatogram chromatogram) {
+            if (timeUnit == null) {
+                timeUnit = chromatogram.timeUnit();
+            }
+            losses.note(B_15_CHROMATOGRAM_TIMES, chromatogram.timeUnit().equals(timeUnit) ? 0 : 1);
+            chromatogram = chromatogram.withTimeUnit(timeUnit);
             losses.note(B_26, nanOnly(chromatogram.arrays()));
             losses.note(B_36, chromatogram.size() == 0 && chromatogram.intensityUnit() != null ? 1 : 0);
             session.addChromatogram(chromatogram);

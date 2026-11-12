@@ -33,6 +33,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mzpeak.io.MemberRewriter.rewrite;
 import static org.mzpeak.io.MemberRewriter.rewriteInPlace;
 
@@ -128,6 +129,36 @@ class ChromatogramTimeUnitTest {
             assertThat(back.timeUnit()).isEqualTo(MINUTE);
             assertClose(back.time(), minutes.time(), "time in minutes");
             assertThat(seconds.tic().orElseThrow().timeUnit()).isEqualTo(SECOND);
+        }
+    }
+
+    /**
+     * (b) The seconds copy with the data rows of its chromatogram removed: the chromatogram, now without points,
+     * still takes the unit of the member's time column, UO:0000010, and the dataset writes back in seconds.
+     */
+    @Test
+    void aChromatogramWithoutDataRowsTakesTheUnitOfTheTimeColumn() throws IOException {
+        Path dir = secondsCopy();
+        Path file = dir.resolve(CHROMATOGRAMS_DATA);
+        MemberRewrite.Member member = MemberRewrite.read(file);
+        assertThat(member.rows).isNotEmpty();
+        member.rows.clear();
+        member.keyValues.remove("writer.model.name");
+        MemberRewrite.write(member, file);
+
+        List<Chromatogram> read;
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            read = reader.chromatograms();
+        }
+        assertThat(read).hasSize(1);
+        assertThat(read.get(0).size()).isZero();
+        assertThat(read.get(0).timeUnit()).isEqualTo(SECOND);
+
+        Path out = tmp.resolve("written.mzpeak");
+        MzPeakWriter.writeDirectory(out, List.of(), read);
+        try (MzPeakReader back = MzPeakReader.open(out)) {
+            assertThat(back.chromatograms()).extracting(Chromatogram::id, Chromatogram::size, Chromatogram::timeUnit)
+                    .containsExactly(tuple(read.get(0).id(), 0, SECOND));
         }
     }
 
@@ -236,6 +267,29 @@ class ChromatogramTimeUnitTest {
                     .hasMessage("chromatogram data member: chromatogram time column chunk.time_chunk_values has the"
                             + " unit UO:0000033; supported are minute (UO:0000031), second (UO:0000010), millisecond"
                             + " (UO:0000028) and hour (UO:0000032)");
+        }
+    }
+
+    /**
+     * (c) The chunk start and the time values in the same unit that is not converted, UO:0000029: nothing needs
+     * converting, so the member opens (design §3.12), the time unit is UO:0000029 and the times are as stored.
+     */
+    @Test
+    void aStartAndValuesInTheSameUnconvertedUnitPassThrough() {
+        try (MzPeakSource source = MzPeakSource.open(SMALL_CHUNKED)) {
+            InputFile metadata = source.inputFile(CHROMATOGRAMS_METADATA);
+            InputFile data = source.inputFile(CHROMATOGRAMS_DATA);
+            Path rewritten = tmp.resolve(CHROMATOGRAMS_DATA);
+            Map<String, Edit> edits = new HashMap<>();
+            edits.put("chunk.time_chunk_start", new Edit("UO:0000029", v -> v));
+            edits.put("chunk.time_chunk_values", new Edit("UO:0000029", v -> v));
+            rewrite(data, rewritten, SignalEntity.CHROMATOGRAM, edits);
+
+            Chromatogram expected = ChromatogramStore.load(metadata, data).all().get(0);
+            Chromatogram actual = ChromatogramStore.load(metadata, new LocalInputFile(rewritten)).all().get(0);
+            assertThat(actual.timeUnit()).isEqualTo("UO:0000029");
+            assertThat(actual.time()).isNotEmpty().containsExactly(expected.time());
+            assertThat(actual.intensity()).isEqualTo(expected.intensity());
         }
     }
 
