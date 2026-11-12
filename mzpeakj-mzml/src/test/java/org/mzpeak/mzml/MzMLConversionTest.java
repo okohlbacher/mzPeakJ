@@ -95,7 +95,7 @@ class MzMLConversionTest {
             "B-21 lost array dataProcessingRef (10)",
             "B-10 spectrum@spotID lost (1)",
             "B-10 spectrum@sourceFileRef lost (1)",
-            "B-15 times converted to minutes and drift times to milliseconds (3)",
+            "B-15 times converted to minutes and drift times to milliseconds (1)",
             "B-27 chromatogram products dropped (1)");
     private static final String TINY_A_26 = String.format(MzMLWriter.A_26, "2007-06-27T15:23:45.00035",
             "2007-06-27T15:23:45Z") + " (1)";
@@ -137,6 +137,34 @@ class MzMLConversionTest {
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2007-06-27T15:23:45Z");
         assertThat(ModelAssert.assertEqual("tiny B", model(tiny), m3, STRICT, ModelAssert.A_26).hidden())
                 .containsExactly(Map.entry("A_26", 1));
+    }
+
+    /**
+     * D-12c (V-23): tiny's two chromatograms, whose time arrays are in seconds, keep their unit and values both ways:
+     * the mzPeak dataset reads {@code timeUnit} UO:0000010 with the mzML's values, and the mzML written from it holds
+     * time arrays with {@code unitAccession="UO:0000010"} whose values are bit-identical to the source's, both as
+     * jmzML decodes them.
+     */
+    @Test
+    void tinysChromatogramTimesKeepTheirUnitAndValuesBothWays() throws IOException {
+        Path tiny = MzMLFixtures.extract(MzMLFixtures.TINY, dir);
+        List<List<Object>> source = jmzmlTimeArrays(tiny);
+        assertThat(source).hasSize(2).allSatisfy(a -> assertThat(a.get(0)).isEqualTo("UO:0000010"));
+        assertThat(source).extracting(List::size).containsExactly(16, 11);
+
+        B b = b(tiny, false);
+
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            List<Chromatogram> chromatograms = reader.chromatograms();
+            assertThat(chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000010");
+            for (int c = 0; c < 2; c++) {
+                assertThat(Arrays.stream(chromatograms.get(c).time()).mapToObj(Double::doubleToRawLongBits)
+                        .toList()).as("chromatogram %d", c).isEqualTo(source.get(c).subList(1, source.get(c).size()));
+            }
+        }
+        assertThat(jmzmlTimeArrays(b.mzml)).isEqualTo(source);
+        assertThat(Files.readString(b.mzml, StandardCharsets.UTF_8))
+                .contains("accession=\"MS:1000595\" name=\"time array\" unitAccession=\"UO:0000010\"");
     }
 
     /**
@@ -699,6 +727,26 @@ class MzMLConversionTest {
         }
     }
 
+    /**
+     * D-12c (V-23): the converter keeps each chromatogram's time unit and the mzPeak writer converts none (D-12b), so
+     * an mzML whose chromatograms have different time units (the sic in minutes, the tic in seconds) is refused by
+     * the writer's check, and no target is left.
+     */
+    @Test
+    void chromatogramsOfDifferentTimeUnitsAreRefused() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(s, "id=\"sic\"", "unitAccession=\"UO:0000010\" unitName=\"second\"",
+                "unitAccession=\"UO:0000031\" unitName=\"minute\""));
+        Path out = Files.createDirectory(dir.resolve("out"));
+        Path target = out.resolve("mixed.mzpeak");
+
+        assertThatThrownBy(() -> MzMLConversion.toMzPeak(file, target, false, MzPeakWriter.Options.defaults()))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("chromatograms 0 (UO:0000010) and 1 (UO:0000031) have different time units");
+        try (Stream<Path> left = Files.list(out)) {
+            assertThat(left).isEmpty();
+        }
+    }
+
     @Test
     void toMzMLRefusesAnExistingTargetBeforeItOpensTheInput() throws IOException {
         Path target = Files.writeString(dir.resolve("exists.mzML"), "kept");
@@ -811,6 +859,33 @@ class MzMLConversionTest {
             spectra.add(it.next());
         }
         return spectra;
+    }
+
+    /**
+     * Per chromatogram of {@code file} as jmzML reads it, its time array: the unit accession, then the raw bits of
+     * each value.
+     */
+    private static List<List<Object>> jmzmlTimeArrays(Path file) {
+        List<List<Object>> arrays = new ArrayList<>();
+        MzMLObjectIterator<uk.ac.ebi.jmzml.model.mzml.Chromatogram> it = new MzMLUnmarshaller(file.toFile(), false,
+                null).unmarshalCollectionFromXpath("/run/chromatogramList/chromatogram",
+                uk.ac.ebi.jmzml.model.mzml.Chromatogram.class);
+        while (it.hasNext()) {
+            for (uk.ac.ebi.jmzml.model.mzml.BinaryDataArray a
+                    : it.next().getBinaryDataArrayList().getBinaryDataArray()) {
+                for (uk.ac.ebi.jmzml.model.mzml.CVParam p : a.getCvParam()) {
+                    if ("MS:1000595".equals(p.getAccession())) {
+                        List<Object> array = new ArrayList<>();
+                        array.add(p.getUnitAccession());
+                        for (Number n : a.getBinaryDataAsNumberArray()) {
+                            array.add(Double.doubleToRawLongBits(n.doubleValue()));
+                        }
+                        arrays.add(array);
+                    }
+                }
+            }
+        }
+        return arrays;
     }
 
     /** {@link #TINY_LOSSES} with {@code unitless} params given their default unit (B-14): tiny with more ions. */
