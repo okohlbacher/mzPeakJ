@@ -179,6 +179,13 @@ class RustReaderAcceptanceTest {
      * wavelength spectrum record with {@code none} (but for the derived TIC and BPC above), a TIC/BPC record with
      * {@code error} or {@code panic}.
      *
+     * <p>Every spectrum's MS level and retention time are compared with the spectrum written: the MS level equal; the
+     * retention time, Rust's {@code start_time}, bit-equal to the start time of the spectrum's first scan, in minutes,
+     * or to its retention time if it has no scan (the output without scans, to which the writer adds one scan holding
+     * the retention time). Not to the retention time throughout, which is the spectrum's {@code time} first: in legacy
+     * small.unpacked the scan start times differ from the spectrum times beyond the 7th significant digit
+     * (0.004935000091791153, the widened float nearest to 0.004935, against 0.004935).
+     *
      * <p>The values of every spectrum's data arrays and peaks and of every chromatogram's and wavelength spectrum's
      * arrays are compared with mzPeakJ's read: point counts equal; m/z within {@value #MZ_TOLERANCE} (R-6, Rust
      * fills null-marked m/z less precisely); times, wavelengths and intensities bit-equal, since both readers decode
@@ -262,6 +269,14 @@ class RustReaderAcceptanceTest {
                 Spectrum expected = both.getSpectrumAt(i);
                 assertThat(r.path("index").asInt()).as(at).isEqualTo(i);
                 assertThat(r.path("id").asText()).as(at).isEqualTo(expected.description().id());
+                // MS level and retention time against the spectrum written, so that a writer that loses them fails
+                SpectrumDescription d = output.spectra().get(i).description();
+                assertThat(r.path("ms_level").asInt()).as("%s: ms_level", at).isEqualTo(d.msLevel());
+                // start_time() is the start time of the first scan, in minutes; the writer gives a spectrum
+                // without scans one scan with its retention time
+                double rt = d.scans().isEmpty() ? d.retentionTime() : d.scans().get(0).startTime();
+                assertThat(r.path("rt").isNumber()).as("%s: rt %s", at, r.path("rt")).isTrue();
+                assertValues(at + " rt", new double[] {r.path("rt").asDouble()}, new double[] {rt}, Match.EXACT);
                 assertThat(r.path("peaks_err").asText(null)).as(at)
                         .isEqualTo(peaksMember ? null : "Spectrum peak data entry not found");
                 // R-1: get_spectrum_peaks_for panics for a spectrum without rows in the peaks member, inside the
