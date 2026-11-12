@@ -381,8 +381,9 @@ Writer notes:
 - The Rust reference reader (`mzpeak_prototyping` at HUPO-PSI/mzPeak `2ee2589`) reads the `SPLIT` output: the CI job
   `rust-reader` builds [`tools/rdump`](tools/rdump/README.md) and compares every main signal array (m/z, intensity,
   time, wavelength) and every centroid peak it reads with mzPeakJ's read, peak intensities as float32
-  (`RustReaderAcceptanceTest`). Extra arrays such as per-peak ion mobility are not compared, since Rust does not
-  expose them, and for a dataset written without chromatograms Rust reports its own derived TIC and BPC. Its known issues are in [docs/upstream-issues.md](docs/upstream-issues.md).
+  (`RustReaderAcceptanceTest`). Extra arrays are not compared; per-peak ion mobility could not be, since Rust does
+  not expose it (R-7). For a dataset written without chromatograms Rust reports its own derived TIC and BPC; the TIC
+  and BPC records are checked only for being retrieved without error or panic. Its known issues are in [docs/upstream-issues.md](docs/upstream-issues.md).
 - Not yet written: the delta-`chunk` layout and chunked chromatograms; the m/z + intensity payload is preserved
   in full. A `PACKED` write logs one WARNING for each kind of content that layout drops (see above).
 - Known limits of the HEAD Python reader (HUPO-PSI/mzPeak `2ee2589`) on mzPeakJ's output: it loses the

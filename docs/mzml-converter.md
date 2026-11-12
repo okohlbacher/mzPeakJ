@@ -218,11 +218,11 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 | a second array of a type already present | — | dropped (B-29) |
 | data types MS:1000521, 523, 519, 522 | `double[]` | B: the type is lost (B-21, silent); 64-bit integers above 2^53 round (B-31). A: always 64-bit float |
 | MS:1001479 null-terminated ASCII | — | dropped (B-21) |
-| MS:1000520 16-bit float, no data type | — | rejected |
+| MS:1000520 16-bit float | — | rejected when it is the only data type term; next to a known one jmzML decodes by that one |
 | compression none, zlib | — | decoded by jmzML (B-21, silent). A: zlib unless `--no-zlib`; an empty array is never compressed (guard 1) |
 | MS-Numpress MS:1002312, 1002313, 1002314 (alone or with zlib as two terms) | — | decoded by jmzML; PIC counts of 2^31 and above rejected (guard 3); never written |
 | MS:1002746, 1002747, 1002748 (Numpress and zlib in one term) | — | rejected (guard 2) |
-| any other compression (pwiz truncation, zstd, grid) | — | rejected |
+| any other compression (pwiz truncation, zstd, grid) | — | rejected when it is the only compression term; next to a known one jmzML decodes by that one |
 | `@arrayLength`, `@encodedLength` | — | declared lengths classify extra arrays and must agree between the main arrays; decoded lengths are not checked (L-6) |
 | array params other than type, data type and compression; `@dataProcessingRef` | — | lost (B-21) |
 

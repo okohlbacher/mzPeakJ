@@ -48,7 +48,7 @@ The upstream update to HUPO-PSI/mzPeak `2ee2589` (spec snapshot `0220201`, mzdat
   and one warning per entity; the caller's arrays are not modified. *Why:* the array index declares sorting rank 1 and
   the spec says the writer MUST sort; re-sorting loses no pair, rejecting would fail writes on user data.
 - **Entities are renumbered 0..n-1 on write**, `precursor_index` remapped (null when the parent is not written); in the
-  split layout two precursors of one spectrum that share the written key `(source_index, precursor_index)` may not both
+  split layout only the first precursor of a spectrum with a given written key `(source_index, precursor_index)` may
   carry selected ions (thrown before any I/O). *Why:* both reference joins attach ions to the first matching key, so
   exactly that case would move ions silently.
 - **Precursor join.** Key `(source_index, precursor_index)`, null equal to null, in both layouts; ions go to the first
@@ -146,7 +146,7 @@ these ids.
 |---|---|---|
 | D-1 | Update every dependency with known advisories to the newest fixed version: Jackson 2.23.0, parquet 1.18.2 (with fixed snappy-java and aircompressor and a newer shaded Jackson), assertj 3.27.7; enforcer floors fail the build on a vulnerable version | Jackson 2.18.2 had HIGH advisories, and the fixes exist on three branches, so the floor is the chosen version itself |
 | D-2 | Restrict the EBI repository to jmzML's group ids, deny POM-declared repositories, fail closed when the filter is not active, pin the jmzML jar's checksum; Maven pinned by the Maven Wrapper (`./mvnw`, 3.9.x) | the EBI repository must not serve any other artifact; the resolver filter has no prefix wildcard, so the groups are listed exactly |
-| D-3 | Converter jar: of fastutil only the classes jmzML needs (81 instead of 11,781), `Main-Class` and `Enable-Native-Access` in the manifest, so that `java -jar mzpeakj-mzml-<version>-all.jar <in> <out>` works | about 15 MB smaller; `minimizeJar` was rejected because it could drop classes loaded by name |
+| D-3 | Converter jar: of fastutil only the classes jmzML needs (81 instead of 10,653), `Main-Class` and `Enable-Native-Access` in the manifest, so that `java -jar mzpeakj-mzml-<version>-all.jar <in> <out>` works | about 15 MB smaller; `minimizeJar` was rejected because it could drop classes loaded by name |
 | D-4 | CLAUDE.md describes the current state and the agent-team process | it described an earlier state |
 | D-5 | Numpress intensities stay full doubles; no float32 narrowing | the difference is at most 5.95e-8 relative, and arrays are `double[]` throughout |
 | D-6 | Split facet rows whose `source_index` names no spectrum are dropped silently | as the Rust reader does |

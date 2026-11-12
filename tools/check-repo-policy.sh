@@ -22,7 +22,8 @@ EBI_URL='https://www.ebi.ac.uk/Tools/maven/repos/content/groups/ebi-repo/'
 
 cd "$ROOT"
 echo "repository policy: $MVN, fresh local repository $WORK/repo"
-if ! "$MVN" -B -X -Dmaven.repo.local="$WORK/repo" verify -DskipTests >"$LOG" 2>&1; then
+# Resolution only: without clean, jacoco:check would judge a stale target/jacoco.exec of an earlier build.
+if ! "$MVN" -B -X -Dmaven.repo.local="$WORK/repo" verify -DskipTests -Djacoco.skip=true >"$LOG" 2>&1; then
   tail -n 40 "$LOG"
   echo "FAIL: the build failed; log: $LOG" >&2
   exit 1

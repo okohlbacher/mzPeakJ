@@ -239,6 +239,83 @@ class RunReferenceConformanceTest {
                 .isEqualTo(FooterMetadataWriter.serialize(fixture).get("software_list"));
     }
 
+    /**
+     * Without a default instrument the run names the first configuration's id, also when no configuration is 0: no
+     * stub configuration and no warning.
+     */
+    @Test
+    void aRunWithoutDefaultInstrumentNamesTheFirstConfigurationAlsoWhenItIsNotZero() throws IOException {
+        FileMetadata fixture = fileMetadata(Fixtures.legacy("small.mzpeak"));
+        List<InstrumentConfiguration> configurations = new ArrayList<>();
+        for (InstrumentConfiguration c : fixture.instrumentConfigurations()) {
+            configurations.add(new InstrumentConfiguration(c.id() + 3, c.components(), c.softwareReference(),
+                    c.parameters()));
+        }
+        assertThat(configurations).extracting(InstrumentConfiguration::id).containsExactly(3, 4);
+        FileMetadata meta = new FileMetadata(fixture.fileDescription(), configurations,
+                fixture.dataProcessingMethods(), fixture.samples(), fixture.software(),
+                run(fixture, fixture.run().defaultDataProcessingId(), fixture.run().defaultSourceFileId(), null));
+
+        Serialized out = serialize(meta);
+
+        assertThat(json(out.footer, "run").path("default_instrument_id").asInt()).isEqualTo(3);
+        assertThat(json(out.footer, "instrument_configuration_list")).extracting(c -> c.path("id").asInt())
+                .containsExactly(3, 4);
+        assertThat(out.warnings).isEmpty();
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+    }
+
+    /** Several references to the same undeclared software add one stub of it, with one warning. */
+    @Test
+    void severalReferencesToOneUndeclaredSoftwareAddOneStub() throws IOException {
+        FileMetadata fixture = fileMetadata(Fixtures.legacy("small.mzpeak"));
+        FileMetadata meta = withMethodSoftware(withConfiguration(withConfiguration(fixture, 0, "X"), 1, "X"), "X");
+
+        Serialized out = serialize(meta);
+
+        JsonNode software = json(out.footer, "software_list");
+        assertThat(software).hasSize(fixture.software().size() + 1);
+        assertThat(software).filteredOn(s -> "X".equals(s.path("id").asText())).extracting(JsonNode::toString)
+                .containsExactly("{\"id\":\"X\",\"version\":\"\",\"parameters\":[]}");
+        assertThat(out.warnings).containsExactly("software_list: added the stub software X, which"
+                + " instrument_configuration_list[0].software_reference" + UNDECLARED);
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+    }
+
+    /**
+     * A software without an id cannot be named: a configuration without software names the first software with an id,
+     * and without one the stub software, so every configuration keeps its required software_reference.
+     */
+    @Test
+    void aSoftwareWithoutIdIsNotNamedByAConfiguration() throws IOException {
+        Software anonymous = new Software(null, null, List.of());
+        FileMetadata meta = new FileMetadata(null, List.of(), List.of(), List.of(), List.of(anonymous),
+                new MsRun(null, null, null, null, null, List.of()));
+
+        Serialized out = serialize(meta);
+
+        assertThat(out.footer.get("instrument_configuration_list")).isEqualTo("[{\"id\":0,"
+                + "\"software_reference\":\"mzpeakj_software\",\"components\":[],\"parameters\":[]}]");
+        assertThat(out.footer.get("software_list")).isEqualTo("[{\"version\":\"\",\"parameters\":[]},"
+                + "{\"id\":\"mzpeakj_software\",\"version\":\"\",\"parameters\":[]}]");
+        assertThat(out.warnings).hasSize(4).endsWith("software_list: added the stub software mzpeakj_software, which"
+                + " instrument_configuration_list[0].software_reference" + UNDECLARED);
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+
+        Serialized named = serialize(new FileMetadata(null, List.of(), List.of(), List.of(),
+                List.of(anonymous, new Software("named", "1", List.of())), meta.run()));
+
+        assertThat(json(named.footer, "instrument_configuration_list").get(0).path("software_reference").asText())
+                .isEqualTo("named");
+        assertThat(json(named.footer, "software_list")).hasSize(2);
+        assertThat(named.warnings).hasSize(3);
+        assertThat(SpecSchemaCheck.violations(named.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(named.footer)).isEmpty();
+    }
+
     /** Without a run nothing names a default, so only the software references are resolved. */
     @Test
     void withoutARunOnlyTheSoftwareReferencesAreResolved() throws IOException {
@@ -282,7 +359,9 @@ class RunReferenceConformanceTest {
 
     /**
      * (f) Every file metadata document of every dataset {@link InteropOutputs} writes, in the split and the packed
-     * layout, in the manifest and in each member's footer, passes the schema check and resolves.
+     * layout, in the manifest and in each member's footer, passes the schema check and resolves. Exactly the manifest
+     * and the spectrum and wavelength spectrum metadata members hold them ({@link SpecSchemaCheck#fileMetadataPlaces}),
+     * each the manifest's documents.
      */
     @Test
     void everyDocumentInteropOutputsWritesConformsAndResolves(@TempDir Path tmp) {
@@ -298,8 +377,10 @@ class RunReferenceConformanceTest {
                 assertThat(places).as(output.name()).isEmpty();
                 continue;
             }
-            assertThat(places).as(output.name()).containsKey("mzpeak_index.json");
+            assertThat(places.keySet()).as(output.name())
+                    .containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(output.path()));
             places.forEach((place, documents) -> {
+                assertThat(documents).as(output.name() + " " + place).isEqualTo(places.get("mzpeak_index.json"));
                 assertThat(documents).as(output.name() + " " + place).containsKey("run");
                 SpecSchemaCheck.violations(documents).forEach(v -> problems.add(output + " " + place + ": " + v));
                 SpecSchemaCheck.unresolved(documents).forEach(u -> problems.add(output + " " + place + ": " + u));

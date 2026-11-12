@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MzPeakFileInfoTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final String USAGE ="Usage: MzPeakFileInfo <in.mzpeak> [-s]   (-s adds intensity statistics)";
+    private static final String USAGE = "Usage: MzPeakFileInfo <in.mzpeak> [-s]   (-s adds intensity statistics)";
 
     @Test
     void summarizesAnArchiveWithoutStatistics() {
@@ -399,8 +399,9 @@ class MzPeakFileInfoTest {
      * with the only MS1 point, one empty centroid spectrum. MS2: a precursor without selected ion and activation, a
      * charged precursor whose dissociation methods (CID, HCD) have no name, and no precursor. MS3: an uncharged
      * precursor, no retention time and no points. Then an ion current and an untyped chromatogram, and file metadata
-     * with an unnamed run (which the writer names mzpeakj_run), a software without version, an unknown component without named parameters, a resolution
-     * and a source file without name. Written in the packed layout, which keeps the methods nameless.
+     * with an unnamed run (which the writer names mzpeakj_run), a software without version, an unknown component
+     * without named parameters, a resolution and a source file without name. Written in the packed layout, which
+     * keeps the methods nameless.
      */
     private static Path writeEdgeCases(Path dir) {
         Precursor withoutIon = new Precursor(0L, "scan=1", null, List.of(), Activation.EMPTY);

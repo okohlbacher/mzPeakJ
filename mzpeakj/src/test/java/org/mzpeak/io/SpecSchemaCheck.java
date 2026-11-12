@@ -135,6 +135,27 @@ final class SpecSchemaCheck {
         return out;
     }
 
+    /**
+     * The places of {@code dataset} that hold the file metadata documents when it is written by mzPeakJ, in the order
+     * of {@link #documents}: the manifest and each member it lists whose name starts with {@code spectra_metadata} or
+     * {@code wavelength_spectra_metadata}. The writers give the file metadata to the footers of the spectrum and
+     * wavelength spectrum metadata members, not to the chromatogram metadata or signal members.
+     */
+    static List<String> fileMetadataPlaces(Path dataset) {
+        List<String> out = new ArrayList<>(List.of(INDEX));
+        try (MzPeakSource source = MzPeakSource.open(dataset)) {
+            for (JsonNode file : MAPPER.readTree(source.readManifestBytes()).path("files")) {
+                String name = file.path("name").asText();
+                if (name.startsWith("spectra_metadata") || name.startsWith("wavelength_spectra_metadata")) {
+                    out.add(name);
+                }
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return out;
+    }
+
     private static void putIfAny(Map<String, Map<String, String>> out, String place, Map<String, String> documents) {
         if (!documents.isEmpty()) {
             out.put(place, documents);

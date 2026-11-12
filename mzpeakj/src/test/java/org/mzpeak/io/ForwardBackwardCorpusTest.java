@@ -31,13 +31,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiPredicate;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
@@ -484,27 +488,49 @@ class ForwardBackwardCorpusTest {
         String runB = b.run() == null ? null : b.run().id();
         eq(diffs, "fileMetadata.run.id", runA, runB);
         // The writer appends a stub for what a reference names but the source lacks (WR-9), so each written list is
-        // the source's list followed by stubs only.
-        sizeWithStubs(diffs, "fileMetadata.software.size", a.software().size(), b.software(),
-                s -> "".equals(s.version()) && s.parameters().isEmpty());
-        sizeWithStubs(diffs, "fileMetadata.instrumentConfigurations.size", a.instrumentConfigurations().size(),
-                b.instrumentConfigurations(), ic -> ic.components().isEmpty() && ic.parameters().isEmpty());
-        sizeWithStubs(diffs, "fileMetadata.dataProcessingMethods.size", a.dataProcessingMethods().size(),
-                b.dataProcessingMethods(), dp -> dp.methods().isEmpty());
+        // the source's list followed by stubs only. A software without version is written with version "".
+        sizeWithStubs(diffs, "fileMetadata.software", a.software(), b.software(),
+                (x, y) -> Objects.equals(x.id(), y.id()) && x.parameters().equals(y.parameters())
+                        && (x.version() == null ? "" : x.version()).equals(y.version()),
+                FileMetadata.Software::id, s -> "".equals(s.version()) && s.parameters().isEmpty());
+        sizeWithStubs(diffs, "fileMetadata.instrumentConfigurations", a.instrumentConfigurations(),
+                b.instrumentConfigurations(), Object::equals, FileMetadata.InstrumentConfiguration::id,
+                ic -> ic.components().isEmpty() && ic.parameters().isEmpty());
+        sizeWithStubs(diffs, "fileMetadata.dataProcessingMethods", a.dataProcessingMethods(),
+                b.dataProcessingMethods(), Object::equals, FileMetadata.DataProcessing::id,
+                dp -> dp.methods().isEmpty());
         eq(diffs, "fileMetadata.samples.size", a.samples().size(), b.samples().size());
-        int srcFilesA = a.fileDescription() == null ? 0 : a.fileDescription().sourceFiles().size();
+        List<FileMetadata.SourceFile> srcFilesA = a.fileDescription() == null ? List.of()
+                : a.fileDescription().sourceFiles();
         List<FileMetadata.SourceFile> srcFilesB = b.fileDescription() == null ? List.of()
                 : b.fileDescription().sourceFiles();
-        sizeWithStubs(diffs, "fileMetadata.fileDescription.sourceFiles.size", srcFilesA, srcFilesB,
-                sf -> "unknown".equals(sf.name()) && "file:///unknown".equals(sf.location())
-                        && sf.parameters().isEmpty());
+        sizeWithStubs(diffs, "fileMetadata.fileDescription.sourceFiles", srcFilesA, srcFilesB, Object::equals,
+                FileMetadata.SourceFile::id, sf -> "unknown".equals(sf.name())
+                        && "file:///unknown".equals(sf.location()) && sf.parameters().isEmpty());
     }
 
-    /** A diff unless {@code written} is {@code size} entries followed by entries that are stubs only. */
-    private static <T> void sizeWithStubs(List<String> diffs, String tag, int size, List<T> written,
-                                          Predicate<T> stub) {
-        if (written.size() < size || !written.subList(size, written.size()).stream().allMatch(stub)) {
-            diffs.add(tag + ": src=" + size + " out=" + written.size() + " (beyond the source only WR-9 stubs)");
+    /**
+     * A diff unless {@code written} is the {@code source} list, entry by entry the {@code same}, followed by stubs
+     * only: entries that are {@code stub}s, with distinct ids that no entry of the source has.
+     */
+    private static <T> void sizeWithStubs(List<String> diffs, String tag, List<T> source, List<T> written,
+                                          BiPredicate<T, T> same, Function<T, Object> id, Predicate<T> stub) {
+        if (written.size() < source.size()) {
+            diffs.add(tag + ".size: src=" + source.size() + " out=" + written.size()
+                    + " (beyond the source only WR-9 stubs)");
+            return;
+        }
+        for (int i = 0; i < source.size(); i++) {
+            if (!same.test(source.get(i), written.get(i))) {
+                diffs.add(tag + "[" + i + "]: src=" + source.get(i) + " out=" + written.get(i));
+            }
+        }
+        Set<Object> ids = new HashSet<>();
+        source.forEach(e -> ids.add(id.apply(e)));
+        for (T e : written.subList(source.size(), written.size())) {
+            if (!stub.test(e) || !ids.add(id.apply(e))) {
+                diffs.add(tag + ": " + e + " beyond the source is not a WR-9 stub of a new id");
+            }
         }
     }
 
