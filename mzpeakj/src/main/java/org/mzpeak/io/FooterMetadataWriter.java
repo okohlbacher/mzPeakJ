@@ -216,15 +216,17 @@ final class FooterMetadataWriter {
 
     /**
      * The software an instrument configuration without one names: the first configuration's software, else the
-     * first software, else the stub software.
+     * first software with an id, else the stub software.
      */
     private static String defaultSoftware(FileMetadata meta) {
         List<InstrumentConfiguration> configurations = meta.instrumentConfigurations();
         if (!configurations.isEmpty() && configurations.get(0).softwareReference() != null) {
             return configurations.get(0).softwareReference();
         }
-        if (!meta.software().isEmpty()) {
-            return meta.software().get(0).id();
+        for (Software s : meta.software()) {
+            if (s.id() != null) {
+                return s.id();
+            }
         }
         return SOFTWARE_ID;
     }

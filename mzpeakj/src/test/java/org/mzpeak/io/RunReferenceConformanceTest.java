@@ -239,6 +239,38 @@ class RunReferenceConformanceTest {
                 .isEqualTo(FooterMetadataWriter.serialize(fixture).get("software_list"));
     }
 
+    /**
+     * A software without an id cannot be named: a configuration without software names the first software with an id,
+     * and without one the stub software, so every configuration keeps its required software_reference.
+     */
+    @Test
+    void aSoftwareWithoutIdIsNotNamedByAConfiguration() throws IOException {
+        Software anonymous = new Software(null, null, List.of());
+        FileMetadata meta = new FileMetadata(null, List.of(), List.of(), List.of(), List.of(anonymous),
+                new MsRun(null, null, null, null, null, List.of()));
+
+        Serialized out = serialize(meta);
+
+        assertThat(out.footer.get("instrument_configuration_list")).isEqualTo("[{\"id\":0,"
+                + "\"software_reference\":\"mzpeakj_software\",\"components\":[],\"parameters\":[]}]");
+        assertThat(out.footer.get("software_list")).isEqualTo("[{\"version\":\"\",\"parameters\":[]},"
+                + "{\"id\":\"mzpeakj_software\",\"version\":\"\",\"parameters\":[]}]");
+        assertThat(out.warnings).hasSize(4).endsWith("software_list: added the stub software mzpeakj_software, which"
+                + " instrument_configuration_list[0].software_reference" + UNDECLARED);
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+
+        Serialized named = serialize(new FileMetadata(null, List.of(), List.of(), List.of(),
+                List.of(anonymous, new Software("named", "1", List.of())), meta.run()));
+
+        assertThat(json(named.footer, "instrument_configuration_list").get(0).path("software_reference").asText())
+                .isEqualTo("named");
+        assertThat(json(named.footer, "software_list")).hasSize(2);
+        assertThat(named.warnings).hasSize(3);
+        assertThat(SpecSchemaCheck.violations(named.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(named.footer)).isEmpty();
+    }
+
     /** Without a run nothing names a default, so only the software references are resolved. */
     @Test
     void withoutARunOnlyTheSoftwareReferencesAreResolved() throws IOException {
