@@ -33,6 +33,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mzpeak.io.MemberRewriter.rewrite;
 import static org.mzpeak.io.MemberRewriter.rewriteInPlace;
 
@@ -128,6 +129,36 @@ class ChromatogramTimeUnitTest {
             assertThat(back.timeUnit()).isEqualTo(MINUTE);
             assertClose(back.time(), minutes.time(), "time in minutes");
             assertThat(seconds.tic().orElseThrow().timeUnit()).isEqualTo(SECOND);
+        }
+    }
+
+    /**
+     * (b) The seconds copy with the data rows of its chromatogram removed: the chromatogram, now without points,
+     * still takes the unit of the member's time column, UO:0000010, and the dataset writes back in seconds.
+     */
+    @Test
+    void aChromatogramWithoutDataRowsTakesTheUnitOfTheTimeColumn() throws IOException {
+        Path dir = secondsCopy();
+        Path file = dir.resolve(CHROMATOGRAMS_DATA);
+        MemberRewrite.Member member = MemberRewrite.read(file);
+        assertThat(member.rows).isNotEmpty();
+        member.rows.clear();
+        member.keyValues.remove("writer.model.name");
+        MemberRewrite.write(member, file);
+
+        List<Chromatogram> read;
+        try (MzPeakReader reader = MzPeakReader.open(dir)) {
+            read = reader.chromatograms();
+        }
+        assertThat(read).hasSize(1);
+        assertThat(read.get(0).size()).isZero();
+        assertThat(read.get(0).timeUnit()).isEqualTo(SECOND);
+
+        Path out = tmp.resolve("written.mzpeak");
+        MzPeakWriter.writeDirectory(out, List.of(), read);
+        try (MzPeakReader back = MzPeakReader.open(out)) {
+            assertThat(back.chromatograms()).extracting(Chromatogram::id, Chromatogram::size, Chromatogram::timeUnit)
+                    .containsExactly(tuple(read.get(0).id(), 0, SECOND));
         }
     }
 
