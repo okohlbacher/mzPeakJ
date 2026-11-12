@@ -648,7 +648,9 @@ order:
   column mapping. A scan's or ion's Param moves there only when it is its scope's one ion mobility Param, has one of
   the four types whose name and unit the reader fixes (MS:1002476, MS:1002815, MS:1001581, MS:1003371) with that unit,
   and a finite Double or Long value (read back as Double); otherwise both cells are null and the Param stays in the
-  list. A value is never written without a type. The packed writer does not write them.
+  list. A value is never written without a type. These promotion rules apply only to the split writer: the packed
+  writer keeps its pin-era scan `ion_mobility_value` and `ion_mobility_type` columns, filled from the scan's ion
+  mobility Param, which also stays in the list, and writes no such columns for selected ions.
 - `Spectrum.ionMobility()` looks for an ion mobility array key (§3.6).
 - `Activation.methods()` reports only `DISSOCIATION_METHODS`, which also name the dissociation-method marker's
   Param. MS:1002631 (EThcD) is a child of MS:1003181 'combined dissociation method', not of MS:1000044: it is
@@ -912,10 +914,14 @@ every push to `main` and every pull request: the job `rust-reader` builds [`tool
 dumper on the reference's public API, and runs `RustReaderAcceptanceTest` (WR-13). Every split output of
 `UpstreamInteropTest`'s set (as archive and directory), plus has_uv in both fixture sets, current small with an
 untyped chromatogram, with a chromatogram in seconds and with an integer collision energy, and diaPASEF.ref with its
-ion mobility columns, is opened by Rust: the counts equal the written ones, MS levels and scan start times equal
-those written, and every array equals mzPeakJ's read (times, wavelengths, plain, Numpress linear and PIC values bit
-for bit; m/z within 1e-4, since Rust fills null-marked m/z less precisely; SLOF intensities within 2 ulp of `j + 1`,
-because Java's `Math.exp` and the platform libm may differ by one ulp). The only failures allowed are the known
+ion mobility columns, is opened by Rust: the counts equal the written ones (for a dataset written without
+chromatograms Rust reports 2, the TIC and BPC it derives from the spectra), MS levels and scan start times equal
+those written, and every main signal array (m/z, intensity, time, wavelength) and every centroid peak equals
+mzPeakJ's read (times, wavelengths, plain, Numpress linear and PIC values bit for bit; m/z within 1e-4, since Rust
+fills null-marked m/z less precisely; SLOF intensities within 2 ulp of `j + 1`, because Java's `Math.exp` and the
+platform libm may differ by one ulp; peak intensities as the float32 nearest to mzPeakJ's value, the type of
+`mzpeaks::CentroidPeak`). Extra arrays, such as per-peak ion mobility, are not compared: Rust does not expose them
+(R-7). The only failures allowed are the known
 issues R-1 to R-3 of the Rust reader ([docs/upstream-issues.md](docs/upstream-issues.md)), each expected exactly
 where it applies and required to occur, so that a fixed one is noticed. The `PACKED` output is not read by the
 current Rust reader (R-9).
