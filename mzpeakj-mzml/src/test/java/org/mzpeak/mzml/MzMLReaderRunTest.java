@@ -670,10 +670,28 @@ class MzMLReaderRunTest {
         }
     }
 
-    /** A tic without its intensity array drops its time array too (B-9) and reads with the default unit minute. */
+    /**
+     * A tic without its intensity array drops its time array too (B-9) and keeps the unit its time array declares,
+     * seconds, as the sic's (V-23 review).
+     */
     @Test
-    void aTimeOnlyChromatogramReadsInMinutes(@TempDir Path dir) throws IOException {
+    void aTimeOnlyChromatogramKeepsItsTimeArraysUnit(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> removeFirstArray(s, "name=\"time array\""));
+
+        Run run = read(file);
+
+        Chromatogram tic = run.chromatograms.get(0);
+        assertThat(tic.time()).isEmpty();
+        assertThat(tic.intensity()).isEmpty();
+        assertThat(tic.timeUnit()).isEqualTo("UO:0000010");
+        assertThat(run.reader.warnings())
+                .contains("B-9 arrays of spectra and chromatograms without an axis or intensity array dropped (1)");
+    }
+
+    /** A tic without its time array drops its intensity array too (B-9) and reads with the default unit minute. */
+    @Test
+    void anIntensityOnlyChromatogramReadsInMinutes(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> removeFirstArray(s, "id=\"tic\""));
 
         Run run = read(file);
 

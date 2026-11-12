@@ -820,8 +820,8 @@ public final class MzMLReader {
     /**
      * A chromatogram (design 5.8): its type and polarity promoted; its data processing (its own, else the list's
      * {@code listDefault}) kept when it differs from the spectrumList's; its precursor; its product dropped (B-27); its
-     * time as stored with the time array's unit as {@code timeUnit} (minute without unit or time array, D-12c) and its
-     * intensity unit as given.
+     * time as stored with the time array's unit as {@code timeUnit} (minute without unit or time array, D-12c), also
+     * when B-9 drops the time array, and its intensity unit as given.
      */
     private Consumer<Visitor> chromatogram(uk.ac.ebi.jmzml.model.mzml.Chromatogram c, String listDefault) {
         List<Param> params = new ArrayList<>(params(c));
@@ -840,7 +840,7 @@ public final class MzMLReader {
                 type == null ? null : type.accession(), values(signal.axis()), values(signal.intensity()),
                 signal.intensity() == null ? null : signal.intensity().array().unit(), values(signal.extras()),
                 polarity, Objects.equals(processing, spectrumListDefault) ? null : processing, params, precursors,
-                signal.axis() == null ? MINUTE : Objects.requireNonNullElse(signal.axis().array().unit(), MINUTE));
+                Objects.requireNonNullElse(signal.axisUnit(), MINUTE));
         return v -> v.chromatogram(chromatogram);
     }
 
@@ -992,8 +992,11 @@ public final class MzMLReader {
     private record Kept(Array array, DoubleUnaryOperator conversion) {
     }
 
-    /** The arrays kept of a spectrum or chromatogram: axis and intensity (both or neither) and the extras by key. */
-    private record Signal(Kept axis, Kept intensity, Map<String, Kept> extras) {
+    /**
+     * The arrays kept of a spectrum or chromatogram: axis and intensity (both or neither) and the extras by key; and
+     * the unit of the first axis array, null for none or no unit, also when B-9 drops it.
+     */
+    private record Signal(Kept axis, Kept intensity, Map<String, Kept> extras, String axisUnit) {
     }
 
     /**
@@ -1077,12 +1080,13 @@ public final class MzMLReader {
         Array axis = first(usable, kind.axis);
         Array intensity = first(usable, INTENSITY_ARRAY);
         DoubleUnaryOperator axisConversion = axis == null ? null : mainConversion(axis);
+        String axisUnit = axis == null ? null : axis.unit();
         DoubleUnaryOperator intensityConversion = intensity == null || kind == Kind.CHROMATOGRAM ? AS_IS
                 : mainConversion(intensity);
         Map<String, Kept> extras = new LinkedHashMap<>();
         if (axis == null || intensity == null) {
             note(B_9, usable.isEmpty() ? 0 : 1);
-            return new Signal(null, null, extras);
+            return new Signal(null, null, extras, axisUnit);
         }
         if (axis.length() != intensity.length()) {
             throw error("its " + axis.key() + " and " + INTENSITY_ARRAY + " arrays declare different lengths, "
@@ -1110,7 +1114,7 @@ public final class MzMLReader {
                 extras.put(a.key(), kept(a, conversion));
             }
         }
-        return new Signal(axisKept, intensityKept, extras);
+        return new Signal(axisKept, intensityKept, extras, axisUnit);
     }
 
     /** The first of {@code arrays} with {@code key}, else null. */

@@ -747,6 +747,31 @@ class MzMLConversionTest {
         }
     }
 
+    /**
+     * D-12c (V-23 review): the tic without its intensity array loses its time array too (B-9) but keeps the time
+     * array's unit, seconds as the sic's, so the conversion succeeds and the empty tic reads back in seconds.
+     */
+    @Test
+    void aTimeOnlyChromatogramConvertsWithItsTimeArraysUnit() throws IOException {
+        Path file = tinyWith(s -> {
+            int time = s.indexOf("name=\"time array\"", s.indexOf("id=\"tic\""));
+            int start = s.indexOf("<binaryDataArray ", time);
+            int end = s.indexOf("</binaryDataArray>", start) + "</binaryDataArray>".length();
+            return s.substring(0, start) + s.substring(end);
+        });
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLReader.B_9 + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(0, 10);
+            assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
+                    .containsExactly("UO:0000010", "UO:0000010");
+        }
+        assertThat(model(b.mzml).chromatograms()).extracting(Chromatogram::timeUnit)
+                .containsExactly("UO:0000010", "UO:0000010");
+    }
+
     @Test
     void toMzMLRefusesAnExistingTargetBeforeItOpensTheInput() throws IOException {
         Path target = Files.writeString(dir.resolve("exists.mzML"), "kept");
