@@ -5,19 +5,33 @@
 **mzPeakJ**
 
 mzPeakJ is a **demonstrator** Java library that reads and writes the [mzPeak](https://www.psidev.info/mzpeak)
-mass-spectrometry data format — a HUPO-PSI prototype format built on Apache Parquet. It is vibe-coded by
-following the Rust reference implementations (`mzpeaks` / `mzdata` / `mzpeak_prototyping` by mobiusklein) and
-the HUPO-PSI spec + example files. It opens an unpacked `*.mzpeak` directory or single-file ZIP, lists spectra,
-materializes per-spectrum m/z + intensity arrays, and can write mzPeak back out. Built for exploration, not production.
+mass-spectrometry data format — a HUPO-PSI prototype format built on Apache Parquet. It follows the Rust reference
+implementations (`mzpeaks` / `mzdata` / `mzpeak_prototyping` by mobiusklein) and the HUPO-PSI spec + example files.
+It opens an unpacked `*.mzpeak` directory or single-file ZIP, lists spectra, materializes per-spectrum m/z + intensity
+arrays, and can write mzPeak back out. Built for exploration, not production.
 
 **Core Value:** Given an mzPeak dataset, return correct per-spectrum **m/z + intensity arrays** and spectrum
 metadata (index, MS level, RT, precursor). If everything else fails, reading a spectrum's peaks correctly must work.
+
+### Current state
+
+- **Two modules**: `mzpeakj` (the core library: reader, writer, CLI tools) and `mzpeakj-mzml` (the mzML ↔ mzPeak
+  converter on jmzML, CLI `MzPeakConvert`, using only the core library's public API).
+- **Coverage**: JaCoCo gate of 100% line, branch and method coverage for every `org.mzpeak.*` class in both modules,
+  with no exclusions; coverage evidence comes only from a clean build.
+- **Vendored `ms.numpress`**: stays byte-identical to upstream; it is held at the coverage it reaches (the one gap is
+  the unreachable `nbrOfDoubles < 0` throw in `MSNumpress.java`).
+- **Reader checks**: written files must stay readable by the current Rust reference reader (`RustReaderAcceptanceTest`,
+  `-Dmzpeak.rust.rdump=<rdump>`, run in CI) and the HEAD Python reader (`UpstreamInteropTest`,
+  `-Dmzpeak.upstream.python=<mzPeak checkout>/python`, opt-in).
+- **Build**: `./mvnw -B -q -Dmzpeak.corpus.dir=/nonexistent-mzpeak-corpus clean verify` (the corpus tests are skipped
+  without a corpus directory).
 
 ### Constraints
 
 - **Tech stack**: Java (Maven build), Parquet via `parquet-java` (org.apache.parquet) — Why: pure-JVM; no Hadoop FileSystem/Configuration or native code is used (a self-contained `hadoop-client-api` jar is on the classpath only because parquet-java's classes reference Hadoop types).
 - **Data structures**: store intensity as `double[]` so consumers get arrays directly with no widening copy.
-- **Process**: run a `codex` CLI adversarial review at the **start** (plan/design) and **end** (diff) of every phase — Why: user-mandated external quality gate. `codex exec --skip-git-repo-check "<prompt>"` / `codex exec review`.
+- **Process**: agent-team rounds; every unit and every final review by Codex, Kimi and Vibe.
 - **Testing**: tests must use the existing HUPO-PSI example `.mzpeak` data — Why: validate against real fixtures, not synthetic.
 - **Dependencies**: avoid Hadoop transitive bloat and all native code — Why: keep the artifact lean and portable.
 
@@ -31,11 +45,11 @@ metadata (index, MS level, RT, precursor). If everything else fails, reading a s
 
 | Concern | Choice | Coordinates / version | Rationale | Confidence |
 |---|---|---|---|---|
-| Language/runtime | Java 17 bytecode target on JDK 25 | Homebrew `openjdk@25` 25.0.2 | JDK 25 is what's installed; target 17 for broad JVM compatibility. | High |
-| Build | Maven | 3.9.15 (installed) | Already present; Gradle absent. Simpler single-module → multi-module later. | High |
-| Parquet I/O | **parquet-java (parquet-mr)**, Hadoop-free | `org.apache.parquet:parquet-hadoop` + `parquet-column` + `parquet-common` **1.17.0** | Pure JVM, best-in-class LIST + projection + predicate pushdown, reads via `InputFile` (no Hadoop `Path` needed using `PlainParquetConfiguration` + `LocalInputFile`). Exclude `hadoop-common`/`hadoop-mapreduce` transitively. | High |
-| JSON (manifest + footer metadata) | Jackson | `com.fasterxml.jackson.core:jackson-databind` 2.18.x | Parse `mzpeak_index.json` and Parquet footer key-value JSON. Ubiquitous, no native deps. | High |
-| Tests | JUnit 5 + AssertJ | `org.junit.jupiter` 5.11.x, `org.assertj` 3.26.x | Standard. Drive from HUPO-PSI example data. | High |
+| Language/runtime | Java 17 bytecode target | `maven.compiler.release` 17; CI on JDK 17 and 21; developed on the installed Homebrew OpenJDK 27.0.1 | Target 17 for broad JVM compatibility. | High |
+| Build | Maven Wrapper | `./mvnw`, Maven 3.9.x (wrapper pins 3.9.16; `requireMavenVersion` enforces it) | Pins the Maven version for the resolver's repository filter and trusted checksums; two modules `mzpeakj` + `mzpeakj-mzml`. | High |
+| Parquet I/O | **parquet-java (parquet-mr)**, Hadoop-free | `org.apache.parquet:parquet-hadoop` + `parquet-column` + `parquet-common` **1.18.2** | Pure JVM, best-in-class LIST + projection + predicate pushdown, reads via `InputFile` (no Hadoop `Path` needed using `PlainParquetConfiguration` + `LocalInputFile`). Exclude `hadoop-common`/`hadoop-mapreduce` transitively. | High |
+| JSON (manifest + footer metadata) | Jackson | `com.fasterxml.jackson.core:jackson-databind` 2.23.0 | Parse `mzpeak_index.json` and Parquet footer key-value JSON. Ubiquitous, no native deps. | High |
+| Tests | JUnit 5 + AssertJ | `org.junit.jupiter` 5.11.x, `org.assertj` 3.27.x | Standard. Drive from HUPO-PSI example data. | High |
 
 ## Explicitly NOT using (and why)
 
@@ -69,21 +83,6 @@ Architecture not yet mapped. Follow existing patterns found in the codebase.
 
 No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
 <!-- GSD:skills-end -->
-
-<!-- GSD:workflow-start source:GSD defaults -->
-
-## GSD Workflow Enforcement
-
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-
-- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd:debug` for investigation and bug fixing
-- `/gsd:execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
 
 <!-- GSD:profile-start -->
 
