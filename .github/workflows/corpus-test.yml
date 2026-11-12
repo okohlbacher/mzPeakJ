@@ -64,11 +64,9 @@ jobs:
       - name: Maven version
         run: ./mvnw -v
 
-      # verify, not test: with the resolver's trusted checksums on (.mvn/maven.config), a reactor build that stops
-      # before package fails, because the resolver hashes the library module's target/classes directory.
       - name: Run corpus + round-trip tests
         run: |
-          ./mvnw -B --no-transfer-progress verify \
+          ./mvnw -B --no-transfer-progress test \
             -Dmzpeak.roundtrip=true \
             -Dmzpeak.corpus.dir="${CORPUS_DIR}" \
             -Dmzpeak.validator.command=mzpeak-validate
