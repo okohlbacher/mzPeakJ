@@ -77,14 +77,19 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *
  * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param moves to its standardized
  * column only if the reader rebuilds it equal apart from its name ({@link Promotion}, WR-5c): a summary value, the
- * spectrum type, an imaging position, the dissociation method or the collision energy, and of a wavelength spectrum
- * its representation, base peak intensity or total ion current. A collision energy is promoted also when it is an
- * integer or has no unit, as mzML writers give it: MS:1000045 is defined in electronvolt, and it reads back as a
- * Double in electronvolt. Every other Param stays in
- * its {@code parameters} list, ion mobility included. A promoted Param reads back after the list, in column order, so
- * a description whose promoted terms (summary values, spectrum type, representation, collision energy, ...) did not
- * come last in its Params reads back in another order: CV param order carries no meaning, and a list read from this
- * writer's output, where promoted terms always come last, keeps its order. The summary values are derived from the
+ * spectrum type, an imaging position, the dissociation method or the collision energy, the ion mobility of a scan or
+ * selected ion, and of a wavelength spectrum its representation, base peak intensity or total ion current. A
+ * collision energy is promoted also when it is an integer or has no unit, as mzML writers give it: MS:1000045 is
+ * defined in electronvolt, and it reads back as a Double in electronvolt. An ion mobility goes to the
+ * {@code ion_mobility_value} and {@code ion_mobility_type} columns, which the reference writes after
+ * {@code ion_injection_time} and {@code peak_intensity} without a column mapping, only when it is the scope's one
+ * Param with an ion mobility type and has one of the four types the reader names, with the unit it gives that type,
+ * and a finite Double or Long value, which reads back as a Double ({@link #promoteIonMobility}); otherwise both cells
+ * are null. Every other Param stays in its {@code parameters} list. A promoted Param reads back after the list, in
+ * column order, so a description whose promoted terms (summary values, spectrum type, representation, collision
+ * energy, ion mobility, ...) did not come last in its Params reads back in another order (of a scan, the ion mobility
+ * reads back before the imaging positions): CV param order carries no meaning, and a list read from this writer's
+ * output, where promoted terms always come last, keeps its order. The summary values are derived from the
  * payload only when the spectrum's Params have none of the five, and the spectrum type from the MS level only when
  * they have no spectrum type. The {@code parameters} and {@code scan_windows} lists are empty, never null, when there is nothing in them,
  * as in the reference's output; the isolation window's {@code parameters} list holds its Params, none promoted
@@ -163,6 +168,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final String ACTIVATION = "activation";
     private static final String PARAMETERS = "parameters";
     private static final String DATA_PROCESSING_REF = "data_processing_ref";
+    /** The typed ion mobility of a scan or selected ion, not CV-mapped, as in the reference's manifest (V-24). */
+    private static final String ION_MOBILITY_VALUE = "ion_mobility_value";
+    private static final String ION_MOBILITY_TYPE = "ion_mobility_type";
 
     // CV-mapped spectrum columns
     private static final Column MS_LEVEL = column(Facet.SPECTRUM, "MS:1000511");
@@ -276,6 +284,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(field(SELECTED_ION_MZ))
             .optional(PrimitiveTypeName.INT32).named(field(CHARGE_STATE))
             .optional(PrimitiveTypeName.DOUBLE).named(field(PEAK_INTENSITY))
+            .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
+            .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ION_MOBILITY_TYPE)
             .addField(paramListField())
             .named("spectra_metadata_selected_ions");
 
@@ -497,6 +507,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 .optional(PrimitiveTypeName.INT32).named(field(PRESET_SCAN_CONFIGURATION))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(FILTER_STRING))
                 .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME))
+                .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ION_MOBILITY_TYPE)
                 .optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID)
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(SPECTRUM_REFERENCE)
                 .addField(paramListField())
@@ -547,6 +559,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                         row.add(SPECTRUM_REFERENCE, scan.spectrumReference());
                     }
                     Promotion params = new Promotion(scan.parameters());
+                    promoteIonMobility(row, params);
                     for (Column position : positions) {
                         Param p = params.promote(positionIn(position));
                         if (p != null) {
@@ -646,7 +659,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                             row.add(field(CHARGE_STATE), ion.charge());
                         }
                         addIfPresent(row, field(PEAK_INTENSITY), ion.intensity());
-                        params(row, ion.parameters());
+                        Promotion params = new Promotion(ion.parameters());
+                        promoteIonMobility(row, params);
+                        params(row, params.rest());
                         writer.write(row);
                     }
                 }
@@ -861,6 +876,17 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             return -1;
         }
 
+        /** The number of Params of the list, promoted or not, that have one of {@code accessions}. */
+        int count(Collection<String> accessions) {
+            int n = 0;
+            for (Param p : params) {
+                if (p.accession() != null && accessions.contains(p.accession())) {
+                    n++;
+                }
+            }
+            return n;
+        }
+
         /** Whether a Param of the list, promoted or not, has one of {@code accessions}. */
         boolean hasAny(Collection<String> accessions) {
             for (Param p : params) {
@@ -909,6 +935,35 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         return p -> column.accession().equals(p.accession())
                 && (p.unit() == null || Objects.equals(column.unit(), p.unit()))
                 && (p.value() instanceof Long || p.value() instanceof Double v && Double.isFinite(v));
+    }
+
+    /**
+     * A typed ion mobility the reader rebuilds from the {@code ion_mobility_value} and {@code ion_mobility_type}
+     * cells ({@link IonMobilityParams}): one of the four types it names, a finite Double or a Long, in the unit it
+     * gives that type. A Long reads back as a Double.
+     */
+    private static boolean isTypedIonMobility(Param p) {
+        String unit = IonMobilityParams.unitOf(p.accession());
+        return unit != null && unit.equals(p.unit())
+                && (p.value() instanceof Long || p.value() instanceof Double v && Double.isFinite(v));
+    }
+
+    /**
+     * Promotes the scope's ion mobility to the {@code ion_mobility_value} and {@code ion_mobility_type} cells of
+     * {@code row} when it is the only Param of the scope with an ion mobility type
+     * ({@link CvTerms#ION_MOBILITY_TYPES}) and qualifies ({@link #isTypedIonMobility}); otherwise both cells stay
+     * null and the Params stay in the list. The reader adds the cells' Param only when the list holds no ion
+     * mobility type, so a second type would read back without it.
+     */
+    private static void promoteIonMobility(Group row, Promotion params) {
+        if (params.count(CvTerms.ION_MOBILITY_TYPES) != 1) {
+            return;
+        }
+        Param p = params.promote(SplitMetadataWriter::isTypedIonMobility);
+        if (p != null) {
+            row.add(ION_MOBILITY_VALUE, ((Number) p.value()).doubleValue());
+            row.add(ION_MOBILITY_TYPE, p.accession());
+        }
     }
 
     /** Promotes to each of the DOUBLE {@code columns} of {@code row} the Param that qualifies for it, if any. */

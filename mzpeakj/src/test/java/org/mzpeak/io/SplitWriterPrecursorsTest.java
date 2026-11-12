@@ -40,10 +40,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * WR-5b: the precursors and selected ions of the split metadata layout written by {@link SplitMetadataWriter} (design
  * §11.8). spectra_metadata_precursors has one row per precursor, in the spectrum's order, keyed by
  * {@code (source_index, precursor_index)}; spectra_metadata_selected_ions has one row per selected ion with the
- * {@code precursor_index} of its precursor and a global {@code selected_ion_index}. Selected-ion Params, ion mobility
- * included, stay in the {@code parameters} lists; the activation's dissociation method and collision energy move to
- * their columns ({@link SplitWriterPromotionTest}, WR-5c). The full round trips of the WR-5a fixtures are in
- * {@link SplitWriterSpectraTest}.
+ * {@code precursor_index} of its precursor and a global {@code selected_ion_index}. Selected-ion Params stay in the
+ * {@code parameters} lists except an ion mobility, which moves to {@code ion_mobility_value} and
+ * {@code ion_mobility_type} ({@link SplitIonMobilityColumnsTest}, V-24); the activation's dissociation method and
+ * collision energy move to their columns ({@link SplitWriterPromotionTest}, WR-5c). The full round trips of the WR-5a
+ * fixtures are in {@link SplitWriterSpectraTest}.
  *
  * <p>Oracles: current small.unpacked (34 MS2 spectra with one precursor and one selected ion each), diaPASEF.ref
  * (selected ions with ion mobility), Example_Processed.img (no precursors), their manifests, and spectra constructed
@@ -76,7 +77,9 @@ class SplitWriterPrecursorsTest {
         assertThat(columns(schema(out, SELECTED_IONS))).containsExactly(
                 "source_index required INT64 uint64", "precursor_index optional INT64 uint64",
                 "selected_ion_index required INT64 uint64", "selected_ion_mz optional DOUBLE -",
-                "charge_state optional INT32 -", "peak_intensity optional DOUBLE -", "parameters optional group list");
+                "charge_state optional INT32 -", "peak_intensity optional DOUBLE -",
+                "ion_mobility_value optional DOUBLE -", "ion_mobility_type optional BINARY string",
+                "parameters optional group list");
 
         List<Group> precursorRows = rows(out.resolve(PRECURSORS));
         List<Group> ionRows = rows(out.resolve(SELECTED_IONS));
@@ -301,7 +304,7 @@ class SplitWriterPrecursorsTest {
     }
 
     @Test
-    void selectedIonIonMobilityStaysInTheParametersListAndReadsBackEqual(@TempDir Path tmp) {
+    void selectedIonIonMobilityMovesToItsColumnsAndReadsBackEqual(@TempDir Path tmp) {
         Source dia = source(Fixtures.current("diaPASEF.ref.mzpeak"));
         int carriers = 0;
         for (Spectrum s : dia.spectra) {
@@ -314,15 +317,16 @@ class SplitWriterPrecursorsTest {
         assertThat(carriers).as("diaPASEF.ref selected ions with ion mobility").isEqualTo(8);
         Path out = write(dia, tmp.resolve("out.mzpeak"));
 
-        MessageType ions = schema(out, SELECTED_IONS);
-        assertThat(ions.containsField("ion_mobility_value")).isFalse();
-        assertThat(ions.containsField("ion_mobility_type")).isFalse();
-        int written = 0;
+        int inParameters = 0;
+        int inColumns = 0;
         for (Group row : rows(out.resolve(SELECTED_IONS))) {
-            written += ParquetGroups.readParams(row, "parameters").stream()
-                    .anyMatch(p -> "MS:1002815".equals(p.accession()) && p.value() instanceof Double) ? 1 : 0;
+            inParameters += ParquetGroups.readParams(row, "parameters").stream()
+                    .anyMatch(p -> "MS:1002815".equals(p.accession())) ? 1 : 0;
+            inColumns += "MS:1002815".equals(ParquetGroups.optString(row, "ion_mobility_type"))
+                    && ParquetGroups.optDouble(row, "ion_mobility_value") != null ? 1 : 0;
         }
-        assertThat(written).as("selected-ion rows with MS:1002815 in parameters").isEqualTo(8);
+        assertThat(inParameters).as("selected-ion rows with MS:1002815 in parameters").isZero();
+        assertThat(inColumns).as("selected-ion rows with MS:1002815 in their columns").isEqualTo(8);
 
         Source back = ForwardBackwardCorpusTest.readSource(out);
         DescriptionAssert.assertEqual("diaPASEF.ref", descriptions(dia.spectra), descriptions(back.spectra));

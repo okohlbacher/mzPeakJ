@@ -47,9 +47,13 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * <ul>
  *   <li><b>mzPeak fixtures</b> (all 13, zlib): m1 = toMzML(F), p2 = toMzPeak(m1), m2 = toMzML(p2), p3 = toMzPeak(m2),
  *       m3 = toMzML(p3). m2 and m3 are byte-identical and p2, p3 have equal {@link ContentDigest}s per member, for
- *       every F; all 13 are normal already (m1 = m2 byte for byte). The 5 legacy ones are since V-17 (D-9a): their
+ *       every F; 11 are normal already (m1 = m2 byte for byte). The 5 legacy ones are since V-17 (D-9a): their
  *       spectra read with their stored spectrum type and five summary params, which m1 carries, so p2 derives none
- *       (before, p2 gained the five summary params per spectrum, A-16).
+ *       (before, p2 gained the five summary params per spectrum, A-16). diaPASEF.ref and diaPASEF.grid reach it
+ *       after one pass since V-24 (D-13): the 8 scans of each name MS:1002815 "inverse reduced ion mobility" in their
+ *       parameters list, which m1 keeps; p2 writes that Param to the scans' ion_mobility_value and
+ *       ion_mobility_type columns, which read back with the name the reader gives the type (WR-5c: equal apart from
+ *       its name), so m2 differs from m1 in exactly those 8 names ({@link #ION_MOBILITY_RENAMED}).
  *   <li><b>mzML fixtures</b> (the 4 vendored ones): q1 = toMzPeak(X), m1 = toMzML(q1), q2 = toMzPeak(m1),
  *       m2 = toMzML(q2): m1 and m2 are byte-identical and q1, q2 have equal content digests; diaPASEF's m1 keeps
  *       exactly MS:1000505 and MS:1000285 of the five summary params, with the source values; tiny's run start time is
@@ -63,6 +67,16 @@ class MzMLFixpointTest {
 
     /** The five summary params the mzPeak writer derives when a spectrum carries none of them (design 6.2). */
     static final Set<String> SUMMARIES = Set.of("MS:1000528", "MS:1000527", "MS:1000504", "MS:1000505", "MS:1000285");
+
+    /**
+     * The fixtures whose m2 renames the scan-level MS:1002815 cvParams of m1, with the number renamed, and the name
+     * before and after (V-24).
+     */
+    private static final Map<String, Integer> ION_MOBILITY_RENAMED = Map.of(
+            "current diaPASEF.ref.mzpeak", 8, "current diaPASEF.grid.mzpeak", 8);
+    private static final String STORED_NAME = " name=\"inverse reduced ion mobility\" unitAccession=\"MS:1002814\"";
+    private static final String READER_NAME =
+            " name=\"inverse reduced ion mobility drift time\" unitAccession=\"MS:1002814\"";
 
     /** A member checksum in the manifest with its value. */
     private static final Pattern CHECKSUM = Pattern.compile("\"checksum\" : \"[0-9a-f]+\"");
@@ -119,7 +133,12 @@ class MzMLFixpointTest {
 
         assertThat(Files.readAllBytes(m3)).as(name + ": m3 = m2").isEqualTo(Files.readAllBytes(m2));
         assertThat(digests(p3)).as(name + ": p3 = p2").isEqualTo(digests(p2));
-        assertThat(Files.readAllBytes(m2)).as(name + ": m2 = m1").isEqualTo(Files.readAllBytes(m1));
+        String m1Text = Files.readString(m1, StandardCharsets.UTF_8);
+        int renamed = m1Text.split(Pattern.quote(STORED_NAME), -1).length - 1;
+        assertThat(renamed).as(name + ": MS:1002815 cvParams named as stored in m1")
+                .isEqualTo(ION_MOBILITY_RENAMED.getOrDefault(name, 0));
+        assertThat(Files.readAllBytes(m2)).as(name + ": m2 = m1, the MS:1002815 names of the scans renamed")
+                .isEqualTo(m1Text.replace(STORED_NAME, READER_NAME).getBytes(StandardCharsets.UTF_8));
         if (legacy) {
             List<Spectrum> first = mzmlModel(m1).spectrumList();
             assertThat(first.size()).isIn(48, 212);

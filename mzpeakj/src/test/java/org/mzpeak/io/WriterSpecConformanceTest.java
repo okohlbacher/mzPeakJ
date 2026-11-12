@@ -205,7 +205,7 @@ class WriterSpecConformanceTest {
      * options naming the layout, has {@code scan.ion_mobility_value} equal to the scan's value and
      * {@code scan.ion_mobility_type} MS:1002815 on each of the 8 spectra whose scan has one, and neither on the other.
      * A scan whose only ion-mobility Param is the array term MS:1002893 has no scan-level value, so it gets no typed
-     * ion-mobility cell; the split layout keeps ion mobility in the {@code parameters} list and has no such column.
+     * ion-mobility cell, in either layout ({@link SplitIonMobilityColumnsTest} has the split layout's columns).
      */
     @Test
     void thePackedLayoutWritesTypedIonMobilityForAScanValueOnly(@TempDir Path tmp) throws IOException {
@@ -251,11 +251,13 @@ class WriterSpecConformanceTest {
         Path split = tmp.resolve("array-term-split.mzpeak");
         MzPeakWriter.writeDirectory(split, List.of(constructed), List.of(), List.of(), List.of(), FileMetadata.EMPTY,
                 MzPeakWriter.Options.defaults());
-        try (ParquetFileReader reader = ParquetFileReader.open(
-                new LocalInputFile(split.resolve("spectra_metadata_scans.parquet")), ParquetGroups.readOptions())) {
-            assertThat(reader.getFooter().getFileMetaData().getSchema().getFields())
-                    .noneMatch(f -> f.getName().contains("ion_mobility"));
-        }
+        List<Group> splitScans = new ArrayList<>();
+        ParquetGroups.forEach(split.resolve("spectra_metadata_scans.parquet"), splitScans::add);
+        assertThat(splitScans).hasSize(1);
+        assertThat(ParquetGroups.has(splitScans.get(0), "ion_mobility_value")).as("split ion_mobility_value").isFalse();
+        assertThat(ParquetGroups.has(splitScans.get(0), "ion_mobility_type")).as("split ion_mobility_type").isFalse();
+        assertThat(ParquetGroups.readParams(splitScans.get(0), "parameters"))
+                .containsExactly(arrayOnly.parameters().get(0));
     }
 
     /** The {@code scan} struct of each spectra_metadata row of a packed dataset, by its {@code source_index}. */

@@ -36,6 +36,17 @@ final class IonMobilityParams {
     }
 
     /**
+     * The unit the reader gives a typed ion mobility of {@code type}, or {@code null} when {@code type} is not one of
+     * the four types it names ({@link #NAMES_AND_UNITS}). The split writer promotes only those (V-24).
+     *
+     * @param type a CURIE, not {@code null}
+     */
+    static String unitOf(String type) {
+        String[] nameAndUnit = NAMES_AND_UNITS.get(type);
+        return nameAndUnit == null ? null : nameAndUnit[1];
+    }
+
+    /**
      * {@code params} plus the row's typed ion mobility as {@code Param(name, type, value, unit)}, appended when
      * {@code params} hold no ion mobility type ({@link CvTerms#ION_MOBILITY_TYPES}) and the row has a finite value. The
      * name and unit are those the Rust reader gives the type: ion mobility drift time (UO:0000028 millisecond),

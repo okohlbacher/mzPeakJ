@@ -19,6 +19,7 @@ import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -32,6 +33,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
@@ -128,6 +130,50 @@ class RustReaderAcceptanceTest {
         JsonNode precursor = record.path("prec").get(0);
         assertThat(precursor.path("energy").asDouble()).isEqualTo(35.0);
         assertThat(precursor.path("methods").get(0).asText()).isEqualTo("CollisionInducedDissociation");
+    }
+
+    /**
+     * D-13 (V-24): diaPASEF.ref written split as an archive, its ion mobility in the {@code ion_mobility_value} and
+     * {@code ion_mobility_type} columns of the scans and selected ions: Rust reads each spectrum's scan and selected
+     * ion ion mobility with the source's value, and none for spectrum 0's scan.
+     */
+    @Test
+    void rustReadsTheIonMobilityColumns() throws Exception {
+        Source dia = ForwardBackwardCorpusTest.readSource(Fixtures.current("diaPASEF.ref.mzpeak"));
+        Path out = tmp.resolve("ion-mobility.mzpeak");
+        MzPeakWriter.writeArchive(out, dia.spectra, dia.chromatograms, dia.wavelengthSpectra, dia.scanSettings,
+                dia.fileMetadata, SPLIT);
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(dia.spectra.size());
+        int scans = 0;
+        int ions = 0;
+        for (int i = 0; i < records.size(); i++) {
+            JsonNode r = records.get(i);
+            SpectrumDescription d = dia.spectra.get(i).description();
+            String at = "spectrum " + i;
+            assertThat(r.has("panic") || r.has("none")).as("%s: %s", at, r).isFalse();
+            assertThat(r.path("id").asText()).as(at).isEqualTo(d.id());
+            OptionalDouble scan = d.scans().get(0).ionMobilityValue();
+            if (scan.isPresent()) {
+                scans++;
+                assertThat(r.path("scan_im").asDouble()).as("%s scan_im", at).isEqualTo(scan.getAsDouble());
+            } else {
+                assertThat(r.path("scan_im").isNull()).as("%s scan_im %s", at, r.path("scan_im")).isTrue();
+            }
+            List<SelectedIon> expected = d.precursors().stream().flatMap(p -> p.selectedIons().stream()).toList();
+            List<JsonNode> read = new ArrayList<>();
+            r.path("prec").forEach(p -> p.path("ions").forEach(read::add));
+            assertThat(read).as("%s selected ions", at).hasSameSizeAs(expected);
+            for (int k = 0; k < read.size(); k++) {
+                ions++;
+                assertThat(read.get(k).path("im").asDouble()).as("%s ion %d im", at, k)
+                        .isEqualTo(expected.get(k).ionMobilityValue().orElseThrow());
+            }
+        }
+        assertThat(scans).as("scans with ion mobility").isEqualTo(8);
+        assertThat(ions).as("selected ions with ion mobility").isEqualTo(8);
     }
 
     /**
