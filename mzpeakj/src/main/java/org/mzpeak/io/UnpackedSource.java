@@ -71,7 +71,24 @@ final class UnpackedSource implements MzPeakSource {
     }
 
     /** The member {@code name}, opened on first use. */
-    private synchronized Member member(String name) {
+    private Member member(String name) {
+        Member m = lookup(name);
+        if (m == null) {
+            throw new MzPeakException(description + " has no member " + name);
+        }
+        return m;
+    }
+
+    /**
+     * Whether the dataset has the member {@code name}: opens it as {@link #inputFile(String)} would, and keeps it open
+     * for the reads that follow; false if the opener returns {@code null}.
+     */
+    boolean contains(String name) {
+        return lookup(name) != null;
+    }
+
+    /** The member {@code name}, opened on first use, or {@code null} if the opener returns {@code null}. */
+    private synchronized Member lookup(String name) {
         if (closed) {
             throw new IllegalStateException(description + " is closed");
         }
@@ -79,7 +96,9 @@ final class UnpackedSource implements MzPeakSource {
         Member m = members.get(name);
         if (m == null) {
             m = open(name);
-            members.put(name, m);
+            if (m != null) {
+                members.put(name, m);
+            }
         }
         return m;
     }
@@ -101,6 +120,7 @@ final class UnpackedSource implements MzPeakSource {
         }
     }
 
+    /** Opens the member {@code name}, or returns {@code null} if the opener does. */
     private Member open(String name) {
         RandomAccessBytes bytes;
         try {
@@ -109,7 +129,7 @@ final class UnpackedSource implements MzPeakSource {
             throw new MzPeakException("Failed to open member " + name + " of " + description, e);
         }
         if (bytes == null) {
-            throw new MzPeakException(description + " has no member " + name);
+            return null;
         }
         try {
             long size = bytes.size();

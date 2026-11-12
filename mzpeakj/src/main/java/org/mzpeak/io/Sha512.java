@@ -1,7 +1,10 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.io.SeekableInputStream;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -25,6 +28,21 @@ final class Sha512 {
         byte[] buffer = new byte[BUFFER_SIZE];
         for (int n = in.read(buffer); n != -1; n = in.read(buffer)) {
             digest.update(buffer, 0, n);
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /**
+     * The SHA-512 of everything {@code in} yields up to its end, in lowercase hex, read through
+     * {@link SeekableInputStream#read(ByteBuffer)}: parquet's {@code LocalInputFile} reads an array only byte by byte.
+     * The stream is not closed.
+     */
+    static String hex(SeekableInputStream in) throws IOException {
+        MessageDigest digest = newDigest();
+        ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
+        for (int n = in.read(buffer); n != -1; n = in.read(buffer)) {
+            digest.update(buffer.flip());
+            buffer.clear();
         }
         return HexFormat.of().formatHex(digest.digest());
     }

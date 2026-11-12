@@ -5,6 +5,7 @@ import org.apache.parquet.io.LocalInputFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 
 /** {@link MzPeakSource} over an unpacked {@code *.mzpeak/} directory. */
@@ -32,6 +33,16 @@ final class DirectorySource implements MzPeakSource {
     @Override
     public InputFile inputFile(String name) {
         return new LocalInputFile(resolveSafe(name));
+    }
+
+    /**
+     * Whether the member {@code name} exists, as any kind of file system entry (a link is not followed); only an entry
+     * that is known not to exist counts as absent.
+     *
+     * @throws MzPeakException if the name escapes the dataset directory
+     */
+    boolean contains(String name) {
+        return !Files.notExists(resolveSafe(name), LinkOption.NOFOLLOW_LINKS);
     }
 
     /** Resolve a manifest member name, rejecting names that escape the dataset directory (e.g. {@code ../x}). */

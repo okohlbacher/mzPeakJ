@@ -82,6 +82,11 @@ final class ZipSource implements MzPeakSource {
         return new ByteArrayInputFile(readBytes(name)); // compressed -> inflate into memory
     }
 
+    /** Whether the archive's central directory lists the member {@code name}. */
+    boolean contains(String name) {
+        return index.containsKey(name);
+    }
+
     private ZipIndex.Entry entry(String name) {
         ZipIndex.Entry e = index.get(name);
         if (e == null) {

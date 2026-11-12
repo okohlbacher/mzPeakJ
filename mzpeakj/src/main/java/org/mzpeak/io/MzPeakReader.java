@@ -356,6 +356,36 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         }
     }
 
+    /**
+     * Compare the SHA-512 checksum the manifest declares for each member of this dataset with the checksum of the
+     * member's bytes (RD-19). Every member is read in full; nothing is verified on {@code open}.
+     *
+     * @throws IllegalStateException if this reader is closed
+     * @throws MzPeakException       if a member that is not missing cannot be read
+     * @see #verifyIntegrity(Path)
+     */
+    public IntegrityReport verifyIntegrity() {
+        requireOpen();
+        return MzPeakSources.verify(source, manifest);
+    }
+
+    /**
+     * Compare the SHA-512 checksum the manifest declares for each member of the dataset (directory or ZIP) at
+     * {@code dataset} with the checksum of the member's bytes (RD-19). Opens only the dataset and its manifest: the
+     * metadata is not decoded and the format version is not checked, so a corrupt member that {@link #open(Path)}
+     * would refuse is reported, not thrown.
+     *
+     * @throws NullPointerException if {@code dataset} is {@code null}
+     * @throws MzPeakException      if the dataset or its manifest cannot be read, or a member that is not missing
+     *                              cannot be read
+     */
+    public static IntegrityReport verifyIntegrity(Path dataset) {
+        Objects.requireNonNull(dataset, "dataset");
+        try (MzPeakSource source = MzPeakSource.open(dataset)) {
+            return MzPeakSources.verify(source, MzPeakManifest.fromSource(source));
+        }
+    }
+
     /** The options this reader was opened with. */
     public Options options() {
         return options;
