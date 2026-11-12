@@ -39,7 +39,7 @@ class ArrowSchemaHintTest {
 
     private static final String HAS_UV = "has_uv.mzpeak";
     private static final List<String> HINTED = List.of("spectra_metadata.parquet",
-            "wavelength_spectra_metadata.parquet");
+            "chromatograms_metadata.parquet", "wavelength_spectra_metadata.parquet");
 
     private static final ArrowType UINT64 = new ArrowType(2, 64, false, 0);
     private static final ArrowType INT64 = new ArrowType(2, 64, true, 0);
@@ -83,8 +83,9 @@ class ArrowSchemaHintTest {
     }
 
     /**
-     * Both hinted members of a split write of has_uv carry the hint of their own schema, which decodes to the fields
-     * {@link ArrowSchemaHint#fields} gives, and whose {@code auxiliary_arrays} equals the reference's.
+     * The hinted members (V-25: chromatograms_metadata too) of a split write of has_uv carry the hint of their own
+     * schema, which decodes to the fields {@link ArrowSchemaHint#fields} gives, and whose {@code auxiliary_arrays}
+     * equals the reference's.
      */
     @Test
     void theWrittenHintDecodesToItsFieldsAndAuxiliaryArraysAsTheReference() {
