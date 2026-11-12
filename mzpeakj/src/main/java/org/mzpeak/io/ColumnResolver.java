@@ -14,10 +14,13 @@ import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Param;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -27,6 +30,10 @@ import java.util.Set;
  * split table or packed struct, or a struct or list element below it ({@link #child}). Column identity comes from
  * the member's {@code column_mapping} (split layout only), then from {@link ColumnTable}, so legacy names are data,
  * not code. Every read goes through the {@link ParquetGroups} accessors, made aware of unsigned integers.
+ *
+ * <p>A resolver serves the rows of one decode of one member, so it remembers what depends on the schema and the
+ * mapping only: child scopes, resolved fields, mappings, term markers and the leftover plan. It is not thread-safe:
+ * its caches are plain {@link HashMap}s, and a decode is single-threaded.
  */
 final class ColumnResolver {
 
@@ -42,6 +49,30 @@ final class ColumnResolver {
     /** The dotted path of this scope below the facet's table or packed struct; empty at the top. */
     private final String prefix;
     private final String member;
+
+    /** The child scopes by field, as {@link #child} made them. */
+    private final Map<String, ColumnResolver> children = new HashMap<>();
+    /** {@link #resolve} results, {@code null} included, by accession, or by accession and extra names. */
+    private final Map<Object, String> resolved = new HashMap<>();
+    /** {@link #resolveName} results, {@code null} included, by name, or by the list of names. */
+    private final Map<Object, String> named = new HashMap<>();
+    private final Map<String, Optional<ColumnMapping>> mappings = new HashMap<>();
+    private final Map<String, Boolean> termMarkers = new HashMap<>();
+    /** The type {@link #plan} was made for, and the plan: the fields {@link #scalarCells} may turn into Params. */
+    private GroupType planType;
+    private List<LeftoverField> plan;
+
+    /**
+     * A field of a row type that may become a leftover Param: a primitive, non-repeated field that is neither
+     * structural nor a unit column.
+     *
+     * @param index      the field's index in the row type
+     * @param type       the field's type
+     * @param mapping    its {@link #mapping}, or {@code null}
+     * @param termMarker its {@link #termMarker} flag
+     */
+    private record LeftoverField(int index, PrimitiveType type, ColumnMapping mapping, boolean termMarker) {
+    }
 
     private ColumnResolver(GroupType scope, Entry entry, Facet facet, String prefix, String member) {
         this.scope = scope;
@@ -81,13 +112,19 @@ final class ColumnResolver {
      * @throws IllegalArgumentException if {@code field} is absent, a scalar or a list of scalars
      */
     ColumnResolver child(String field) {
+        ColumnResolver known = children.get(field);
+        if (known != null) {
+            return known;
+        }
         Type type = field == null || !scope.containsField(field) ? null : scope.getType(field);
         GroupType element = type == null || type.isPrimitive() ? null : element(type.asGroupType());
         if (element == null) {
             throw new IllegalArgumentException(member + ": " + path(field)
                     + " is not a struct or a list of structs in " + scope.getName());
         }
-        return new ColumnResolver(element, entry, facet, path(field), member);
+        ColumnResolver child = new ColumnResolver(element, entry, facet, path(field), member);
+        children.put(field, child);
+        return child;
     }
 
     /** Names the member, or the packed struct, in error messages. */
@@ -107,6 +144,24 @@ final class ColumnResolver {
      */
     String resolve(String accession, String... extraNames) {
         Objects.requireNonNull(accession, "accession");
+        Object key = extraNames.length == 0 ? accession : key(accession, extraNames);
+        String field = resolved.get(key);
+        if (field == null && !resolved.containsKey(key)) {
+            field = resolveUncached(accession, extraNames);
+            resolved.put(key, field);
+        }
+        return field;
+    }
+
+    /** The lookup key of {@code accession} with {@code extraNames}: a list that copies the names. */
+    private static List<String> key(String accession, String... extraNames) {
+        String[] key = new String[extraNames.length + 1];
+        key[0] = accession;
+        System.arraycopy(extraNames, 0, key, 1, extraNames.length);
+        return Arrays.asList(key);
+    }
+
+    private String resolveUncached(String accession, String... extraNames) {
         if (entry != null) {
             for (ColumnMapping m : entry.columnMapping()) {
                 String field = accession.equals(m.accession()) ? field(m.path()) : null;
@@ -150,6 +205,16 @@ final class ColumnResolver {
 
     /** The first of {@code names} that is a field directly in this scope, or {@code null}. */
     String resolveName(String... names) {
+        Object key = names.length == 1 ? names[0] : Arrays.asList(names.clone());
+        String name = named.get(key);
+        if (name == null && !named.containsKey(key)) {
+            name = resolveNameUncached(names);
+            named.put(key, name);
+        }
+        return name;
+    }
+
+    private String resolveNameUncached(String... names) {
         for (String name : names) {
             if (name != null && scope.containsField(name)) {
                 return name;
@@ -166,6 +231,10 @@ final class ColumnResolver {
         if (field == null) {
             return Optional.empty();
         }
+        return mappings.computeIfAbsent(field, this::mappingUncached);
+    }
+
+    private Optional<ColumnMapping> mappingUncached(String field) {
         String path = path(field);
         if (entry != null) {
             Optional<ColumnMapping> mapped = entry.columnAtPath(path);
@@ -182,6 +251,13 @@ final class ColumnResolver {
      * key, the {@link ColumnTable} column of the mapped accession (of the path when the mapping has none).
      */
     boolean termMarker(String field) {
+        if (field == null) {
+            return false;
+        }
+        return termMarkers.computeIfAbsent(field, this::termMarkerUncached);
+    }
+
+    private boolean termMarkerUncached(String field) {
         Optional<ColumnMapping> mapped = mapping(field);
         if (mapped.isEmpty()) {
             return false;
@@ -356,16 +432,13 @@ final class ColumnResolver {
     }
 
     private List<Param> scalarCells(Group row, Set<String> consumed) {
-        Set<String> structural = ColumnTable.structural(facet);
-        Set<String> unitColumns = unitColumns();
         List<Param> out = new ArrayList<>();
-        for (Type type : row.getType().getFields()) {
-            String field = type.getName();
-            if (!type.isPrimitive() || type.isRepetition(Type.Repetition.REPEATED) || structural.contains(field)
-                    || consumed.contains(field) || unitColumns.contains(field) || !ParquetGroups.has(row, field)) {
+        for (LeftoverField f : plan(row.getType())) {
+            // the plan's fields are in the row type, so ParquetGroups.has is the repetition count by index
+            if (row.getFieldRepetitionCount(f.index()) == 0 || consumed.contains(f.type().getName())) {
                 continue;
             }
-            Param p = leftover(row, type.asPrimitiveType());
+            Param p = leftover(row, f);
             if (p != null) {
                 out.add(p);
             }
@@ -373,7 +446,35 @@ final class ColumnResolver {
         return List.copyOf(out);
     }
 
-    private Param leftover(Group row, PrimitiveType type) {
+    /**
+     * The leftover plan of rows of {@code type}, made on first use and again whenever a row has another type
+     * instance (such as a projection): its primitive, non-repeated fields in schema order, without the structural
+     * fields ({@link ColumnTable#structural}) and the unit columns ({@link #unitColumns}).
+     */
+    private List<LeftoverField> plan(GroupType type) {
+        if (type == planType) {
+            return plan;
+        }
+        Set<String> structural = ColumnTable.structural(facet);
+        Set<String> unitColumns = unitColumns();
+        List<LeftoverField> fields = new ArrayList<>();
+        for (int i = 0; i < type.getFieldCount(); i++) {
+            Type t = type.getType(i);
+            String field = t.getName();
+            if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED) || structural.contains(field)
+                    || unitColumns.contains(field)) {
+                continue;
+            }
+            ColumnMapping m = mapping(field).orElse(null);
+            fields.add(new LeftoverField(i, t.asPrimitiveType(), m, m != null && termMarker(field)));
+        }
+        planType = type;
+        plan = fields;
+        return plan;
+    }
+
+    private Param leftover(Group row, LeftoverField f) {
+        PrimitiveType type = f.type();
         String field = type.getName();
         Object value = switch (type.getPrimitiveTypeName()) {
             case BOOLEAN -> booleanValue(row, field);
@@ -385,12 +486,11 @@ final class ColumnResolver {
         if (value == null) {
             return null;
         }
-        Optional<ColumnMapping> mapped = mapping(field);
-        if (mapped.isEmpty()) {
+        ColumnMapping m = f.mapping();
+        if (m == null) {
             return new Param(field, null, value, null);
         }
-        ColumnMapping m = mapped.get();
-        if (termMarker(field)) {
+        if (f.termMarker()) {
             if (value instanceof String curie) {
                 return new Param(null, curie, null, null);
             }
