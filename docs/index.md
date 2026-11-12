@@ -17,6 +17,10 @@ mass-spectrometry data format built on Apache Parquet, under development by the
 &nbsp;
 [Releases](https://github.com/okohlbacher/mzPeakJ/releases){: .btn }
 
+**Further pages:** [mzML converter](mzml-converter.md) (scope, mapping, losses, limits, memory, command line) ·
+[Design decisions](design-decisions.md) (the decisions behind the code, with their reasons) ·
+[Known issues of the Rust reference reader](upstream-issues.md)
+
 ---
 
 ## About mzPeak
