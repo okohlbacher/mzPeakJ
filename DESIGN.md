@@ -223,8 +223,8 @@ that names the member and the column, in both layouts.
 layout only in the `spectrum` struct, §2.4). Only primitive,
 non-repeated fields directly in the scope are visited. Structural columns (`ColumnTable.structural`: keys such
 as `index`, `id`, `source_index`, `scan_index` or `precursor_index`, and bookkeeping columns such as
-`parameters`, `auxiliary_arrays`, `number_of_auxiliary_arrays`, `data_processing_id` or the spec's
-`data_processing_ref`), consumed columns and null cells are skipped. Unknown `opt_` columns become Params like
+`parameters`, `auxiliary_arrays`, `number_of_auxiliary_arrays`, the spec's `data_processing_id` or the
+`data_processing_ref` 0.12.0 wrote for chromatograms), consumed columns and null cells are skipped. Unknown `opt_` columns become Params like
 any other unmapped column.
 
 | Column | Param |
@@ -313,7 +313,8 @@ wavelength-spectrum metadata has `spectrum` and `scan`.
 Both read either layout through `MetadataTable`, columns by accession:
 
 - `ChromatogramMetadataDecoder`: `index`, `id`, the MS:1000626 chromatogram-type marker, MS:1000465 scan
-  polarity (0 or null is unknown), `data_processing_ref` (else Rust's `data_processing_id`) and the Params
+  polarity (0 or null is unknown), `data_processing_ref` (0.12.0's name; else the spec's and Rust's
+  `data_processing_id`, which the split writer writes since 0.13.0) and the Params
   (MZ-5), read as for wavelength spectra; and the precursors (MZ-6): the precursor and selected-ion rows, from
   the `precursor` and `selected_ion` structs of the same member (packed) or the members the manifest lists
   (split), decoded and joined as those of spectra (§2.3) on `(source_index, precursor_index)`. A chromatogram's
@@ -760,8 +761,8 @@ one WARNING per stub naming its document, its id and the reference:
   `mzpeakj_software_<i>` or `mzpeakj_processing_<i>` of its position `i`, with `_` appended while another entry has
   it.
 
-Datasets whose references resolve are written unchanged. Spectrum and chromatogram `data_processing_ref` cells are
-not checked. `RunReferenceConformanceTest` checks the written documents against copies of the spec schemas
+Datasets whose references resolve are written unchanged. Spectrum and chromatogram data processing reference cells
+are not checked. `RunReferenceConformanceTest` checks the written documents against copies of the spec schemas
 (`mzpeakj/src/test/resources/spec-schema/`, spec 963d64a); the packed layout's documents are only resolved.
 
 ---

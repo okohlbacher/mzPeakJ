@@ -94,9 +94,9 @@ final class ColumnTable {
      * The columns of {@code facet} that are never data and never become Params: the keys ({@code index}, {@code id},
      * {@code source_index}, its alias {@code spectrum_index}, {@code scan_index}, {@code precursor_index} and
      * {@code selected_ion_index}), {@code parameters}, {@code auxiliary_arrays}, {@code number_of_auxiliary_arrays}
-     * and the data processing reference in both spellings, {@code data_processing_id} and the spec's
-     * {@code data_processing_ref}. The set is the same for every facet, so a stray key or bookkeeping column in any
-     * facet is not taken for data. Unmodifiable.
+     * and the data processing reference in both spellings, the spec's {@code data_processing_id} and the
+     * {@code data_processing_ref} mzPeakJ 0.12.0 wrote for chromatograms. The set is the same for every facet, so a
+     * stray key or bookkeeping column in any facet is not taken for data. Unmodifiable.
      */
     static Set<String> structural(Facet facet) {
         Objects.requireNonNull(facet, "facet");
