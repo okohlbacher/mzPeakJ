@@ -64,10 +64,20 @@ final class SpecSchemaCheck {
         for (Map.Entry<String, String> e : SCHEMAS.entrySet()) {
             String document = footer.get(e.getKey());
             if (document != null) {
-                JsonNode root = schema(e.getValue());
-                check(root, root, parse(document), e.getKey(), out);
+                out.addAll(violations(e.getKey(), e.getValue(), document));
             }
         }
+        return out;
+    }
+
+    /**
+     * Every violation of {@code document}, the value of the key {@code key}, against the schema {@code schemaFile} of
+     * the folder, such as {@code scan_settings_list.json} for a manifest's {@code scan_settings_list}; empty when none.
+     */
+    static List<String> violations(String key, String schemaFile, String document) {
+        List<String> out = new ArrayList<>();
+        JsonNode root = schema(schemaFile);
+        check(root, root, parse(document), key, out);
         return out;
     }
 

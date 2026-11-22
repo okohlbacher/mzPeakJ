@@ -16,6 +16,7 @@ import org.mzpeak.model.Param;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Contact;
 import org.mzpeak.model.meta.FileMetadata.FileDescription;
+import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
@@ -31,9 +32,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * MZ-7: the contacts of the file description ({@link Contact}, {@code file_description.contacts}) and the source file
- * references and targets of scan settings ({@code scan_settings_list[].source_file_refs} and {@code targets}) are read
- * and written in both metadata layouts, kept for scan settings the split layout gives an id, and scan-settings params
- * and targets keep their JSON type. File-level params are JSON, so a non-finite {@code Double} comes back as a
+ * references and targets of scan settings ({@code scan_settings_list[].source_file_references}, in the packed layout
+ * {@code source_file_refs}, and {@code targets}) are read and written in both metadata layouts, kept for scan settings
+ * the split layout gives an id, and scan-settings params and targets keep their JSON type. File-level params are JSON, so a non-finite {@code Double} comes back as a
  * {@code String} (design §5.3, B-35).
  *
  * <p>Oracle: the contact and scan settings of tiny.pwiz.1.1.mzML (pwiz), written with the spectra and file metadata
@@ -88,10 +89,15 @@ class FileMetadataContactsTest {
         assertThat(contact.path("parameters").findValuesAsText("accession"))
                 .containsExactly("MS:1000587", "MS:1000588", "MS:1000589");
         JsonNode settings = metadata.path("scan_settings_list").path(0);
-        assertThat(settings.path("source_file_refs").toString()).isEqualTo("[\"sf_parameters\"]");
+        boolean split = layout == MetadataLayout.SPLIT;
+        assertThat(settings.path(split ? "source_file_references" : "source_file_refs").toString())
+                .isEqualTo("[\"sf_parameters\"]");
+        assertThat(settings.has(split ? "source_file_refs" : "source_file_references")).isFalse();
         assertThat(settings.path("targets")).hasSize(2);
-        assertThat(settings.path("targets").path(1).path(0).path("value").isIntegralNumber()).isTrue();
-        assertThat(settings.path("targets").path(1).path(0).path("value").longValue()).isEqualTo(1200L);
+        JsonNode secondTarget = settings.path("targets").path(1);
+        JsonNode targetParams = split ? secondTarget.path("parameters") : secondTarget;
+        assertThat(targetParams.path(0).path("value").isIntegralNumber()).isTrue();
+        assertThat(targetParams.path(0).path("value").longValue()).isEqualTo(1200L);
 
         ObjectNode index = (ObjectNode) MAPPER.readTree(out.resolve(INDEX).toFile());
         ((ObjectNode) index.path("metadata")).remove("file_description");
@@ -157,6 +163,41 @@ class FileMetadataContactsTest {
         }
     }
 
+    /**
+     * (b) The split layout writes scan settings in the shape of the spec's {@code schema/scan_settings_list.json} (W5):
+     * the source file references under {@code source_file_references} and each target as an object with its
+     * {@code parameters}. The entry validates against the schema (with {@code param.json} followed), its reference
+     * names a source file of the file description, and it reads back equal.
+     */
+    @Test
+    void theSplitLayoutWritesScanSettingsInTheSpecShape(@TempDir Path tmp) throws IOException {
+        FileDescription small = SMALL.fileMetadata.fileDescription();
+        List<SourceFile> sourceFiles = new ArrayList<>(small.sourceFiles());
+        sourceFiles.add(new SourceFile("sf0", "method.meth", "file:///methods", List.of()));
+        FileMetadata meta = withFileDescription(new FileDescription(small.contents(), sourceFiles, List.of()));
+        List<Param> target = List.of(new Param("isolation window target m/z", "MS:1000827", 500.0, "MS:1000040"));
+        ScanSettings settings = new ScanSettings("s1", List.of(), List.of("sf0"), List.of(target));
+
+        Path out = write(tmp.resolve("split.mzpeak"), List.of(settings), meta, MetadataLayout.SPLIT, false);
+        JsonNode metadata = MAPPER.readTree(out.resolve(INDEX).toFile()).path("metadata");
+        JsonNode list = metadata.path("scan_settings_list");
+        assertThat(SpecSchemaCheck.violations("scan_settings_list", "scan_settings_list.json", list.toString()))
+                .isEmpty();
+        JsonNode entry = list.path(0);
+        assertThat(entry.has("source_file_refs")).isFalse();
+        assertThat(entry.path("source_file_references").toString()).isEqualTo("[\"sf0\"]");
+        assertThat(metadata.path("file_description").path("source_files").findValuesAsText("id")).contains("sf0");
+        assertThat(entry.path("targets")).hasSize(1);
+        JsonNode parameters = entry.path("targets").path(0).path("parameters");
+        assertThat(parameters.isArray()).isTrue();
+        assertThat(parameters.path(0).path("accession").textValue()).isEqualTo("MS:1000827");
+        assertThat(parameters.path(0).path("value").doubleValue()).isEqualTo(500.0);
+
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.scanSettings()).containsExactly(settings);
+        }
+    }
+
     /** (b) The packed layout leaves empty source file references and targets out; the split layout writes them. */
     @Test
     void emptyRefsAndTargetsAreLeftOutOnlyInThePackedLayout(@TempDir Path tmp) throws IOException {
@@ -168,7 +209,8 @@ class FileMetadataContactsTest {
         Path split = write(tmp.resolve("split.mzpeak"), List.of(plain), SMALL.fileMetadata, MetadataLayout.SPLIT,
                 false);
         assertThat(MAPPER.readTree(split.resolve(INDEX).toFile()).path("metadata").path("scan_settings_list")
-                .toString()).isEqualTo("[{\"id\":\"plain\",\"source_file_refs\":[],\"targets\":[],\"parameters\":[]}]");
+                .toString()).isEqualTo("[{\"id\":\"plain\",\"source_file_references\":[],\"targets\":[],"
+                + "\"parameters\":[]}]");
     }
 
     // ---- (c) the fixtures ----------------------------------------------------------------------------

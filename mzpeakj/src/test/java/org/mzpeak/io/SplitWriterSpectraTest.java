@@ -329,7 +329,7 @@ class SplitWriterSpectraTest {
         JsonNode entry = settings.get(0);
         List<String> keys = new ArrayList<>();
         entry.fieldNames().forEachRemaining(keys::add);
-        assertThat(keys).containsExactly("id", "source_file_refs", "targets", "parameters");
+        assertThat(keys).containsExactly("id", "source_file_references", "targets", "parameters");
         assertThat(entry.path("id").asText()).isEqualTo("scansettings1");
         JsonNode pixelSize = null;
         for (JsonNode p : entry.path("parameters")) {
@@ -367,7 +367,7 @@ class SplitWriterSpectraTest {
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, List.of(), settings,
                 source.fileMetadata, SPLIT);
 
-        assertThat(scanSettingsList(out).toString()).isEqualTo("[{\"id\":\"scan_settings_0\",\"source_file_refs\":[],"
+        assertThat(scanSettingsList(out).toString()).isEqualTo("[{\"id\":\"scan_settings_0\",\"source_file_references\":[],"
                 + "\"targets\":[],\"parameters\":[{\"name\":null,\"accession\":\"IMS:1000401\",\"value\":null,"
                 + "\"unit\":null}]}]");
         assertThat(scanSettingsWarnings(source, settings, SPLIT)).containsExactly(
