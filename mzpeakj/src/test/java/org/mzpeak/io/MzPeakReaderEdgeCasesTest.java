@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.MzPeakReader.Options;
 import org.mzpeak.io.MzPeakReader.SignalMode;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.SignalSlice;
 import org.mzpeak.model.Spectrum;
@@ -342,7 +342,7 @@ class MzPeakReaderEdgeCasesTest {
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
                 .withExtraMetaData(footer)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

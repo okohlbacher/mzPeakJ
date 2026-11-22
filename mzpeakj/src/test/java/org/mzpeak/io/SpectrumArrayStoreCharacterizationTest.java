@@ -19,7 +19,7 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -599,7 +599,7 @@ class SpectrumArrayStoreCharacterizationTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withRowGroupRowCountLimit(rowGroupRows)
                 .withStatisticsEnabled(statistics)

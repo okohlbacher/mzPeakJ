@@ -23,7 +23,7 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.DoubleRange;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.ScanEvent;
@@ -804,7 +804,7 @@ class ColumnStatisticsTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(tmp.resolve(name)))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .withRowGroupRowCountLimit(rowGroupRows)

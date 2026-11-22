@@ -15,7 +15,7 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -247,7 +247,7 @@ class ChromatogramDataDecoderTest {
                 .withConf(new PlainParquetConfiguration())
                 .withType(CHUNK)
                 .withExtraMetaData(Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), json))
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

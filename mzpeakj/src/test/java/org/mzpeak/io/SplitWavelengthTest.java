@@ -19,7 +19,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.GoldenMeta.Row;
 import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.Entry;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.WavelengthSpectrum;
 
@@ -261,7 +261,7 @@ class SplitWavelengthTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

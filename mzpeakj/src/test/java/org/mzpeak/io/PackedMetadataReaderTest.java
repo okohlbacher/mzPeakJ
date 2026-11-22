@@ -20,7 +20,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.io.IOException;
@@ -66,7 +66,7 @@ class PackedMetadataReaderTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(scalarScan)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

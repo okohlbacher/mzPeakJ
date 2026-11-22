@@ -653,14 +653,17 @@ readers, the fixture sets and golden oracles), see **[DESIGN.md](DESIGN.md)**.
 | `org.mzpeak.model` | Pure data — no I/O deps: `CentroidPeak`, `Spectrum`, `SpectrumDescription`, `Precursor`, `Activation`, `SelectedIon`, `IsolationWindow`, `ScanEvent`, `Chromatogram`, `WavelengthSpectrum`, `Param`, `Tolerance`, `CvTerms`, … |
 | `org.mzpeak.model.meta` | File/run-level metadata records: `FileMetadata`, `InstrumentConfiguration`, `Software`, `MsRun`, `DataProcessing`, `Sample`, `FileDescription` |
 | `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, `SignalQuery`, `ColumnStatistics`, source abstraction (`MzPeakSource`, `RandomAccessBytes`; `DirectorySource` / `ZipSource` / `UnpackedSource`), metadata + array + chromatogram + wavelength stores |
-| `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O: `ParquetGroups` (type-variance-safe accessors), `ZstdCompressionCodecFactory`, `ByteArrayInputFile`, `FileSliceInputFile` |
+| `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O: `ParquetGroups` (type-variance-safe accessors), `PureJavaCodecFactory` (`ZstdCompressionCodecFactory`, deprecated), `ByteArrayInputFile`, `FileSliceInputFile` |
 | `org.mzpeak.cli` / `org.mzpeak.examples` | Runnable demonstrator tools |
 | `org.mzpeak.mzml` / `org.mzpeak.mzml.cli` (module `mzpeakj-mzml`) | mzML ↔ mzPeak through jmzML: `MzMLReader`, `MzMLWriter`, `MzMLConversion`; the CLI `MzPeakConvert` |
 
-**Parquet without Hadoop:** mzPeak Parquet files are ZSTD-compressed. Rather than using parquet-java's
-default Hadoop-based codec factory, mzPeakJ supplies a `ZstdCompressionCodecFactory` backed by the
-self-contained `zstd-jni` jar. No Hadoop FileSystem, Configuration, native libraries, or cluster setup is
-ever used. A single self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
+**Parquet without Hadoop:** mzPeak Parquet files are usually ZSTD-compressed, but the specification allows
+every Parquet codec. Rather than using parquet-java's default Hadoop-based codec factory, mzPeakJ supplies a
+`PureJavaCodecFactory`: ZSTD through the self-contained `zstd-jni` jar, GZIP through `java.util.zip`, SNAPPY,
+LZ4, LZ4_RAW and LZO through aircompressor and BROTLI through `org.brotli:dec`, all of them but zstd-jni pure Java;
+it writes ZSTD (and UNCOMPRESSED). No Hadoop FileSystem, Configuration, Hadoop native libraries, or cluster setup is
+ever used. On JDK 24 and later, the first SNAPPY, LZ4, LZ4_RAW or LZO page read makes the JVM print its one-time
+`sun.misc.Unsafe` warning about aircompressor; `--sun-misc-unsafe-memory-access=allow` turns it off. A single self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
 classes statically reference Hadoop types — but it is never actually invoked.
 
 ## Format notes
@@ -791,7 +794,7 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - in the two `-all` jars only, the runtime libraries: parquet-java 1.18.2, Jackson 2.23.0, hadoop-client-api 3.5.0,
   snappy-java 1.1.10.12, aircompressor 2.0.3 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
   jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);
-  slf4j-api and slf4j-nop 1.7.33 (MIT); and the native code compiled into the native libraries of two of them:
+  slf4j-api and slf4j-nop 1.7.33 and org.brotli:dec 0.1.2 (MIT); and the native code compiled into the native libraries of two of them:
   zstd 1.5.7 in zstd-jni's (BSD-3-Clause; zstd is dual-licensed BSD or GPLv2), snappy 1.1.10 (BSD-3-Clause) and
   bitshuffle 0.3.4 (MIT) in snappy-java's. Each `-all` jar carries their licence and notice files (`META-INF/`,
   those of several jars concatenated), this project's as `META-INF/LICENSE.mzpeakj` and `META-INF/NOTICE.mzpeakj`,

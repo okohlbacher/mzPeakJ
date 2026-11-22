@@ -59,8 +59,8 @@ Java demonstrator; an official Java implementation is planned by the HUPO-PSI.
 - **Writes** point and Numpress chunk layouts, with footer metadata and CV param lists.
 - **Ion mobility** (the 7 PSI-MS ion mobility types) and **imaging position** (`IMS:1000050`/`IMS:1000051`)
   decoded from dedicated typed scan columns and CV params; accessible via `ScanEvent` convenience methods.
-- **No Hadoop runtime** — custom `ZstdCompressionCodecFactory` means no Hadoop FileSystem, Configuration,
-  or native libraries are ever touched.
+- **No Hadoop runtime** — custom `PureJavaCodecFactory` (every Parquet codec) means no Hadoop FileSystem,
+  Configuration, or Hadoop native libraries are ever touched.
 - **Tested** on both vendored HUPO-PSI example sets against golden outputs of the upstream Python reader,
   cross-validated against the Rust and Python reference test suites, with an opt-in corpus gate. CI on
   JDK 17 + 21.

@@ -26,7 +26,7 @@ import java.util.function.Consumer;
 
 /**
  * Hadoop-free Parquet record reading via {@link LocalInputFile} + {@link PlainParquetConfiguration} +
- * the parquet-column {@link Group} API, with a {@link ZstdCompressionCodecFactory} so the Hadoop codec
+ * the parquet-column {@link Group} API, with a {@link PureJavaCodecFactory} so the Hadoop codec
  * machinery (and its {@code Configuration} dependency) is never touched.
  *
  * <p>Also provides null- and type-variance-aware leaf accessors: mzPeak writers may emit a numeric column
@@ -38,10 +38,10 @@ public final class ParquetGroups {
     private ParquetGroups() {
     }
 
-    /** Hadoop-free read options with the custom ZSTD codec factory (no Hadoop Configuration is built). */
+    /** Hadoop-free read options with the pure-Java codec factory (no Hadoop Configuration is built). */
     public static ParquetReadOptions readOptions() {
         return ParquetReadOptions.builder(new PlainParquetConfiguration())
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .build();
     }
 

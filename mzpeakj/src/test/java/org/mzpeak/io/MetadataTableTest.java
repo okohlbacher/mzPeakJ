@@ -20,7 +20,7 @@ import org.mzpeak.io.GoldenMeta.Row;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Chromatogram;
 
 import java.io.IOException;
@@ -459,7 +459,7 @@ class MetadataTableTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(tmp.resolve(name)))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

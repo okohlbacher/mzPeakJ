@@ -23,7 +23,7 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakReader.Options;
 import org.mzpeak.io.MzPeakReader.SignalMode;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.DoubleRange;
 import org.mzpeak.model.Polarity;
@@ -749,7 +749,7 @@ class SignalQueryTest {
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
                 .withExtraMetaData(Map.of(SignalEntity.SPECTRUM.arrayIndexKey(), index))
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .build()) {
             for (int i = 0; i < mz.length; i++) {

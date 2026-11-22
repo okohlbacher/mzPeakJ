@@ -18,7 +18,7 @@
 
   <dependencies>
     <!-- Parquet via parquet-java. We read/write through LocalInputFile/LocalOutputFile + the parquet-column
-         Group API and a custom zstd-jni codec, so no Hadoop FileSystem or Configuration is ever touched. -->
+         Group API and a custom codec factory, so no Hadoop FileSystem or Configuration is ever touched. -->
     <dependency>
       <groupId>org.apache.parquet</groupId>
       <artifactId>parquet-hadoop</artifactId>
@@ -51,6 +51,19 @@
       <groupId>com.github.luben</groupId>
       <artifactId>zstd-jni</artifactId>
       <version>1.5.7-3</version>
+    </dependency>
+    <!-- Pure-Java decompressors of the other Parquet codecs, which the mzPeak specification allows
+         (PureJavaCodecFactory): SNAPPY, LZ4, LZ4_RAW and LZO with aircompressor (parquet-hadoop's too, at the
+         enforcer's floor), BROTLI with the Brotli project's Java decoder. Neither loads native code. -->
+    <dependency>
+      <groupId>io.airlift</groupId>
+      <artifactId>aircompressor</artifactId>
+      <version>2.0.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.brotli</groupId>
+      <artifactId>dec</artifactId>
+      <version>0.1.2</version>
     </dependency>
 
     <!-- JSON: mzpeak_index.json manifest -->

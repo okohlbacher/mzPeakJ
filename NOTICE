@@ -40,6 +40,10 @@ Runtime libraries bundled in the self-contained jars
                                                            and bitshuffle 0.3.4 (Copyright (c) 2014 Kiyoshi
                                                            Masui), MIT License (licenses/MIT-bitshuffle.txt)
   io.airlift:aircompressor 2.0.3                           Apache License 2.0
+  org.brotli:dec 0.1.2                                     MIT License (licenses/MIT-brotli.txt), Copyright (c)
+                                                           2009, 2010, 2013-2016 by the Brotli Authors; the jar
+                                                           carries no licence file, the text is the one of the
+                                                           Brotli sources (google/brotli v0.6.0)
   commons-pool:commons-pool 1.6                            Apache License 2.0
   com.github.luben:zstd-jni 1.5.7-3                        BSD 2-Clause License (licenses/BSD-2-Clause-zstd-jni.txt);
                                                            its native libraries (libzstd-jni) embed zstd 1.5.7

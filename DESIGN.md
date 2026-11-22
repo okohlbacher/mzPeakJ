@@ -669,9 +669,11 @@ mzPeak Parquet files are ZSTD-compressed. parquet-java's default codec factory i
 
 - **Reading/writing** use `LocalInputFile` / `ByteArrayInputFile` / `FileSliceInputFile` / `LocalOutputFile`
   + `PlainParquetConfiguration` + the parquet-column Group API (`ParquetGroups`).
-- **Codec**: a custom `ZstdCompressionCodecFactory` backed by `zstd-jni` (self-contained native jar) is
-  supplied to both `ParquetReadOptions.builder().withCodecFactory(...)` (reads) and
-  `ParquetWriter.Builder.withCodecFactory(...)` (writes). The Hadoop `CodecFactory` and
+- **Codec**: a custom `PureJavaCodecFactory` (ZSTD through `zstd-jni`, a self-contained native jar; every other
+  Parquet codec read with pure-Java code: `java.util.zip`, aircompressor, `org.brotli:dec`; the deprecated
+  `ZstdCompressionCodecFactory` is a subclass) is supplied to both
+  `ParquetReadOptions.builder().withCodecFactory(...)` (reads) and `ParquetWriter.Builder.withCodecFactory(...)`
+  (writes). The Hadoop `CodecFactory` and
   `Configuration` are **never** invoked.
 
 **Caveat:** parquet-java's classes statically reference Hadoop types, so `hadoop-client-api` (a single
@@ -797,7 +799,8 @@ org.mzpeak.io                reading + writing
 
 org.mzpeak.io.parquet         Hadoop-free Parquet I/O
   ParquetGroups               type-variance-safe accessors (optDouble, readParams, groupList, …)
-  ZstdCompressionCodecFactory custom ZSTD compressor + decompressor
+  PureJavaCodecFactory        ZSTD compressor, decompressors of every Parquet codec
+  ZstdCompressionCodecFactory deprecated subclass of PureJavaCodecFactory (its name before 0.13.0)
   ByteArrayInputFile          in-memory Parquet member (for ZIP fallback)
   FileSliceInputFile          seekable byte-range slice of a RandomAccessBytes (STORED ZIP)
 
