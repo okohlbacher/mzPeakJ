@@ -583,33 +583,41 @@ class SpectrumSignalPlanTest {
     }
 
     /**
-     * SLOF or PIC intensity in the second column without Numpress m/z throws, as it does in the first column; before
-     * the fix the row was decoded as a delta chunk without intensities and the spectrum read as empty.
+     * SLOF or PIC intensity in the second column without Numpress m/z is read, as it is in the first column, paired
+     * with the row's absolute m/z and the chunk start (X-9, R3). Before the fix for the second column the row was
+     * decoded as a delta chunk without intensities and the spectrum read as empty; up to 0.12.0 it threw "unsupported
+     * chunk: Numpress SLOF intensity (slof_b) without Numpress linear m/z".
      */
     @Test
-    void numpressIntensityInASecondColumnWithoutNumpressMzThrows() {
+    void numpressIntensityInASecondColumnPairsWithAbsoluteMz() {
         Row0 r = Row0.load();
-        Group slofRecord = multiRecord(3);
-        slofRecord.getGroup("chunk", 0).add("mz_chunk_start", r.mz[0]);
+        byte[] pic = pic(r.intensity);
+        Group slofRecord = absoluteRecord(3, r.mz);
         addBytes(slofRecord.getGroup("chunk", 0), "slof_b", r.slof);
-        Group picRecord = multiRecord(3);
-        picRecord.getGroup("chunk", 0).add("mz_chunk_start", r.mz[0]);
-        addBytes(picRecord.getGroup("chunk", 0), "pic_b", pic(r.intensity));
+        Group picRecord = absoluteRecord(3, r.mz);
+        addBytes(picRecord.getGroup("chunk", 0), "pic_b", pic);
 
         Path slofFile = write(MULTI_INTENSITY_CHUNK, MULTI_INTENSITY_CHUNK_INDEX, 100, slofRecord);
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(slofFile), false, Map.of())) {
-            assertThatThrownBy(() -> store.get(3))
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("unsupported chunk: Numpress SLOF intensity (slof_b) without Numpress linear m/z"
-                            + " (chunk_encoding null) for spectrum_index 3");
+            assertExact("SLOF m/z", r.mz, store.get(3).mz());
+            assertExact("SLOF intensity", r.intensity, store.get(3).intensity());
         }
         Path picFile = write(MULTI_INTENSITY_CHUNK, MULTI_INTENSITY_CHUNK_INDEX, 100, picRecord);
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(picFile), false, Map.of())) {
-            assertThatThrownBy(() -> store.get(3))
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("unsupported chunk: Numpress PIC intensity (pic_b) without Numpress linear m/z"
-                            + " (chunk_encoding null) for spectrum_index 3");
+            assertExact("PIC m/z", r.mz, store.get(3).mz());
+            assertExact("PIC intensity", MSNumpress.decode(MSNumpress.ACC_NUMPRESS_PIC, pic, pic.length),
+                    store.get(3).intensity());
         }
+    }
+
+    /** A record of spectrum {@code si} storing {@code mz} as chunk start and absolute (MS:1000576) values. */
+    private static Group absoluteRecord(long si, double[] mz) {
+        Group record = multiRecord(si);
+        Group chunk = record.getGroup("chunk", 0);
+        chunk.add("mz_chunk_start", mz[0]);
+        addDoubles(chunk, "mz_chunk_values", java.util.Arrays.copyOfRange(mz, 1, mz.length));
+        chunk.add("chunk_encoding", "MS:1000576");
+        return record;
     }
 
     /**

@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.within;
 /**
  * RD-12: a spectrum chunk the reader cannot decode fails with a precise {@link MzPeakException} instead of being
  * dropped or misdecoded. Covered: grid chunks ({@code MS:1003826}) of a grid type RD-20 does not decode, or without
- * the grid encoding, unknown {@code chunk_encoding} CURIEs, Numpress intensity without a Numpress m/z source, Numpress
- * m/z without an intensity source, and unknown {@code *numpress*} columns (list or scalar) that carry a value.
+ * the grid encoding, unknown {@code chunk_encoding} CURIEs, Numpress intensity without m/z values of its length,
+ * Numpress m/z without an intensity source, and unknown {@code *numpress*} columns (list or scalar) that carry a value.
  *
  * <p>The cases write constructed chunk rows whose values come from row 0 of the current small.numpress data member
  * (spectrum 0, chunk_encoding {@code MS:1002312}, Numpress linear m/z and SLOF intensity) or from row 0 of the
@@ -75,7 +75,7 @@ class UnsupportedEncodingTest {
                 .hasMessage("mz_grid carries a grid but chunk_encoding is (none) for spectrum_index 0");
     }
 
-    // ---- Numpress intensity without a Numpress m/z source -----------------------------------------------------
+    // ---- Numpress intensity without m/z values of its length --------------------------------------------------
 
     @Test
     void storedRow0DecodesAsNumpress() {
@@ -85,17 +85,22 @@ class UnsupportedEncodingTest {
         assertThat(arrays.intensity()).isEqualTo(row0.intensity);
     }
 
+    /**
+     * X-9 (R3): SLOF or PIC intensity pairs with m/z of any encoding, so the row without its Numpress m/z is read as
+     * a chunk start without values, and its 776 intensities fail on the length rule. Up to 0.12.0 the row threw
+     * "unsupported chunk: Numpress SLOF intensity ... without Numpress linear m/z (chunk_encoding MS:1002312)".
+     */
     @Test
     void slofIntensityWithoutNumpressMzFails() {
         ChunkRow row = Row0.INSTANCE.asStored();
         row.mzLinear = null;
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageContaining("SLOF")
-                .hasMessageContaining("MS:1002312")
-                .hasMessageContaining("spectrum_index 0");
+                .hasMessageStartingWith("chunk intensity length (776) must equal m/z values (0) or values+1, for"
+                        + " spectrum_index 0 (SLOF intensity column intensity_numpress_slof_bytes, chunk start ");
     }
 
+    /** As {@link #slofIntensityWithoutNumpressMzFails}, for PIC (X-9, R3). */
     @Test
     void picIntensityWithoutNumpressMzFails() {
         double[] intensity = Row0.INSTANCE.intensity;
@@ -107,10 +112,8 @@ class UnsupportedEncodingTest {
         row.pic = java.util.Arrays.copyOf(buffer, length);
         assertThatThrownBy(() -> read(row))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageContaining("PIC")
-                .hasMessageNotContaining("SLOF")
-                .hasMessageContaining("MS:1002312")
-                .hasMessageContaining("spectrum_index 0");
+                .hasMessageStartingWith("chunk intensity length (776) must equal m/z values (0) or values+1, for"
+                        + " spectrum_index 0 (PIC intensity column intensity_numpress_pic_bytes, chunk start ");
     }
 
     @Test

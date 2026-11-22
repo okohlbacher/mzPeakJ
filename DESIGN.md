@@ -404,15 +404,17 @@ transforms the other way round. Rule 1 and the lowest-rank rule cover them uncha
 | Row | Axis | Intensity |
 |---|---|---|
 | the axis's `MS:1002312` transform column is non-null | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
-| `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | plain list, as long as the values or one longer |
+| `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | SLOF, else PIC, else the plain list, as long as the values or one longer |
 | `MS:1000576` or `MS:1003088` | absolute values | same |
-| `MS:1003826` (coordinate grid) | the grid's model applied to its cumulative indices (below) | plain list, 1:1 |
+| `MS:1003826` (coordinate grid) | the grid's model applied to its cumulative indices (below) | SLOF, else PIC, else the plain list; 1:1 |
 | any other CURIE | throws `unsupported chunk encoding <curie> for spectrum_index <n>` | |
 
 Column presence picks the Numpress decoder, but an unknown `chunk_encoding` throws on every row. A row that
-names `MS:1002312` without carrying a Numpress column decodes as delta. A row without Numpress m/z is never
-decoded as Numpress: SLOF or PIC intensity that decodes to values throws, and a payload without values is
-skipped, so it cannot hide the row's delta m/z and plain intensities. A plan may list several plain lists, SLOF
+names `MS:1002312` without carrying a Numpress column decodes as delta. SLOF or PIC intensity is a secondary
+opaque transform (chunked-layout.md, Opaque array transforms for other dimensions) and pairs with the decoded
+m/z of any encoding, as the plain list does; a length that fits neither rule throws, naming the spectrum, the
+column and the chunk start (0.13.0, R3; up to 0.12.0 it threw without Numpress m/z). A payload without values
+is skipped, so it cannot hide the row's plain intensities. A plan may list several plain lists, SLOF
 or PIC columns: the first plain list that carries a value (non-null and not empty) is read, else the first
 non-null one, and the first SLOF or PIC column whose payload decodes to values. An empty payload, or a SLOF
 payload of its 8-byte header only, has no values and does not hide a later column of any kind.
@@ -442,10 +444,10 @@ doubles, never narrowed to float32 (D-5; `NumpressConformanceTest`, `NumpressPic
 
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
 misdecoded: a grid chunk without a grid or with an unknown `grid_type` (below), an unknown `chunk_encoding`,
-Numpress intensity that decodes to values without a Numpress m/z source, Numpress m/z that decodes to values
-without an intensity column, a value in a `*numpress*` column the plan does not decode, and a value in an
-intensity chunk transform other than SLOF and PIC when no plain list of the row carries a value and no SLOF or
-PIC payload decodes to values.
+SLOF or PIC intensity whose length fits neither the m/z values nor values+1 (1:1 on grid and Numpress rows),
+Numpress m/z that decodes to values without an intensity column, a value in a `*numpress*` column the plan
+does not decode, and a value in an intensity chunk transform other than SLOF and PIC when no plain list of the
+row carries a value and no SLOF or PIC payload decodes to values.
 
 **Coordinate grids** (`MS:1003826`, draft). A grid chunk stores its axis as a struct `{grid_type, parameters,
 indices}` in the column that the array index lists as the axis's `MS:1003826` chunk transform (`mz_grid` in
@@ -456,8 +458,8 @@ otherwise a non-null Numpress linear column selects the Numpress path, by its pr
 the delta path takes the rest. So a member may mix grid rows with delta rows.
 
 - **Main axis.** The indices are delta-encoded: their running sum, kept in a `long`, gives each point's grid
-  index, and the first index is absolute. The m/z values pair 1:1 with the plain intensity list; no chunk start
-  point is emitted.
+  index, and the first index is absolute. The m/z values pair 1:1 with the row's intensities (SLOF, else PIC,
+  else the plain list); no chunk start point is emitted.
 - **Extra arrays** stored as a grid (their `MS:1003826` transform column carries a value, such as
   diaPASEF.grid's ion mobility) use absolute indices and land in the extras (§3.6).
 
