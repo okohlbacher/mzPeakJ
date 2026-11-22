@@ -194,6 +194,39 @@ class ChunkRowDecoderTest {
                         + " MS:9999001 for spectrum_index 0");
     }
 
+    /**
+     * X-9 (R3): SLOF or PIC intensity pairs one-to-one with the m/z of a grid chunk; another length throws naming the
+     * column. Up to 0.12.0 the grid row read the plain list only and the SLOF or PIC payload was not read.
+     */
+    @Test
+    void aGridChunkPairsWithSlofOrPicIntensity() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY, MZ_GRID,
+                bytes("intensity_numpress_slof_bytes"), bytes("intensity_numpress_pic_bytes"));
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        Group picRow = row(schema);
+        picRow.add("chunk_encoding", ChunkCodecs.GRID_ENCODING);
+        addGrid(picRow, GridModels.LINEAR, 7, 8);
+        double[] counts = {10, 20};
+        byte[] pic = new byte[counts.length * 5];
+        addBytes(picRow, "intensity_numpress_pic_bytes", Arrays.copyOf(pic, MSNumpress.encodePic(counts, 2, pic)));
+        Group slofRow = row(schema);
+        slofRow.add("chunk_encoding", ChunkCodecs.GRID_ENCODING);
+        addGrid(slofRow, GridModels.LINEAR, 7, 8);
+        double[] three = {10, 20, 30};
+        byte[] slof = new byte[8 + three.length * 2];
+        addBytes(slofRow, "intensity_numpress_slof_bytes", Arrays.copyOf(slof,
+                MSNumpress.encodeSlof(three, 3, slof, MSNumpress.optimalSlofFixedPoint(three, 3))));
+
+        ChunkRowDecoder.Row row = decoder.decode(picRow, 0);
+
+        assertThat(row.axis()).containsExactly(7.0, 15.0);
+        assertThat(row.intensity()).containsExactly(10.0, 20.0);
+        assertThatThrownBy(() -> decoder.decode(slofRow, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid chunk intensity length (3) must equal its mz_grid indices (2) for spectrum_index 0"
+                        + " (SLOF intensity column intensity_numpress_slof_bytes)");
+    }
+
     // ---- Numpress columns -----------------------------------------------------------------------------------------
 
     @Test

@@ -64,19 +64,6 @@ final class ChunkCodecs {
     }
 
     /**
-     * Throws if Numpress intensity in {@code field} (null when the member has none) decodes to values that have no
-     * Numpress m/z to pair with; the message names {@code encoding}, the row's chunk_encoding.
-     */
-    static void rejectUnpairedNumpressIntensity(Group chunk, String field, String cvAccession,
-                                                String kind, String encoding, long si) {
-        if (ParquetGroups.has(chunk, field)
-                && decodeNumpress(chunk, field, cvAccession, si, "intensity").length > 0) {
-            throw new MzPeakException("unsupported chunk: Numpress " + kind + " intensity (" + field
-                    + ") without Numpress linear m/z (chunk_encoding " + encoding + ") for spectrum_index " + si);
-        }
-    }
-
-    /**
      * Throws for a {@code *numpress*} column other than the {@code decoded} ones when it carries a value in this
      * row: its data would otherwise be dropped (or, in place of the SLOF column, the whole chunk skipped). The
      * {@code handled} columns do not throw: the extra-array transform columns of the plan, whose arrays are dropped

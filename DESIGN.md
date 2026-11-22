@@ -404,15 +404,17 @@ transforms the other way round. Rule 1 and the lowest-rank rule cover them uncha
 | Row | Axis | Intensity |
 |---|---|---|
 | the axis's `MS:1002312` transform column is non-null | Numpress linear, absolute | SLOF, else PIC, else the plain list; 1:1 |
-| `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | plain list, as long as the values or one longer |
+| `chunk_encoding` null or `MS:1003089` | null-aware delta from `chunk_start` | SLOF, else PIC, else the plain list, as long as the values or one longer |
 | `MS:1000576` or `MS:1003088` | absolute values | same |
-| `MS:1003826` (coordinate grid) | the grid's model applied to its cumulative indices (below) | plain list, 1:1 |
+| `MS:1003826` (coordinate grid) | the grid's model applied to its cumulative indices (below) | SLOF, else PIC, else the plain list; 1:1 |
 | any other CURIE | throws `unsupported chunk encoding <curie> for spectrum_index <n>` | |
 
 Column presence picks the Numpress decoder, but an unknown `chunk_encoding` throws on every row. A row that
-names `MS:1002312` without carrying a Numpress column decodes as delta. A row without Numpress m/z is never
-decoded as Numpress: SLOF or PIC intensity that decodes to values throws, and a payload without values is
-skipped, so it cannot hide the row's delta m/z and plain intensities. A plan may list several plain lists, SLOF
+names `MS:1002312` without carrying a Numpress column decodes as delta. SLOF or PIC intensity is a secondary
+opaque transform (chunked-layout.md, Opaque array transforms for other dimensions) and pairs with the decoded
+m/z of any encoding, as the plain list does; a length that fits neither rule throws, naming the spectrum, the
+column and the chunk start (0.13.0, R3; up to 0.12.0 it threw without Numpress m/z). A payload without values
+is skipped, so it cannot hide the row's plain intensities. A plan may list several plain lists, SLOF
 or PIC columns: the first plain list that carries a value (non-null and not empty) is read, else the first
 non-null one, and the first SLOF or PIC column whose payload decodes to values. An empty payload, or a SLOF
 payload of its 8-byte header only, has no values and does not hide a later column of any kind.
