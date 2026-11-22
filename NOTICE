@@ -138,7 +138,11 @@ HUPO-PSI mzPeak specification JSON schemas (test resources, unmodified)
          mzpeakj/src/test/resources/spec-schema/data_processing.json
          mzpeakj/src/test/resources/spec-schema/instrument_configuration.json
          mzpeakj/src/test/resources/spec-schema/file_description.json
-  Source: https://github.com/HUPO-PSI/mzPeak-specification (commit 98800705, schema/), copied unmodified (SHA-256
+         mzpeakj/src/test/resources/spec-schema/scan_settings_list.json
+         mzpeakj/src/test/resources/spec-schema/array_index.json
+         mzpeakj/src/test/resources/spec-schema/param.json
+         mzpeakj/src/test/resources/spec-schema/auxiliary_array.json
+  Source: https://github.com/HUPO-PSI/mzPeak-specification (commit 963d64a, schema/), copied unmodified (SHA-256
           values in mzpeakj/src/test/resources/spec-schema/SOURCE.txt)
   Copyright (C) 2026 HUPO Proteomics Standards Initiative (PSI)
   Licensed under Creative Commons Attribution-NoDerivatives 4.0 International (CC BY-ND 4.0,

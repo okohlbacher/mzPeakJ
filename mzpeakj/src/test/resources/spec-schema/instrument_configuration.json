@@ -1,7 +1,10 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak metadata instrument configurations",
-  "description": "Describe the JSON format of instrument configurations used to acquire a mass spectrometry experiment",
+  "description": "The JSON format of instrument configurations used to acquire a mass spectrometry experiment",
+  "$meta": {
+    "summary": "file:schema/meta/instrument_configurations.md"
+  },
   "type": "array",
   "items": {
     "$ref": "#/definitions/instrument_configuration"
@@ -14,15 +17,15 @@
       "properties": {
         "components": {
           "type": "array",
-          "items": { "$ref": "#/definitions/component_type" }
+          "items": { "$ref": "#/definitions/component" }
         },
         "software_reference": {
           "type": "string",
-          "description": "The identifier for a software that was associated with the data acquisition process."
+          "description": "The identifier for a software that was associated with the data acquisition process. This **MUST** be a software_list[].id in the software list of the mzPeak archive."
         },
         "id": {
           "type": "integer",
-          "description": "A unique identifier for this instrument configuration."
+          "description": "A unique identifier for this instrument configuration. This value is an integer for compact storage of references throughout the rest of the archive."
         },
         "parameters": {
           "type": "array",
@@ -30,10 +33,15 @@
             "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/param.json"
           },
           "description": "Additional parameters describing this configuration, like the instrument model and serial number"
+        },
+        "scan_settings_reference": {
+          "type": ["string", "null"],
+          "description": "The identifier for a scan settings that was associated with this instrument configuration. If present, this **MUST** be a scan_settings_list[].id in the scan settings list of the mzPeak archive.",
+          "default": null
         }
       }
     },
-    "component_type": {
+    "component": {
       "type": "object",
       "description": "Describes an instrument component like the ion source, mass analyzer, or detector",
       "required": ["component_type", "order", "parameters"],
@@ -44,7 +52,7 @@
         },
         "order": {
           "type": "integer",
-          "description": "The order in which the analytes travels through the component"
+          "description": "The order in which the analytes travels through the component. The values must be contiguous, unique ascending integers."
         },
         "parameters": {
           "type": "array",

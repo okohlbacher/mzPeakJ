@@ -136,7 +136,8 @@ final class WritePlanner {
         warnPackedDrops(packedDrops, report);
         return complete(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(spectrumSignals), List.copyOf(extras.values()), chromatograms,
-                wavelengthSpectra, scanSettings, FooterMetadataWriter.serialize(fileMetadata), report);
+                wavelengthSpectra, scanSettings,
+                FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), report);
     }
 
     /**

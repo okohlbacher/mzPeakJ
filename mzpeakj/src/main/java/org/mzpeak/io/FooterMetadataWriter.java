@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.Contact;
@@ -45,6 +46,12 @@ import java.util.Set;
  *       software, else the first software, else the stub software {@code mzpeakj_software};
  *   <li>a software without a version is written with the empty version.
  * </ul>
+ * In the current (split) layout's dialect the run names its default instrument with
+ * {@code default_instrument_configuration_id} (spec 963d64a, W1), a processing method without a software names the
+ * software an instrument configuration without one names, and a software or a data processing without an id is
+ * written with a fresh one ({@code mzpeakj_software_<i>}, {@code mzpeakj_processing_<i>} for the {@code i}-th entry of
+ * its list), as the specification requires these keys; the packed layout keeps the pin-era dialect, with
+ * {@code default_instrument_id} and those values left out.
  * Each stub is logged once as a WARNING naming its document, its id and the reference that names it.
  */
 final class FooterMetadataWriter {
@@ -59,7 +66,15 @@ final class FooterMetadataWriter {
     private FooterMetadataWriter() {
     }
 
+    /** The documents in the dialect of the current (split) metadata layout. */
     static Map<String, String> serialize(FileMetadata meta) {
+        return serialize(meta, MetadataLayout.SPLIT);
+    }
+
+    /** The documents in the dialect of {@code layout}. */
+    static Map<String, String> serialize(FileMetadata meta, MetadataLayout layout) {
+        boolean current = layout == MetadataLayout.SPLIT;
+        String instrumentKey = current ? "default_instrument_configuration_id" : "default_instrument_id";
         Map<String, String> kv = new LinkedHashMap<>();
         if (meta == null) {
             return kv;
@@ -79,7 +94,7 @@ final class FooterMetadataWriter {
             if (configurations.stream().noneMatch(ic -> ic.id() == instrumentId)) {
                 configurations.add(new InstrumentConfiguration(instrumentId, List.of(), null, List.of()));
                 warnStub("instrument_configuration_list", "instrument configuration " + instrumentId,
-                        "run.default_instrument_id");
+                        "run." + instrumentKey);
             }
             // default_data_processing_id: required by mzPeak spec
             String dpId = run.defaultDataProcessingId();
@@ -110,7 +125,7 @@ final class FooterMetadataWriter {
             }
             runJson = MAPPER.createObjectNode();
             runJson.put("id", run.id() != null ? run.id() : RUN_ID);
-            runJson.put("default_instrument_id", instrumentId);
+            runJson.put(instrumentKey, instrumentId);
             runJson.put("default_data_processing_id", effectiveDpId);
             runJson.put("default_source_file_id", effectiveSfId);
             putText(runJson, "start_time", run.startTime());
@@ -125,11 +140,16 @@ final class FooterMetadataWriter {
             configurations.set(i, new InstrumentConfiguration(ic.id(), ic.components(), reference, ic.parameters()));
         }
         for (int i = 0; i < processing.size(); i++) {
-            List<ProcessingMethod> methods = processing.get(i).methods();
+            List<ProcessingMethod> methods = new ArrayList<>(processing.get(i).methods());
             for (int j = 0; j < methods.size(); j++) {
-                requireSoftware(methods.get(j).softwareReference(), "data_processing_method_list[" + i + "].methods["
-                        + j + "].software_reference", software, softwareIds);
+                ProcessingMethod m = methods.get(j);
+                String reference = m.softwareReference() != null || !current ? m.softwareReference()
+                        : defaultSoftware;
+                requireSoftware(reference, "data_processing_method_list[" + i + "].methods[" + j
+                        + "].software_reference", software, softwareIds);
+                methods.set(j, new ProcessingMethod(m.order(), reference, m.parameters()));
             }
+            processing.set(i, new DataProcessing(processing.get(i).id(), methods));
         }
 
         if (runJson != null) {
@@ -137,9 +157,10 @@ final class FooterMetadataWriter {
         }
         if (!software.isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();
-            for (Software s : software) {
+            for (int i = 0; i < software.size(); i++) {
+                Software s = software.get(i);
                 ObjectNode n = arr.addObject();
-                putText(n, "id", s.id());
+                putText(n, "id", s.id() != null || !current ? s.id() : freshId("mzpeakj_software_" + i, softwareIds));
                 n.put("version", s.version() != null ? s.version() : "");
                 putParams(n, s.parameters());
             }
@@ -163,10 +184,14 @@ final class FooterMetadataWriter {
             kv.put("instrument_configuration_list", arr.toString());
         }
         if (!processing.isEmpty()) {
+            Set<String> processingIds = new HashSet<>();
+            processing.forEach(dp -> processingIds.add(dp.id()));
             ArrayNode arr = MAPPER.createArrayNode();
-            for (DataProcessing dp : processing) {
+            for (int i = 0; i < processing.size(); i++) {
+                DataProcessing dp = processing.get(i);
                 ObjectNode n = arr.addObject();
-                putText(n, "id", dp.id());
+                putText(n, "id", dp.id() != null || !current ? dp.id()
+                        : freshId("mzpeakj_processing_" + i, processingIds));
                 ArrayNode methods = n.putArray("methods");
                 for (ProcessingMethod m : dp.methods()) {
                     ObjectNode mn = methods.addObject();
@@ -238,6 +263,15 @@ final class FooterMetadataWriter {
             software.add(new Software(id, "", List.of()));
             warnStub("software_list", "software " + id, reference);
         }
+    }
+
+    /** {@code base}, or {@code base} with {@code _} appended until no id of {@code ids} is it; it is added to them. */
+    private static String freshId(String base, Set<String> ids) {
+        String id = base;
+        while (!ids.add(id)) {
+            id += "_";
+        }
+        return id;
     }
 
     private static void warnStub(String document, String stub, String reference) {

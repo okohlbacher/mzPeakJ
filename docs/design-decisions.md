@@ -55,8 +55,9 @@ The upstream update to HUPO-PSI/mzPeak `2ee2589` (spec snapshot `0220201`, mzdat
   matching precursor, unmatched ions to the first precursor, orphan ions form a precursor-less `Precursor`. *Why:*
   legacy-compatible and identical to the references on every fixture.
 - **Run key.** The reader takes `default_instrument_configuration_id`, else `default_instrument_id`; the writer writes
-  only `default_instrument_id`. *Why:* the spec's `ms_run.json` still requires `default_instrument_id`, and writing both
-  makes serde reject a duplicate field.
+  only `default_instrument_configuration_id` in the split layout and only `default_instrument_id` in the packed one.
+  *Why:* the spec's `ms_run.json` (963d64a) requires `default_instrument_configuration_id`, the packed layout keeps its
+  pin-era dialect, and writing both makes serde reject a duplicate field.
 - **Unknown CURIE prefixes.** The writer warns and never throws; the reader keeps the literal value without a warning.
   *Why:* writes must not fail on user data, and the conformance text asks readers to keep unknown terms.
 - **Imaging.** `KnownCvs` is a verbatim copy of the reference's CV list (IMS on its master branch); the reader resolves

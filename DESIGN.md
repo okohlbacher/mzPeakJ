@@ -737,9 +737,10 @@ footer.
   param's unit is read from `unit`, falling back to `unit_accession`.
 - Missing documents yield empty or absent objects rather than errors.
 
-**Writer run key.** `MzPeakWriter` writes a single run key, `default_instrument_id`: the spec schema
-`ms_run.json` still lists it under `required`, and the Rust reader, which accepts either name, rejects a run
-that has both as a duplicate field.
+**Writer run key** (W1, D13-11). `MzPeakWriter` writes a single run key: `default_instrument_configuration_id` in
+the split (current) layout, which spec 963d64a's `ms_run.json` requires, and `default_instrument_id` in the packed
+(pin-era) layout. Never both: the Rust reader, which accepts either name, rejects a run that has both as a duplicate
+field.
 
 **No dangling references** (WR-9, D-17). `FooterMetadataWriter` writes every reference between the documents so that
 it resolves, and every key the spec schemas (`ms_run.json`, `software.json`, `data_processing.json`,
@@ -753,11 +754,15 @@ one WARNING per stub naming its document, its id and the reference:
   `default_instrument_id` without its configuration keeps its value and gains a stub configuration, as for
   diaPASEF.ref and diaPASEF.grid, whose runs name configuration 1 while only 0 exists;
 - a configuration without a software names the first configuration's software, else the first software, else the
-  stub `mzpeakj_software`; a software without a version is written with `""`.
+  stub `mzpeakj_software`; a software without a version is written with `""`;
+- in the split layout only (spec 963d64a requires these keys), a processing method without a software names the
+  software a configuration without one names, and a software or a data processing without an id gets the id
+  `mzpeakj_software_<i>` or `mzpeakj_processing_<i>` of its position `i`, with `_` appended while another entry has
+  it.
 
 Datasets whose references resolve are written unchanged. Spectrum and chromatogram `data_processing_ref` cells are
 not checked. `RunReferenceConformanceTest` checks the written documents against copies of the spec schemas
-(`mzpeakj/src/test/resources/spec-schema/`).
+(`mzpeakj/src/test/resources/spec-schema/`, spec 963d64a); the packed layout's documents are only resolved.
 
 ---
 
