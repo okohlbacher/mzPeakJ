@@ -55,7 +55,8 @@ import java.util.function.DoubleUnaryOperator;
  *
  * <p><b>Streaming:</b> per-row-group min/max statistics of the plan's index column ({@code spectrum_index}) are
  * read at open time; {@link #get} decodes only the row group(s) covering the requested index, caching the last
- * decoded block run. Memory usage is bounded to one row-group run rather than the whole file.
+ * decoded block run. Memory usage is bounded to one row-group run rather than the whole file. Row groups of 0 rows
+ * (members MAY be empty) are never read, and a spectrum's rows may continue past one into the next row group.
  */
 final class SpectrumArrayStore implements AutoCloseable {
 
@@ -78,6 +79,8 @@ final class SpectrumArrayStore implements AutoCloseable {
     private final Map<Long, double[]> deltaModels;
     private final long[] rgMin;
     private final long[] rgMax;
+    /** Per row group: whether it holds 0 rows; such a group is skipped, whatever its index statistics say. */
+    private final boolean[] empty;
     private final ColumnIOFactory columnIO = new ColumnIOFactory();
     /** The member name in warnings. */
     private final String member;
@@ -93,7 +96,7 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, SignalPlan plan,
                                boolean reconstructProfile, Map<Long, double[]> deltaModels, long[] rgMin,
-                               long[] rgMax, String member) {
+                               long[] rgMax, boolean[] empty, String member) {
         this.reader = reader;
         this.schema = schema;
         this.plan = plan;
@@ -102,6 +105,7 @@ final class SpectrumArrayStore implements AutoCloseable {
         this.deltaModels = deltaModels;
         this.rgMin = rgMin;
         this.rgMax = rgMax;
+        this.empty = empty;
         this.member = member;
         for (SignalPlan.Extra extra : plan.extras().values()) {
             if (ArrayUnits.DRIFT_TIME_ARRAYS.contains(extra.arrayType())) {
@@ -142,13 +146,15 @@ final class SpectrumArrayStore implements AutoCloseable {
                 List<BlockMetaData> blocks = reader.getRowGroups();
                 long[] rgMin = new long[blocks.size()];
                 long[] rgMax = new long[blocks.size()];
+                boolean[] empty = new boolean[blocks.size()];
                 for (int b = 0; b < blocks.size(); b++) {
                     long[] range = indexRange(blocks.get(b), indexPath);
                     rgMin[b] = range[0];
                     rgMax[b] = range[1];
+                    empty[b] = blocks.get(b).getRowCount() == 0;
                 }
                 return new SpectrumArrayStore(reader, schema, plan, reconstructProfile, deltaModels, rgMin, rgMax,
-                        member);
+                        empty, member);
             } catch (RuntimeException e) {
                 try {
                     reader.close();
@@ -200,18 +206,27 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private int firstBlock(long index) {
         for (int b = 0; b < rgMin.length; b++) {
-            if (index >= rgMin[b] && index <= rgMax[b]) {
+            if (!empty[b] && index >= rgMin[b] && index <= rgMax[b]) {
                 return b;
             }
         }
         return -1;
     }
 
-    /** A spectrum may span consecutive blocks (its rows cross a row-group boundary); find the last such block. */
+    /**
+     * A spectrum may span consecutive blocks (its rows cross a row-group boundary); find the last such block. Empty
+     * blocks in between are passed over: the spectrum continues in the next non-empty block that holds its index.
+     */
     private int lastBlock(long index, int first) {
         int last = first;
-        while (last + 1 < rgMin.length && index >= rgMin[last + 1] && index <= rgMax[last + 1]) {
-            last++;
+        for (int b = first + 1; b < rgMin.length; b++) {
+            if (empty[b]) {
+                continue;
+            }
+            if (index < rgMin[b] || index > rgMax[b]) {
+                break;
+            }
+            last = b;
         }
         return last;
     }
@@ -222,6 +237,9 @@ final class SpectrumArrayStore implements AutoCloseable {
                 member, toMilliseconds);
         try {
             for (int b = first; b <= last; b++) {
+                if (empty[b]) {
+                    continue; // parquet-java refuses to read a row group of 0 rows
+                }
                 PageReadStore pages = reader.readRowGroup(b);
                 MessageColumnIO cio = columnIO.getColumnIO(schema);
                 RecordReader<Group> rr = cio.getRecordReader(pages, new GroupRecordConverter(schema));

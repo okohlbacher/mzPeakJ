@@ -235,7 +235,7 @@ class CodecReadTest {
     }
 
     /** Sets the manifest checksum of the member {@code name} of {@code dataset} to the member's SHA-512. */
-    private static void updateChecksum(Path dataset, String name) throws IOException {
+    static void updateChecksum(Path dataset, String name) throws IOException {
         ObjectNode index = (ObjectNode) MAPPER.readTree(dataset.resolve(INDEX).toFile());
         int[] updated = {0};
         String checksum = Sha512.hex(dataset.resolve(name));
