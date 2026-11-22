@@ -88,6 +88,38 @@ class WriterChromatogramTimeUnitTest {
     }
 
     /**
+     * Chromatograms in minutes, written by a batch write and by a session in both metadata layouts, are declared in
+     * minutes and read back in minutes with the bits of the times and intensities they were written with, in index
+     * order.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(MetadataLayout.class)
+    void chromatogramsInMinutesAreWrittenBitForBit(MetadataLayout layout) throws IOException {
+        List<Chromatogram> minutes = List.of(chromatogram(0, MINUTE, List.of()), chromatogram(1, MINUTE, List.of()));
+        Options options = Options.defaults().withMetadataLayout(layout);
+        Path batch = tmp.resolve("batch.mzpeak");
+        MzPeakWriter.writeDirectory(batch, List.of(), minutes, List.of(), List.of(), FileMetadata.EMPTY, options);
+        Path session = tmp.resolve("session.mzpeak");
+        try (Session s = MzPeakWriter.openDirectory(session, FileMetadata.EMPTY, List.of(), Set.of(), options)) {
+            minutes.forEach(s::addChromatogram);
+            s.finish();
+        }
+        for (Path written : List.of(batch, session)) {
+            assertThat(declaredTimeUnit(written)).as("%s time column", written).isEqualTo(MINUTE);
+            try (MzPeakReader back = MzPeakReader.open(written)) {
+                List<Chromatogram> read = back.chromatograms();
+                assertThat(read).extracting(Chromatogram::timeUnit).containsExactly(MINUTE, MINUTE);
+                for (int i = 0; i < minutes.size(); i++) {
+                    assertThat(bits(read.get(i).time())).as("%s time %d", written, i)
+                            .containsExactly(bits(minutes.get(i).time()));
+                    assertThat(bits(read.get(i).intensity())).as("%s intensity %d", written, i)
+                            .containsExactly(bits(minutes.get(i).intensity()));
+                }
+            }
+        }
+    }
+
+    /**
      * A time unit {@link Chromatogram#withTimeUnit} does not convert is written as given too, and the manifest
      * declares its CV, which nothing else of the dataset uses.
      */
