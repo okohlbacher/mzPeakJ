@@ -261,8 +261,8 @@ which is where the Rust reader takes it from. `PrecursorJoin` attaches the precu
   spectrum's first precursor (the Rust reference falls back to the last one);
 - selected ions of a spectrum without precursor rows form a precursor-less `Precursor` (the Rust reference
   drops them);
-- a selected-ion row whose m/z is null is dropped (the Rust reference keeps the ion with m/z 0.0, its charge and
-  its intensity).
+- a selected-ion row whose m/z is null is kept with m/z NaN, its charge and its intensity (the Rust reference
+  reads its m/z as 0.0).
 
 Every example has one precursor per MSn spectrum, so the divergences do not show there. Two precursors of one
 spectrum that share a key cannot be told apart by either reader.

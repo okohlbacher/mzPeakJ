@@ -19,8 +19,8 @@ import java.util.Objects;
  *       first precursor (the Rust reference falls back to the last one);
  *   <li>selected ions without any precursor row form a precursor-less {@link Precursor} (the Rust reference drops
  *       them);
- *   <li>a selected-ion row whose m/z is null is dropped ({@link SelectedIonRowDecoder#decode}; the Rust reference
- *       keeps the ion with m/z 0.0, its charge and its intensity).
+ *   <li>a selected-ion row whose m/z is null is kept with m/z NaN ({@link SelectedIonRowDecoder#decode}; the Rust
+ *       reference keeps it with m/z 0.0).
  * </ul>
  * Aligning these with the reference waits for a multi-precursor fixture.
  */
@@ -50,9 +50,6 @@ final class PrecursorJoin {
         if (selectedIonRows != null) {
             for (FacetRow ion : selectedIonRows) {
                 SelectedIon selectedIon = SelectedIonRowDecoder.decode(ion);
-                if (selectedIon == null) {
-                    continue;
-                }
                 if (precursors.isEmpty()) {
                     orphans.add(selectedIon);
                 } else {
