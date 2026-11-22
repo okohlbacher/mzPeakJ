@@ -114,7 +114,6 @@ class ManifestStrictnessTest {
                         MAPPING + ".path", "not a string or an array of strings (found null)"),
                 new Case("path an array with a number", i -> mapping(i).putArray("path").add("filter").add(1),
                         MAPPING + ".path", "not a string or an array of strings (found array)"),
-                new Case("accession absent", i -> mapping(i).remove("accession"), MAPPING + ".accession", "absent"),
                 new Case("accession a name", i -> mapping(i).put("accession", "filter string"),
                         MAPPING + ".accession", "not a CURIE or null (found \"filter string\")"),
                 new Case("accession a number", i -> mapping(i).put("accession", 1000512),
@@ -132,19 +131,16 @@ class ManifestStrictnessTest {
                 // parameter item
                 new Case("parameter a number", i -> entry(i, 0).putArray("parameters").add(1),
                         PARAM, "not an object (found number)"),
+                new Case("parameter name absent", i -> param(i).remove("name"), PARAM + ".name", "absent"),
+                new Case("parameter name null", i -> param(i).putNull("name"), PARAM + ".name", "null"),
                 new Case("parameter name a number", i -> param(i).put("name", 1),
-                        PARAM + ".name", "not a string or null (found number)"),
-                new Case("parameter accession absent", i -> param(i).remove("accession"),
-                        PARAM + ".accession", "absent"),
+                        PARAM + ".name", "not a string (found number)"),
                 new Case("parameter accession a name", i -> param(i).put("accession", "scan start time"),
                         PARAM + ".accession", "not a CURIE or null (found \"scan start time\")"),
-                new Case("parameter unit absent", i -> param(i).remove("unit"), PARAM + ".unit", "absent"),
-                new Case("parameter unit_accession alone", i -> {
-                    param(i).remove("unit");
-                    param(i).put("unit_accession", "UO:0000010");
-                }, PARAM + ".unit", "absent"),
                 new Case("parameter unit an object", i -> param(i).putObject("unit"),
-                        PARAM + ".unit", "not a CURIE or null (found object)"),
+                        PARAM + ".unit", "not a string or null (found object)"),
+                new Case("parameter unit a number", i -> param(i).put("unit", 10),
+                        PARAM + ".unit", "not a string or null (found number)"),
                 // metadata documents
                 new Case("cv_list an object", i -> metadata(i).putObject("cv_list"),
                         "metadata.cv_list", "not an array (found object)"),
@@ -249,8 +245,8 @@ class ManifestStrictnessTest {
 
     /**
      * The shapes serde accepts besides the fixtures': a null checksum, a null or array unit, an array path, an absent
-     * term marker, a parameter without name or with a null name, value and units, and no {@code column_mapping}
-     * or {@code parameters} at all.
+     * term marker, a parameter with a null accession, value and unit, and no {@code column_mapping} or
+     * {@code parameters} at all.
      */
     @Test
     void theOptionalAndNullableShapesParse() throws IOException {
@@ -265,21 +261,102 @@ class ManifestStrictnessTest {
         ObjectNode withUnitPath = (ObjectNode) mappings(index).get(0);
         withUnitPath.putArray("unit").add("scan_start_time_unit");
         ArrayNode params = entry(index, 0).putArray("parameters");
-        params.addObject().putNull("accession").put("value", "x").putNull("unit");
-        params.addObject().putNull("name").put("accession", "MS:1000016").put("value", 1.5).put("unit", "UO:0000031");
-        params.addObject().putNull("name").putNull("accession").putNull("unit");
+        params.addObject().put("name", "label").putNull("accession").put("value", "x").putNull("unit");
+        params.addObject().put("name", "scan start time").put("accession", "MS:1000016").put("value", 1.5)
+                .put("unit", "UO:0000031");
+        params.addObject().put("name", "empty").putNull("accession").putNull("unit");
 
         MzPeakManifest m = manifest(copyWith(MAPPER.writeValueAsString(index)));
 
         assertThat(m.files().get(0).checksum()).isNull();
         assertThat(m.files().get(0).parameters()).containsExactly(
-                new Param(null, null, "x", null),
-                new Param(null, "MS:1000016", 1.5, "UO:0000031"),
-                new Param(null, null, null, null));
+                new Param("label", null, "x", null),
+                new Param("scan start time", "MS:1000016", 1.5, "UO:0000031"),
+                new Param("empty", null, null, null));
         assertThat(m.files().get(1)).isEqualTo(new Entry("spectra_peaks.parquet", "spectrum", "peaks"));
         assertThat(scansMapping(m)).isEqualTo(
                 new ColumnMapping("filter string", "filter_string", "MS:1000512", null, null, null));
         assertThat(m.files().get(3).columnMapping().get(0).unitPath()).isEqualTo("scan_start_time_unit");
+    }
+
+    // ---- optional fields (D13-2) ----------------------------------------------------------
+
+    /**
+     * mzpeak_index.json {@code column_mapping} requires only {@code name} and {@code path}: a mapping without
+     * accession and unit opens the dataset, with both null.
+     */
+    @Test
+    void aMappingWithOnlyNameAndPathOpens() throws IOException {
+        ObjectNode index = fixtureIndex();
+        mappings(index).addObject().put("name", "opt thing").put("path", "opt_thing");
+        Path copy = copyWith(MAPPER.writeValueAsString(index));
+
+        try (MzPeakReader reader = MzPeakReader.open(copy)) {
+            assertThat(reader.size()).isEqualTo(48);
+            List<ColumnMapping> scans = reader.manifest().files().get(3).columnMapping();
+            assertThat(scans.get(scans.size() - 1))
+                    .isEqualTo(new ColumnMapping("opt thing", "opt_thing", null, null, null, null));
+        }
+    }
+
+    /** param.json requires only {@code name}: a file parameter with nothing else opens with the rest null. */
+    @Test
+    void aParameterWithOnlyANameOpens() throws IOException {
+        ObjectNode index = fixtureIndex();
+        entry(index, 0).putArray("parameters").addObject().put("name", "file format");
+        Path copy = copyWith(MAPPER.writeValueAsString(index));
+
+        try (MzPeakReader reader = MzPeakReader.open(copy)) {
+            assertThat(reader.size()).isEqualTo(48);
+            assertThat(reader.manifest().files().get(0).parameters())
+                    .containsExactly(new Param("file format", null, null, null));
+        }
+    }
+
+    /** param.json gives {@code unit} no pattern: any string is kept as is. */
+    @Test
+    void aParameterUnitThatIsNotACurieOpens() throws IOException {
+        ObjectNode index = fixtureIndex();
+        param(index).put("unit", "seconds");
+        Path copy = copyWith(MAPPER.writeValueAsString(index));
+
+        try (MzPeakReader reader = MzPeakReader.open(copy)) {
+            assertThat(reader.size()).isEqualTo(48);
+            assertThat(reader.manifest().files().get(0).parameters())
+                    .containsExactly(new Param("label", null, "x", "seconds"));
+        }
+    }
+
+    /** Without {@code unit}, the legacy {@code unit_accession} still supplies the unit. */
+    @Test
+    void aParameterWithUnitAccessionAloneTakesItsUnit() throws IOException {
+        ObjectNode index = fixtureIndex();
+        param(index).remove("unit");
+        param(index).put("unit_accession", "UO:0000010");
+
+        assertThat(manifest(copyWith(MAPPER.writeValueAsString(index))).files().get(0).parameters())
+                .containsExactly(new Param("label", null, "x", "UO:0000010"));
+    }
+
+    @Test
+    void aParameterWithoutNameIsRejected() throws IOException {
+        ObjectNode index = fixtureIndex();
+        entry(index, 0).putArray("parameters").addObject().put("accession", "MS:1000016").put("value", 1.5);
+        Path copy = copyWith(MAPPER.writeValueAsString(index));
+
+        assertThatThrownBy(() -> MzPeakReader.open(copy)).isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("parameters[0].name: absent");
+    }
+
+    @Test
+    void aMappingAccessionThatIsANumberIsStillRejected() throws IOException {
+        ObjectNode index = fixtureIndex();
+        mappings(index).addObject().put("name", "opt thing").put("path", "opt_thing").put("accession", 42);
+        Path copy = copyWith(MAPPER.writeValueAsString(index));
+
+        assertThatThrownBy(() -> MzPeakReader.open(copy)).isInstanceOf(MzPeakException.class)
+                .hasMessageContaining(SCANS + ".column_mapping[" + (mappings(fixtureIndex()).size()) + "].accession: "
+                        + "not a CURIE or null (found number)");
     }
 
     // ---- duplicate fields ------------------------------------------------------------------
