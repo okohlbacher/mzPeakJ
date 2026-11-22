@@ -23,6 +23,7 @@ import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
+import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -205,6 +206,35 @@ class RustReaderAcceptanceTest {
             assertThat(dump.array(time)).isEqualTo(seconds.time());
             assertThat(dump.array(c.path("arrays").path("IntensityArray"))).isEqualTo(seconds.intensity());
         });
+    }
+
+    /**
+     * R-10 (W10): the probe of {@link NoNaNInWrittenColumnsTest}, its spectrum 1 with the signal-to-noise array
+     * {@code [1, NaN, 3]}, which mzPeakJ writes as {@code [1, null, 3]}, written split as an archive in the point
+     * layout and as Numpress: Rust reads the null cell as 0.0 ({@code src/reader/point.rs:128},
+     * {@code unwrap_or_default}), so the array as {@code [1, 0, 3]}, where mzPeakJ reads {@code [1, NaN, 3]}.
+     */
+    @Test
+    void rustReadsANullExtraCellAsZero() throws Exception {
+        List<Spectrum> probe = NoNaNInWrittenColumnsTest.probe(new double[] {1, Double.NaN, 3});
+        for (Options options : List.of(SPLIT, SPLIT.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS))) {
+            Path out = tmp.resolve("null-extra-" + options.signalEncoding() + ".mzpeak");
+            MzPeakWriter.writeArchive(out, probe, List.of(), List.of(), List.of(), FileMetadata.EMPTY, options);
+            try (MzPeakReader reader = MzPeakReader.open(out)) {
+                assertThat(reader.getSpectrumAt(1).arrays().get("MS:1000517")).containsExactly(1, Double.NaN, 3);
+            }
+
+            Dump dump = rdump(out);
+            List<JsonNode> records = dump.records("S");
+            assertThat(records).hasSize(2);
+            JsonNode record = records.get(1);
+            String what = options.signalEncoding() + " " + record;
+            assertThat(record.has("panic") || record.has("none")).as(what).isFalse();
+            assertThat(dump.array(record.path("arrays").path("SignalToNoiseArray"))).as(what)
+                    .containsExactly(1, 0, 3);
+            assertThat(dump.array(record.path("arrays").path("IntensityArray"))).as(what)
+                    .hasSize(3);
+        }
     }
 
     /**

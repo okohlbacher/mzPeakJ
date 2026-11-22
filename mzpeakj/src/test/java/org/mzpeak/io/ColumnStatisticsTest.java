@@ -8,8 +8,10 @@ import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.hadoop.example.ExampleParquetWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.io.LocalOutputFile;
+import org.apache.parquet.schema.ColumnOrder;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
+import org.apache.parquet.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -458,14 +460,41 @@ class ColumnStatisticsTest {
     }
 
     /**
-     * A row group mixing numbers and a NaN, as {@link MzPeakWriter} writes it in either layout, has no bounds and
-     * leaves the statistics incomplete: parquet-java (since 1.18) leaves the NaN out of the footer's minimum and
-     * maximum and counts it instead, so those bounds would not hold for the NaN. Here the ion injection time of the
-     * first scan of small is NaN; written unchanged, the same column has complete bounds.
+     * A row group mixing numbers and a NaN in a column of the type-defined order, as mzPeakJ wrote a NaN before W10
+     * and as another writer may, has no bounds and leaves the statistics incomplete: parquet-java (since 1.18) leaves
+     * the NaN out of the footer's minimum and maximum and counts it instead, so those bounds would not hold for the
+     * NaN. Here the first row group of the lowest observed m/z holds NaN and 250; the highest stays complete.
+     */
+    @Test
+    void aRowGroupMixingNumbersAndANaNHasNoBounds() {
+        Double[][] mz = new Double[SPLIT_MZ.length][];
+        for (int i = 0; i < mz.length; i++) {
+            mz[i] = SPLIT_MZ[i].clone();
+        }
+        mz[0][0] = Double.NaN;
+        writeSplitMetadata(mz, true, null, true);
+        try (MzPeakReader reader = MzPeakReader.open(tmp)) {
+            ColumnStatistics lowest =
+                    reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, LOWEST_MZ).orElseThrow();
+            assertThat(lowest.rowGroups()).containsExactly(
+                    new RowGroup(2, 0L, null, null),
+                    new RowGroup(2, 2L, null, null),
+                    new RowGroup(1, 0L, 200.0, 200.0));
+            assertThat(lowest.complete()).isFalse();
+            assertThat(reader.columnStatistics(EntityType.SPECTRUM, DataKind.METADATA, HIGHEST_MZ).orElseThrow()
+                    .complete()).isTrue();
+            assertThat(reader.observedMzRange()).isEmpty();
+        }
+    }
+
+    /**
+     * W10: a NaN ion injection time, written by {@link MzPeakWriter} in either layout, is written as null, so the row
+     * group keeps its bounds, those of small's other scans, and the statistics stay complete. Here the ion injection
+     * time of the first scan of small is NaN; written unchanged, the same column has no null.
      */
     @ParameterizedTest(name = "{0}")
     @EnumSource(MetadataLayout.class)
-    void aRowGroupMixingNumbersAndANaNWrittenByMzPeakWriterHasNoBounds(MetadataLayout layout) {
+    void aNaNWrittenByMzPeakWriterIsANullThatKeepsTheBounds(MetadataLayout layout) {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.mzpeak"));
         Path unchanged = tmp.resolve("unchanged.mzpeak");
         write(unchanged, source, layout);
@@ -486,6 +515,7 @@ class ColumnStatisticsTest {
             ColumnStatistics bounded =
                     reader.columnStatistics(EntityType.SPECTRUM, DataKind.SCANS, ION_INJECTION_TIME).orElseThrow();
             assertThat(bounded.rowGroups()).hasSize(1);
+            assertThat(bounded.rowGroups().get(0).nullCount()).isEqualTo(0L);
             assertThat(bounded.rowGroups().get(0).min()).isNotNull();
             assertThat(bounded.complete()).isTrue();
         }
@@ -494,12 +524,11 @@ class ColumnStatisticsTest {
                     reader.columnStatistics(EntityType.SPECTRUM, DataKind.SCANS, ION_INJECTION_TIME).orElseThrow();
             assertThat(stats.rowGroups()).hasSize(1);
             RowGroup group = stats.rowGroups().get(0);
-            assertThat(group.nullCount()).isEqualTo(0L);
-            assertThat(group.min()).isNull();
-            assertThat(group.max()).isNull();
-            assertThat(stats.complete()).isFalse();
-            assertThat(stats.min()).isEmpty();
-            assertThat(stats.max()).isEmpty();
+            assertThat(group.nullCount()).isEqualTo(1L);
+            assertThat(group.min()).isNotNull();
+            assertThat(group.max()).isNotNull();
+            assertThat(stats.complete()).isTrue();
+            assertThat(reader.getSpectrumAt(0).description().scans().get(0).injectionTime()).isNull();
         }
     }
 
@@ -718,12 +747,17 @@ class ColumnStatisticsTest {
         writeSplitMetadata(mz, statistics, null);
     }
 
+    private void writeSplitMetadata(Double[][] mz, boolean statistics, String omitted) {
+        writeSplitMetadata(mz, statistics, omitted, false);
+    }
+
     /**
      * {@link #writeSplitMetadata(Double[][], boolean)} without the observed m/z column of the accession
      * {@code omitted} ({@code null} for none): it is neither written nor mapped, as the column table would otherwise
-     * find it by its name.
+     * find it by its name. With {@code typeDefined}, the observed m/z columns have the type-defined column order, as
+     * mzPeakJ writes them, rather than parquet-java's default IEEE 754 total order.
      */
-    private void writeSplitMetadata(Double[][] mz, boolean statistics, String omitted) {
+    private void writeSplitMetadata(Double[][] mz, boolean statistics, String omitted, boolean typeDefined) {
         boolean lowest = !LOWEST_MZ.equals(omitted);
         boolean highest = !HIGHEST_MZ.equals(omitted);
         MessageType schema = MessageTypeParser.parseMessageType("message arrow_schema {\n"
@@ -733,6 +767,14 @@ class ColumnStatisticsTest {
                 + (highest ? "  optional double highest_observed_mz;\n" : "")
                 + "  optional int32 number_of_data_points (INTEGER(32,false));\n"
                 + "}");
+        if (typeDefined) {
+            List<Type> fields = new ArrayList<>();
+            for (Type field : schema.getFields()) {
+                fields.add(field.getName().endsWith("_observed_mz")
+                        ? field.asPrimitiveType().withColumnOrder(ColumnOrder.typeDefined()) : field);
+            }
+            schema = new MessageType(schema.getName(), fields);
+        }
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         int[] points = {10, (int) 4_000_000_000L, 20, 30, 40};
         Group[] rows = new Group[mz.length];

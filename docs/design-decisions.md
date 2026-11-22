@@ -127,8 +127,11 @@ decisions cause.
 - **The chromatogram data-processing column is written `data_processing_id`**, read as that or the
   `data_processing_ref` 0.12.0 wrote (2026-11-08, name changed 2026-11-22, X-13). *Why:* the spec spelling
   (`chromatograms.md`, l.53); 0.12.0 had taken `data_processing_ref` for it.
-- **A NaN m/z in mzML input is warned (B-34), not rejected** (2026-11-08); with mzPeak Numpress output it is refused.
-  *Why:* it carries no information, and rejecting the whole file would fail conversions other tools accept.
+- **A NaN m/z, time, wavelength or intensity fails the write, and so the conversion** (2026-11-22, X-18, D13-14;
+  until then a NaN m/z in mzML input was warned as B-34). A NaN extra-array cell and a NaN optional metadata double
+  are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec
+  requires a page index for every column (`conformance.md`, l.36); a null axis value would be a null-marked point and
+  a null intensity reads as 0, so neither has a form that reads back as written.
 - **mzML output is always 64-bit float, zlib by default, no MS-Numpress** (2026-11-09). *Why:* exact for `double[]`;
   jmzML's Numpress encoder writes wrong values without an error for values it cannot hold.
 - **Param order follows jmzML** (an element's own params before its groups') (2026-11-09). *Why:* order carries no

@@ -156,7 +156,7 @@ class SplitWriterRustReaderTest {
         Param tic = new Param("total ion current", "MS:1000285", 7.0, COUNTS);
         Param valuedRepresentation = new Param(null, "MS:1000128", "x", null);
         Param unitlessBpi = new Param("base peak intensity", "MS:1000505", 2.5, null);
-        Param nanTic = new Param("total ion current", "MS:1000285", Double.NaN, COUNTS);
+        Param infiniteTic = new Param("total ion current", "MS:1000285", Double.POSITIVE_INFINITY, COUNTS);
         Param namelessType = new Param(null, "MS:1000804", null, null);
         Param lowest = new Param("lowest observed wavelength", "MS:1000619", 190.0, NANOMETRE);
         Param highest = new Param("highest observed wavelength", "MS:1000618", 400.0, NANOMETRE);
@@ -166,7 +166,7 @@ class SplitWriterRustReaderTest {
         List<WavelengthSpectrum> waves = List.of(
                 wave(0, List.of(centroid, TITLE)),
                 wave(1, List.of(tic, profile, bpi)),
-                wave(2, List.of(valuedRepresentation, unitlessBpi, nanTic, namelessType)),
+                wave(2, List.of(valuedRepresentation, unitlessBpi, infiniteTic, namelessType)),
                 wave(3, List.of(unknownTerm, lowest, namelessCid, highest)),
                 wave(4, List.of(lowestInMetres)));
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
@@ -180,7 +180,7 @@ class SplitWriterRustReaderTest {
         assertRow(rows.get(0), null, "MS:1000127", null, null, null, null, List.of(TITLE));
         assertRow(rows.get(1), null, "MS:1000128", null, null, 2.5, 7.0, List.of());
         assertRow(rows.get(2), "MS:1000804", null, null, null, null, null,
-                List.of(namedValuedRepresentation, unitlessBpi, nanTic));
+                List.of(namedValuedRepresentation, unitlessBpi, infiniteTic));
         assertRow(rows.get(3), null, null, 190.0, 400.0, null, null, List.of(namedUnknown, namedCid));
         assertRow(rows.get(4), null, null, null, null, null, null, List.of(lowestInMetres));
         assertThat(nameless(out)).isEmpty();
@@ -188,7 +188,7 @@ class SplitWriterRustReaderTest {
         List<WavelengthSpectrum> back = ForwardBackwardCorpusTest.readSource(out).wavelengthSpectra;
         assertThat(back.get(0).parameters()).containsExactly(TITLE, centroid);
         assertThat(back.get(1).parameters()).containsExactly(new Param(null, "MS:1000128", null, null), bpi, tic);
-        assertThat(back.get(2).parameters()).containsExactly(namedValuedRepresentation, unitlessBpi, nanTic,
+        assertThat(back.get(2).parameters()).containsExactly(namedValuedRepresentation, unitlessBpi, infiniteTic,
                 namelessType);
         assertThat(back.get(3).parameters()).containsExactly(namedUnknown, namedCid, lowest, highest);
         assertThat(back.get(4).parameters()).containsExactly(lowestInMetres);

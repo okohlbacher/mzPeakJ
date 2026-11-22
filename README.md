@@ -352,13 +352,16 @@ Writer notes:
   A CENTROID spectrum with a non-finite m/z keeps both files, since `spectra_peaks` would read such a row back
   as an invented peak (a deviation from the spec's routing).
 - An m/z, chromatogram time or wavelength axis that is not ascending is written re-sorted, with one WARNING per
-  entity. The sort orders rows by `Double.compare`, so rows with a NaN move to the end.
+  entity. The sort orders rows by `Double.compare`, so -Infinity comes first and +Infinity last.
 - Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The Numpress layout takes
   only finite m/z of at least 0 that its fixed point encodes (see `SignalEncoding.NUMPRESS`; sorted m/z up to
   21474.83 always are) and only finite intensities of at least 0 (PIC: rounding to at most 2147483647), and refuses
-  any other value, naming the spectrum, before anything is written. The point layout writes every m/z, but reads a
-  NaN m/z back interpolated, as its null marker; so transition data without a product-ion m/z (SRM/MRM) keeps its
-  NaN m/z in neither layout.
+  any other value, naming the spectrum, before anything is written. The point layout writes every m/z but NaN.
+- No NaN is written to a column: parquet-java writes no column index for a page holding a NaN, and the spec requires
+  a page index for every column. A NaN m/z, time, wavelength or intensity is refused in every encoding, naming the
+  entity and the position, before anything is written (so transition data without a product-ion m/z, SRM/MRM, needs
+  its rows without m/z dropped first); a NaN extra-array cell is written as null and reads back as NaN, and a NaN
+  optional metadata double is written as null and reads back absent.
 - Extra signal arrays are written: those of spectra (`arrays()` and `peakArrays()`, such as per-peak ion
   mobility) as extra columns of `spectra_data` and `spectra_peaks` in both signal encodings, those of
   chromatograms (such as the TIC's `ms level`) as extra columns of `chromatograms_data`, which holds the

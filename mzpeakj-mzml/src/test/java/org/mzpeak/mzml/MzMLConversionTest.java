@@ -65,11 +65,15 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * before and after mzML -> mzPeak -> mzML, equal up to A-26 for tiny, every output valid and the warnings pinned.
  * (b) Smoke round trips A: small.mzpeak, Example_Processed and legacy small.mzpeak through mzML and back, equal up to
  * the A exclusions of design 12.4, with the toMzML warnings and the cv lists pinned (A-17). (c) Branch documents derived from tiny, and mzPeak inputs written with {@link MzPeakWriter}: refs whose
- * kind is kept or changes (B-33), the losses the conversion counts (B-19, B-26, B-34, B-35, B-36), A-26, and the
- * removal of the mzPeak writer's stubs. (d) Failures: the clean-up after a failed conversion, the early target check of
- * {@code toMzML} and gzip input.
+ * kind is kept or changes (B-33), the losses the conversion counts (B-19, B-26, B-35, B-36), A-26, and the
+ * removal of the mzPeak writer's stubs. (d) Failures: the clean-up after a failed conversion, a NaN m/z or intensity
+ * (W10), the early target check of {@code toMzML} and gzip input.
  */
 class MzMLConversionTest {
+
+    /** The end of the mzPeak writer's error for a NaN m/z or intensity (W10). */
+    private static final String NAN = " is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, since a"
+            + " Parquet page holding a NaN gets no column index (conformance.md requires a page index for every column)";
 
     private static final String SCAN_19 = "id=\"scan=19\"";
     private static final String SCAN_20 = "id=\"scan=20\"";
@@ -343,39 +347,36 @@ class MzMLConversionTest {
     }
 
     /**
-     * Two NaN m/z in a row are counted and read back between their neighbours, as the mzPeak read fills a null pair. A
-     * single NaN m/z between two others reads as an unpaired null, which the mzPeak read rejects since R2 (X-8); X-18
-     * (W10) rejects a NaN m/z at conversion.
+     * W10: an mzML spectrum with intensities {@code [1, NaN]}, and one with a NaN m/z, fail the conversion with the
+     * mzPeak writer's message, which names the spectrum and the position, and leave no target, as an archive and as a
+     * directory.
      */
     @Test
-    void aNaNMzIsCountedAndInterpolatedBetweenItsNeighbours() throws IOException {
+    void aNaNIntensityOrMzFailsTheConversionNamingTheSpectrum() throws IOException {
+        Path intensity = tinyWith(s -> spectrum19With(s, 2, array(MZ_TYPE, 100, 200),
+                array(INTENSITY_TYPE, 1, Double.NaN)));
+        assertThat(model(intensity).spectrumList().get(0).intensity()[1]).isNaN();
+        assertConversionFails(intensity, "spectrum 0: the intensity at position 1" + NAN);
+
         double[] mz = new double[15];
         for (int i = 0; i < mz.length; i++) {
             mz[i] = i;
         }
         mz[5] = Double.NaN;
-        mz[6] = Double.NaN;
-        Path file = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
-        Model m1 = model(file);
-        assertThat(m1.spectrumList().get(0).mz()[5]).isNaN();
+        Path nanMz = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
+        assertThat(model(nanMz).spectrumList().get(0).mz()[5]).isNaN();
+        assertConversionFails(nanMz, "spectrum 0: the m/z at position 5" + NAN);
+    }
 
-        B b = b(file, false);
-
-        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES,
-                MzMLConversion.B_34 + " (1)"));
-        Model m3 = model(b.mzml);
-        assertThat(m3.spectrumList().get(0).mz()[5]).isEqualTo(5.0);
-        assertThat(m3.spectrumList().get(0).mz()[6]).isEqualTo(6.0);
-        assertThat(ModelAssert.assertEqual("NaN m/z", m1, m3, STRICT, ModelAssert.A_26, ModelAssert.B_34).hidden())
-                .containsExactly(Map.entry("A_26", 1), Map.entry("B_34", 1));
-
-        mz[6] = 6;
-        Path single = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
-        Path singleMzPeak = dir.resolve("single.mzpeak");
-        MzMLConversion.toMzPeak(single, singleMzPeak, false, MzPeakWriter.Options.defaults());
-        assertThatThrownBy(() -> MzMLConversion.toMzML(singleMzPeak, dir.resolve("single.mzML"), true))
-                .isInstanceOf(MzPeakException.class)
-                .hasMessageContaining("unpaired null m/z at position 5 of spectrum_index 0");
+    /** Converting {@code mzml} as an archive and as a directory fails with {@code message} and leaves no target. */
+    private void assertConversionFails(Path mzml, String message) {
+        for (boolean directory : new boolean[] {false, true}) {
+            Path target = dir.resolve("failed-" + directory + ".mzpeak");
+            assertThatThrownBy(() -> MzMLConversion.toMzPeak(mzml, target, directory,
+                    MzPeakWriter.Options.defaults()))
+                    .isExactlyInstanceOf(MzPeakException.class).hasMessage(message);
+            assertThat(target).doesNotExist();
+        }
     }
 
     @Test

@@ -402,7 +402,7 @@ class SplitWriterPromotionTest {
      * A summary value or a collision energy that is not finite does not qualify for its column
      * ({@code SplitMetadataWriter.doubleIn}): a NaN and an infinite total ion current and a NaN and an infinite
      * collision energy stay in their {@code parameters} lists, their columns stay null, nothing is derived next to
-     * the summary Param, and the spectra read back equal.
+     * the summary Param, and the spectra read back equal, but for the NaN values, which are written as no value (W10).
      */
     @Test
     void nonFiniteSummaryValuesAndCollisionEnergiesStayParams(@TempDir Path tmp) throws IOException {
@@ -415,9 +415,12 @@ class SplitWriterPromotionTest {
         Param cid = new Param("collision-induced dissociation", "MS:1000133", null, null);
         List<Param> energies = List.of(new Param("collision energy", "MS:1000045", Double.NaN, "UO:0000266"),
                 new Param("collision energy", "MS:1000045", Double.NEGATIVE_INFINITY, "UO:0000266"));
+        List<Spectrum> expected = new ArrayList<>(small.spectra);
         for (int k = 0; k < 2; k++) {
             spectra.set(ms1.get(k), withParams(spectra.get(ms1.get(k)), List.of(tics.get(k))));
             spectra.set(msn.get(k), withActivation(spectra.get(msn.get(k)), List.of(cid, energies.get(k))));
+            expected.set(ms1.get(k), withParams(expected.get(ms1.get(k)), List.of(stored(tics.get(k)))));
+            expected.set(msn.get(k), withActivation(expected.get(msn.get(k)), List.of(cid, stored(energies.get(k)))));
         }
 
         Path out = write(spectra, small, tmp.resolve("out.mzpeak"));
@@ -430,23 +433,23 @@ class SplitWriterPromotionTest {
         for (int k = 0; k < 2; k++) {
             Group spectrum = rows.get(spectra.get(ms1.get(k)).index());
             assertThat(ParquetGroups.readParams(spectrum, "parameters")).as("params of %s", tics.get(k))
-                    .containsExactly(tics.get(k));
+                    .containsExactly(stored(tics.get(k)));
             assertSummary(spectrum, Map.of());
             Group activation = activations.get(spectra.get(msn.get(k)).index());
             assertThat(ParquetGroups.optString(activation, "dissociation_method")).isEqualTo("MS:1000133");
             assertThat(ParquetGroups.optDouble(activation, "collision_energy")).as("column of %s", energies.get(k))
                     .isNull();
             assertThat(ParquetGroups.readParams(activation, "parameters")).as("params of %s", energies.get(k))
-                    .containsExactly(energies.get(k));
+                    .containsExactly(stored(energies.get(k)));
         }
 
         Source back = ForwardBackwardCorpusTest.readSource(out);
-        DescriptionAssert.assertEqual("non-finite summaries and energies", descriptions(spectra),
+        DescriptionAssert.assertEqual("non-finite summaries and energies", descriptions(expected),
                 descriptions(back.spectra));
         for (int k = 0; k < 2; k++) {
-            assertThat(back.spectra.get(ms1.get(k)).description().parameters()).contains(tics.get(k));
+            assertThat(back.spectra.get(ms1.get(k)).description().parameters()).contains(stored(tics.get(k)));
             assertThat(back.spectra.get(msn.get(k)).description().primaryPrecursor().activation().parameters())
-                    .containsExactlyInAnyOrder(cid, energies.get(k));
+                    .containsExactlyInAnyOrder(cid, stored(energies.get(k)));
         }
         assertNoAccessionTwice(out);
     }
@@ -495,8 +498,8 @@ class SplitWriterPromotionTest {
 
     /**
      * A collision energy in another unit than electronvolt, or whose value is no number, does not qualify for
-     * {@code activation.collision_energy}: it stays in the {@code parameters} list unchanged, the column stays null,
-     * and it reads back equal.
+     * {@code activation.collision_energy}: it stays in the {@code parameters} list unchanged (a NaN value written as
+     * no value, W10), the column stays null, and it reads back equal.
      */
     @Test
     void aCollisionEnergyInAnotherUnitOrWithoutANumberStaysAParam(@TempDir Path tmp) throws IOException {
@@ -508,8 +511,10 @@ class SplitWriterPromotionTest {
                 new Param("collision energy", COLLISION_ENERGY, 35.0, PERCENT),
                 new Param("collision energy", COLLISION_ENERGY, "35", null),
                 new Param("collision energy", COLLISION_ENERGY, Double.NaN, null));
+        List<Spectrum> expected = new ArrayList<>(small.spectra);
         for (int k = 0; k < energies.size(); k++) {
             spectra.set(msn.get(k), withActivation(spectra.get(msn.get(k)), List.of(cid, energies.get(k))));
+            expected.set(msn.get(k), withActivation(expected.get(msn.get(k)), List.of(cid, stored(energies.get(k)))));
         }
 
         Path out = write(spectra, small, tmp.resolve("out.mzpeak"));
@@ -524,13 +529,13 @@ class SplitWriterPromotionTest {
             assertThat(ParquetGroups.optDouble(activation, "collision_energy")).as("column of %s", energies.get(k))
                     .isNull();
             assertThat(ParquetGroups.readParams(activation, "parameters")).as("params of %s", energies.get(k))
-                    .containsExactly(energies.get(k));
+                    .containsExactly(stored(energies.get(k)));
         }
         Source back = ForwardBackwardCorpusTest.readSource(out);
-        DescriptionAssert.assertEqual("energies that stay Params", descriptions(spectra), descriptions(back.spectra));
+        DescriptionAssert.assertEqual("energies that stay Params", descriptions(expected), descriptions(back.spectra));
         for (int k = 0; k < energies.size(); k++) {
             assertThat(back.spectra.get(msn.get(k)).description().primaryPrecursor().activation().parameters())
-                    .containsExactly(cid, energies.get(k));
+                    .containsExactly(cid, stored(energies.get(k)));
         }
         assertNoAccessionTwice(out);
     }
@@ -618,6 +623,11 @@ class SplitWriterPromotionTest {
                 spectrum(List.of(), List.of(tic)))).containsExactly(
                 "s.scans[0].parameters: missing [], unexpected [ParamKey[id=MS:1000285, value=5.0,"
                         + " unit=MS:1000131]]");
+    }
+
+    /** {@code p} as the writer stores it: a NaN value as no value (W10), any other as given. */
+    private static Param stored(Param p) {
+        return p.value() instanceof Double d && d.isNaN() ? new Param(p.name(), p.accession(), null, p.unit()) : p;
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------
