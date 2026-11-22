@@ -3,6 +3,7 @@ package org.mzpeak.io.parquet;
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdException;
 import io.airlift.compress.lz4.Lz4Compressor;
+import io.airlift.compress.lzo.LzoCompressor;
 import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.bytes.BytesInput;
 import org.apache.parquet.bytes.DirectByteBufferAllocator;
@@ -263,8 +264,8 @@ class PureJavaCodecFactoryTest {
             // the length the page declares
             case SNAPPY -> "SNAPPY decompressed size mismatch: got " + PAGE + ", expected " + (PAGE - 1);
             // the block length exceeds the declared size
-            case LZO -> "LZO decompression failed: java.io.IOException: the page does not start with a Hadoop "
-                    + "block header";
+            case LZO -> "LZO decompression failed: java.io.IOException: Hadoop block length " + PAGE
+                    + " exceeds the " + (PAGE - 1) + " bytes left of the declared size";
             // raw blocks and Hadoop chunks do not fit the output buffer
             default -> codecs.codec() + " decompression failed: io.airlift.compress.MalformedInputException";
         };
@@ -329,18 +330,57 @@ class PureJavaCodecFactoryTest {
         // block length 4, chunk length 5 (4 bytes follow)
         byte[] page = {0, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 0};
         byte[] tooShort = {0, 0, 0, 4, 0, 0, 0};
+        // two empty blocks, then 3 bytes of the next block length
+        byte[] cutLength = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        byte[] rawBlock = TestCodecs.raw(new Lz4Compressor(), bytes(0, PAGE));
 
         assertThatThrownBy(() -> FACTORY.getDecompressor(CompressionCodecName.LZ4)
                 .decompress(BytesInput.from(page), 4))
                 .isInstanceOf(IOException.class)
                 .hasMessageStartingWith("LZ4 decompression failed: io.airlift.compress.MalformedInputException");
-        for (byte[] lzo : List.of(page, tooShort, TestCodecs.raw(new Lz4Compressor(), bytes(0, PAGE)))) {
-            assertThatThrownBy(() -> FACTORY.getDecompressor(CompressionCodecName.LZO)
-                    .decompress(BytesInput.from(lzo), 4))
+        String lzo = "LZO decompression failed: java.io.IOException: ";
+        assertLzoFails(page, 4, lzo + "Hadoop chunk length 5 exceeds the 4 bytes left of the page");
+        assertLzoFails(tooShort, 4, lzo + "the page does not start with a Hadoop block header");
+        assertLzoFails(cutLength, 4, lzo + "the page ends inside a Hadoop block length");
+        assertLzoFails(rawBlock, 4, lzo + "Hadoop block length "
+                + Integer.toUnsignedLong(ByteBuffer.wrap(rawBlock).getInt()) + " exceeds the 4 bytes left of the "
+                + "declared size");
+    }
+
+    /**
+     * A Hadoop-framed page whose first chunk is valid but whose second chunk length runs far past the page fails
+     * naming the codec, both ways, without allocating from that length (aircompressor's Hadoop streams allocate a
+     * buffer of the chunk length before they read the chunk). LZ4 retries the page as a raw block, which is corrupt.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = CompressionCodecName.class, names = {"LZ4", "LZO"})
+    void anOversizedLaterChunkLengthFailsNamingTheCodec(CompressionCodecName codec) {
+        BytesInputDecompressor decompressor = FACTORY.getDecompressor(codec);
+        byte[] first = TestCodecs.raw(codec == CompressionCodecName.LZ4 ? new Lz4Compressor() : new LzoCompressor(),
+                bytes(0, 1000));
+        for (int length : new int[] {0x7FFFFFF0, 0xFFFFFFF0}) {
+            byte[] page = ByteBuffer.allocate(16 + first.length)
+                    .putInt(PAGE).putInt(first.length).put(first).putInt(length).putInt(0).array();
+            String message = codec == CompressionCodecName.LZ4
+                    ? "LZ4 decompression failed: io.airlift.compress.MalformedInputException"
+                    : "LZO decompression failed: java.io.IOException: Hadoop chunk length "
+                            + Integer.toUnsignedLong(length) + " exceeds the 4 bytes left of the page";
+
+            assertThatThrownBy(() -> decompressor.decompress(BytesInput.from(page), PAGE))
                     .isInstanceOf(IOException.class)
-                    .hasMessage("LZO decompression failed: java.io.IOException: the page does not start with a "
-                            + "Hadoop block header");
+                    .hasMessageStartingWith(message);
+            assertThatThrownBy(() -> decompressor.decompress(ByteBuffer.wrap(page), page.length,
+                    ByteBuffer.allocate(PAGE), PAGE))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageStartingWith(message);
         }
+    }
+
+    private static void assertLzoFails(byte[] page, int decompressedSize, String message) {
+        assertThatThrownBy(() -> FACTORY.getDecompressor(CompressionCodecName.LZO)
+                .decompress(BytesInput.from(page), decompressedSize))
+                .isInstanceOf(IOException.class)
+                .hasMessage(message);
     }
 
     /** A Hadoop-framed LZ4 page whose chunk does not decode is retried as a raw block, which fails too. */

@@ -1,9 +1,9 @@
 package org.mzpeak.io.parquet;
 
 import com.github.luben.zstd.Zstd;
+import io.airlift.compress.Decompressor;
 import io.airlift.compress.lz4.Lz4Decompressor;
-import io.airlift.compress.lz4.Lz4HadoopStreams;
-import io.airlift.compress.lzo.LzoHadoopStreams;
+import io.airlift.compress.lzo.LzoDecompressor;
 import io.airlift.compress.snappy.SnappyDecompressor;
 import org.apache.parquet.bytes.BytesInput;
 import org.apache.parquet.compression.CompressionCodecFactory;
@@ -185,18 +185,47 @@ public class PureJavaCodecFactory implements CompressionCodecFactory {
     }
 
     /**
-     * Whether {@code page} starts like a Hadoop block of a page of {@code decompressedSize} bytes: at least the
-     * two 4-byte big-endian lengths, a block length of at most the page size and a first chunk length of at most
-     * the bytes that follow. Hadoop's streams allocate their buffers from these lengths, so a page that fails the
-     * check never reaches them.
+     * Decodes {@code page} as Hadoop's block framing into {@code out} with {@code decompressor} and returns the bytes
+     * written: blocks of a 4-byte big-endian uncompressed length followed by chunks, each a 4-byte big-endian
+     * compressed length and the chunk, until the chunks fill the block. Every length is checked, unsigned, against
+     * the page bytes left and the declared size left before it is used, and nothing is allocated from it, so a
+     * corrupt page cannot make the reader allocate more than the page and its declared size. Throws an
+     * {@link IOException} naming the first framing violation; a chunk that does not decode throws the
+     * decompressor's exception.
      */
-    private static boolean hadoopFramed(byte[] page, int decompressedSize) {
+    private static int decodeHadoopFramed(byte[] page, byte[] out, Decompressor decompressor) throws IOException {
         if (page.length < 8) {
-            return false;
+            throw new IOException("the page does not start with a Hadoop block header");
         }
-        ByteBuffer header = ByteBuffer.wrap(page);
-        return Integer.compareUnsigned(header.getInt(0), decompressedSize) <= 0
-                && Integer.compareUnsigned(header.getInt(4), page.length - 8) <= 0;
+        ByteBuffer in = ByteBuffer.wrap(page);
+        int produced = 0;
+        while (in.hasRemaining()) {
+            long block = readLength(in, "block");
+            if (block > out.length - produced) {
+                throw new IOException("Hadoop block length " + block + " exceeds the " + (out.length - produced)
+                        + " bytes left of the declared size");
+            }
+            int blockEnd = produced + (int) block;
+            while (produced < blockEnd) {
+                long chunk = readLength(in, "chunk");
+                if (chunk > in.remaining()) {
+                    throw new IOException("Hadoop chunk length " + chunk + " exceeds the " + in.remaining()
+                            + " bytes left of the page");
+                }
+                produced += decompressor.decompress(page, in.position(), (int) chunk, out, produced,
+                        blockEnd - produced);
+                in.position(in.position() + (int) chunk);
+            }
+        }
+        return produced;
+    }
+
+    /** The next 4-byte big-endian Hadoop length of {@code in}, unsigned. */
+    private static long readLength(ByteBuffer in, String what) throws IOException {
+        if (in.remaining() < 4) {
+            throw new IOException("the page ends inside a Hadoop " + what + " length");
+        }
+        return Integer.toUnsignedLong(in.getInt());
     }
 
     private static final BytesInputDecompressor GZIP_DECOMPRESSOR =
@@ -229,16 +258,13 @@ public class PureJavaCodecFactory implements CompressionCodecFactory {
             new PureJavaDecompressor(CompressionCodecName.LZ4) {
                 @Override
                 long inflate(byte[] compressed, byte[] out) {
-                    if (hadoopFramed(compressed, out.length)) {
-                        try {
-                            long n = readStream(new Lz4HadoopStreams(Math.max(out.length, 1))
-                                    .createInputStream(new ByteArrayInputStream(compressed)), out);
-                            if (n == out.length) {
-                                return n;
-                            }
-                        } catch (IOException | RuntimeException notHadoopFramed) {
-                            // decoded as a raw block below
+                    try {
+                        int n = decodeHadoopFramed(compressed, out, new Lz4Decompressor());
+                        if (n == out.length) {
+                            return n;
                         }
+                    } catch (IOException | RuntimeException notHadoopFramed) {
+                        // decoded as a raw block below
                     }
                     return new Lz4Decompressor().decompress(compressed, 0, compressed.length, out, 0, out.length);
                 }
@@ -248,11 +274,7 @@ public class PureJavaCodecFactory implements CompressionCodecFactory {
             new PureJavaDecompressor(CompressionCodecName.LZO) {
                 @Override
                 long inflate(byte[] compressed, byte[] out) throws IOException {
-                    if (!hadoopFramed(compressed, out.length)) {
-                        throw new IOException("the page does not start with a Hadoop block header");
-                    }
-                    return readStream(new LzoHadoopStreams(Math.max(out.length, 1))
-                            .createInputStream(new ByteArrayInputStream(compressed)), out);
+                    return decodeHadoopFramed(compressed, out, new LzoDecompressor());
                 }
             };
 
