@@ -129,7 +129,7 @@ final class FooterMetadataWriter {
             runJson.put("default_data_processing_id", effectiveDpId);
             runJson.put("default_source_file_id", effectiveSfId);
             putText(runJson, "start_time", run.startTime());
-            putParams(runJson, run.parameters());
+            putParams(runJson, "run", run.parameters());
         }
         String defaultSoftware = defaultSoftware(meta);
         for (int i = 0; i < configurations.size(); i++) {
@@ -160,9 +160,10 @@ final class FooterMetadataWriter {
             for (int i = 0; i < software.size(); i++) {
                 Software s = software.get(i);
                 ObjectNode n = arr.addObject();
-                putText(n, "id", s.id() != null || !current ? s.id() : freshId("mzpeakj_software_" + i, softwareIds));
+                String id = s.id() != null || !current ? s.id() : freshId("mzpeakj_software_" + i, softwareIds);
+                putText(n, "id", id);
                 n.put("version", s.version() != null ? s.version() : "");
-                putParams(n, s.parameters());
+                putParams(n, "software " + id, s.parameters());
             }
             kv.put("software_list", arr.toString());
         }
@@ -177,9 +178,10 @@ final class FooterMetadataWriter {
                     ObjectNode cn = comps.addObject();
                     cn.put("component_type", componentTypeJson(c.componentType()));
                     cn.put("order", c.order());
-                    putParams(cn, c.parameters());
+                    putParams(cn, "instrument configuration " + ic.id() + " component " + c.order(),
+                            c.parameters());
                 }
-                putParams(n, ic.parameters());
+                putParams(n, "instrument configuration " + ic.id(), ic.parameters());
             }
             kv.put("instrument_configuration_list", arr.toString());
         }
@@ -190,14 +192,14 @@ final class FooterMetadataWriter {
             for (int i = 0; i < processing.size(); i++) {
                 DataProcessing dp = processing.get(i);
                 ObjectNode n = arr.addObject();
-                putText(n, "id", dp.id() != null || !current ? dp.id()
-                        : freshId("mzpeakj_processing_" + i, processingIds));
+                String id = dp.id() != null || !current ? dp.id() : freshId("mzpeakj_processing_" + i, processingIds);
+                putText(n, "id", id);
                 ArrayNode methods = n.putArray("methods");
                 for (ProcessingMethod m : dp.methods()) {
                     ObjectNode mn = methods.addObject();
                     mn.put("order", m.order());
                     putText(mn, "software_reference", m.softwareReference());
-                    putParams(mn, m.parameters());
+                    putParams(mn, "data processing " + id + " method " + m.order(), m.parameters());
                 }
             }
             kv.put("data_processing_method_list", arr.toString());
@@ -208,21 +210,21 @@ final class FooterMetadataWriter {
                 ObjectNode n = arr.addObject();
                 putText(n, "id", s.id());
                 putText(n, "name", s.name());
-                putParams(n, s.parameters());
+                putParams(n, "sample " + s.id(), s.parameters());
             }
             kv.put("sample_list", arr.toString());
         }
         // A run always names a source file, so without a file description one is written to declare its stub.
         if (description != null || !sources.isEmpty()) {
             ObjectNode fd = MAPPER.createObjectNode();
-            putParamsArray(fd, "contents", description == null ? null : description.contents());
+            putParamsArray(fd, "contents", "file description", description == null ? null : description.contents());
             ArrayNode sourceArray = fd.putArray("source_files");
             for (SourceFile sf : sources) {
                 ObjectNode sn = sourceArray.addObject();
                 putText(sn, "id", sf.id());
                 putText(sn, "name", sf.name());
                 putText(sn, "location", sf.location());
-                putParams(sn, sf.parameters());
+                putParams(sn, "source file " + sf.id(), sf.parameters());
             }
             // Left out when empty, as the reference serialises FileDescription.contacts (skip_serializing_if empty).
             if (description != null && !description.contacts().isEmpty()) {
@@ -231,7 +233,7 @@ final class FooterMetadataWriter {
                     ObjectNode cn = contacts.addObject();
                     putText(cn, "contact_name", c.name());
                     putText(cn, "contact_affiliation", c.affiliation());
-                    putParams(cn, c.parameters());
+                    putParams(cn, "contact " + c.name(), c.parameters());
                 }
             }
             kv.put("file_description", fd.toString());
@@ -279,33 +281,25 @@ final class FooterMetadataWriter {
                 + " names but the file metadata does not declare");
     }
 
-    private static void putParams(ObjectNode owner, List<Param> params) {
-        putParamsArray(owner, "parameters", params);
+    private static void putParams(ObjectNode owner, String entity, List<Param> params) {
+        putParamsArray(owner, "parameters", entity, params);
     }
 
-    private static void putParamsArray(ObjectNode owner, String field, List<Param> params) {
+    /**
+     * Adds {@code params} as the array {@code field} of {@code owner}, each value as {@link ParamValues#json} gives it;
+     * a value of a type the writer cannot write throws {@link MzPeakException} naming {@code entity} and the param.
+     */
+    private static void putParamsArray(ObjectNode owner, String field, String entity, List<Param> params) {
         ArrayNode arr = owner.putArray(field);
         if (params == null) {
             return;
         }
+        ParamValues.require(entity, params);
         for (Param p : params) {
             ObjectNode pn = arr.addObject();
             putText(pn, "name", p.name());
             putText(pn, "accession", p.accession());
-            Object v = p.value();
-            if (v == null) {
-                pn.putNull("value");
-            } else if (v instanceof Boolean b) {
-                pn.put("value", b);
-            } else if (v instanceof Long l) {
-                pn.put("value", l);
-            } else if (v instanceof Integer i) {
-                pn.put("value", i.longValue());
-            } else if (v instanceof Double d) {
-                pn.put("value", d);
-            } else {
-                pn.put("value", v.toString());
-            }
+            pn.set("value", ParamValues.json(p.value()));
             putText(pn, "unit", p.unit());
         }
     }

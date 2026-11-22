@@ -171,6 +171,11 @@ public final class MzPeakWriter {
      * extra array cell reads back as NaN, the others as absent.
      * With {@link SignalEncoding#NUMPRESS}, every m/z and intensity written must be in the range that encoding
      * documents.
+     * A {@link org.mzpeak.model.Param} value is {@code null}, a {@code Long}, {@code Integer}, {@code Short} or
+     * {@code Byte} (read back as a {@code Long}), a {@code Double} or {@code Float} (read back as a {@code Double}), a
+     * {@code String}, a {@code Boolean}, or a {@code java.util.Collection} or Java array of these, written as a JSON
+     * array (a JSON string of it in a Parquet {@code parameters} list) and read back as its compact JSON text
+     * ({@code "[1,2]"}).
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}
@@ -353,8 +358,10 @@ public final class MzPeakWriter {
      * @param options        the settings of the write
      * @return the open session
      * @throws MzPeakException      when {@code target} exists and is not an empty directory, when it cannot be read,
-     *                              created or written, or when a key of {@code spectrumArrays} is MS:1000514 or
-     *                              MS:1000515, which a spectrum holds in {@code mz()} and {@code intensity()}
+     *                              created or written, when a key of {@code spectrumArrays} is MS:1000514 or
+     *                              MS:1000515, which a spectrum holds in {@code mz()} and {@code intensity()}, or when
+     *                              a Param of {@code fileMetadata} or {@code scanSettings} has a value of a type
+     *                              {@code writeDirectory} does not write
      * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
      */
     public static Session openDirectory(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
@@ -377,7 +384,9 @@ public final class MzPeakWriter {
      * @param options        the settings of the write
      * @return the open session
      * @throws MzPeakException      when {@code target} exists, when the temp directory cannot be created or written,
-     *                              or when a key of {@code spectrumArrays} is MS:1000514 or MS:1000515
+     *                              when a key of {@code spectrumArrays} is MS:1000514 or MS:1000515, or when a Param of
+     *                              {@code fileMetadata} or {@code scanSettings} has a value of a type
+     *                              {@code writeDirectory} does not write
      * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
      */
     public static Session openArchive(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
@@ -717,6 +726,7 @@ public final class MzPeakWriter {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(fileMetadata, "fileMetadata");
             List<ScanSettings> settings = List.copyOf(Objects.requireNonNull(scanSettings, "scanSettings"));
+            WritePlanner.requireWritableScanSettings(settings);
             Set<String> keys = new LinkedHashSet<>();
             for (String key : Objects.requireNonNull(spectrumArrays, "spectrumArrays")) {
                 keys.add(Objects.requireNonNull(key, "spectrumArrays key"));

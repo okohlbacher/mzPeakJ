@@ -1006,7 +1006,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * accession but no name, such as a term-marker cell the reader gives as {@code Param(null, CURIE)} when no column
      * takes it, is written with a name, since the Rust reader requires one there: the term's name where
      * {@link #TERM_NAMES} knows it, else its accession. A Param with neither name nor accession never gets here: the
-     * planner refuses it before anything is written ({@code WritePlanner.requireNamedParams}).
+     * planner refuses it before anything is written ({@code WritePlanner.requireWritableParams}).
      */
     private static void params(Group row, List<Param> params) {
         if (params.isEmpty()) {

@@ -108,6 +108,7 @@ final class WritePlanner {
                           FileMetadata fileMetadata, Options options) {
         List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra,
                 options.metadataLayout());
+        requireWritableScanSettings(scanSettings);
         Map<Long, Long> writtenIndex = new HashMap<>();
         for (int i = 0; i < ordered.size(); i++) {
             writtenIndex.put(ordered.get(i).index(), (long) i);
@@ -263,7 +264,7 @@ final class WritePlanner {
             }
         }
         List<Precursor> precursors = s.description().precursors();
-        requireNamedParams(s);
+        requireWritableParams(s);
         boolean split = options.metadataLayout() == MetadataLayout.SPLIT;
         if (split) {
             for (Precursor p : precursors) {
@@ -951,7 +952,7 @@ final class WritePlanner {
         long previous = -1;
         for (Spectrum s : spectra) {
             requireNonNegative(s.index(), "spectrum index");
-            requireNamedParams(s);
+            requireWritableParams(s);
             if (layout == MetadataLayout.SPLIT) {
                 for (Precursor p : s.description().precursors()) {
                     requireNonNegativePrecursorIndex(p);
@@ -993,7 +994,7 @@ final class WritePlanner {
             requireSameTimeUnit(chromatograms.get(0), c);
             List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
             addPrecursorParams(c.precursors(), lists);
-            requireNamedParams(owner("chromatogram", c.index(), c.id()), lists);
+            requireWritableParams(owner("chromatogram", c.index(), c.id()), lists);
             requireNoNaN("chromatogram " + c.index(), "time", c.time());
             requireNoNaN("chromatogram " + c.index(), "intensity", c.intensity());
             if (layout == MetadataLayout.SPLIT) {
@@ -1006,7 +1007,7 @@ final class WritePlanner {
         for (WavelengthSpectrum w : wavelengthSpectra) {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
-            requireNamedParams(owner("wavelength spectrum", w.index(), w.id()), List.of(w.parameters()));
+            requireWritableParams(owner("wavelength spectrum", w.index(), w.id()), List.of(w.parameters()));
             requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
             requireNoNaN("wavelength spectrum " + w.index(), "intensity", w.intensity());
         }
@@ -1014,18 +1015,19 @@ final class WritePlanner {
 
     /**
      * Throws {@link MzPeakException} when a Param of {@code s}, its own, its scans', its precursors' (isolation window,
-     * activation) or its selected ions', has neither a name nor an accession. Such a Param names nothing: mzML
-     * requires a userParam's name, and the Rust reference reader requires every Param of a {@code parameters} list to
-     * have a name, so a spectrum with one would be unreadable there. Checked in both metadata layouts, before
-     * anything is written.
+     * activation) or its selected ions', has neither a name nor an accession, or a value of a type the writer cannot
+     * write ({@link ParamValues#require}). A Param without name and accession names nothing: mzML requires a
+     * userParam's name, and the Rust reference reader requires every Param of a {@code parameters} list to have a
+     * name, so a spectrum with one would be unreadable there. Checked in both metadata layouts, before anything is
+     * written.
      */
-    private static void requireNamedParams(Spectrum s) {
+    private static void requireWritableParams(Spectrum s) {
         List<List<Param>> lists = new ArrayList<>(List.of(s.description().parameters()));
         for (ScanEvent scan : s.description().scans()) {
             lists.add(scan.parameters());
         }
         addPrecursorParams(s.description().precursors(), lists);
-        requireNamedParams(owner("spectrum", s.index(), s.description().id()), lists);
+        requireWritableParams(owner("spectrum", s.index(), s.description().id()), lists);
     }
 
     /** Adds to {@code lists} the Params of each of {@code precursors}: isolation window, activation, ions. */
@@ -1041,13 +1043,33 @@ final class WritePlanner {
         }
     }
 
-    /** See {@link #requireNamedParams(Spectrum)}; {@code owner} names the entity in the message. */
-    private static void requireNamedParams(String owner, List<List<Param>> lists) {
+    /** See {@link #requireWritableParams(Spectrum)}; {@code owner} names the entity in the message. */
+    private static void requireWritableParams(String owner, List<List<Param>> lists) {
         for (List<Param> params : lists) {
             for (Param p : params) {
                 if (p.name() == null && p.accession() == null) {
                     throw new MzPeakException(owner + ": a parameter needs a name or an accession: " + p);
                 }
+            }
+            ParamValues.require(owner, params);
+        }
+    }
+
+    /**
+     * Throws {@link MzPeakException} when a Param of {@code scanSettings}, which may be {@code null}, its own or its
+     * targets', has a value of a type the writer cannot write ({@link ParamValues#require}), naming the scan settings
+     * by position and id; checked by {@link #plan} and when a session opens, before anything is written.
+     */
+    static void requireWritableScanSettings(List<ScanSettings> scanSettings) {
+        if (scanSettings == null) {
+            return;
+        }
+        for (int i = 0; i < scanSettings.size(); i++) {
+            ScanSettings s = scanSettings.get(i);
+            String owner = owner("scan settings", i, s.id());
+            ParamValues.require(owner, s.parameters());
+            for (List<Param> target : s.targets()) {
+                ParamValues.require(owner, target);
             }
         }
     }
