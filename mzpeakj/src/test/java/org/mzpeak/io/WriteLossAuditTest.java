@@ -35,12 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Each of current small.unpacked, has_uv, diaPASEF.ref and Example_Processed.img is read, written SPLIT and read back:
  * <ul>
  *   <li>(a) every column of every metadata member the fixture has exists in the written member, except those of
- *       {@link #EXCUSED}, each with its reason;
+ *       {@link #EXCUSED}, each with its reason, and the wavelength columns the spec does not name
+ *       ({@link #NOT_IN_SPEC}, W11);
  *   <li>(b) what mzPeakJ reads back equals what it read from the fixture (Canonical forms, exact arrays): spectrum
  *       descriptions, signal arrays and peaks with their extra arrays, chromatograms with their extra arrays, units
  *       and Params, wavelength spectra, scan settings and file metadata;
- *   <li>(c) has_uv's written wavelength scans hold the spectrum-scan columns, an empty {@code scan_windows} and the
- *       stored times.
+ *   <li>(c) has_uv's written wavelength scans hold the spectrum-scan columns the wavelength scan table has, an empty
+ *       {@code scan_windows} and the stored times.
  * </ul>
  */
 class WriteLossAuditTest {
@@ -57,6 +58,16 @@ class WriteLossAuditTest {
                     + "these fixtures has one (checked against the reference's cells)",
             "polynomial_delta_coordinate_interpolation", "mzPeakJ writes the reconstructed arrays, not null-marked "
                     + "profiles with interpolation coefficients (DESIGN §8.1)");
+
+    /**
+     * The columns of the reference's wavelength members the written ones lack on purpose (W11, D13-12): the wavelength
+     * scan table of wavelength-spectra.md has no ion mobility or spectrum reference column, and the representation
+     * is written as {@code opt_spectrum_representation}.
+     */
+    private static final Map<String, Set<String>> NOT_IN_SPEC = Map.of(
+            "wavelength_spectra_metadata_scans.parquet",
+            Set.of("ion_mobility_value", "ion_mobility_type", "spectrum_reference"),
+            "wavelength_spectra_metadata.parquet", Set.of("spectrum_representation"));
 
     /** The metadata members of each fixture: Example_Processed.img has no chromatograms, has_uv wavelength spectra. */
     private static final Map<String, Integer> METADATA_MEMBERS = Map.of("small.unpacked.mzpeak", 7,
@@ -88,6 +99,10 @@ class WriteLossAuditTest {
                 ParquetFooter ref = ParquetFooter.read(reference.inputFile(entry.name()));
                 List<String> have = ParquetFooter.read(written.inputFile(entry.name())).topLevelFields();
                 for (String column : ref.topLevelFields()) {
+                    if (NOT_IN_SPEC.getOrDefault(entry.name(), Set.of()).contains(column)) {
+                        assertThat(have).as("%s: %s", name, entry.name()).doesNotContain(column);
+                        continue;
+                    }
                     if (!have.contains(column)) {
                         missing.computeIfAbsent(column, k -> new ArrayList<>()).add(entry.name());
                         if (column.equals("data_processing_id")) {
@@ -143,8 +158,14 @@ class WriteLossAuditTest {
                     .isEqualTo(Canonical.lines(a.precursors(), Canonical::precursor));
         }
 
+        // W11: the wavelength Params read back from their columns (WavelengthColumnsTest)
+        List<WavelengthSpectrum> expectedWavelengthSpectra = new ArrayList<>();
+        for (WavelengthSpectrum w : source.wavelengthSpectra) {
+            expectedWavelengthSpectra.add(new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(),
+                    w.wavelength(), w.intensity(), WavelengthColumnsTest.readBack(w.parameters())));
+        }
         assertThat(Canonical.lines(back.wavelengthSpectra, Canonical::describe)).as("%s wavelength spectra", name)
-                .containsExactlyElementsOf(Canonical.lines(source.wavelengthSpectra, Canonical::describe));
+                .containsExactlyElementsOf(Canonical.lines(expectedWavelengthSpectra, Canonical::describe));
         for (int i = 0; i < source.wavelengthSpectra.size(); i++) {
             WavelengthSpectrum a = source.wavelengthSpectra.get(i);
             WavelengthSpectrum b = back.wavelengthSpectra.get(i);
@@ -205,13 +226,14 @@ class WriteLossAuditTest {
             assertThat(ParquetGroups.groupList(row, "scan_windows")).as(what).isEmpty();
             assertThat(ParquetGroups.groupList(row, "parameters")).as(what).isEmpty();
             for (String empty : List.of("preset_scan_configuration", "filter_string", "ion_injection_time",
-                    "ion_mobility_value", "ion_mobility_type", "instrument_configuration_id", "spectrum_reference")) {
+                    "instrument_configuration_id")) {
                 assertThat(ParquetGroups.has(row, empty)).as("%s %s", what, empty).isFalse();
             }
         }
         try (MzPeakSource reference = MzPeakSource.open(fixture); MzPeakSource written = MzPeakSource.open(out)) {
-            assertThat(ParquetFooter.read(written.inputFile(member)).topLevelFields())
-                    .isEqualTo(ParquetFooter.read(reference.inputFile(member)).topLevelFields());
+            List<String> expected = new ArrayList<>(ParquetFooter.read(reference.inputFile(member)).topLevelFields());
+            expected.removeAll(NOT_IN_SPEC.get(member));
+            assertThat(ParquetFooter.read(written.inputFile(member)).topLevelFields()).isEqualTo(expected);
         }
     }
 

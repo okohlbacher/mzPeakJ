@@ -337,12 +337,13 @@ Writer notes:
   spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
 - A CV param that has a standardized column (summary values, spectrum type, representation, dissociation method,
-  collision energy, imaging position, wavelength representation, base peak intensity and TIC) is written to that
-  column and leaves the `parameters` list, so it reads back after the list, in column order, and without its name
-  where the column is a term marker. CV param order carries no meaning; a description whose promoted terms did not
-  come last reads back in another order, and one read from mzPeakJ's own output keeps its order. As the reference
-  does, a wavelength spectrum's type and observed wavelength range are written to their columns and also stay in the
-  list. A param with an accession but no name in a `parameters` list is written with its term's name (its accession
+  collision energy, imaging position, and of a wavelength spectrum its type, representation, observed wavelength
+  range, base peak intensity and TIC) is written to that column and leaves the `parameters` list, so it reads back
+  after the list, in column order, and without its name where the column is a term marker. CV param order carries no
+  meaning; a description whose promoted terms did not come last reads back in another order, and one read from
+  mzPeakJ's own output keeps its order. Unlike the reference, a wavelength spectrum's type and observed wavelength
+  range are not also kept in the list (the spec forbids writing a term both ways); the Rust reference reader takes
+  them from the columns, once each, where it reads the reference's has_uv with each twice. A param with an accession but no name in a `parameters` list is written with its term's name (its accession
   where mzPeakJ does not know the term), which the Rust reference reader requires.
 - In the `SPLIT` layout, `spectra_metadata` and `wavelength_spectra_metadata` carry empty `auxiliary_arrays` and
   an `ARROW:schema` footer entry that types them as the reference does; the Rust reference reader needs both.
@@ -369,8 +370,10 @@ Writer notes:
   with `Chromatogram.withTimeUnit`.
 - In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
   one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
-  full scan schema, and `chromatograms_metadata` carries empty `auxiliary_arrays` with its `ARROW:schema` entry, as
-  the reference writes them.
+  scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), and
+  `chromatograms_metadata` carries empty `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
+  them. The wavelength representation column is `opt_spectrum_representation` (the spec's wavelength table does not
+  name it); the reader also reads the reference's `spectrum_representation`.
 - Every reference in the file-level documents resolves: a run default or software reference that names nothing
   gets a stub entity of that id (an instrument configuration, data processing, source file or software), with one
   WARNING each; files whose references resolve are written unchanged. diaPASEF.ref and diaPASEF.grid, whose run

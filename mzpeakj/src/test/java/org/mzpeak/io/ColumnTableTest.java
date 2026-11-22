@@ -86,6 +86,9 @@ class ColumnTableTest {
             new Legacy(Facet.WAVELENGTH_SPECTRUM, "MS:1003812", "MS_1003812_lambda_max_unit_UO:0000018"),
             new Legacy(Facet.WAVELENGTH_SPECTRUM, "MS:1003060", "MS_1003060_number_of_data_points"));
 
+    /** The one canonical path that is not the current manifests' (D13-12). */
+    private static final String RENAMED = "opt_spectrum_representation";
+
     @Test
     void eachFacetHasTheUnionOfTheCurrentMappings() {
         Map<Facet, Integer> sizes = new EnumMap<>(Facet.class);
@@ -118,13 +121,13 @@ class ColumnTableTest {
                 covered.add(e);
                 List<String> tableOrder = new ArrayList<>();
                 for (Column c : ColumnTable.columns(facet)) {
-                    Optional<ColumnMapping> m = e.columnAtPath(c.path());
+                    Optional<ColumnMapping> m = e.columnAtPath(manifestPath(c));
                     if (m.isEmpty()) {
                         continue;
                     }
                     compared++;
                     seen.add(c);
-                    tableOrder.add(c.path());
+                    tableOrder.add(manifestPath(c));
                     if (!sameIdentity(c, m.get())) {
                         conflicts.add(fixture + " " + facet + " " + c.path() + ": table " + identity(c)
                                 + ", manifest " + identity(m.get()));
@@ -132,7 +135,7 @@ class ColumnTableTest {
                 }
                 List<String> fileOrder = e.columnMapping().stream().map(ColumnMapping::path).toList();
                 for (String path : fileOrder) {
-                    if (ColumnTable.columns(facet).stream().noneMatch(c -> c.path().equals(path))) {
+                    if (ColumnTable.columns(facet).stream().noneMatch(c -> manifestPath(c).equals(path))) {
                         unknownMappings.add(fixture + " " + facet + " " + path);
                     }
                 }
@@ -376,8 +379,17 @@ class ColumnTableTest {
 
     // ---- helpers ---------------------------------------------------------------------------
 
+    /**
+     * The path the current manifests map {@code c} at: its canonical path, but for the wavelength representation,
+     * which the table renames to {@code opt_spectrum_representation} (D13-12) and the manifests map at its first
+     * fallback, {@code spectrum_representation}.
+     */
+    private static String manifestPath(Column c) {
+        return c.path().equals(RENAMED) ? c.fallbacks().get(0) : c.path();
+    }
+
     private static boolean sameIdentity(Column c, ColumnMapping m) {
-        return c.path().equals(m.path()) && c.accession().equals(m.accession()) && c.name().equals(m.name())
+        return manifestPath(c).equals(m.path()) && c.accession().equals(m.accession()) && c.name().equals(m.name())
                 && Objects.equals(c.unit(), m.unit()) && c.termMarker() == Boolean.TRUE.equals(m.termMarker());
     }
 

@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the lowest and highest observed wavelength and a spectrum title, which the reader used to drop and the writer used
  * to write as an empty list. The reader takes a row's {@code parameters} list first, then, in both layouts (packed
  * since LIB-1), the leftover columns whose accession is not already there (a term marker as
- * {@code Param(null, CURIE)}). The split writer writes the representation, base peak intensity and TIC into their
- * columns, as the reference does, and the others into the {@code parameters} column; the packed writer, whose schema is
- * frozen, writes none of them, and warns once. The cv-list prefix scan covers them (design §7).
+ * {@code Param(null, CURIE)}). The split writer writes the type, representation, wavelength range, base peak
+ * intensity and TIC into their columns only (W11), and the others into the {@code parameters} column; the packed
+ * writer, whose schema is frozen, writes none of them, and warns once. The cv-list prefix scan covers them (design §7).
  */
 class WavelengthParamsTest {
 
@@ -143,13 +143,13 @@ class WavelengthParamsTest {
     // ---- (c): written and read again ------------------------------------------------------------------------
 
     /**
-     * The split writer writes the list Params into the parameters column and the representation, base peak intensity
-     * and TIC, which the reader appended from has_uv's columns, into the same columns, in the reference's order;
-     * reading it back gives every Param in the order read. The representation, a term marker the reader gives without
-     * a name, never reaches the list (the Rust reader requires a name there).
+     * The split writer writes the title into the parameters column and the type, wavelength range, representation,
+     * base peak intensity and TIC into their columns only (W11); reading it back gives every Param, the column terms
+     * after the title, the type without its name ({@link WavelengthColumnsTest#readBack}). The representation, a term
+     * marker the reader gives without a name, never reaches the list (the Rust reader requires a name there).
      */
     @Test
-    void splitWriteKeepsEveryParamInOrder() {
+    void splitWriteKeepsEveryParam() {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current(HAS_UV));
         Path out = tmp.resolve("split.mzpeak");
         List<LogRecord> warnings = packedWarnings(() -> MzPeakWriter.writeDirectory(out, source.spectra,
@@ -162,11 +162,10 @@ class WavelengthParamsTest {
             List<Param> expected = source.wavelengthSpectra.get(i).parameters();
             assertThat(expected).as("source spectrum %d", i).hasSize(7);
             assertThat(back.get(i).parameters()).as("spectrum %d", i)
-                    .containsExactlyInAnyOrderElementsOf(expected)
-                    .isEqualTo(expected);
+                    .isEqualTo(WavelengthColumnsTest.readBack(expected));
         }
-        // The member itself: the four list Params are list entries, the type and wavelength range also columns (as
-        // in has_uv), the three leftovers columns only.
+        // The member itself: the title is the list entry, the type, wavelength range and three leftovers columns
+        // only.
         List<Group> rows = new ArrayList<>();
         ParquetGroups.forEach(out.resolve(METADATA), rows::add);
         assertThat(rows).hasSameSizeAs(source.wavelengthSpectra);
@@ -174,14 +173,14 @@ class WavelengthParamsTest {
             Group row = rows.get(i);
             List<Param> params = source.wavelengthSpectra.get(i).parameters();
             assertThat(ParquetGroups.readParams(row, "parameters")).as("spectrum %d", i)
-                    .isEqualTo(params.subList(0, 4)).extracting(Param::name).doesNotContainNull();
+                    .containsExactly(params.get(3)).extracting(Param::name).doesNotContainNull();
             assertThat(ParquetGroups.optString(row, "spectrum_type")).as("spectrum %d", i)
                     .isEqualTo(params.get(0).accession());
             assertThat(ParquetGroups.optDouble(row, "lowest_observed_wavelength")).as("spectrum %d", i)
                     .isEqualTo(params.get(1).value());
             assertThat(ParquetGroups.optDouble(row, "highest_observed_wavelength")).as("spectrum %d", i)
                     .isEqualTo(params.get(2).value());
-            assertThat(ParquetGroups.optString(row, "spectrum_representation")).as("spectrum %d", i)
+            assertThat(ParquetGroups.optString(row, "opt_spectrum_representation")).as("spectrum %d", i)
                     .isEqualTo("MS:1000128").isEqualTo(params.get(4).accession());
             assertThat(ParquetGroups.optDouble(row, "base_peak_intensity")).as("spectrum %d", i)
                     .isEqualTo(params.get(5).value());
@@ -189,7 +188,7 @@ class WavelengthParamsTest {
                     .isEqualTo(params.get(6).value());
         }
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName())
-                .containsExactly("index", "id", "time", "spectrum_type", "spectrum_representation",
+                .containsExactly("index", "id", "time", "spectrum_type", "opt_spectrum_representation",
                         "lowest_observed_wavelength", "highest_observed_wavelength", "number_of_data_points",
                         "lambda_max", "base_peak_intensity", "total_ion_current", "parameters", "auxiliary_arrays",
                         "number_of_auxiliary_arrays");
@@ -285,7 +284,7 @@ class WavelengthParamsTest {
         assertThat(cvIds(out)).contains("BTO", "NCIT");
         assertThat(WriterCvListTest.assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000142")
                 .containsEntry("NCIT", "NCIT:C48505");
-        // Each added Param stays in the list, so it reads back after the list Params and before the three columns.
+        // Each added Param stays in the list, so it reads back after the title and before the columns.
         List<WavelengthSpectrum> back = wavelengthSpectra(out);
         assertThat(back.get(0).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(0), brain));
         assertThat(back.get(1).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(1), mass));
@@ -410,10 +409,7 @@ class WavelengthParamsTest {
 
     /** The four list Params of a has_uv spectrum {@code w}, then {@code added}, then its three column Params. */
     private static List<Param> listThenColumns(WavelengthSpectrum w, Param added) {
-        List<Param> out = new ArrayList<>(w.parameters().subList(0, 4));
-        out.add(added);
-        out.addAll(w.parameters().subList(4, 7));
-        return out;
+        return WavelengthColumnsTest.readBack(withParam(w, added).parameters());
     }
 
     private static WavelengthSpectrum withParam(WavelengthSpectrum w, Param param) {

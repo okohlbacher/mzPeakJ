@@ -73,7 +73,9 @@ class RustReaderAcceptanceTest {
 
     /**
      * has_uv, read and written split as an archive: Rust reads all 212 spectra and all 520 wavelength spectra
-     * without a panic, with the ids, wavelengths and intensities the mzPeakJ reader reads from the fixture.
+     * without a panic, with the ids, wavelengths and intensities the mzPeakJ reader reads from the fixture, and the
+     * spectrum type and observed wavelength range once each (W11; Rust gives them twice for the reference's has_uv,
+     * which writes them both as columns and in the list).
      */
     @ParameterizedTest
     @MethodSource("hasUv")
@@ -97,6 +99,12 @@ class RustReaderAcceptanceTest {
                     .isEqualTo(expected.wavelength());
             assertThat(dump.array(w.path("arrays").path("IntensityArray"))).as("intensity of %d", i)
                     .isEqualTo(expected.intensity());
+            // W11: the type and wavelength range are columns only now, and Rust reads each once from there
+            List<Integer> accessions = new ArrayList<>();
+            for (JsonNode p : w.path("desc").path("params")) {
+                accessions.add(p.path("accession").asInt());
+            }
+            assertThat(accessions).as("param accessions of %d", i).containsOnlyOnce(1000804, 1000619, 1000618);
         }
     }
 

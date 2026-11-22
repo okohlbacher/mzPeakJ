@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
@@ -39,8 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (design §11.8). chromatograms_metadata has one row per chromatogram with its type as a term marker and, since V-25,
  * empty auxiliary arrays, and chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the
  * spectrum facets' fields and no rows; wavelength_spectra_metadata has one row per wavelength spectrum, and
- * wavelength_spectra_metadata_scans, with the spectrum-scan schema since V-25, one scan per wavelength spectrum whose
- * start time is the spectrum's time. Each member is written only when the plan has
+ * wavelength_spectra_metadata_scans, with the spectrum-scan schema since V-25 (without the ion mobility and spectrum
+ * reference columns since W11), one scan per wavelength spectrum whose start time is the spectrum's time. Each member is written only when the plan has
  * entities of its kind, and is read back by role, its layout detected from its schema.
  *
  * <p>Oracles: has_uv, the only fixture with wavelength spectra, in both sets (2 chromatograms, TIC and 'DAD1 A', and
@@ -100,7 +101,11 @@ class SplitWriterChromWlTest {
         assertThat(source.wavelengthSpectra).hasSize(520);
         assertThat(back.wavelengthSpectra).hasSameSizeAs(source.wavelengthSpectra);
         for (int i = 0; i < source.wavelengthSpectra.size(); i++) {
-            assertWavelengthSpectrumEqual(source.wavelengthSpectra.get(i), back.wavelengthSpectra.get(i));
+            // W11: the Params read back from the columns, after the list (WavelengthColumnsTest)
+            WavelengthSpectrum a = source.wavelengthSpectra.get(i);
+            assertWavelengthSpectrumEqual(new WavelengthSpectrum(a.index(), a.id(), a.time(), a.lambdaMax(),
+                    a.wavelength(), a.intensity(), WavelengthColumnsTest.readBack(a.parameters())),
+                    back.wavelengthSpectra.get(i));
         }
     }
 
@@ -121,21 +126,23 @@ class SplitWriterChromWlTest {
                 .isEqualTo(schema(out, "spectra_metadata_selected_ions.parquet").getFields());
         assertThat(columns(schema(out, WAVELENGTH))).containsExactly(
                 "index required INT64 uint64", "id optional BINARY string", "time optional DOUBLE -",
-                "spectrum_type optional BINARY string", "spectrum_representation optional BINARY string",
+                "spectrum_type optional BINARY string", "opt_spectrum_representation optional BINARY string",
                 "lowest_observed_wavelength optional DOUBLE -", "highest_observed_wavelength optional DOUBLE -",
                 "number_of_data_points optional INT64 uint64",
                 "lambda_max optional DOUBLE -", "base_peak_intensity optional DOUBLE -",
                 "total_ion_current optional DOUBLE -", "parameters optional group list",
                 "auxiliary_arrays optional group list", "number_of_auxiliary_arrays optional INT32 uint32");
-        // V-25: the wavelength scans have the spectrum-scan schema, as in the reference.
-        assertThat(schema(out, WAVELENGTH_SCANS).getFields())
-                .isEqualTo(schema(out, "spectra_metadata_scans.parquet").getFields());
+        // V-25: the wavelength scans have the spectrum-scan schema, but for the ion mobility and spectrum
+        // reference columns, which the wavelength scan table does not have (D13-12).
+        List<Type> spectrumScanFields = new ArrayList<>(schema(out, "spectra_metadata_scans.parquet").getFields());
+        spectrumScanFields.removeIf(t -> List.of("ion_mobility_value", "ion_mobility_type", "spectrum_reference")
+                .contains(t.getName()));
+        assertThat(schema(out, WAVELENGTH_SCANS).getFields()).isEqualTo(spectrumScanFields);
         assertThat(columns(schema(out, WAVELENGTH_SCANS))).containsExactly(
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",
                 "scan_start_time optional DOUBLE -", "preset_scan_configuration optional INT32 -",
                 "filter_string optional BINARY string", "ion_injection_time optional DOUBLE -",
-                "ion_mobility_value optional DOUBLE -", "ion_mobility_type optional BINARY string",
-                "instrument_configuration_id optional INT32 -", "spectrum_reference optional BINARY string",
+                "instrument_configuration_id optional INT32 -",
                 "parameters optional group list", "scan_windows optional group list");
 
         List<Group> chromatogramRows = rows(out.resolve(CHROMATOGRAMS));
@@ -169,17 +176,18 @@ class SplitWriterChromWlTest {
             assertThat(row.getDouble("time", 0)).isEqualTo(w.time());
             assertThat(row.getLong("number_of_data_points", 0)).isEqualTo(w.size());
             assertThat(row.getDouble("lambda_max", 0)).isEqualTo(w.lambdaMax());
-            // MZ-4: the four list Params go to the list, the type and wavelength range also to their columns, as
-            // in has_uv; the representation, base peak intensity and TIC, which the reader appended from has_uv's
-            // columns, go to the same columns only.
+            // W11: of the four list Params of has_uv, only the title stays in the list; the type and wavelength
+            // range go to their columns only, as do the representation, base peak intensity and TIC, which the
+            // reader appended from has_uv's columns.
             assertThat(w.parameters()).as("parameters of %s", w.id()).hasSize(7);
             assertThat(ParquetGroups.readParams(row, "parameters")).as("parameters of %s", w.id())
-                    .isEqualTo(w.parameters().subList(0, 4));
+                    .containsExactly(w.parameters().get(3));
             assertThat(row.getString("spectrum_type", 0)).isEqualTo(w.parameters().get(0).accession())
                     .isEqualTo("MS:1000804");
             assertThat(row.getDouble("lowest_observed_wavelength", 0)).isEqualTo(w.parameters().get(1).value());
             assertThat(row.getDouble("highest_observed_wavelength", 0)).isEqualTo(w.parameters().get(2).value());
-            assertThat(row.getString("spectrum_representation", 0)).isEqualTo(w.parameters().get(4).accession());
+            assertThat(row.getString("opt_spectrum_representation", 0))
+                    .isEqualTo(w.parameters().get(4).accession());
             assertThat(row.getDouble("base_peak_intensity", 0)).isEqualTo(w.parameters().get(5).value());
             assertThat(row.getDouble("total_ion_current", 0)).isEqualTo(w.parameters().get(6).value());
 
@@ -239,7 +247,8 @@ class SplitWriterChromWlTest {
 
     /**
      * Acceptance (b): the chromatogram members map their columns exactly as current has_uv's do; the wavelength
-     * members map the columns they write, each row as current has_uv maps it.
+     * members map the columns they write, each row as current has_uv maps it but for the representation's path,
+     * {@code opt_spectrum_representation} (D13-12).
      */
     @Test
     void theMappingRowsAreThoseOfCurrentHasUv(@TempDir Path tmp) throws IOException {
@@ -259,15 +268,20 @@ class SplitWriterChromWlTest {
         assertThat(mappedPaths(entry(written, CHROMATOGRAM_SELECTED_IONS))).hasSize(3);
 
         assertThat(mappedPaths(entry(written, WAVELENGTH))).containsExactly("spectrum_type",
-                "spectrum_representation", "lowest_observed_wavelength", "highest_observed_wavelength",
+                "opt_spectrum_representation", "lowest_observed_wavelength", "highest_observed_wavelength",
                 "number_of_data_points", "lambda_max", "base_peak_intensity", "total_ion_current");
         assertThat(mappedPaths(entry(written, WAVELENGTH_SCANS))).containsExactly("scan_start_time",
                 "preset_scan_configuration", "filter_string", "ion_injection_time",
                 "scan_windows.scan_window_lower_limit", "scan_windows.scan_window_upper_limit");
         for (String member : WAVELENGTH_MEMBERS) {
             List<JsonNode> currentRows = list(entry(current, member).path("column_mapping"));
-            assertThat(list(entry(written, member).path("column_mapping"))).as("column_mapping of %s", member)
-                    .isSubsetOf(currentRows);
+            List<JsonNode> writtenRows = new ArrayList<>();
+            for (JsonNode row : list(entry(written, member).path("column_mapping"))) {
+                // D13-12: has_uv maps the representation at the name without opt_
+                writtenRows.add(row.path("path").asText().equals("opt_spectrum_representation")
+                        ? ((ObjectNode) row.deepCopy()).put("path", "spectrum_representation") : row);
+            }
+            assertThat(writtenRows).as("column_mapping of %s", member).isSubsetOf(currentRows);
         }
 
         List<String> roles = new ArrayList<>();

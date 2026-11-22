@@ -25,6 +25,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -58,6 +59,8 @@ class MzMLRustOracleTest {
     private static final double FLOAT32 = 1e-7;
     private static final double EXACT = 0;
     private static final String ION_MOBILITY = "MS:1003006";
+    /** The UV representation and spectrum type, which the split writer writes as term-marker columns. */
+    private static final Set<String> MARKERS = Set.of("MS:1000128", "MS:1000804");
 
     @TempDir
     Path dir;
@@ -130,9 +133,10 @@ class MzMLRustOracleTest {
                     .isEqualTo(Double.doubleToRawLongBits(theirs.time()));
             assertThat(bits(ours1.wavelength())).as(what + " wavelength").isEqualTo(bits(theirs.wavelength()));
             assertThat(bits(ours1.intensity())).as(what + " intensity").isEqualTo(bits(theirs.intensity()));
-            // the representation goes to its term-marker column, as in has_uv, and comes back without its name
+            // the representation and the spectrum type go to their term-marker columns (the type only there since
+            // W11), and come back without their names
             assertThat(ours1.parameters()).as(what).containsAll(givenUv.get(i).parameters().stream()
-                    .map(p -> "MS:1000128".equals(p.accession()) ? new Param(null, p.accession(), p.value(), p.unit())
+                    .map(p -> MARKERS.contains(p.accession()) ? new Param(null, p.accession(), p.value(), p.unit())
                             : p)
                     .toList());
             assertThat(ours1.parameters()).as(what).extracting(Param::accession)
