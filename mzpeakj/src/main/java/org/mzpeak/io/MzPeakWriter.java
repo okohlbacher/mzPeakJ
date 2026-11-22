@@ -428,7 +428,8 @@ public final class MzPeakWriter {
          * m/z up to 21474.83 always do. Intensities must be in the range of the {@link NumpressIntensityEncoding}
          * (finite and at least 0; with PIC, rounding to at most 2147483647). A write with another value throws
          * {@link MzPeakException} naming the spectrum index, the array and the value before anything is written;
-         * {@link #POINT} writes such values (a NaN m/z reads back interpolated, as a null in the point layout does).
+         * {@link #POINT} writes such values (a NaN m/z reads back as a null of the point layout does: filled as part of
+         * a null pair or at an end of the spectrum, else rejected as an unpaired null).
          */
         NUMPRESS
     }

@@ -65,6 +65,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the rounding is still far finer than a SLOF quantization step, so a changed decode still changes the digest
  * ({@link #float32HidesTheLastBitOfASlofValueButNotOneQuantizationStep}). Its peak intensities are float32 columns,
  * which the rounding keeps exactly; its m/z and times are exact and hashed raw.
+ *
+ * <p>R2 (X-8) changed the reconstructed spectrum digests of small, small.unpacked, small.chunked and
+ * Example_Processed.img on purpose: the null-marked m/z are filled by the spec's rule, and small.chunked chunk row by
+ * chunk row, so its reconstructed m/z no longer equal the point layout's where a row boundary splits a null pair or a
+ * stored segment.
  */
 class SignalSnapshotTest {
 
@@ -89,7 +94,7 @@ class SignalSnapshotTest {
                     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             snap("legacy small.mzpeak reconstructProfile=true spectra",
                     "entries=48 absent=none values=536796",
-                    "6103dca83f94f601cb0fce07426b1d363498572b06d1145c8c47166bb62d18c0"),
+                    "d1d978ca9dd5a086be0e5f4ed2e6ed273809bc0f5ebd63266fef71b01a8cc8cb"),
             snap("legacy small.mzpeak reconstructProfile=true chromatograms",
                     "entries=1 absent=none values=96",
                     "316eab9cb4e2028177069ca8bade8660ed0b66fba3ccde716c924eab8baf98ee"),
@@ -108,7 +113,7 @@ class SignalSnapshotTest {
                     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             snap("legacy small.chunked.mzpeak reconstructProfile=true spectra",
                     "entries=48 absent=none values=586602",
-                    "fea88b3969c9ccee14afb8d1fd8e4b9edf15822959fdb095b3317c72e6bba958"),
+                    "01e5e3e4a35852b391e647189691fd32cc8a1a728d31d1af27bef35201c61cb0"),
             snap("legacy small.chunked.mzpeak reconstructProfile=true chromatograms",
                     "entries=1 absent=none values=96",
                     "316eab9cb4e2028177069ca8bade8660ed0b66fba3ccde716c924eab8baf98ee"),
@@ -146,7 +151,7 @@ class SignalSnapshotTest {
                     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             snap("legacy small.unpacked.mzpeak reconstructProfile=true spectra",
                     "entries=48 absent=none values=536796",
-                    "6103dca83f94f601cb0fce07426b1d363498572b06d1145c8c47166bb62d18c0"),
+                    "d1d978ca9dd5a086be0e5f4ed2e6ed273809bc0f5ebd63266fef71b01a8cc8cb"),
             snap("legacy small.unpacked.mzpeak reconstructProfile=true chromatograms",
                     "entries=1 absent=none values=96",
                     "316eab9cb4e2028177069ca8bade8660ed0b66fba3ccde716c924eab8baf98ee"),
@@ -181,7 +186,7 @@ class SignalSnapshotTest {
                     "433b1d0b778db88f556f94f77f153eb2b575a9fe1c39ec1dd2a0836b8fbb0393"),
             snap("current small.mzpeak reconstructProfile=true spectra_data.parquet",
                     "member_rows=217710 entries=48 absent=2-6,9-13,16-20,23-27,30-33,36-40,43-47 values=435420",
-                    "6d8c817cae96cc9b92fe0bb8519b13b2391d4473e0d0fb33fc855e7250c48621"),
+                    "dac0aeff4daa31c47d23875431196c4a1f3308374909971ba8a2e21d00204610"),
             snap("current small.mzpeak reconstructProfile=true spectra_peaks.parquet",
                     "member_rows=25344 entries=48 absent=0-1,7-8,14-15,21-22,28-29,34-35,41-42 values=50688",
                     "433b1d0b778db88f556f94f77f153eb2b575a9fe1c39ec1dd2a0836b8fbb0393"),
@@ -194,7 +199,7 @@ class SignalSnapshotTest {
                     "995920c40e818d84e0a8e5f70f3205cfcb4c136ac2565208fec1d3206d109efe"),
             snap("current small.chunked.mzpeak reconstructProfile=true spectra_data.parquet",
                     "member_rows=488 entries=48 absent=2-6,9-13,16-20,23-27,30-33,36-40,43-47 values=435420",
-                    "6d8c817cae96cc9b92fe0bb8519b13b2391d4473e0d0fb33fc855e7250c48621"),
+                    "073987968196bdf7aa8151b0ec2b82e307a916c6ed1e5bf2c22ce2160d598549"),
             snap("current small.chunked.mzpeak reconstructProfile=true spectra_peaks.parquet",
                     "member_rows=50247 entries=48 absent=none values=100494",
                     "995920c40e818d84e0a8e5f70f3205cfcb4c136ac2565208fec1d3206d109efe"),
@@ -220,7 +225,7 @@ class SignalSnapshotTest {
                     "433b1d0b778db88f556f94f77f153eb2b575a9fe1c39ec1dd2a0836b8fbb0393"),
             snap("current small.unpacked.mzpeak reconstructProfile=true spectra_data.parquet",
                     "member_rows=217710 entries=48 absent=2-6,9-13,16-20,23-27,30-33,36-40,43-47 values=435420",
-                    "6d8c817cae96cc9b92fe0bb8519b13b2391d4473e0d0fb33fc855e7250c48621"),
+                    "dac0aeff4daa31c47d23875431196c4a1f3308374909971ba8a2e21d00204610"),
             snap("current small.unpacked.mzpeak reconstructProfile=true spectra_peaks.parquet",
                     "member_rows=25344 entries=48 absent=0-1,7-8,14-15,21-22,28-29,34-35,41-42 values=50688",
                     "433b1d0b778db88f556f94f77f153eb2b575a9fe1c39ec1dd2a0836b8fbb0393"),
@@ -259,7 +264,7 @@ class SignalSnapshotTest {
                     "6d977585e8775ed96c4dd2e80bd485868cfe0baaa1ffa137f9673a4967d502f0"),
             snap("current Example_Processed.img.mzpeak reconstructProfile=true spectra_data.parquet",
                     "member_rows=36856 entries=9 absent=none values=73712",
-                    "0198d25e4abb5dd1e96b1117c448608f7a9a7f38a241b005c3175ba20e4a3a23"),
+                    "1a0bbda34fa0947daa59aec500983bcd3468bee5b4d341360bf5f0f98f2d6650"),
             snap("current Example_Processed.img.mzpeak reconstructProfile=true spectra_peaks.parquet",
                     "member_rows=0 entries=9 absent=0-8 values=0",
                     "6d977585e8775ed96c4dd2e80bd485868cfe0baaa1ffa137f9673a4967d502f0"));

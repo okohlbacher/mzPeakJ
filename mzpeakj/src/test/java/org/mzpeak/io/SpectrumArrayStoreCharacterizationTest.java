@@ -144,6 +144,7 @@ class SpectrumArrayStoreCharacterizationTest {
         List<Group> rows = List.of(
                 point(POINT_SCHEMA, 2L, p[0][0], p[0][1]),
                 point(POINT_SCHEMA, 2L, null, null),
+                point(POINT_SCHEMA, 2L, null, null),
                 point(POINT_SCHEMA, 2L, p[2][0], null),
                 point(POINT_SCHEMA, 2L, p[3][0], p[3][1]));
         Path file = writePoints(POINT_SCHEMA, rows, 100, true);
@@ -152,10 +153,13 @@ class SpectrumArrayStoreCharacterizationTest {
         assertExact("dropped m/z", new double[] {p[0][0], p[2][0], p[3][0]}, dropped.mz());
         assertExact("dropped intensity", new double[] {p[0][1], 0.0, p[3][1]}, dropped.intensity());
 
+        // R2 (X-8): the null pair steps from each side by the spacing p[3] - p[2], the only one stored (0.12.0 filled
+        // an interior single null linearly; the spec rejects one)
         SpectrumArrayStore.Arrays filled = read(file, 2, true);
-        double between = p[0][0] + (p[2][0] - p[0][0]) * 1 / 2; // linear interpolation of the single gap
-        assertExact("filled m/z", new double[] {p[0][0], between, p[2][0], p[3][0]}, filled.mz());
-        assertExact("filled intensity", new double[] {p[0][1], 0.0, 0.0, p[3][1]}, filled.intensity());
+        double spacing = p[3][0] - p[2][0];
+        assertExact("filled m/z", new double[] {p[0][0], p[0][0] + spacing, p[2][0] - spacing, p[2][0], p[3][0]},
+                filled.mz());
+        assertExact("filled intensity", new double[] {p[0][1], 0.0, 0.0, 0.0, p[3][1]}, filled.intensity());
     }
 
     @Test

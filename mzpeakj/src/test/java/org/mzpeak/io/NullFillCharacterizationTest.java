@@ -5,13 +5,23 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Characterizes the null fill without a delta model: {@link NullFill#interpolateGaps} and
- * {@link NullFill#finalizeArrays} for both {@code reconstructProfile} values. The fill with a delta model,
- * {@code polynomialFill}, is pinned by {@link PolynomialFillCharacterizationTest}.
+ * Characterizes the null fill without a delta model ({@link NullFill#fill} with no model) and the drop of null-marked
+ * points without reconstruction ({@link NullFill#dropNulls}). The fill with a delta model is pinned by
+ * {@link PolynomialFillCharacterizationTest}.
+ *
+ * <p>R2 (X-8) replaced the 0.12.0 fill without a model, which interpolated interior runs linearly and flattened
+ * leading and trailing runs to the nearest stored value ({@code interpolateGaps}), with the spec's rule: a flank steps
+ * from its stored segment by the segment's second median spacing; next to a single stored value it steps by the
+ * second median spacing of all of the spectrum's stored values (mzPeakJ's fallback, as there is no model); an
+ * interior single null throws. Without a model the values agree with the model fill wherever no segment holds a single
+ * stored value.
  *
  * <p>The input is the window that test uses: eight consecutive stored m/z values of small.unpacked spectrum 0
  * (stored ordinals 50..57) and their intensities, with NaN injected where a null run should be. The expected values
@@ -51,67 +61,82 @@ class NullFillCharacterizationTest {
         assertExact("stored intensity", STORED_INTENSITY, storedIntensity);
     }
 
-    // ---- interpolateGaps --------------------------------------------------------------------------------------
+    // ---- fill without a model -----------------------------------------------------------------------------------
 
+    /** R2: a leading run steps backwards by the local spacing (0.12.0: flattened to the first stored value). */
     @Test
-    void leadingRunIsFlattenedToTheFirstStoredValue() {
+    void leadingRunStepsBackwardsByTheLocalSpacing() {
         assertExact("leading run of 2", new double[]{
-                204.8212897792057, 204.8212897792057, 204.8212897792057, 204.82154376977772,
-                204.8217977609797, 204.82205175281157, 204.8223057452734, 204.8225597383652}, interpolate(0, 1));
+                204.82078179680173, 204.8210357880037, 204.8212897792057, 204.82154376977772,
+                204.8217977609797, 204.82205175281157, 204.8223057452734, 204.8225597383652}, fill(0, 1));
     }
 
+    /** R2: a trailing run steps forwards by the local spacing (0.12.0: flattened to the last stored value). */
     @Test
-    void trailingRunIsFlattenedToTheLastStoredValue() {
+    void trailingRunStepsForwardsByTheLocalSpacing() {
         assertExact("trailing run of 2", new double[]{
                 204.8207817999514, 204.82103578926362, 204.8212897792057, 204.82154376977772,
-                204.8217977609797, 204.82205175281157, 204.82205175281157, 204.82205175281157}, interpolate(6, 7));
+                204.8217977609797, 204.82205175281157, 204.82230574275366, 204.82255973269574}, fill(6, 7));
     }
 
+    /** R2: an interior single null throws (0.12.0: interpolated linearly). */
     @Test
-    void interiorSingletonIsInterpolatedLinearly() {
-        assertExact("interior singleton", new double[]{
-                204.8207817999514, 204.82103578926362, 204.8212897792057, 204.82154377009272,
-                204.8217977609797, 204.82205175281157, 204.8223057452734, 204.8225597383652}, interpolate(3));
+    void interiorSingletonThrows() {
+        assertThatThrownBy(() -> fill(3)).isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("unpaired null m/z at position 3");
     }
 
+    /** R2: an interior run of three is filled from both segments and halfway between (0.12.0: linearly). */
     @Test
-    void interiorRunOfThreeIsInterpolatedLinearly() {
+    void interiorRunOfThreeIsFilledFromBothSegments() {
         assertExact("interior run of 3", new double[]{
-                204.8207817999514, 204.82103578926362, 204.8212897801506, 204.8215437710376,
-                204.82179776192459, 204.82205175281157, 204.8223057452734, 204.8225597383652}, interpolate(2, 3, 4));
+                204.8207817999514, 204.82103578926362, 204.82128977857585, 204.82154376946278,
+                204.82179776034974, 204.82205175281157, 204.8223057452734, 204.8225597383652}, fill(2, 3, 4));
     }
 
+    /** R2: single nulls at both ends and an interior pair, the shape null marking produces. */
     @Test
     void leadingInteriorAndTrailingRunsTogether() {
         assertExact("runs at 0, 3..4 and 7", new double[]{
-                204.82103578926362, 204.82103578926362, 204.8212897792057, 204.82154377040766,
-                204.82179776160962, 204.82205175281157, 204.8223057452734, 204.8223057452734}, interpolate(0, 3, 4, 7));
+                204.82078179932154, 204.82103578926362, 204.8212897792057, 204.82154376914778,
+                204.82179776034974, 204.82205175281157, 204.8223057452734, 204.82255973773525}, fill(0, 3, 4, 7));
+    }
+
+    /** R2: next to a single stored value the spectrum's second median spacing is used. */
+    @Test
+    void aSingleStoredValueStepsByTheSpectrumsSpacing() {
+        assertExact("single stored value at 1", new double[]{
+                204.82078179711675, 204.82103578926362, 204.82128978141048, 204.82154376883284,
+                204.8217977609797, 204.82205175281157, 204.8223057452734, 204.8225597383652}, fill(0, 2, 3));
+        assertExact("single stored values at 0 and 3", new double[]{
+                204.8207817999514, 204.82103579304317, 204.82128977668594, 204.82154376977772,
+                204.8217977628695, 204.82205175218164, 204.8223057452734, 204.8225597383652}, fill(1, 2, 4, 5));
     }
 
     @Test
     void allNullInputIsLeftUnfilled() {
         double[] allNaN = new double[LENGTH];
         Arrays.fill(allNaN, Double.NaN);
-        assertExact("all null", allNaN, interpolate(0, 1, 2, 3, 4, 5, 6, 7));
+        assertExact("all null", allNaN, fill(0, 1, 2, 3, 4, 5, 6, 7));
     }
 
     @Test
     void inputWithoutNullsIsUnchanged() {
-        assertExact("no null", STORED_MZ, interpolate());
+        assertExact("no null", STORED_MZ, fill());
     }
 
-    // ---- finalizeArrays ---------------------------------------------------------------------------------------
+    // ---- dropNulls ----------------------------------------------------------------------------------------------
 
     @Test
     void withoutReconstructionNullMzIsDroppedWithItsIntensity() {
-        SpectrumArrayStore.Arrays interior = finalizeWithNulls(false, 2, 3, 4);
+        SpectrumArrayStore.Arrays interior = dropWithNulls(2, 3, 4);
         assertExact("m/z without 2..4", new double[]{
                 204.8207817999514, 204.82103578926362, 204.82205175281157, 204.8223057452734, 204.8225597383652},
                 interior.mz());
         assertExact("intensity without 2..4", new double[]{
                 932.3289794921875, 2340.11572265625, 1139.264892578125, 0.0, 796.740966796875}, interior.intensity());
 
-        SpectrumArrayStore.Arrays mixed = finalizeWithNulls(false, 0, 3, 4, 7);
+        SpectrumArrayStore.Arrays mixed = dropWithNulls(0, 3, 4, 7);
         assertExact("m/z without 0, 3, 4, 7", new double[]{
                 204.82103578926362, 204.8212897792057, 204.82205175281157, 204.8223057452734}, mixed.mz());
         assertExact("intensity without 0, 3, 4, 7", new double[]{
@@ -120,7 +145,7 @@ class NullFillCharacterizationTest {
 
     @Test
     void withoutReconstructionAnAllNullInputBecomesEmpty() {
-        SpectrumArrayStore.Arrays arrays = finalizeWithNulls(false, 0, 1, 2, 3, 4, 5, 6, 7);
+        SpectrumArrayStore.Arrays arrays = dropWithNulls(0, 1, 2, 3, 4, 5, 6, 7);
         assertThat(arrays.mz()).isEmpty();
         assertThat(arrays.intensity()).isEmpty();
     }
@@ -129,35 +154,31 @@ class NullFillCharacterizationTest {
     void withoutReconstructionAndWithoutNullsTheInputArraysAreReturned() {
         double[] mz = storedMz.clone();
         double[] intensity = storedIntensity.clone();
-        SpectrumArrayStore.Arrays arrays = NullFill.finalizeArrays(mz, intensity, false);
+        SpectrumArrayStore.Arrays arrays = NullFill.dropNulls(mz, intensity, Map.of());
         assertThat(arrays.mz()).isSameAs(mz);
         assertThat(arrays.intensity()).isSameAs(intensity);
         assertExact("m/z", STORED_MZ, arrays.mz());
         assertExact("intensity", STORED_INTENSITY, arrays.intensity());
     }
 
+    /** The fill of a single array (the point layout) works in place and returns that array. */
     @Test
-    void withReconstructionNullMzIsInterpolatedInPlace() {
+    void withReconstructionNullMzIsFilledInPlace() {
         double[] mz = withNulls(storedMz, 0, 3, 4, 7);
-        double[] intensity = storedIntensity.clone();
-        SpectrumArrayStore.Arrays arrays = NullFill.finalizeArrays(mz, intensity, true);
-        assertThat(arrays.mz()).isSameAs(mz);
-        assertThat(arrays.intensity()).isSameAs(intensity);
-        assertExact("m/z", interpolate(0, 3, 4, 7), arrays.mz());
-        assertExact("intensity", STORED_INTENSITY, arrays.intensity());
+        assertThat(NullFill.fill(List.of(mz), false, null, "spectra_data.parquet", 0)).isSameAs(mz);
+        assertExact("m/z", fill(0, 3, 4, 7), mz);
     }
 
-    /** Copy the stored m/z, set {@code nullPositions} to NaN, and run the interpolation on the copy. */
-    private static double[] interpolate(int... nullPositions) {
+    /** Copy the stored m/z, set {@code nullPositions} to NaN, and run the fill without a model on the copy. */
+    private static double[] fill(int... nullPositions) {
         double[] m = withNulls(storedMz, nullPositions);
-        NullFill.interpolateGaps(m);
+        NullFill.fill(List.of(m), false, null, "spectra_data.parquet", 0);
         return m;
     }
 
-    /** {@link NullFill#finalizeArrays} on copies of the stored window, NaN m/z at {@code nullPositions}. */
-    private static SpectrumArrayStore.Arrays finalizeWithNulls(boolean reconstructProfile, int... nullPositions) {
-        return NullFill.finalizeArrays(
-                withNulls(storedMz, nullPositions), storedIntensity.clone(), reconstructProfile);
+    /** {@link NullFill#dropNulls} on copies of the stored window, NaN m/z at {@code nullPositions}. */
+    private static SpectrumArrayStore.Arrays dropWithNulls(int... nullPositions) {
+        return NullFill.dropNulls(withNulls(storedMz, nullPositions), storedIntensity.clone(), Map.of());
     }
 
     private static double[] withNulls(double[] values, int... nullPositions) {

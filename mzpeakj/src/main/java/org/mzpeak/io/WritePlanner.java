@@ -428,7 +428,7 @@ final class WritePlanner {
     // stay in spectra_data, and a CENTROID spectrum whose arrays are not a peak copy keeps both files instead of
     // losing its arrays (both deviate from the reference). So does a CENTROID spectrum with a non-finite m/z
     // (deviation from §11.5): the reader builds a peak from every spectra_peaks row, and such a row does not come
-    // back as stored (the null fill interpolates a NaN m/z, and Numpress linear cannot encode NaN or an infinity),
+    // back as stored (the null fill replaces or rejects a NaN m/z, and Numpress linear cannot encode NaN or infinity),
     // so in spectra_peaks it would read back as an invented peak.
 
     /** Where the rows of {@code s} go, by the disposition table of design §11.5. */

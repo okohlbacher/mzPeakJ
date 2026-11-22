@@ -177,37 +177,45 @@ class SpectrumArrayStoreTest {
 
     // ---- delta models -------------------------------------------------------------------------------------------
 
+    /**
+     * Without a delta-model map the null pair is filled (R2, X-8): from 401 by the spacing of 400 and 401, and from
+     * the single stored 404 by the spectrum's second median spacing, 1.
+     */
     @Test
-    void withoutADeltaModelMapTheNullMarkedMzIsInterpolated() {
+    void withoutADeltaModelMapTheNullMarkedMzIsFilled() {
         Path file = nullMarked();
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true, null)) {
             SpectrumArrayStore.Arrays arrays = store.get(2);
-            assertThat(arrays.mz()).containsExactly(400.0, 400.5, 401.0);
-            assertThat(arrays.intensity()).containsExactly(10.0, 0.0, 30.0);
+            assertThat(arrays.mz()).containsExactly(400.0, 401.0, 402.0, 403.0, 404.0);
+            assertThat(arrays.intensity()).containsExactly(10.0, 20.0, 0.0, 0.0, 30.0);
         }
     }
 
-    /** An empty delta model is no model: the null-marked m/z is interpolated, not stepped with a zero spacing. */
+    /**
+     * An empty delta model is no model: next to the single stored m/z the spectrum's spacing is used, not a zero
+     * spacing; a one-coefficient model steps by its coefficient there.
+     */
     @Test
-    void anEmptyDeltaModelInterpolatesTheNullMarkedMz() {
+    void anEmptyDeltaModelFillsWithTheSpectrumsSpacing() {
         Path file = nullMarked();
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true,
                 Map.of(2L, new double[0]))) {
-            assertThat(store.get(2).mz()).containsExactly(400.0, 400.5, 401.0);
-            assertThat(store.get(2).intensity()).containsExactly(10.0, 0.0, 30.0);
+            assertThat(store.get(2).mz()).containsExactly(400.0, 401.0, 402.0, 403.0, 404.0);
+            assertThat(store.get(2).intensity()).containsExactly(10.0, 20.0, 0.0, 0.0, 30.0);
         }
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true,
                 Map.of(2L, new double[] {0.25}))) {
-            assertThat(store.get(2).mz()).as("a one-coefficient model steps").containsExactly(400.0, 400.25, 401.0);
+            assertThat(store.get(2).mz()).as("a one-coefficient model steps")
+                    .containsExactly(400.0, 401.0, 402.0, 403.75, 404.0);
         }
     }
 
     // ---- constructed members ------------------------------------------------------------------------------------
 
-    /** Spectrum 2 with a null-marked point between m/z 400 and 401. */
+    /** Spectrum 2 with a null-marked pair between m/z 401 and 404. */
     private Path nullMarked() {
-        return write(INDEX, 100, row(2, 400.0, 10f, null, null), row(2, null, null, null, null),
-                row(2, 401.0, 30f, null, null));
+        return write(INDEX, 100, row(2, 400.0, 10f, null, null), row(2, 401.0, 20f, null, null),
+                row(2, null, null, null, null), row(2, null, null, null, null), row(2, 404.0, 30f, null, null));
     }
 
     /** A row of {@link #POINT}; a null argument leaves its cell null. */

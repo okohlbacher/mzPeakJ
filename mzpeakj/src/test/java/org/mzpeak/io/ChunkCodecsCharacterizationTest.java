@@ -78,10 +78,13 @@ class ChunkCodecsCharacterizationTest {
             0.0, 1938.117431640625, 2572.8388671875, 3392.107421875, 3729.5908203125, 2819.127197265625,
             993.3759765625, 1422.173583984375, 3215.4931640625, 3887.35595703125, 2843.16552734375};
 
-    /** The start-point row decoded with reconstructProfile=true and no delta model: the null pair is interpolated. */
+    /**
+     * The start-point row decoded with reconstructProfile=true and no delta model: each null of the pair steps from its
+     * stored segment by the segment's second median spacing (R2, X-8; 0.12.0 interpolated linearly across the gap).
+     */
     private static final double[] START_POINT_FILLED_MZ = {
             202.60657495520474, 202.60682348271374, 202.60707201083247, 202.607320539561, 202.60756906889915,
-            202.60781759884705, 202.60806612940473, 203.32524033272404, 204.04241453604334, 204.75958873936264,
+            202.60781759884705, 202.60806612940473, 202.60831465752347, 204.7593349014789, 204.75958873936264,
             204.7598425769317, 204.76009641513016, 204.76035025395797};
     private static final double[] START_POINT_FILLED_INTENSITY = {
             0.0, 1938.117431640625, 2572.8388671875, 3392.107421875, 3729.5908203125, 2819.127197265625,
@@ -139,10 +142,14 @@ class ChunkCodecsCharacterizationTest {
                 1328.245849609375, 3272.78173828125, 4725.3662109375, 4891.2607421875, 3677.263671875,
                 1680.248779296875, 2385.547119140625}, dropped.intensity());
 
+        // R2 (X-8): the leading null and the first of the pair step from the six stored values by their second median
+        // spacing; the last of the pair steps from the single stored value after it by the second median spacing of
+        // the spectrum's stored values, as there is no delta model (0.12.0 flattened the leading null to its neighbour
+        // and interpolated the pair linearly).
         SpectrumArrayStore.Arrays filled = read(row, true);
         assertExact("filled m/z", new double[]{
-                252.96545361882283, 252.96545361882283, 252.9658410458915, 252.9662284741469, 252.966615903589,
-                252.96700333421788, 252.96739076603342, 252.9728151686843, 252.97823957133514, 252.983663973986},
+                252.96506619056743, 252.96545361882283, 252.9658410458915, 252.9662284741469, 252.966615903589,
+                252.96700333421788, 252.96739076603342, 252.96777819428883, 252.9832765457306, 252.983663973986},
                 filled.mz());
         assertExact("filled intensity", new double[]{
                 0.0, 1328.245849609375, 3272.78173828125, 4725.3662109375, 4891.2607421875, 3677.263671875,
