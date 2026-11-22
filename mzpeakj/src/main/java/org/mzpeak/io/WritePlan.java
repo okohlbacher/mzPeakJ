@@ -75,14 +75,13 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
     /**
      * An intensity column of a signal file and its array-index entry (design §11.7, WR-11): the 64-bit float
      * intensities (MS:1000515) in {@code unit}. chromatograms_data has one for each distinct
-     * {@link Chromatogram#intensityUnit()}; every other signal file has one, {@code intensity}.
+     * {@link Chromatogram#intensityUnit()}; every other signal file has one, {@code intensity}. The first column's
+     * entry has buffer priority primary, the others secondary ({@link ArrayIndex#builder}).
      *
-     * @param unit    the unit of the values and of the entry, null when they have none
-     * @param column  the column's name inside the prefix struct, unique among the file's columns
-     * @param primary whether the entry has buffer priority primary, which only the column {@code intensity} has; the
-     *                others have none, as the reference writes has_uv's absorbance column
+     * @param unit   the unit of the values and of the entry, null when they have none
+     * @param column the column's name inside the prefix struct, unique among the file's columns
      */
-    record IntensityColumn(String unit, String column, boolean primary) {
+    record IntensityColumn(String unit, String column) {
     }
 
     /**

@@ -66,6 +66,7 @@ class WriterChromatogramArraysTest {
     private static final String INT64 = "MS:1000522";
     private static final String FLOAT64 = "MS:1000523";
     private static final String PRIMARY = "primary";
+    private static final String SECONDARY = "secondary";
     private static final String TIC_TYPE = "MS:1000235";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -116,7 +117,7 @@ class WriterChromatogramArraysTest {
      * Current has_uv read, written as an archive in either metadata layout and read again: the TIC keeps its
      * intensities in MS:1000131 and its {@code ms level} array, the DAD chromatogram its absorbances in UO:0000269 and
      * no {@code ms level}. The MS:1000131 column is {@code intensity}, with buffer priority primary; the absorbance
-     * column is {@code intensity_UO_0000269}, without buffer priority, as the reference writes has_uv's.
+     * column is {@code intensity_UO_0000269}, secondary (W6, D13-25).
      */
     @ParameterizedTest
     @EnumSource(MetadataLayout.class)
@@ -148,7 +149,7 @@ class WriterChromatogramArraysTest {
                         tuple("chromatogram_index", INDEX_ARRAY, null, PRIMARY),
                         tuple("time", TIME, MINUTE, PRIMARY),
                         tuple("intensity", INTENSITY, COUNTS, PRIMARY),
-                        tuple("intensity_UO_0000269", INTENSITY, ABSORBANCE, null),
+                        tuple("intensity_UO_0000269", INTENSITY, ABSORBANCE, SECONDARY),
                         tuple("ms_level", NON_STANDARD, DIMENSIONLESS, PRIMARY));
     }
 
@@ -290,11 +291,11 @@ class WriterChromatogramArraysTest {
                 .extracting(Entry::field, Entry::unit, Entry::bufferPriority, Entry::dataType, Entry::format)
                 .containsExactly(
                         tuple("intensity", COUNTS, PRIMARY, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_UO_0000269", ABSORBANCE, null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_unitless", null, null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_UO_0000269_2", "UO_0000269", null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_unitless_2", "unitless", null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_a_b_c", "a b.c", null, FLOAT64, BufferFormat.POINT));
+                        tuple("intensity_UO_0000269", ABSORBANCE, SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_unitless", null, SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_UO_0000269_2", "UO_0000269", SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_unitless_2", "unitless", SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_a_b_c", "a b.c", SECONDARY, FLOAT64, BufferFormat.POINT));
         List<Chromatogram> back = ForwardBackwardCorpusTest.readSource(out).chromatograms;
         assertThat(back).extracting(Chromatogram::intensityUnit).containsExactlyElementsOf(units);
         for (int i = 0; i < units.size(); i++) {
@@ -318,7 +319,7 @@ class WriterChromatogramArraysTest {
 
         assertThat(chromatogramIndex(out).entries()).filteredOn(e -> INTENSITY.equals(e.arrayType()))
                 .extracting(Entry::field, Entry::unit, Entry::bufferPriority)
-                .containsExactly(tuple("intensity", ABSORBANCE, PRIMARY), tuple("intensity_unitless", null, null));
+                .containsExactly(tuple("intensity", ABSORBANCE, PRIMARY), tuple("intensity_unitless", null, SECONDARY));
         List<Chromatogram> back = ForwardBackwardCorpusTest.readSource(out).chromatograms;
         assertThat(back).extracting(Chromatogram::id, Chromatogram::intensityUnit)
                 .containsExactly(tuple("absorbance", ABSORBANCE), tuple("unitless", null));

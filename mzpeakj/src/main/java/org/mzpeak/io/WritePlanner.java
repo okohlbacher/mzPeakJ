@@ -604,11 +604,11 @@ final class WritePlanner {
         String primary = units.contains(ArrayIndex.COUNTS_UNIT) ? ArrayIndex.COUNTS_UNIT : units.iterator().next();
         List<IntensityColumn> out = new ArrayList<>(units.size());
         columns.add(INTENSITY_COLUMN);
-        out.add(new IntensityColumn(primary, INTENSITY_COLUMN, true));
+        out.add(new IntensityColumn(primary, INTENSITY_COLUMN));
         for (String unit : units) {
             if (!Objects.equals(unit, primary)) {
                 String name = unit == null ? "unitless" : unit.replaceAll("[^A-Za-z0-9]", "_");
-                out.add(new IntensityColumn(unit, uniqueColumn(INTENSITY_COLUMN + "_" + name, columns), false));
+                out.add(new IntensityColumn(unit, uniqueColumn(INTENSITY_COLUMN + "_" + name, columns)));
             }
         }
         return Collections.unmodifiableList(out);
