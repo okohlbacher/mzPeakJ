@@ -94,7 +94,10 @@ public final class ParquetGroups {
         return has(g, field) ? g.getString(field, 0) : null;
     }
 
-    /** Read a numeric leaf as double regardless of whether it is stored as FLOAT/DOUBLE/INT32/INT64. */
+    /**
+     * Read a numeric leaf as double regardless of whether it is stored as FLOAT/DOUBLE/INT32/INT64; an integer leaf
+     * annotated as unsigned is read without sign extension.
+     */
     public static Double optDouble(Group g, String field) {
         if (!has(g, field)) {
             return null;
@@ -103,8 +106,7 @@ public final class ParquetGroups {
         return switch (p) {
             case DOUBLE -> g.getDouble(field, 0);
             case FLOAT -> (double) g.getFloat(field, 0);
-            case INT32 -> (double) g.getInteger(field, 0);
-            case INT64 -> (double) g.getLong(field, 0);
+            case INT32, INT64 -> integerAsDouble(g, field, 0);
             default -> throw new IllegalStateException("Field " + field + " is not numeric: " + p);
         };
     }
@@ -308,9 +310,28 @@ public final class ParquetGroups {
         return switch (p) {
             case DOUBLE -> g.getDouble(field, index);
             case FLOAT -> (double) g.getFloat(field, index);
-            case INT32 -> (double) g.getInteger(field, index);
-            case INT64 -> (double) g.getLong(field, index);
+            case INT32, INT64 -> integerAsDouble(g, field, index);
             default -> throw new IllegalStateException("List element " + field + " is not numeric: " + p);
         };
+    }
+
+    /**
+     * An INT32 or INT64 value as double: signed unless the leaf is annotated as an unsigned integer, so a uint32 of
+     * 2^31 or more and a uint64 of 2^63 or more read as the positive values they are (a uint64 rounded to the
+     * nearest double).
+     */
+    private static double integerAsDouble(Group g, String field, int index) {
+        PrimitiveType type = g.getType().getType(field).asPrimitiveType();
+        boolean unsigned = type.getLogicalTypeAnnotation() instanceof IntLogicalTypeAnnotation i && !i.isSigned();
+        if (type.getPrimitiveTypeName() == PrimitiveTypeName.INT32) {
+            int v = g.getInteger(field, index);
+            return unsigned ? Integer.toUnsignedLong(v) : v;
+        }
+        long v = g.getLong(field, index);
+        if (unsigned && v < 0) {
+            // Halve without losing the low bit (it decides the rounding), convert, and double again: exact scaling.
+            return (double) ((v >>> 1) | (v & 1)) * 2.0;
+        }
+        return v;
     }
 }
