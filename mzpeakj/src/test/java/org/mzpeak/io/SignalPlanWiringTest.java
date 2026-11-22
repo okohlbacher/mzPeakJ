@@ -1005,10 +1005,12 @@ class SignalPlanWiringTest {
 
     /**
      * A chunk member whose wavelength_spectrum_array_index has the prefix 'chunk', the shape of the has_uv_chunkwl
-     * reproduction (520 spectra with no points and no log line before FN-5), throws.
+     * reproduction (520 spectra with no points and no log line before FN-5), threw from FN-5 on; since C5 its chunk rows
+     * are decoded by ChunkRowDecoder and the chunks of one index appended in row order. A row without the chunk struct
+     * or without an index is skipped, and a chunk_encoding that is not decoded throws, naming the index.
      */
     @Test
-    void aChunkWavelengthMemberWithAnArrayIndexThrows() {
+    void aChunkWavelengthMemberWithAnArrayIndexIsDecoded() {
         MessageType schema = MessageTypeParser.parseMessageType("""
                 message m {
                   optional group chunk {
@@ -1028,17 +1030,41 @@ class SignalPlanWiringTest {
                 indexEntry("chunk.chunk_encoding", "chunk_encoding", "MS:1000617", 1, null, null),
                 indexEntry("chunk.intensity", "chunk_secondary", "MS:1000515", null, null, "UO:0000269"));
         SimpleGroupFactory rows = new SimpleGroupFactory(schema);
-        Group row = rows.newGroup();
-        new Row(row, row.addGroup("chunk")).append("wavelength_spectrum_index", 0L)
+        Group first = rows.newGroup();
+        new Row(first, first.addGroup("chunk")).append("wavelength_spectrum_index", 0L)
                 .append("wavelength_chunk_start", 200.0).append("wavelength_chunk_end", 201.0)
                 .list("wavelength_chunk_values", 1.0).append("chunk_encoding", "MS:1003089")
                 .list("intensity", 1.0, 2.0);
+        Group noIndex = rows.newGroup();
+        new Row(noIndex, noIndex.addGroup("chunk")).append("wavelength_chunk_start", 300.0)
+                .list("wavelength_chunk_values", 1.0).append("chunk_encoding", "MS:1003089")
+                .list("intensity", 9.0, 9.0);
+        Group second = rows.newGroup();
+        new Row(second, second.addGroup("chunk")).append("wavelength_spectrum_index", 0L)
+                .append("wavelength_chunk_start", 202.0).append("wavelength_chunk_end", 203.0)
+                .list("wavelength_chunk_values", 202.0, 203.0).append("chunk_encoding", "MS:1000576")
+                .list("intensity", 3.0, 4.0);
         Path data = write("wavelength_spectra_data.parquet", schema,
-                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index), row);
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index), first, rows.newGroup(), noIndex,
+                second);
 
-        assertThatThrownBy(() -> wavelengthSpectra(data, 0))
+        List<WavelengthSpectrum> all = wavelengthSpectra(data, 0, 1);
+
+        assertThat(all.get(0).wavelength()).containsExactly(200.0, 201.0, 202.0, 203.0);
+        assertThat(all.get(0).intensity()).containsExactly(1.0, 2.0, 3.0, 4.0);
+        assertThat(all.get(1).wavelength()).isEmpty();
+        assertThat(all.get(1).intensity()).isEmpty();
+
+        Group unknown = rows.newGroup();
+        new Row(unknown, unknown.addGroup("chunk")).append("wavelength_spectrum_index", 1L)
+                .append("wavelength_chunk_start", 200.0).list("wavelength_chunk_values", 1.0)
+                .append("chunk_encoding", "MS:0000000").list("intensity", 1.0, 2.0);
+        Path undecoded = write("undecoded.parquet", schema,
+                Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), index), unknown);
+
+        assertThatThrownBy(() -> wavelengthSpectra(undecoded, 1))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage("wavelength spectrum data member: chunked wavelength spectra are not supported");
+                .hasMessage("unsupported chunk encoding MS:0000000 for wavelength_spectrum_index 1");
     }
 
     @Test

@@ -1,10 +1,12 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.schema.MessageType;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.util.ArrayList;
@@ -17,11 +19,14 @@ import java.util.Optional;
  * Reads {@code wavelength_spectra_metadata.parquet} + {@code wavelength_spectra_data.parquet} into
  * {@link WavelengthSpectrum}s. The metadata member, packed or split, is decoded by
  * {@link WavelengthMetadataDecoder}; spectra keep its order, and an index without data rows reads as empty arrays.
- * UV/DAD data is dense {@code point} layout (no null-marking, no precursors), grouped by {@link PointArrays} through
- * the data member's {@link SignalPlan}: from its {@code wavelength_spectrum_array_index} footer, else inferred from
- * its column names. A data member that cannot be read that way throws an {@link MzPeakException} naming it, instead
- * of giving empty arrays: one in chunk layout (chunked wavelength spectra are not decoded), one without the plan's
- * prefix struct, and one whose plan names no wavelength values column or no value-bearing intensity column.
+ * The data member is read through its {@link SignalPlan}: from its {@code wavelength_spectrum_array_index} footer,
+ * else inferred from its column names. In {@code point} layout its rows are grouped by {@link PointArrays}; in
+ * {@code chunk} layout (C5, wavelength-spectra.md: point or chunked layout) each chunk row is decoded by
+ * {@link ChunkRowDecoder} with the wavelength as its main axis, and the chunks of one index are appended in row order;
+ * a null-marked wavelength of a chunk reads as NaN, as a null point wavelength does. A data member that cannot be read
+ * that way throws an {@link MzPeakException} naming it, instead of giving empty arrays: one without the plan's prefix
+ * struct, one whose plan names no wavelength values column or no value-bearing intensity column, and one with a chunk
+ * row that {@link ChunkRowDecoder} cannot decode (naming the wavelength spectrum index).
  */
 final class WavelengthSpectrumStore {
 
@@ -95,7 +100,8 @@ final class WavelengthSpectrumStore {
                 ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.WAVELENGTH_SPECTRUM), footer.schema(),
                 SignalEntity.WAVELENGTH_SPECTRUM);
         requireReadable(plan, footer.schema(), dataName);
-        Map<Long, PointArrays.XY> data = PointArrays.groupByIndex(dataFile, plan, dataName);
+        Map<Long, PointArrays.XY> data = plan.layout() == SignalPlan.Layout.CHUNK
+                ? groupChunks(dataFile, plan, dataName) : PointArrays.groupByIndex(dataFile, plan, dataName);
 
         List<WavelengthSpectrum> all = new ArrayList<>(headers.size());
         for (WavelengthMetadataDecoder.Header h : headers) {
@@ -108,11 +114,40 @@ final class WavelengthSpectrumStore {
         return new WavelengthSpectrumStore(all, plan);
     }
 
-    /** Throws unless {@code plan} reads the point rows of the data member {@code dataName} of schema {@code schema}. */
+    /**
+     * Decodes the chunk rows of a data file with {@link ChunkRowDecoder} and appends their wavelengths and
+     * intensities by the plan's index field, in the order the indices first occur; rows without the prefix struct or
+     * an index are skipped, as point rows are.
+     *
+     * @param member the name of the data member in errors
+     */
+    private static Map<Long, PointArrays.XY> groupChunks(InputFile dataFile, SignalPlan plan, String member) {
+        ChunkRowDecoder decoder = new ChunkRowDecoder(plan);
+        Map<Long, DoubleArrayBuilder[]> acc = new LinkedHashMap<>();
+        ParquetGroups.forEach(dataFile, row -> {
+            Group chunk = ParquetGroups.optGroup(row, plan.prefix());
+            if (chunk == null) {
+                return;
+            }
+            Long idx = ParquetGroups.optIndexKey(chunk, plan.indexField(), member);
+            if (idx == null) {
+                return;
+            }
+            ChunkRowDecoder.Row decoded = decoder.decodeSignal(chunk, idx);
+            DoubleArrayBuilder[] b = acc.computeIfAbsent(idx,
+                    k -> new DoubleArrayBuilder[] {new DoubleArrayBuilder(), new DoubleArrayBuilder()});
+            for (int i = 0; i < decoded.axis().length; i++) {
+                b[0].add(decoded.axis()[i]);
+                b[1].add(decoded.intensity()[i]);
+            }
+        });
+        Map<Long, PointArrays.XY> out = new LinkedHashMap<>();
+        acc.forEach((idx, b) -> out.put(idx, new PointArrays.XY(b[0].toArray(), b[1].toArray())));
+        return out;
+    }
+
+    /** Throws unless {@code plan} reads the rows of the data member {@code dataName} of schema {@code schema}. */
     private static void requireReadable(SignalPlan plan, MessageType schema, String dataName) {
-        if (plan.layout() == SignalPlan.Layout.CHUNK) {
-            throw new MzPeakException(dataName + ": chunked wavelength spectra are not supported");
-        }
         if (!schema.containsField(plan.prefix()) || schema.getType(plan.prefix()).isPrimitive()) {
             throw new MzPeakException(dataName + " has no '" + plan.prefix() + "' struct, so its wavelength spectra"
                     + " cannot be read");
