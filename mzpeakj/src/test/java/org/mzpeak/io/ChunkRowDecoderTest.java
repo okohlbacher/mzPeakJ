@@ -10,8 +10,11 @@ import org.junit.jupiter.api.Test;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.SignalPlan.Layout;
+import org.mzpeak.io.parquet.ParquetGroups;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,17 +52,32 @@ class ChunkRowDecoderTest {
 
     // ---- the plan --------------------------------------------------------------------------------------------------
 
+    /**
+     * A chromatogram plan decodes its chunk rows with the time as the main axis (C4: before, the constructor threw
+     * IllegalArgumentException "chunk rows of CHROMATOGRAM are not decoded here"): small.chunked's TIC row gives 48
+     * times from its chunk start, paired with its intensity list, whose column it reports.
+     */
     @Test
-    void aChromatogramPlanIsNotDecodedHere() {
+    void aChromatogramPlanDecodesItsTimeAxis() {
         ParquetFooter f = ArrayIndexTest.footer(Fixtures.current("small.chunked.mzpeak"), EntityType.CHROMATOGRAM,
                 DataKind.DATA_ARRAYS);
         SignalPlan plan = SignalPlan.of(ArrayIndex.of(f.keyValue(), f.schema(), SignalEntity.CHROMATOGRAM),
                 f.schema(), SignalEntity.CHROMATOGRAM);
         assertThat(plan.layout()).isEqualTo(Layout.CHUNK);
+        List<Group> rows = new ArrayList<>();
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current("small.chunked.mzpeak"))) {
+            ParquetGroups.forEach(source.inputFile("chromatograms_data.parquet"), rows::add);
+        }
+        Group chunk = rows.get(0).getGroup("chunk", 0);
 
-        assertThatThrownBy(() -> new ChunkRowDecoder(plan))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("chunk rows of CHROMATOGRAM are not decoded here");
+        ChunkRowDecoder.Row row = new ChunkRowDecoder(plan).decodeSignal(chunk, 0);
+
+        assertThat(row.axis()).hasSize(48);
+        assertThat(row.axis()[0]).isEqualTo(0.004935);
+        assertThat(row.axis()[47]).isCloseTo(0.487237, within(1e-6));
+        assertThat(row.intensity()).hasSize(48);
+        assertThat(row.intensityField()).isEqualTo("intensity");
+        assertThat(row.extras()).isEmpty();
     }
 
     // ---- axis values ----------------------------------------------------------------------------------------------

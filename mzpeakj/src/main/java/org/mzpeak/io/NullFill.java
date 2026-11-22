@@ -8,8 +8,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Resolves the NaN m/z placeholders that null marking leaves in a decoded profile spectrum: drops them with their
- * intensities, or fills them by the spec's rule (signal-data.md, Decoding null pairs).
+ * Resolves the NaN m/z placeholders that null marking leaves in a decoded profile spectrum, or the NaN time
+ * placeholders of a chunked chromatogram (C4): drops them with their intensities, or fills them by the spec's rule
+ * (signal-data.md, Decoding null pairs). The rules below say m/z and spectrum for the main axis and the entity.
  */
 final class NullFill {
 
@@ -115,9 +116,10 @@ final class NullFill {
      *
      * @param model  the spectrum's delta model; null or empty when it has none
      * @param member the member name in messages
-     * @param index  the spectrum index in messages
+     * @param index  the entity in messages, which also names the main axis
      */
-    static double[] fill(List<double[]> rows, boolean chunked, double[] model, String member, long index) {
+    static double[] fill(List<double[]> rows, boolean chunked, double[] model, String member,
+                         SignalEntity.Ref index) {
         new EntityFill(rows, chunked, model, member, index).fill();
         return concat(rows);
     }
@@ -128,19 +130,25 @@ final class NullFill {
         private final boolean chunked;
         private final double[] model;
         private final String member;
-        private final long index;
+        private final SignalEntity.Ref index;
+        /** The main axis in messages: m/z, time. */
+        private final String axis;
+        /** The delta model in messages: mz_delta_model for a spectrum. */
+        private final String modelName;
         /** The spacing for a single stored value without a model, from the stored values before any fill. */
         private double fallback = Double.NaN;
         /** The runs of nulls that null marking does not produce, and where the first is. */
         private int irregular;
         private String firstIrregular;
 
-        EntityFill(List<double[]> rows, boolean chunked, double[] model, String member, long index) {
+        EntityFill(List<double[]> rows, boolean chunked, double[] model, String member, SignalEntity.Ref index) {
             this.rows = rows;
             this.chunked = chunked;
             this.model = model == null || model.length == 0 ? null : model;
             this.member = member;
             this.index = index;
+            this.axis = index.entity().axisName();
+            this.modelName = index.entity() == SignalEntity.SPECTRUM ? "mz_delta_model" : "delta model";
         }
 
         void fill() {
@@ -156,10 +164,10 @@ final class NullFill {
             if (irregular > 0) {
                 int runs = irregular;
                 String first = firstIrregular;
-                LOG.log(Level.DEBUG, () -> member + ": spectrum_index " + index + " has " + runs
-                        + (runs == 1 ? " run" : " runs") + " of null m/z that null marking does not produce (the"
-                        + " first at " + first + "): three or more nulls between stored values, or more than one"
-                        + " at an end of an array; filled by stepping from the stored values");
+                LOG.log(Level.DEBUG, () -> member + ": " + index + " has " + runs + (runs == 1 ? " run" : " runs")
+                        + " of null " + axis + " that null marking does not produce (the first at " + first + "):"
+                        + " three or more nulls between stored values, or more than one at an end of an array; filled"
+                        + " by stepping from the stored values");
             }
         }
 
@@ -227,8 +235,8 @@ final class NullFill {
             int length = b - a;
             boolean interior = a > 0 && b < n;
             if (interior && length == 1) {
-                throw new MzPeakException(member + ": unpaired null m/z at position " + a + where(row)
-                        + " of spectrum_index " + index + "; an unpaired null may only be the first or last value of "
+                throw new MzPeakException(member + ": unpaired null " + axis + " at position " + a + where(row)
+                        + " of " + index + "; an unpaired null may only be the first or last value of "
                         + (chunked ? "a chunk row" : "the spectrum") + " (signal-data.md, Decoding null pairs)");
             }
             if ((interior ? length > 2 : length > 1) && irregular++ == 0) {
@@ -282,9 +290,9 @@ final class NullFill {
                 return acc;
             }
             if (Double.isNaN(fallback)) {
-                throw new MzPeakException(member + ": the null m/z next to the single stored m/z at position " + at
-                        + where(row) + " of spectrum_index " + index + " cannot be filled: there is no mz_delta_model"
-                        + " and no two adjacent stored m/z to estimate the spacing from");
+                throw new MzPeakException(member + ": the null " + axis + " next to the single stored " + axis
+                        + " at position " + at + where(row) + " of " + index + " cannot be filled: there is no "
+                        + modelName + " and no two adjacent stored " + axis + " to estimate the spacing from");
             }
             return fallback;
         }

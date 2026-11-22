@@ -178,7 +178,8 @@ class ChromatogramArraysTest {
 
         double[] slof = slofDecoded();
         assertThat(all).extracting(Chromatogram::id).containsExactly("c0", "c1", "c2", "c3");
-        assertArrays(all.get(0), new double[] {10, 11, 12, 20, 21}, new double[] {1, 2, 3, 4, 5});
+        // C4: the chunk without a start reads its one point at time 0, as a spectrum chunk row (it was skipped)
+        assertArrays(all.get(0), new double[] {10, 11, 12, 20, 21, 0}, new double[] {1, 2, 3, 4, 5, 9});
         assertArrays(all.get(1), new double[] {0, 1, 2, 5, 6}, new double[] {7, 8, 9, 1, 1});
         assertArrays(all.get(2), new double[] {0, 0.5}, slof);
         assertArrays(all.get(3), new double[] {0, 1, 2, 3}, new double[] {1, 2, slof[0], slof[1]});
@@ -458,10 +459,10 @@ class ChromatogramArraysTest {
 
     /**
      * Chunk rows: an extra list aligns 1:1 with the time values its chunk decodes to, a null list reads as NaN
-     * cells, and the chunks of one index are appended in row order; a skipped chunk (no start) adds no cells. A list
-     * of another length drops that key for that chromatogram with one WARNING. The unit is that of the intensity
-     * list or the SLOF entry that supplied the chunk; mixed units give null with one WARNING. An extra stored only
-     * as a chunk transform is not decoded: it is dropped with one WARNING.
+     * cells, and the chunks of one index are appended in row order; a chunk without a start starts at time 0 (C4).
+     * A list of another length drops that key for that chromatogram with one WARNING. The unit is that of the
+     * intensity list or the SLOF entry that supplied the chunk; mixed units give null with one WARNING. An extra
+     * stored only as a chunk transform is not decoded: it is dropped with one WARNING.
      */
     @Test
     void chunkMemberExtrasAndUnits() {
@@ -472,7 +473,8 @@ class ChromatogramArraysTest {
 
         assertThat(all.get(0).intensityUnit()).isEqualTo("MS:1000131");
         assertThat(all.get(0).arrays().keySet()).containsExactly("ms level");
-        assertThat(all.get(0).arrays().get("ms level")).containsExactly(1, Double.NaN, 2, Double.NaN, Double.NaN);
+        // C4: with the cell of the chunk without a start, which was skipped
+        assertThat(all.get(0).arrays().get("ms level")).containsExactly(1, Double.NaN, 2, Double.NaN, Double.NaN, 9);
 
         assertThat(all.get(1).intensityUnit()).isEqualTo("MS:1000131");
         assertThat(all.get(1).arrays()).isEmpty();

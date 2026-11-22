@@ -21,7 +21,8 @@ import java.util.Optional;
  * The data member, in {@code point} or {@code chunk} layout, is decoded by {@link ChromatogramDataDecoder} through
  * its {@link SignalPlan}: from the member's {@code chromatogram_array_index} footer, else inferred from its column
  * names. The decoder also gives each chromatogram's intensity unit and extra arrays, and the member's time unit, which
- * every chromatogram gets, an index without data rows included; the times are as stored.
+ * every chromatogram gets, an index without data rows included; the times are as stored, the null-marked times of a
+ * chunked member filled or dropped as the reader's {@code reconstructProfile} option says.
  */
 final class ChromatogramStore {
 
@@ -58,11 +59,20 @@ final class ChromatogramStore {
     /**
      * Loads the members that {@code manifest} lists under the roles (chromatogram, metadata) and (chromatogram, data
      * arrays), and in the split layout those it lists under (chromatogram, precursors) and (chromatogram,
-     * selected_ions); error messages name the members by their file names.
+     * selected_ions); error messages name the members by their file names. Null-marked chunk times are filled, as
+     * with the reader's default options.
      *
      * @return the store, or {@code null} when the manifest lacks either member
      */
     static ChromatogramStore load(MzPeakSource source, MzPeakManifest manifest) {
+        return load(source, manifest, true);
+    }
+
+    /**
+     * {@link #load(MzPeakSource, MzPeakManifest)}, with the null-marked chunk times filled when
+     * {@code reconstructProfile} is set, else dropped.
+     */
+    static ChromatogramStore load(MzPeakSource source, MzPeakManifest manifest, boolean reconstructProfile) {
         Entry metadata = manifest.find(EntityType.CHROMATOGRAM, DataKind.METADATA).orElse(null);
         String dataName = manifest.find(EntityType.CHROMATOGRAM, DataKind.DATA_ARRAYS)
                 .map(Entry::name).orElse(null);
@@ -70,7 +80,7 @@ final class ChromatogramStore {
             return null;
         }
         return load(ChromatogramMetadataDecoder.decode(source, manifest, metadata), source.inputFile(dataName),
-                dataName);
+                dataName, reconstructProfile);
     }
 
     /**
@@ -79,7 +89,7 @@ final class ChromatogramStore {
      */
     static ChromatogramStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.CHROMATOGRAM.canonical(), DataKind.METADATA.canonical());
-        return load(ChromatogramMetadataDecoder.decode(metadataFile, metadata), dataFile, DATA_MEMBER);
+        return load(ChromatogramMetadataDecoder.decode(metadataFile, metadata), dataFile, DATA_MEMBER, true);
     }
 
     /**
@@ -87,13 +97,14 @@ final class ChromatogramStore {
      * is not read when there are none.
      */
     private static ChromatogramStore load(List<ChromatogramMetadataDecoder.Header> headers, InputFile dataFile,
-                                          String dataMember) {
+                                          String dataMember, boolean reconstructProfile) {
         if (headers.isEmpty()) {
             return new ChromatogramStore(List.of(), null);
         }
         // ---- data: point or chunk layout, as the plan says -------------------------
         SignalPlan plan = plan(dataFile);
-        Map<Long, ChromatogramDataDecoder.Decoded> data = ChromatogramDataDecoder.decode(dataFile, dataMember, plan);
+        Map<Long, ChromatogramDataDecoder.Decoded> data =
+                ChromatogramDataDecoder.decode(dataFile, dataMember, plan, reconstructProfile);
         String timeUnit = ChromatogramDataDecoder.timeUnit(plan);
 
         // ---- assemble --------------------------------------------------------------

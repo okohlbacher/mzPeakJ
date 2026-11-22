@@ -231,7 +231,7 @@ class SignalIndexKeyTest {
         ParquetFooter footer = ParquetFooter.read(file);
         SignalPlan plan = SignalPlan.of(ArrayIndex.of(footer.keyValue(), footer.schema(), SignalEntity.CHROMATOGRAM),
                 footer.schema(), SignalEntity.CHROMATOGRAM);
-        return ChromatogramDataDecoder.decode(file, data.getFileName().toString(), plan);
+        return ChromatogramDataDecoder.decode(file, data.getFileName().toString(), plan, true);
     }
 
     /** The entries of the ZIP {@code archive}, extracted into a new directory of the same name. */

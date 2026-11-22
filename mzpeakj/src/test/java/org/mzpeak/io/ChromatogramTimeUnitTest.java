@@ -221,7 +221,8 @@ class ChromatogramTimeUnitTest {
 
     /**
      * (c) A chunked member whose array index names no time values column, its chunk start in seconds: the time unit
-     * is the start column's, UO:0000010, and each chunk gives its stored start.
+     * is the start column's, UO:0000010. Its chunk of 48 intensities and no time values throws (C4: before, each
+     * chunk read as its stored start, paired with its first intensity).
      */
     @Test
     void aChunkedMemberWithoutAValuesColumnTakesTheUnitOfTheStart() throws IOException {
@@ -240,14 +241,11 @@ class ChromatogramTimeUnitTest {
             assertThat(plan(edited).axis().values()).isNull();
             assertThat(plan(edited).axis().start().unit()).isEqualTo(SECOND);
 
-            Chromatogram expected = ChromatogramStore.load(metadata, data).all().get(0);
-            Chromatogram actual = ChromatogramStore.load(metadata, edited).all().get(0);
-            assertThat(actual.timeUnit()).isEqualTo(SECOND);
-            List<Double> seconds = boxed(scaled(expected.time(), v -> v * 60));
-            assertThat(actual.time()).isNotEmpty();
-            for (double t : actual.time()) {
-                assertThat(seconds).contains(t);
-            }
+            assertThat(ChromatogramDataDecoder.timeUnit(plan(edited))).isEqualTo(SECOND);
+            assertThatThrownBy(() -> ChromatogramStore.load(metadata, edited))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("chunk intensity length (48) must equal time values (0) or values+1, for"
+                            + " chromatogram_index 0");
         }
     }
 
@@ -486,10 +484,6 @@ class ChromatogramTimeUnitTest {
             out[i] = f.applyAsDouble(values[i]);
         }
         return out;
-    }
-
-    private static List<Double> boxed(double[] values) {
-        return java.util.Arrays.stream(values).boxed().toList();
     }
 
     /** Asserts that {@code actual[i]} differs from {@code expected[i]} by at most 1e-12 × |expected[i]|. */

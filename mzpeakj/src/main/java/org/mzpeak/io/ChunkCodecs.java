@@ -10,7 +10,7 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * Decodes the payloads of a spectrum signal chunk row (the main-axis values and MS-Numpress byte lists) and builds the
+ * Decodes the payloads of a signal chunk row (the main-axis values and MS-Numpress byte lists) and builds the
  * errors for chunks the reader cannot decode. The caller names the columns, from the member's {@link SignalPlan}.
  */
 final class ChunkCodecs {
@@ -26,10 +26,11 @@ final class ChunkCodecs {
 
     /**
      * The values of the Numpress payload in {@code field} ({@code cvAccession} names the codec), none for an empty or
-     * null payload; a payload that does not decode throws, naming {@code what} and the spectrum. PIC is decoded by
+     * null payload; a payload that does not decode throws, naming {@code what} and the entity. PIC is decoded by
      * {@link #decodePic}, linear and SLOF by {@code MSNumpress.decode}.
      */
-    static double[] decodeNumpress(Group chunk, String field, String cvAccession, long si, String what) {
+    static double[] decodeNumpress(Group chunk, String field, String cvAccession, SignalEntity.Ref ref,
+                                  String what) {
         byte[] bytes = ParquetGroups.byteList(chunk, field);
         if (bytes.length == 0) {
             return new double[0];
@@ -38,7 +39,7 @@ final class ChunkCodecs {
             return cvAccession.equals(MSNumpress.ACC_NUMPRESS_PIC) ? decodePic(bytes)
                     : MSNumpress.decode(cvAccession, bytes, bytes.length);
         } catch (RuntimeException e) {
-            throw new MzPeakException("Failed to Numpress-decode " + what + " for spectrum_index " + si, e);
+            throw new MzPeakException("Failed to Numpress-decode " + what + " for " + ref, e);
         }
     }
 
@@ -72,12 +73,12 @@ final class ChunkCodecs {
      * @param decoded the Numpress columns the decoder reads, in the order the message names them
      */
     static void rejectUnknownNumpressColumns(Group chunk, List<String> decoded, Collection<String> handled,
-                                             long si) {
+                                             SignalEntity.Ref ref) {
         for (Type field : chunk.getType().getFields()) {
             String name = field.getName();
             if (name.contains("numpress") && !decoded.contains(name) && !handled.contains(name)
                     && carriesValue(chunk, name)) {
-                throw new MzPeakException("unsupported Numpress column " + name + " for spectrum_index " + si
+                throw new MzPeakException("unsupported Numpress column " + name + " for " + ref
                         + "; " + decodedColumns(decoded));
             }
         }
@@ -122,17 +123,18 @@ final class ChunkCodecs {
      * @param present   whether the row's grid cell is non-null
      * @param gridType  the grid_type of the row's grid, or null
      */
-    static MzPeakException undecodableGrid(String gridField, boolean present, String gridType, long si) {
+    static MzPeakException undecodableGrid(String gridField, boolean present, String gridType,
+                                           SignalEntity.Ref ref) {
         if (gridField == null) {
-            return new MzPeakException("chunk_encoding " + GRID_ENCODING + " for spectrum_index " + si
+            return new MzPeakException("chunk_encoding " + GRID_ENCODING + " for " + ref
                     + ", but the signal plan has no grid column");
         }
         if (!present) {
-            return new MzPeakException("chunk_encoding " + GRID_ENCODING + " for spectrum_index " + si
+            return new MzPeakException("chunk_encoding " + GRID_ENCODING + " for " + ref
                     + ", but the row has no grid in " + gridField);
         }
         return new MzPeakException("grid_type " + (gridType == null ? "(none)" : gridType) + " of " + gridField
-                + " is not one of " + String.join(", ", GridModels.KINDS.keySet()) + " for spectrum_index " + si);
+                + " is not one of " + String.join(", ", GridModels.KINDS.keySet()) + " for " + ref);
     }
 
     /**
@@ -142,9 +144,9 @@ final class ChunkCodecs {
      *
      * @param encoding the row's chunk_encoding, or null
      */
-    static MzPeakException gridWithoutGridEncoding(String gridField, String encoding, long si) {
+    static MzPeakException gridWithoutGridEncoding(String gridField, String encoding, SignalEntity.Ref ref) {
         return new MzPeakException(gridField + " carries a grid but chunk_encoding is "
-                + (encoding == null ? "(none)" : encoding) + " for spectrum_index " + si);
+                + (encoding == null ? "(none)" : encoding) + " for " + ref);
     }
 
     /**
@@ -154,7 +156,7 @@ final class ChunkCodecs {
      * column decodes as delta, as before. Any other encoding throws instead of being decoded as delta, also on a
      * row whose Numpress columns would select the Numpress decoder.
      */
-    static boolean isAbsolute(String encoding, long si) {
+    static boolean isAbsolute(String encoding, SignalEntity.Ref ref) {
         if (encoding == null || encoding.equals(DELTA_ENCODING)
                 || encoding.equals(MSNumpress.ACC_NUMPRESS_LINEAR)) {
             return false;
@@ -162,7 +164,7 @@ final class ChunkCodecs {
         if (encoding.equals(NO_COMPRESSION) || encoding.equals(TRUNCATION_ZLIB)) {
             return true;
         }
-        throw new MzPeakException("unsupported chunk encoding " + encoding + " for spectrum_index " + si);
+        throw new MzPeakException("unsupported chunk encoding " + encoding + " for " + ref);
     }
 
     /**

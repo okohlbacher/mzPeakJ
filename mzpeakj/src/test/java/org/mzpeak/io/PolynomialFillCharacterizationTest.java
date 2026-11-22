@@ -126,7 +126,7 @@ class PolynomialFillCharacterizationTest {
         for (int k : nullPositions) {
             m[k] = Double.NaN;
         }
-        double[] out = NullFill.fill(List.of(m), false, beta, "spectra_data.parquet", 0);
+        double[] out = NullFill.fill(List.of(m), false, beta, "spectra_data.parquet", SignalEntity.SPECTRUM.ref(0));
         assertThat(out).isSameAs(m);
         return m;
     }

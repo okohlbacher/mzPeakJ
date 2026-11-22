@@ -276,7 +276,7 @@ class GridDecodeTest {
 
     @Test
     void aGridEncodingWithoutAGridColumnInThePlanFails() {
-        assertThat(ChunkCodecs.undecodableGrid(null, false, null, 4))
+        assertThat(ChunkCodecs.undecodableGrid(null, false, null, SignalEntity.SPECTRUM.ref(4)))
                 .hasMessage("chunk_encoding MS:1003826 for spectrum_index 4, but the signal plan has no grid column");
     }
 
@@ -409,7 +409,7 @@ class GridDecodeTest {
     void anInt64GridIndexOfTwoToThe32Fails() {
         Group chunk = gridCell("required int64 element;", indices -> indices.addGroup("list")
                 .add("element", 4_294_967_296L));
-        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 0))
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, SignalEntity.SPECTRUM.ref(0)))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("grid " + MZ_GRID + " has the index 4294967296 at position 0, outside 0..4294967295,"
                         + " for spectrum_index 0");
@@ -422,7 +422,7 @@ class GridDecodeTest {
             indices.addGroup("list").add("element", 2.0);
             indices.addGroup("list").add("element", 1.5);
         });
-        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 0))
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, SignalEntity.SPECTRUM.ref(0)))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("grid " + MZ_GRID + " has the index 1.5 at position 1, not an unsigned 32-bit integer,"
                         + " for spectrum_index 0");
