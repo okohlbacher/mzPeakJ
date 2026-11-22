@@ -20,13 +20,16 @@ import java.util.Set;
  * that every reference between the documents resolves.
  *
  * <p>The schema check is a small subset of JSON Schema, enough for these five schemas and without a dependency: at
- * every node it follows a local {@code $ref} ({@code #/definitions/...}), checks the {@code type} (a name or a list of
- * names: {@code integer}, {@code number}, {@code string}, {@code boolean}, {@code null}, {@code array},
- * {@code object}), that every key of {@code required} is present, every present key of {@code properties} against its
- * schema and every element of an array against {@code items}. A {@code $ref} to another file (the specification's
- * {@code param.json}) is not followed.
+ * every node it follows a local {@code $ref} ({@code #/definitions/...}) and a {@code $ref} to another file of the
+ * folder (by the last segment of its URI, such as the specification's {@code param.json}), checks the {@code type} (a
+ * name or a list of names: {@code integer}, {@code number}, {@code string}, {@code boolean}, {@code null},
+ * {@code array}, {@code object}), that the value is one of {@code enum}, that every key of {@code required} is
+ * present, every present key of {@code properties} against its schema and every element of an array against
+ * {@code items}. The schemas are those of the current dialect: the documents of the packed layout's output, which
+ * keeps the pin-era run key {@code default_instrument_id}, are not checked against them.
  *
- * <p>The resolver checks, when the documents hold a run, that its {@code default_instrument_id} names a configuration
+ * <p>The resolver checks, when the documents hold a run, that its {@code default_instrument_configuration_id} (the
+ * packed layout's {@code default_instrument_id} when only that is present) names a configuration
  * of {@code instrument_configuration_list}, its {@code default_data_processing_id} an entry of
  * {@code data_processing_method_list} and its {@code default_source_file_id} a source file of
  * {@code file_description}; and that every {@code software_reference} of a configuration or a processing method names
@@ -39,6 +42,8 @@ final class SpecSchemaCheck {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final String INDEX = "mzpeak_index.json";
+    private static final String INSTRUMENT_KEY = "default_instrument_configuration_id";
+    private static final String PACKED_INSTRUMENT_KEY = "default_instrument_id";
 
     private SpecSchemaCheck() {
     }
@@ -83,11 +88,13 @@ final class SpecSchemaCheck {
         String runDocument = footer.get("run");
         if (runDocument != null) {
             JsonNode run = parse(runDocument);
-            JsonNode instrument = run.get("default_instrument_id");
+            String instrumentKey = !run.has(INSTRUMENT_KEY) && run.has(PACKED_INSTRUMENT_KEY)
+                    ? PACKED_INSTRUMENT_KEY : INSTRUMENT_KEY;
+            JsonNode instrument = run.get(instrumentKey);
             Set<String> configurations = ids(footer.get("instrument_configuration_list"), "id");
             if (instrument == null || !instrument.isIntegralNumber()
                     || !configurations.contains(instrument.asText())) {
-                out.add("run default_instrument_id " + instrument + " names no instrument configuration of "
+                out.add("run " + instrumentKey + " " + instrument + " names no instrument configuration of "
                         + configurations);
             }
             requiredReference(run.get("default_data_processing_id"),
@@ -197,6 +204,9 @@ final class SpecSchemaCheck {
         if (ref != null) {
             String target = ref.asText();
             if (!target.startsWith("#/")) {
+                // Another file of the folder, named by the last segment of the URI.
+                JsonNode other = schema(target.substring(target.lastIndexOf('/') + 1));
+                check(other, other, value, path, out);
                 return;
             }
             JsonNode resolved = root.at(target.substring(1));
@@ -210,6 +220,10 @@ final class SpecSchemaCheck {
         if (type != null && !hasType(type, value)) {
             out.add(path + ": " + value.getNodeType() + " " + value + " is not of type " + type);
             return;
+        }
+        JsonNode allowed = schema.get("enum");
+        if (allowed != null && !contains(allowed, value)) {
+            out.add(path + ": " + value + " is not one of " + allowed);
         }
         if (value.isObject()) {
             for (JsonNode required : schema.path("required")) {
@@ -228,6 +242,15 @@ final class SpecSchemaCheck {
                 check(root, schema.get("items"), value.get(i), path + "[" + i + "]", out);
             }
         }
+    }
+
+    private static boolean contains(JsonNode values, JsonNode value) {
+        for (JsonNode v : values) {
+            if (v.equals(value)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean hasType(JsonNode type, JsonNode value) {

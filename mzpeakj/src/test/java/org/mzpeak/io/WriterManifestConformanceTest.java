@@ -330,6 +330,64 @@ class WriterManifestConformanceTest {
         assertThat(local).as("ZIP entries of %s via %s", fixture, form).containsExactlyElementsOf(expected);
     }
 
+    // ---- run key (W1) -------------------------------------------------------------------------------------------
+
+    static Stream<Arguments> runKeyCases() {
+        List<Arguments> cases = new ArrayList<>();
+        for (Object[] fixture : new Object[][] {{Fixtures.legacy("small.unpacked.mzpeak"), 0},
+                {Fixtures.legacy("has_uv.mzpeak"), 0}, {Fixtures.current("diaPASEF.ref.mzpeak"), 1}}) {
+            for (Form form : List.of(Form.WRITE_DIRECTORY_SPLIT, Form.WRITE_ARCHIVE)) {
+                cases.add(Arguments.of(fixture[0], form, fixture[1]));
+            }
+        }
+        return cases.stream();
+    }
+
+    /**
+     * W1 (D13-11): in the current (split) dialect the run names its default instrument with
+     * {@code default_instrument_configuration_id} only (diaPASEF.ref's 1 by its stub configuration), and every file
+     * metadata document, the run's against {@code ms_run.json} of spec 963d64a, passes the schema check and resolves,
+     * in the manifest and in every footer that holds them.
+     */
+    @ParameterizedTest(name = "{0} via {1}")
+    @MethodSource("runKeyCases")
+    void theSplitDialectWritesDefaultInstrumentConfigurationId(Path fixture, Form form, int instrument,
+                                                               @TempDir Path tmp) throws IOException {
+        Path out = write(fixture, form, tmp);
+        JsonNode run = index(out).path("metadata").path("run");
+        assertThat(run.get("default_instrument_configuration_id")).as("run of %s via %s", fixture, form).isNotNull();
+        assertThat(run.get("default_instrument_configuration_id").isInt()).isTrue();
+        assertThat(run.get("default_instrument_configuration_id").asInt()).isEqualTo(instrument);
+        assertThat(run.has("default_instrument_id")).as("run of %s via %s", fixture, form).isFalse();
+
+        Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
+        assertThat(places.keySet()).containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(out));
+        List<String> problems = new ArrayList<>();
+        places.forEach((place, documents) -> {
+            assertThat(documents).as(place).containsKey("run").isEqualTo(places.get(INDEX));
+            SpecSchemaCheck.violations(documents).forEach(v -> problems.add(place + ": " + v));
+            SpecSchemaCheck.unresolved(documents).forEach(u -> problems.add(place + ": " + u));
+        });
+        assertThat(problems).as("%s via %s", fixture, form).isEmpty();
+    }
+
+    /** W1 (D13-11): the packed (pin-era) dialect keeps {@code default_instrument_id} and does not write the new key. */
+    @ParameterizedTest(name = "{0} via {1}")
+    @MethodSource("packedCases")
+    void thePackedDialectKeepsDefaultInstrumentId(String fixture, Form form, @TempDir Path tmp) throws IOException {
+        Path out = write(fixture, form, tmp);
+        Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
+        assertThat(places).isNotEmpty();
+        for (Map.Entry<String, Map<String, String>> place : places.entrySet()) {
+            JsonNode run = MAPPER.readTree(place.getValue().get("run"));
+            assertThat(run.get("default_instrument_id")).as("%s via %s: %s", fixture, form, place.getKey())
+                    .isNotNull();
+            assertThat(run.get("default_instrument_id").asInt()).isZero();
+            assertThat(run.has("default_instrument_configuration_id")).isFalse();
+            assertThat(SpecSchemaCheck.unresolved(place.getValue())).isEmpty();
+        }
+    }
+
     // ---- column mapping units -----------------------------------------------------------------------------------
 
     /**
@@ -456,7 +514,11 @@ class WriterManifestConformanceTest {
     }
 
     private static Path write(String fixture, Form form, Path tmp) {
-        Source source = SOURCES.computeIfAbsent(fixture, f -> ForwardBackwardCorpusTest.readSource(Fixtures.legacy(f)));
+        return write(Fixtures.legacy(fixture), form, tmp);
+    }
+
+    private static Path write(Path fixture, Form form, Path tmp) {
+        Source source = SOURCES.computeIfAbsent(fixture.toString(), f -> ForwardBackwardCorpusTest.readSource(fixture));
         Path out = tmp.resolve("out.mzpeak");
         form.write.accept(out, source);
         assertThat(form.archive ? Files.isRegularFile(out) : Files.isDirectory(out))

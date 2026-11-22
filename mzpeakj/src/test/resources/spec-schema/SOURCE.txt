@@ -1,10 +1,14 @@
-https://github.com/HUPO-PSI/mzPeak-specification @ 98800705d647ea8d2a6581420b3eab248b20857a (schema/, copied verbatim)
+https://github.com/HUPO-PSI/mzPeak-specification @ 963d64a04244ebc543532b5141c6e6103aa1f05a (schema/, copied verbatim)
 Copyright (C) 2026 HUPO Proteomics Standards Initiative (PSI), released under CC BY-ND 4.0
 (https://creativecommons.org/licenses/by-nd/4.0/); the files are unmodified (see NOTICE).
-ms_run.json                    91588e97ff8a312ed0265b8d6251a1c173412f3eba2122e3f5fb90cf8ddb53e4
-software.json                  e50a7ba3b141bdd039e8714b302fc540a2ae4f6bf9c7829ce42e9e40aaf5c702
-data_processing.json           ad48690fbe8159b6161d050c2983c97249e4b5a35499e73db327fa85fa503c52
-instrument_configuration.json  f611ddb297e24dd117411d22cccbae89835512e4b7e801516045e9a61ba314f2
-file_description.json          d4d7864bf8fba907cf22d1cf528880984b5daf6364a4731b9dfa2ca6dbe0b991
+ms_run.json                    bfa92f61cf6f8981f56a40c59dfaa49d818c6c96b2a56c9b71295a778cbca222
+software.json                  801fec0f2d15b5d729ce59d071bbfe81ee98896f9b88d272b68f75f22cbd151f
+data_processing.json           dc4c1d4881a038144c69a2145fbed575b9def2b596564a991461278113327a0e
+instrument_configuration.json  f990aa97e83b6582cc8c053d8c12ad316e8aad4c9cf7f1e7e97a635a777e545d
+file_description.json          c0909d441f926d865cd45ae2c98793c18dfa4b97345d2a4cdcd846b13a8f6604
+scan_settings_list.json        37df80d8dcc49459c55ccce9ba148f51c7227f8d09c48c6f2cda9dfc559c0603
+array_index.json               3c181099f9895b3df8d6665b8ed07e221e74043a0d6f68ba9db3240ba5f54373
+param.json                     eac91ae7e2fe7e813878bc1c0ea09c8994372f7d88414c16c9e61c154ae65ec8
+auxiliary_array.json           43edba4d6c5920b35952c7b401521094bb118fa7d7bf798567a566100cab8e56
 The SHA-256 of each file follows its name. SpecSchemaCheck (src/test/java/org/mzpeak/io) checks the footer documents
-mzPeakJ writes against their required keys and property types.
+mzPeakJ writes against their required keys, property types and enumerated values.

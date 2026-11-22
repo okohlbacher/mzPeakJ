@@ -726,7 +726,7 @@ public final class MzPeakWriter {
                         + " writes only into a new or empty directory");
             }
             return new Session(target, archive, false, !archive && !exists, options, extras, true, settings,
-                    FooterMetadataWriter.serialize(fileMetadata), new WriteReport());
+                    FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), new WriteReport());
         }
 
         /**
