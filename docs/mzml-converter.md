@@ -171,7 +171,7 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 |---|---|---|
 | `precursor` | `Precursor` | A: a spectrum precursor's reference follows its `precursorIndex` (A-18, A-23) |
 | `isolationWindow` MS:1000827 / 828 / 829 | `IsolationWindow.targetMz`, `lowerOffset`, `upperOffset` | promoted only in m/z or without unit; other params in `IsolationWindow.parameters` |
-| `selectedIon` MS:1000744 | `SelectedIon.mz` | a selected ion without m/z in MS:1000040 is lost (B-18) |
+| `selectedIon` MS:1000744 | `SelectedIon.mz` | in MS:1000040 or without unit, else a param; an ion without m/z has `mz` NaN and is written back without m/z |
 | MS:1000041 charge state | `charge` | a non-integer value stays a param |
 | MS:1000042 peak intensity | `intensity` | in MS:1000131 or without unit (B-14) |
 | `activation` params | `Activation.parameters` | A: dissociation methods first, then MS:1000045 collision energy; always written |
@@ -327,7 +327,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-15 | scan start times converted to minutes and drift-time arrays to milliseconds; chromatogram times kept in their unit, except that a chromatogram in another unit than the first chromatogram's is converted to that unit | `MzMLReader`, `MzMLConversion` |
 | B-16 | `scan@sourceFileRef` and `precursor@sourceFileRef` | `MzMLReader` |
 | B-17 | scan windows without both limits in m/z, and scan window params other than the limits | `MzMLReader` |
-| B-18 | selected ions without an m/z in MS:1000040, which the mzPeak read drops | `MzMLReader` |
+| B-18 | withdrawn: a selected ion without m/z is kept with m/z NaN since 0.13.0 | — |
 | B-19 | selected ions of later precursors with the same parent, moved to the first precursor | `MzMLConversion` |
 | B-20 | the spectrum `productList` | `MzMLReader` |
 | B-21 | array data type and compression (silent); warned: other array params, array `dataProcessingRef`, declared units of arrays without default unit, arrays in a unit other than their default, arrays of another declared length, ASCII arrays, arrays without array type | `MzMLReader` |

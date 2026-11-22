@@ -6,7 +6,7 @@ import java.util.OptionalDouble;
 /**
  * A selected (precursor) ion.
  *
- * @param mz         selected ion m/z (MS:1000744)
+ * @param mz         selected ion m/z (MS:1000744); NaN for an ion without m/z
  * @param charge     charge state (MS:1000041); may be {@code null}
  * @param intensity  selected ion intensity (MS:1000042); may be {@code null}
  * @param parameters additional CV/user params; never {@code null}, may be empty

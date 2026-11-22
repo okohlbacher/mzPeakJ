@@ -1663,7 +1663,7 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void aSelectedIonMzInNanometersStaysAParamAndIsNoted(@TempDir Path dir) throws IOException {
+    void aSelectedIonMzInNanometersStaysAParamAndTheIonHasMzNaN(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20,
                 "value=\"445.33999999999997\" unitCvRef=\"MS\" unitAccession=\"MS:1000040\"",
                 "value=\"445.33999999999997\" unitCvRef=\"UO\" unitAccession=\"UO:0000018\""));
@@ -1675,12 +1675,11 @@ class MzMLReaderRunTest {
         assertThat(ion.charge()).isEqualTo(2);
         assertThat(ion.parameters()).containsExactly(new Param("selected ion m/z", "MS:1000744", 445.34,
                 "UO:0000018"));
-        assertThat(run.reader.warnings())
-                .contains("B-18 selected ions without an m/z in unit MS:1000040, which the mzPeak read drops (1)");
+        assertThat(run.reader.warnings()).noneMatch(line -> line.startsWith("B-18"));
     }
 
     @Test
-    void aSelectedIonWithoutMzIsNoted(@TempDir Path dir) throws IOException {
+    void aSelectedIonWithoutMzIsReadWithMzNaNAndNotCounted(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceCvParam(s, SCAN_20, "accession=\"MS:1000744\"", ""));
 
         Run run = read(file);
@@ -1688,8 +1687,7 @@ class MzMLReaderRunTest {
         SelectedIon ion = run.spectra.get(1).description().primaryPrecursor().primaryIon();
         assertThat(ion.mz()).isNaN();
         assertThat(ion.intensity()).isEqualTo(120053.0);
-        assertThat(run.reader.warnings())
-                .contains("B-18 selected ions without an m/z in unit MS:1000040, which the mzPeak read drops (1)");
+        assertThat(run.reader.warnings()).noneMatch(line -> line.startsWith("B-18"));
     }
 
     @Test

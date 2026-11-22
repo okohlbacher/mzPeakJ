@@ -697,6 +697,34 @@ class MzMLConversionTest {
         }
     }
 
+    /**
+     * R7 (D13-22): scan=20's selected ion without its m/z cvParam goes to mzPeak with m/z NaN, its charge and
+     * intensity kept and nothing counted, and comes back to mzML without an m/z cvParam.
+     */
+    @Test
+    void aSelectedIonWithoutMzGoesBothWays() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(s, SCAN_20, "<cvParam cvRef=\"MS\" accession=\"MS:1000744\" name=\""
+                + "selected ion m/z\" value=\"445.33999999999997\" unitCvRef=\"MS\" unitAccession=\"MS:1000040\""
+                + " unitName=\"m/z\"/>", ""));
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(tinyLosses(4)));
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadataAt(1).precursors()).singleElement()
+                    .satisfies(p -> assertThat(p.selectedIons()).singleElement().satisfies(ion -> {
+                        assertThat(ion.mz()).isNaN();
+                        assertThat(ion.charge()).isEqualTo(2);
+                        assertThat(ion.intensity()).isEqualTo(120053.0);
+                    }));
+        }
+        SelectedIon back = model(b.mzml).spectrumList().get(1).description().primaryPrecursor().primaryIon();
+        assertThat(back.mz()).isNaN();
+        assertThat(back.charge()).isEqualTo(2);
+        assertThat(back.intensity()).isEqualTo(120053.0);
+        assertThat(back.parameters()).extracting(Param::accession).doesNotContain("MS:1000744");
+    }
+
     /** Precursors with other parents, and a later one with the same parent but without ions, move nothing. */
     @Test
     void precursorsWithOtherParentsOrWithoutIonsMoveNothing() throws IOException {

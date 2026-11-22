@@ -25,7 +25,8 @@ import java.util.Locale;
  *
  * Each {@code .dta} file's first line is {@code <MH+> <charge>} (the singly-protonated precursor mass and
  * charge); subsequent lines are {@code <m/z> <intensity>}. When a precursor charge is missing, the value of
- * {@code --default-charge} is used. Files are named {@code <base>.<scan>.<scan>.<charge>.dta}.
+ * {@code --default-charge} is used. The first selected ion with an m/z is used; a spectrum whose primary precursor has
+ * none is skipped. Files are named {@code <base>.<scan>.<scan>.<charge>.dta}.
  */
 public final class ConvertToDta {
 
@@ -47,7 +48,7 @@ public final class ConvertToDta {
                         continue;
                     }
                     Precursor precursor = d.primaryPrecursor();
-                    SelectedIon ion = precursor == null ? null : precursor.primaryIon();
+                    SelectedIon ion = precursor == null ? null : firstIonWithMz(precursor);
                     if (ion == null) {
                         continue;
                     }
@@ -63,6 +64,16 @@ public final class ConvertToDta {
             throw new UncheckedIOException("Failed writing DTA files to " + outputDir, e);
         }
         return written;
+    }
+
+    /** The first selected ion of {@code precursor} with an m/z (an ion may carry only a charge), or {@code null}. */
+    private static SelectedIon firstIonWithMz(Precursor precursor) {
+        for (SelectedIon ion : precursor.selectedIons()) {
+            if (!Double.isNaN(ion.mz())) {
+                return ion;
+            }
+        }
+        return null;
     }
 
     private static void writeDta(Path file, double mhPlus, int charge, Spectrum s) throws IOException {

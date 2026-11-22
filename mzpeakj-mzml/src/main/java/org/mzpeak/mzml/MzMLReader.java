@@ -181,7 +181,6 @@ public final class MzMLReader {
     static final String B_16 = "B-16 sourceFileRef of scans and precursors lost";
     static final String B_17_WINDOW = "B-17 scan windows without both limits in m/z dropped";
     static final String B_17_PARAMS = "B-17 scan window params other than the limits lost";
-    static final String B_18 = "B-18 selected ions without an m/z in unit MS:1000040, which the mzPeak read drops";
     static final String B_20 = "B-20 spectrum productList lost";
     static final String B_21_PROCESSING = "B-21 lost array dataProcessingRef";
     static final String B_21_PARAMS = "B-21 lost array params other than array type, data type and compression";
@@ -941,7 +940,6 @@ public final class MzMLReader {
             for (ParamGroup ion : ionList.getSelectedIon()) {
                 List<Param> params = new ArrayList<>(params(ion));
                 Double mz = doubleParam(params, CvTerms.SELECTED_ION_MZ, MZ);
-                note(B_18, mz == null ? 1 : 0);
                 Integer charge = intParam(params, CvTerms.CHARGE_STATE);
                 Param peak = Param.find(params, CvTerms.SELECTED_ION_INTENSITY).orElse(null);
                 Double intensity = doubleParam(params, CvTerms.SELECTED_ION_INTENSITY, COUNTS);

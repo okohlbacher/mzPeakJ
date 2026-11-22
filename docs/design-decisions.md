@@ -132,6 +132,9 @@ decisions cause.
   are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec
   requires a page index for every column (`conformance.md`, l.36); a null axis value would be a null-marked point and
   a null intensity reads as 0, so neither has a form that reads back as written.
+- **A selected ion without m/z is kept with `mz` NaN** (2026-11-22, X-24, D13-22; until then the read dropped it and
+  the converter warned B-18). The writer writes the NaN m/z as null, the converter writes no m/z cvParam for it.
+  *Why:* `spectra.md` (l.288-316) and `precursor_selectedion_must` let the charge alone describe a selected ion.
 - **mzML output is always 64-bit float, zlib by default, no MS-Numpress** (2026-11-09). *Why:* exact for `double[]`;
   jmzML's Numpress encoder writes wrong values without an error for values it cannot hold.
 - **Param order follows jmzML** (an element's own params before its groups') (2026-11-09). *Why:* order carries no

@@ -197,8 +197,8 @@ class NoNaNInWrittenColumnsTest {
      * NaN optional metadata doubles, written in both metadata layouts, are written as null and every column keeps its
      * column index: a scan's injection time and scan window lower limit, a Param's value, an isolation window target,
      * a selected ion's intensity and another's m/z, the total ion current of intensities
-     * {@code [+Infinity, -Infinity]}, and a wavelength spectrum's lambda max. Each reads back absent (the ion without
-     * m/z is not read).
+     * {@code [+Infinity, -Infinity]}, and a wavelength spectrum's lambda max. Each reads back absent; the ion without
+     * m/z reads back with m/z NaN (D13-22) in the split layout (the packed layout writes the primary ion only).
      */
     @ParameterizedTest
     @MethodSource("layouts")
@@ -229,10 +229,18 @@ class NoNaNInWrittenColumnsTest {
             Precursor backPrecursor = back.primaryPrecursor();
             assertThat(backPrecursor.isolationWindow().targetMz()).isNull();
             assertThat(backPrecursor.isolationWindow().lowerOffset()).isEqualTo(1.0);
-            assertThat(backPrecursor.selectedIons()).singleElement().satisfies(ion -> {
+            assertThat(backPrecursor.selectedIons()).hasSize(layout == MetadataLayout.SPLIT ? 2 : 1);
+            assertThat(backPrecursor.selectedIons().get(0)).satisfies(ion -> {
                 assertThat(ion.mz()).isEqualTo(500.0);
                 assertThat(ion.intensity()).isNull();
             });
+            if (layout == MetadataLayout.SPLIT) {
+                assertThat(backPrecursor.selectedIons().get(1)).satisfies(ion -> {
+                    assertThat(ion.mz()).isNaN();
+                    assertThat(ion.charge()).isEqualTo(3);
+                    assertThat(ion.intensity()).isEqualTo(7.0);
+                });
+            }
             assertThat(back.parameters()).noneMatch(p -> "MS:1000285".equals(p.accession()));
             assertThat(reader.wavelengthSpectra()).singleElement()
                     .satisfies(back2 -> assertThat(back2.lambdaMax()).isNull());
