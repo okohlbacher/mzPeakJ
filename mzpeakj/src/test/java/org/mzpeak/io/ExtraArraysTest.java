@@ -22,7 +22,7 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.SignalPlan.Column;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -761,7 +761,7 @@ class ExtraArraysTest {
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
                 .withExtraMetaData(Map.of(INDEX_KEY, json))
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withRowGroupRowCountLimit(rowGroupRows)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)

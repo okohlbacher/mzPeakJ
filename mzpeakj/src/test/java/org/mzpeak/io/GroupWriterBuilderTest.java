@@ -14,7 +14,7 @@ import org.apache.parquet.schema.MessageTypeParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -74,7 +74,7 @@ class GroupWriterBuilderTest {
         SimpleGroupFactory rows = new SimpleGroupFactory(SCHEMA);
         try (ParquetWriter<Group> writer = new GroupWriterBuilder(new LocalOutputFile(file), support)
                 .withConf(conf)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withExtraMetaData(Map.of("spectrum_array_index", "{}"))
                 .build()) {

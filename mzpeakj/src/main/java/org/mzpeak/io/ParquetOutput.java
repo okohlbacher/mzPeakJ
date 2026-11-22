@@ -16,7 +16,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
 import org.mzpeak.io.MzPeakWriter.Options;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Param;
 
 import java.io.Closeable;
@@ -132,7 +132,7 @@ final class ParquetOutput {
         conf.set(SCHEMA_PROPERTY, typeDefinedOrder(schema).toString());
         var builder = new GroupWriterBuilder(new LocalOutputFile(file), writeSupport)
                 .withConf(conf)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withStatisticsEnabled(true)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE);
