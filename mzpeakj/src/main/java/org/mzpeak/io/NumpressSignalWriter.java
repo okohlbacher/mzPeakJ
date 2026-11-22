@@ -30,8 +30,8 @@ import static org.mzpeak.io.ParquetOutput.UINT64;
  * {@code list<uint8>} byte list. A file has the column of its own intensity encoding only, and every row an empty
  * {@code mz_chunk_values} list. The plan's extra columns are {@code list<double>} chunk secondary columns, each sliced
  * with the chunk, and null in the rows of a spectrum that has no such array. {@code mz_chunk_start} and
- * {@code mz_chunk_end} are the chunk's first and last m/z, both inclusive, as the reference writes them. Each file's
- * footer holds the array index of its columns and the counts ({@link ParquetOutput.SignalFile}).
+ * {@code mz_chunk_end} are the first and last m/z the chunk's linear payload decodes to, both inclusive, so they bound
+ * the values a reader gets rather than the input m/z Numpress rounds (W9). Each file's footer holds the array index of its columns and the counts ({@link ParquetOutput.SignalFile}).
  */
 final class NumpressSignalWriter {
 
@@ -193,6 +193,10 @@ final class NumpressSignalWriter {
             // Encode m/z with Numpress linear; max output = 8 (header) + 5 bytes/value
             byte[] mzBuf = new byte[8 + chunkLen * 5];
             int mzLen = MSNumpress.encodeLinear(chunkMz, chunkLen, mzBuf, NUMPRESS_LINEAR_FIXED_POINT);
+            // The chunk is bounded by the m/z its payload decodes to, which Numpress rounds (W9); the decoder
+            // writes at most (mzLen - 8) * 2 values
+            double[] decodedMz = new double[(mzLen - 8) * 2];
+            MSNumpress.decodeLinear(mzBuf, mzLen, decodedMz);
 
             // Encode intensity with SLOF or PIC depending on the caller's choice.
             final byte[] inBuf;
@@ -216,8 +220,8 @@ final class NumpressSignalWriter {
             Group row = file.newRow();
             Group chunk = row.addGroup("chunk");
             chunk.add("spectrum_index", spectrum.entry().sourceIndex());
-            chunk.add("mz_chunk_start", chunkMz[0]);
-            chunk.add("mz_chunk_end", chunkMz[chunkLen - 1]);
+            chunk.add("mz_chunk_start", decodedMz[0]);
+            chunk.add("mz_chunk_end", decodedMz[chunkLen - 1]);
             chunk.addGroup("mz_chunk_values"); // an empty list, not null
             chunk.add("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR);
 

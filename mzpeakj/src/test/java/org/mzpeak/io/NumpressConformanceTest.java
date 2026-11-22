@@ -53,9 +53,10 @@ import static org.assertj.core.api.Assertions.within;
  *       intensity digested like {@link SignalSnapshotTest} (raw IEEE-754 bits), in both reconstructProfile modes;
  *   <li>the chunking: each spectrum's points in stored order, 500 per chunk with a shorter last one (499 + 2 for the
  *       last two where a single point would be left over, which no spectrum of small.unpacked has; constructed
- *       spectra cover it), every row's chunk_encoding MS:1002312, and the inclusive chunk bounds the reference
- *       writes (chunk_series.rs:281-289): {@code mz_chunk_start} is the chunk's first input m/z and
- *       {@code mz_chunk_end} its last, not the next chunk's first.
+ *       spectra cover it), every row's chunk_encoding MS:1002312, and inclusive chunk bounds: {@code mz_chunk_start}
+ *       is the chunk's first m/z and {@code mz_chunk_end} its last, not the next chunk's first; since W9 (X-17) these
+ *       are the m/z the chunk's linear payload decodes to, not the input m/z the reference writes
+ *       (chunk_series.rs:281-289).
  * </ul>
  *
  * <p>Schema conformance (WR-10): the byte lists are {@code list<uint8>} (INT32 annotated {@code intType(8, false)}),
@@ -155,18 +156,14 @@ class NumpressConformanceTest {
                         member).isEqualTo(chunkSizes(n));
                 List<double[]> candidates = matchingInputs(input.get(index), decoded, n);
                 assertThat(candidates).as("input m/z of spectrum %d stored in %s", index, member).isNotEmpty();
-                assertThat(candidates).as("chunk bounds of spectrum %d in %s", index, member)
-                        .anySatisfy(mz -> {
-                            int pos = 0;
-                            for (int c = 0; c < chunks.size(); c++) {
-                                int end = pos + decoded.get(c).length;
-                                assertThat(ParquetGroups.optDouble(chunks.get(c), "mz_chunk_start"))
-                                        .isEqualTo(mz[pos]);
-                                assertThat(ParquetGroups.optDouble(chunks.get(c), "mz_chunk_end"))
-                                        .as("inclusive end of chunk %d", c).isEqualTo(mz[end - 1]);
-                                pos = end;
-                            }
-                        });
+                for (int c = 0; c < chunks.size(); c++) {
+                    double[] mz = decoded.get(c);
+                    assertThat(ParquetGroups.optDouble(chunks.get(c), "mz_chunk_start"))
+                            .as("start of chunk %d of spectrum %d in %s", c, index, member).isEqualTo(mz[0]);
+                    assertThat(ParquetGroups.optDouble(chunks.get(c), "mz_chunk_end"))
+                            .as("inclusive end of chunk %d of spectrum %d in %s", c, index, member)
+                            .isEqualTo(mz[mz.length - 1]);
+                }
             });
         }
     }
@@ -175,7 +172,7 @@ class NumpressConformanceTest {
      * The chunk sizes for constructed spectra of each length, in both intensity encodings: chunks of up to 500 points,
      * but never a chunk of one point unless the spectrum has one point, since the HEAD Python reader (pynumpress)
      * cannot decode the 12-byte linear payload of a single value. 501 points are written as 499 + 2 and 1001 as
-     * 500 + 499 + 2. Every chunk is bounded by its first and last input m/z, and every spectrum reads back within the
+     * 500 + 499 + 2. Every chunk is bounded by its first and last decoded m/z, and every spectrum reads back within the
      * Numpress tolerances, the one-point spectrum included, whose PIC payload is under 8 bytes (MZ-23).
      */
     @ParameterizedTest
@@ -356,8 +353,9 @@ class NumpressConformanceTest {
 
     /**
      * Asserts that each of {@code chunks}, the spectra_data rows of {@code s} in file order, has the first and last
-     * m/z of {@code s} it holds as {@code mz_chunk_start} and {@code mz_chunk_end}, and that together they hold every
-     * point of {@code s}; returns the number of points of each chunk.
+     * m/z its linear payload decodes to as {@code mz_chunk_start} and {@code mz_chunk_end}, within Numpress linear
+     * precision of the first and last m/z of {@code s} it holds, and that together they hold every point of
+     * {@code s}; returns the number of points of each chunk.
      */
     private static List<Integer> assertChunkBounds(Spectrum s, List<Group> chunks, NumpressIntensityEncoding encoding) {
         double[] mz = s.mz();
@@ -365,12 +363,14 @@ class NumpressConformanceTest {
         int pos = 0;
         for (Group chunk : chunks) {
             byte[] bytes = ParquetGroups.byteList(chunk, LINEAR_COLUMN);
-            int length = MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, bytes, bytes.length).length;
+            double[] decoded = MSNumpress.decode(MSNumpress.ACC_NUMPRESS_LINEAR, bytes, bytes.length);
+            int length = decoded.length;
             String what = encoding + " chunk " + lengths.size() + " of spectrum " + s.index();
             assertThat(length).as("points in %s", what).isPositive();
-            assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_start")).as("start of %s", what).isEqualTo(mz[pos]);
+            assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_start")).as("start of %s", what)
+                    .isEqualTo(decoded[0]).isCloseTo(mz[pos], within(LINEAR_TOLERANCE));
             assertThat(ParquetGroups.optDouble(chunk, "mz_chunk_end")).as("end of %s", what)
-                    .isEqualTo(mz[pos + length - 1]);
+                    .isEqualTo(decoded[length - 1]).isCloseTo(mz[pos + length - 1], within(LINEAR_TOLERANCE));
             lengths.add(length);
             pos += length;
         }
