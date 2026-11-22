@@ -286,9 +286,11 @@ public final class MzPeakManifest {
     /**
      * Parse {@code mzpeak_index.json} from a source (directory or ZIP). The manifest is checked first against the
      * reference implementation's structs (Rust {@code FileIndex}, {@code FileEntry}, {@code MetadataColumn},
-     * {@code MetaParam}, deserialized by serde): a missing required field, a field of the wrong JSON type, an
-     * accession or unit that is not CURIE-shaped, or a known field given twice in the same object is rejected with
-     * a message naming the entry and field; so is any content but whitespace after the document. Unknown keys, and
+     * {@code MetaParam}, deserialized by serde) and the mzPeak JSON schema: a missing required field (an entry's
+     * {@code name}, {@code entity_type}, {@code data_kind}; a column mapping's {@code name}, {@code path}; a
+     * parameter's {@code name}), a field of the wrong JSON type, an accession or column-mapping unit that is not
+     * CURIE-shaped, or a known field given twice in the same object is rejected with a message naming the entry and
+     * field; the optional fields (accession, unit) read as null when absent, and a parameter's unit is any string; so is any content but whitespace after the document. Unknown keys, and
      * the content of the {@code metadata} documents beyond their JSON type, are not checked.
      *
      * @throws MzPeakException if the manifest is not valid JSON or does not have the reference's shape
@@ -708,7 +710,7 @@ public final class MzPeakManifest {
             if (!path.isTextual() && !isStringArray(path)) {
                 throw fail(at + ".path", "not a string or an array of strings" + found(path));
             }
-            requireCurieOrNull(at, c, "accession");
+            curieOrNull(at, c, "accession");
             JsonNode unit = c.get("unit");
             if (unit != null && !unit.isNull() && !isCurie(unit) && !isStringArray(unit)) {
                 throw fail(at + ".unit", "not a CURIE, null or an array of strings" + found(unit));
@@ -723,12 +725,12 @@ public final class MzPeakManifest {
             if (!p.isObject()) {
                 throw fail(at, "not an object" + found(p));
             }
-            JsonNode name = p.get("name");
-            if (name != null && !name.isNull() && !name.isTextual()) {
-                throw fail(at + ".name", "not a string or null" + found(name));
+            requireString(at, p, "name");
+            curieOrNull(at, p, "accession");
+            JsonNode unit = p.get("unit");
+            if (unit != null && !unit.isNull() && !unit.isTextual()) {
+                throw fail(at + ".unit", "not a string or null" + found(unit));
             }
-            requireCurieOrNull(at, p, "accession");
-            requireCurieOrNull(at, p, "unit");
         }
 
         private void requireString(String at, JsonNode object, String field) {
@@ -747,13 +749,10 @@ public final class MzPeakManifest {
             }
         }
 
-        /** The key is required (serde has no default for it); its value is a CURIE-shaped string or null. */
-        private void requireCurieOrNull(String at, JsonNode object, String field) {
+        /** The key is optional (absent reads as null); when present, its value is a CURIE-shaped string or null. */
+        private void curieOrNull(String at, JsonNode object, String field) {
             JsonNode v = object.get(field);
-            if (v == null) {
-                throw fail(at + "." + field, "absent");
-            }
-            if (!v.isNull() && !isCurie(v)) {
+            if (v != null && !v.isNull() && !isCurie(v)) {
                 throw fail(at + "." + field, "not a CURIE or null" + found(v));
             }
         }
