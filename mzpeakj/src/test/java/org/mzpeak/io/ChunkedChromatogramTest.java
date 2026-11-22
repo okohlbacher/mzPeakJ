@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.within;
  *   <li>(a) the row rewritten to basic encoding (MS:1000576: absolute times, the chunk start excluded) reads as the
  *       delta row;
  *   <li>(b) a crafted delta row with null-marked times is null-aware decoded and filled per chunk row with
- *       reconstructProfile, and the null points dropped without;
+ *       reconstructProfile, and the null points dropped with their intensities and extra cells without;
  *   <li>(c) an intensity list that is neither as long as the times nor one longer throws;
  *   <li>(d) small.numpress (delta time, SLOF intensity) reads its times as small.chunked; that it reads exactly as on
  *       0.12.0 is pinned by {@link ChromatogramFixtureCharacterizationTest}.
@@ -92,33 +92,42 @@ class ChunkedChromatogramTest {
     /**
      * (b) Start 1.0 and the delta values [0.1, null, null, 5.0, 0.1] decode null-aware to [1.0, 1.1, null, null,
      * 5.0, 5.1] (the value after a null is absolute); the null pair is filled from the spacing of the segments on
-     * either side with reconstructProfile, and dropped with its zero intensities without.
+     * either side with reconstructProfile, and dropped with its zero intensities and its ms levels without. A second
+     * chunk row, start 6.0 and deltas [0.1, 0.1, null], ends in a null, filled within that row from its own spacing;
+     * the ms levels, distinct per point, stay aligned with the times across both rows.
      */
     @Test
     void nullMarkedTimesAreFilledPerChunkRow() {
-        Path dataset = crafted(Arrays.asList(0.1, null, null, 5.0, 0.1), List.of(10.0, 11.0, 0.0, 0.0, 12.0, 13.0));
+        Path dataset = crafted(
+                new Chunk(1.0, Arrays.asList(0.1, null, null, 5.0, 0.1), List.of(10.0, 11.0, 0.0, 0.0, 12.0, 13.0),
+                        List.of(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)),
+                new Chunk(6.0, Arrays.asList(0.1, 0.1, null), List.of(14.0, 15.0, 16.0, 0.0),
+                        List.of(7.0, 8.0, 9.0, 10.0)));
 
         Chromatogram filled = tic(dataset, true);
-        double[] expected = {1.0, 1.1, 1.2, 4.9, 5.0, 5.1};
-        assertThat(filled.time()).hasSize(6);
+        double[] expected = {1.0, 1.1, 1.2, 4.9, 5.0, 5.1, 6.0, 6.1, 6.2, 6.3};
+        assertThat(filled.time()).hasSize(10);
         for (int i = 0; i < expected.length; i++) {
             assertThat(filled.time()[i]).as("time[%d]", i).isCloseTo(expected[i], within(1e-12));
         }
-        assertThat(filled.intensity()).containsExactly(10.0, 11.0, 0.0, 0.0, 12.0, 13.0);
+        assertThat(filled.intensity()).containsExactly(10.0, 11.0, 0.0, 0.0, 12.0, 13.0, 14.0, 15.0, 16.0, 0.0);
+        assertThat(filled.arrays().get("ms level"))
+                .containsExactly(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0);
 
         Chromatogram stored = tic(dataset, false);
-        assertThat(stored.time()).hasSize(4);
-        double[] kept = {1.0, 1.1, 5.0, 5.1};
+        double[] kept = {1.0, 1.1, 5.0, 5.1, 6.0, 6.1, 6.2};
+        assertThat(stored.time()).hasSize(7);
         for (int i = 0; i < kept.length; i++) {
             assertThat(stored.time()[i]).as("time[%d]", i).isCloseTo(kept[i], within(1e-12));
         }
-        assertThat(stored.intensity()).containsExactly(10.0, 11.0, 12.0, 13.0);
+        assertThat(stored.intensity()).containsExactly(10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0);
+        assertThat(stored.arrays().get("ms level")).containsExactly(1.0, 2.0, 5.0, 6.0, 7.0, 8.0, 9.0);
     }
 
     /** (c) Five intensities for three time values throw, naming the chromatogram. */
     @Test
     void anIntensityListOfAnotherLengthThrows() {
-        Path dataset = crafted(List.of(0.1, 0.1, 0.1), List.of(1.0, 2.0, 3.0, 4.0, 5.0));
+        Path dataset = crafted(new Chunk(1.0, List.of(0.1, 0.1, 0.1), List.of(1.0, 2.0, 3.0, 4.0, 5.0), null));
 
         try (MzPeakReader r = MzPeakReader.open(dataset)) {
             assertThatThrownBy(r::chromatograms)
@@ -157,11 +166,20 @@ class ChunkedChromatogramTest {
         }
     }
 
-    /** small.unpacked with one chunk row of chromatogram 0: start 1.0, delta {@code values}, {@code intensity}. */
-    private Path crafted(List<Double> values, List<Double> intensity) {
+    /** A delta-encoded chunk row: its start, delta values, intensities and ms levels (null leaves the list null). */
+    private record Chunk(double start, List<Double> values, List<Double> intensity, List<Double> msLevel) {
+    }
+
+    /** small.unpacked whose chromatogram 0 is the delta-encoded {@code chunks}, one row each, in order. */
+    private Path crafted(Chunk... chunks) {
         try (MzPeakSource source = MzPeakSource.open(Fixtures.current("small.chunked.mzpeak"))) {
             InputFile data = source.inputFile(DATA);
-            return dataset(data, row(data, 0, 1.0, null, values, DELTA, intensity, null));
+            Group[] rows = new Group[chunks.length];
+            for (int i = 0; i < chunks.length; i++) {
+                Chunk c = chunks[i];
+                rows[i] = row(data, 0, c.start(), null, c.values(), DELTA, c.intensity(), c.msLevel());
+            }
+            return dataset(data, rows);
         }
     }
 

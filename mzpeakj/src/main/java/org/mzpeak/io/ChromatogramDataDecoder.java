@@ -50,7 +50,9 @@ import java.util.stream.Collectors;
  * INT32 is read without sign extension, see {@link ParquetGroups#optIndexKey}); on the first decoded
  * row, a plan that names no time values column (point layout) or neither a value-bearing intensity column nor a SLOF
  * or PIC column; and a chunk row that {@link ChunkRowDecoder} cannot decode, such as one of another
- * {@code chunk_encoding} or one in which only an intensity chunk transform column that is not decoded carries a value.
+ * {@code chunk_encoding} or one in which only an intensity chunk transform column that is not decoded carries a value;
+ * and a chunk row in which a time axis chunk transform column other than MS-Numpress linear (MS:1002312) or the
+ * coordinate grid (MS:1003826) carries a value.
  *
  * <p><b>Extra arrays</b> (AP-9) are the plan's {@link SignalPlan#extras() extras}, under the plan's keys, parallel
  * to the time axis: one cell per point row, and per chunk row a list that aligns 1:1 with the time values the chunk
@@ -94,6 +96,11 @@ final class ChromatogramDataDecoder {
     private final String indexField;
     /** The chunk row decoder; null for the point layout. */
     private final ChunkRowDecoder chunks;
+    /**
+     * The time axis chunk transforms that {@link ChunkRowDecoder} does not decode (neither MS-Numpress linear nor the
+     * coordinate grid), CURIE to column.
+     */
+    private final Map<String, String> undecodedAxisTransforms;
     /** Whether null-marked chunk times are filled rather than dropped. */
     private final boolean reconstructProfile;
     private final String timeField;
@@ -117,6 +124,10 @@ final class ChromatogramDataDecoder {
         this.indexField = plan.indexField();
         this.chunks = plan.layout() == SignalPlan.Layout.CHUNK
                 ? new ChunkRowDecoder(plan, startConversion(plan.axis(), member)) : null;
+        Map<String, String> undecodedAxis = new LinkedHashMap<>(plan.axis().transformFields());
+        undecodedAxis.remove(MSNumpress.ACC_NUMPRESS_LINEAR);
+        undecodedAxis.remove(ArrayIndex.GRID_TRANSFORM);
+        this.undecodedAxisTransforms = undecodedAxis;
         this.reconstructProfile = reconstructProfile;
         this.timeField = field(plan.axis().values());
         this.intensityColumns = plan.intensities().stream()
@@ -283,6 +294,13 @@ final class ChromatogramDataDecoder {
     }
 
     private void acceptChunk(Group chunk, long idx, Map<Long, Accumulator> acc) {
+        for (Map.Entry<String, String> transform : undecodedAxisTransforms.entrySet()) {
+            if (ChunkCodecs.carriesValue(chunk, transform.getValue())) {
+                throw new MzPeakException(indexField + " " + idx + " stores its time axis with the chunk transform "
+                        + transform.getKey() + " (column " + transform.getValue() + "), which is not decoded for"
+                        + " chromatograms");
+            }
+        }
         ChunkRowDecoder.Row row = chunks.decodeSignal(chunk, idx);
         Accumulator a = accumulator(acc, idx);
         if (row.intensityField() != null) {
