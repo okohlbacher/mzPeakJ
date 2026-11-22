@@ -464,8 +464,8 @@ final class SpectrumArrayStore implements AutoCloseable {
             if (reconstructProfile) {
                 double[] model = deltaModels == null ? null : deltaModels.get(current);
                 try {
-                    arrays = new Arrays(NullFill.fill(rows, chunks != null, model, member, current), intensityArray,
-                            extraArrays);
+                    arrays = new Arrays(NullFill.fill(rows, chunks != null, model, member,
+                            SignalEntity.SPECTRUM.ref(current)), intensityArray, extraArrays);
                 } catch (MzPeakException e) {
                     error = e;
                 }

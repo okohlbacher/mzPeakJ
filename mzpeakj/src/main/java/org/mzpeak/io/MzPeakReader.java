@@ -105,8 +105,8 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
         /**
          * Whether null-marked profile points are reconstructed, so that the point count matches the declared
-         * {@code number_of_data_points}; {@code false} returns only the stored (non-null) points. Default
-         * {@code true}.
+         * {@code number_of_data_points}; {@code false} returns only the stored (non-null) points. The null-marked
+         * times of chunked chromatograms are filled or dropped in the same way. Default {@code true}.
          */
         public boolean reconstructProfile() {
             return reconstructProfile;
@@ -912,7 +912,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private synchronized ChromatogramStore chromatograms0() {
         requireOpen();
         if (!chromatogramsLoaded) {
-            chromatogramStore = ChromatogramStore.load(source, manifest);
+            chromatogramStore = ChromatogramStore.load(source, manifest, options.reconstructProfile());
             chromatogramsLoaded = true;
         }
         return chromatogramStore;

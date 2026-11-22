@@ -165,14 +165,15 @@ class NullFillCharacterizationTest {
     @Test
     void withReconstructionNullMzIsFilledInPlace() {
         double[] mz = withNulls(storedMz, 0, 3, 4, 7);
-        assertThat(NullFill.fill(List.of(mz), false, null, "spectra_data.parquet", 0)).isSameAs(mz);
+        assertThat(NullFill.fill(List.of(mz), false, null, "spectra_data.parquet", SignalEntity.SPECTRUM.ref(0)))
+                .isSameAs(mz);
         assertExact("m/z", fill(0, 3, 4, 7), mz);
     }
 
     /** Copy the stored m/z, set {@code nullPositions} to NaN, and run the fill without a model on the copy. */
     private static double[] fill(int... nullPositions) {
         double[] m = withNulls(storedMz, nullPositions);
-        NullFill.fill(List.of(m), false, null, "spectra_data.parquet", 0);
+        NullFill.fill(List.of(m), false, null, "spectra_data.parquet", SignalEntity.SPECTRUM.ref(0));
         return m;
     }
 
