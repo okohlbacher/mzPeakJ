@@ -362,6 +362,13 @@ Writer notes:
   entity and the position, before anything is written (so transition data without a product-ion m/z, SRM/MRM, needs
   its rows without m/z dropped first); a NaN extra-array cell is written as null and reads back as NaN, and a NaN
   optional metadata double is written as null and reads back absent.
+- A `Param` value may be a `Long`, `Integer`, `Short` or `Byte` (written as an integer, read back as a `Long`), a
+  `Double` or `Float` (read back as a `Double`), a `String`, a `Boolean`, or a `Collection` or Java array of these,
+  which is written as a JSON array in the JSON metadata and as its JSON text in a Parquet `parameters` list, and
+  reads back as its compact JSON text (`"[1,2]"`). Any other type is refused, naming the entity and the param, before
+  anything is written. Up to mzPeakJ 0.12.0 a Parquet `parameters` list held only `Long`, `Double`, `String` and
+  `Boolean` values (any other as no value), and the JSON metadata wrote the types other than those and `Integer` with
+  `toString()`.
 - Extra signal arrays are written: those of spectra (`arrays()` and `peakArrays()`, such as per-peak ion
   mobility) as extra columns of `spectra_data` and `spectra_peaks` in both signal encodings, those of
   chromatograms (such as the TIC's `ms level`) as extra columns of `chromatograms_data`, which holds the

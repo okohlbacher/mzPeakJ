@@ -24,6 +24,7 @@ import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
+import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -206,6 +207,40 @@ class RustReaderAcceptanceTest {
             assertThat(dump.array(time)).isEqualTo(seconds.time());
             assertThat(dump.array(c.path("arrays").path("IntensityArray"))).isEqualTo(seconds.intensity());
         });
+    }
+
+    /**
+     * W2 (D13-16): small.unpacked with spectrum 0 given params {@code Integer 3}, {@code Float 1.5f} and
+     * {@code List.of(1, 2)} (its first scan {@code List.of("x", 1.5f)}), a software with the param
+     * {@code List.of("a", "b")} and scan settings with the param {@code List.of(1, 2)}, written split as an archive:
+     * Rust opens it and reads spectrum 0's params as the integer 3, the float 1.5 and the string {@code "[1,2]"}.
+     */
+    @Test
+    void rustReadsParamValuesOfEveryType() throws Exception {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        spectra.set(0, ParamValueTypesTest.withParams(spectra.get(0), List.of(
+                ParamValueTypesTest.param("w2 integer", 3), ParamValueTypesTest.param("w2 float", 1.5f),
+                ParamValueTypesTest.param("w2 list", List.of(1, 2)))));
+        List<FileMetadata.Software> software = new ArrayList<>(small.fileMetadata.software());
+        software.add(new FileMetadata.Software("w2", "1", List.of(ParamValueTypesTest.param("w2 list",
+                List.of("a", "b")))));
+        List<ScanSettings> scanSettings = List.of(new ScanSettings("w2 settings",
+                List.of(ParamValueTypesTest.param("w2 list", List.of(1, 2)))));
+        Path out = tmp.resolve("params.mzpeak");
+        MzPeakWriter.writeArchive(out, spectra, small.chromatograms, small.wavelengthSpectra, scanSettings,
+                ParamValueTypesTest.withSoftware(small.fileMetadata, software), SPLIT);
+
+        Dump dump = rdump(out);
+        assertThat(dump.header().path("n_spectra").asInt()).isEqualTo(spectra.size());
+        JsonNode desc = dump.records("S").get(0).path("desc");
+        Map<String, String> values = new HashMap<>();
+        desc.path("params").forEach(p -> values.put(p.path("name").asText(), p.path("value").toString()));
+        assertThat(values).as("%s", desc).containsEntry("w2 integer", "{\"Int\":3}")
+                .containsEntry("w2 float", "{\"Float\":1.5}").containsEntry("w2 list", "{\"String\":\"[1,2]\"}");
+        JsonNode scanParams = desc.path("acquisition").path("scans").get(0).path("params");
+        assertThat(scanParams.get(scanParams.size() - 1).path("value").path("String").asText()).as("%s", desc)
+                .isEqualTo("[\"x\",1.5]");
     }
 
     /**

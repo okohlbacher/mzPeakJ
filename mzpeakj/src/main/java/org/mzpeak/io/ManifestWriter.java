@@ -175,12 +175,10 @@ final class ManifestWriter {
                 if (p.name() != null) pn.put("name", p.name());
                 if (p.accession() != null) pn.put("accession", p.accession());
             }
-            Object v = p.value();
-            if (v instanceof Long l) pn.put("value", l);
-            else if (v instanceof Integer i) pn.put("value", i.longValue());
-            else if (v instanceof Double dd) pn.put("value", dd);
-            else if (v instanceof Boolean b) pn.put("value", b);
-            else if (v != null) pn.put("value", v.toString());
+            if (p.value() != null) {
+                // WritePlanner.requireWritableScanSettings refused the types ParamValues.json does not write.
+                pn.set("value", ParamValues.json(p.value()));
+            }
             if (current) {
                 pn.put("unit", p.unit());
             } else if (p.unit() != null) {

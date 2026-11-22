@@ -83,7 +83,7 @@ class WriterComponentsCharacterizationTest {
                 + "\"unit_accession\":\"UO:0000017\"},"
                 + "{\"name\":\"flag\",\"value\":true},"
                 + "{\"name\":\"label\",\"value\":\"top down\"},"
-                + "{\"name\":\"ratio\",\"value\":\"1.5\"},"
+                + "{\"name\":\"ratio\",\"value\":1.5},"  // a JSON number since W2 (X-19), the string "1.5" before
                 + "{\"accession\":\"IMS:1000401\",\"unit_accession\":\"UO:0000010\"}]},"
                 + "{\"parameters\":[]}]";
 
