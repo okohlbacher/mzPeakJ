@@ -33,10 +33,10 @@ final class PointSignalWriter {
 
     /** The intensity column of the spectrum signal files: detector counts. */
     private static final List<IntensityColumn> SPECTRUM_INTENSITY = List.of(
-            new IntensityColumn(ArrayIndex.COUNTS_UNIT, "intensity", true));
+            new IntensityColumn(ArrayIndex.COUNTS_UNIT, "intensity"));
     /** The intensity column of wavelength_spectra_data, whose unit is unknown. */
     private static final List<IntensityColumn> WAVELENGTH_INTENSITY = List.of(
-            new IntensityColumn(null, "intensity", true));
+            new IntensityColumn(null, "intensity"));
 
     private static final MessageType WAVELENGTH_DATA_SCHEMA = pointSchema("wavelength_spectrum_index", "wavelength",
             WAVELENGTH_INTENSITY, List.of());
@@ -60,11 +60,7 @@ final class PointSignalWriter {
                 .index(entity.indexField())
                 .axis(xField, BufferFormat.POINT, null, xUnit);
         for (IntensityColumn intensity : intensities) {
-            if (intensity.primary()) {
-                builder.intensity(intensity.column(), BufferFormat.POINT, null, intensity.unit());
-            } else {
-                builder.secondaryIntensity(intensity.column(), BufferFormat.POINT, intensity.unit());
-            }
+            builder.intensity(intensity.column(), BufferFormat.POINT, null, intensity.unit());
         }
         for (ExtraColumn extra : extras) {
             builder.extra(extra.column(), extra.arrayType(), extra.arrayName(), extra.unit(), BufferFormat.POINT);
