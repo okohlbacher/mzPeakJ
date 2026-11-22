@@ -90,8 +90,8 @@ class MzMLRoundTripATest {
 
     /**
      * The 13 fixtures with the A table of design 12.4, keyed by display name. The hidden counts are differences, not
-     * spectra: A_1 hides two per peak list (peaks.size and numberOfPeaks; the 14 MS1 profile spectra of small.chunked
-     * carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_2, A_8,
+     * spectra: A_1 hides three per peak list (peaks.size, numberOfPeaks and peakIntensityUnit; the 14 MS1 profile
+     * spectra of small.chunked carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_2, A_8,
      * A_17 and A_18 one each. No fixture needs A_16 since V-17 (D-9a): the legacy spectra read with their stored
      * spectrum type and five summary params (before, A_16 hid one type and five summary params per legacy spectrum).
      *
@@ -110,7 +110,7 @@ class MzMLRoundTripATest {
                     List.of(a7(48)), msUo, List.of()));
         }
         f.put("current small.chunked.mzpeak", new Fixture(Fixtures.current("small.chunked.mzpeak"),
-                List.of(hides(ModelAssert.A_1, 2 * 14), hides(ModelAssert.A_7, 48)), List.of(a7(48), A_1_CHUNKED),
+                List.of(hides(ModelAssert.A_1, 3 * 14), hides(ModelAssert.A_7, 48)), List.of(a7(48), A_1_CHUNKED),
                 msUo, List.of()));
         f.put("current has_uv.mzpeak", new Fixture(Fixtures.current("has_uv.mzpeak"),
                 List.of(hides(ModelAssert.A_7, 212 + 520)), List.of(a7(212 + 520)), msUo, List.of()));
@@ -128,7 +128,7 @@ class MzMLRoundTripATest {
             f.put("legacy " + name, new Fixture(Fixtures.legacy(name), legacySmall, A_LEGACY_SMALL, msUo, List.of()));
         }
         List<Hides> legacyChunked = new ArrayList<>(legacySmall);
-        legacyChunked.add(hides(ModelAssert.A_1, 2 * 14));
+        legacyChunked.add(hides(ModelAssert.A_1, 3 * 14));
         List<String> legacyChunkedLosses = new ArrayList<>(A_LEGACY_SMALL);
         legacyChunkedLosses.add(A_1_CHUNKED);
         f.put("legacy small.chunked.mzpeak", new Fixture(Fixtures.legacy("small.chunked.mzpeak"), legacyChunked,

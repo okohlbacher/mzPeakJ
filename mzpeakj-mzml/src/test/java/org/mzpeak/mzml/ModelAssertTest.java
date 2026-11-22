@@ -145,14 +145,16 @@ class ModelAssertTest {
             double[] mz = s.mz().clone();
             mz[5] = 1.0;
             mz[7] = 2.0;
-            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), s.arrays(), s.peakArrays(),
+                    s.intensityUnit(), s.peakIntensityUnit());
         });
         assertOnly(small, changed, "spectrum[0].mz",
                 "spectrum[0].mz: 2 of 13589 values differ, first [5]: expected " + small.spectrumList().get(0).mz()[5]
                         + ", got 1.0");
 
         Model shorter = withSpectrum(small, 0, s -> new Spectrum(s.description(),
-                Arrays.copyOf(s.mz(), 10), Arrays.copyOf(s.intensity(), 10), s.peaks(), s.arrays(), s.peakArrays()));
+                Arrays.copyOf(s.mz(), 10), Arrays.copyOf(s.intensity(), 10), s.peaks(), s.arrays(), s.peakArrays(),
+                        s.intensityUnit(), s.peakIntensityUnit()));
         assertThat(ModelAssert.compare(small, shorter, STRICT).differences()).containsExactly(
                 "spectrum[0].mz: expected 13589 values, got 10",
                 "spectrum[0].intensity: expected 13589 values, got 10");
@@ -163,12 +165,14 @@ class ModelAssertTest {
         Model nan = withSpectrum(small, 0, s -> {
             double[] intensity = s.intensity().clone();
             intensity[0] = Double.NaN;
-            return new Spectrum(s.description(), s.mz(), intensity, s.peaks(), s.arrays(), s.peakArrays());
+            return new Spectrum(s.description(), s.mz(), intensity, s.peaks(), s.arrays(), s.peakArrays(),
+                    s.intensityUnit(), s.peakIntensityUnit());
         });
         Model otherNaN = withSpectrum(small, 0, s -> {
             double[] intensity = s.intensity().clone();
             intensity[0] = Double.longBitsToDouble(0x7ff8000000000001L);
-            return new Spectrum(s.description(), s.mz(), intensity, s.peaks(), s.arrays(), s.peakArrays());
+            return new Spectrum(s.description(), s.mz(), intensity, s.peaks(), s.arrays(), s.peakArrays(),
+                    s.intensityUnit(), s.peakIntensityUnit());
         });
 
         assertThat(ModelAssert.compare(nan, otherNaN, STRICT).equal()).isTrue();
@@ -265,7 +269,7 @@ class ModelAssertTest {
         imChanged[3] = -1.0;
         changed.put("MS:1003006", imChanged);
         Model changedModel = withSpectrum(dia, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
-                changed, s.peakArrays()));
+                changed, s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit()));
         assertOnly(dia, changedModel, "spectrum[0].arrays[MS:1003006]",
                 "spectrum[0].arrays[MS:1003006]: 1 of 205921 values differ, first [3]: expected " + im[3]
                         + ", got -1.0");
@@ -277,9 +281,9 @@ class ModelAssertTest {
         reversed.put("extra", im.clone());
         reversed.put("MS:1003006", im.clone());
         Model inOrder = withSpectrum(dia, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
-                two, s.peakArrays()));
+                two, s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit()));
         Model inReverse = withSpectrum(dia, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
-                reversed, s.peakArrays()));
+                reversed, s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit()));
         assertThat(ModelAssert.compare(inOrder, inReverse, STRICT).equal()).isTrue();
         assertOnly(dia, inOrder, "spectrum[0].arrays[extra]",
                 "spectrum[0].arrays[extra]: expected null, got [205921 values]");
@@ -294,20 +298,22 @@ class ModelAssertTest {
             List<CentroidPeak> list = new ArrayList<>(s.peaks());
             CentroidPeak p = list.get(4);
             list.set(4, new CentroidPeak(p.mz(), p.intensity() + 1, p.index()));
-            return new Spectrum(s.description(), s.mz(), s.intensity(), list, s.arrays(), s.peakArrays());
+            return new Spectrum(s.description(), s.mz(), s.intensity(), list, s.arrays(), s.peakArrays(),
+                    s.intensityUnit(), s.peakIntensityUnit());
         });
         assertThat(ModelAssert.compare(dia, peaks, STRICT).paths()).containsExactly("spectrum[0].peaks[4].intensity");
 
         Map<String, double[]> peakArrays = Map.of("MS:1003006", new double[s0.peaks().size()]);
         Model peakArray = withSpectrum(dia, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
-                s.arrays(), peakArrays));
+                s.arrays(), peakArrays, s.intensityUnit(), s.peakIntensityUnit()));
         assertThat(ModelAssert.compare(dia, peakArray, STRICT).paths())
                 .containsExactly("spectrum[0].peakArrays[MS:1003006]");
 
         Model intensity = withSpectrum(dia, 0, s -> {
             double[] values = s.intensity().clone();
             values[0] += 1;
-            return new Spectrum(s.description(), s.mz(), values, s.peaks(), s.arrays(), s.peakArrays());
+            return new Spectrum(s.description(), s.mz(), values, s.peaks(), s.arrays(), s.peakArrays(),
+                    s.intensityUnit(), s.peakIntensityUnit());
         });
         assertThat(ModelAssert.compare(dia, intensity, STRICT).paths()).containsExactly("spectrum[0].intensity");
     }
@@ -559,14 +565,16 @@ class ModelAssertTest {
 
     @Test
     void a1HidesALostPeakListInStrictMode() {
+        // the peak list lost as the mzPeak read of the round trip loses it: its intensity unit with it
         Model lost = withSpectra(chunked, s -> s.description().signalContinuity() == SignalContinuity.PROFILE
-                ? new Spectrum(with(s.description(), "numberOfPeaks", 0L), s.mz(), s.intensity(), List.of())
+                ? new Spectrum(with(s.description(), "numberOfPeaks", 0L), s.mz(), s.intensity(), List.of(),
+                        Map.of(), Map.of(), s.intensityUnit(), null)
                 : s);
         Result strict = ModelAssert.compare(chunked, lost, STRICT);
         assertThat(kinds(strict)).containsExactly(Map.entry("spectrum[].numberOfPeaks", 14),
-                Map.entry("spectrum[].peaks.size", 14));
+                Map.entry("spectrum[].peakIntensityUnit", 14), Map.entry("spectrum[].peaks.size", 14));
         assertThat(ModelAssert.assertEqual("A_1", chunked, lost, STRICT, ModelAssert.A_1).hidden())
-                .containsExactly(Map.entry("A_1", 28));
+                .containsExactly(Map.entry("A_1", 42));
 
         // a CENTROID peak list that differs from its arrays comes back as a row copy of the arrays
         Model differing = withSpectrum(small, 2, ModelAssertTest::oneChangedPeakIntensity);
@@ -737,7 +745,7 @@ class ModelAssertTest {
         assertThat(kept.stale()).containsExactly("B_22");
 
         Model noArrays = withSpectrum(dia, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
-                Map.of(), s.peakArrays()));
+                Map.of(), s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit()));
         assertThat(ModelAssert.compare(noArrays, dia, STRICT, ModelAssert.B_22).paths())
                 .containsExactly("spectrum[0].arrays[MS:1003006]");
     }
@@ -748,7 +756,8 @@ class ModelAssertTest {
             double[] mz = s.mz().clone();
             mz[0] = Double.NaN;
             mz[3] = Double.NaN;
-            return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
+            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), Map.of(), Map.of(), s.intensityUnit(),
+                    s.peakIntensityUnit());
         });
         // the 0.12.0 mzPeak read filled the leading NaN with the first finite m/z, the shape B-34 hides
         Model filled = withMz(small, 0, m -> m[0] = m[1]);
@@ -758,14 +767,16 @@ class ModelAssertTest {
         Model alsoChanged = withSpectrum(nan, 0, s -> {
             double[] mz = s.mz().clone();
             mz[4] = 1.0;
-            return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
+            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), Map.of(), Map.of(), s.intensityUnit(),
+                    s.peakIntensityUnit());
         });
         Result kept = ModelAssert.compare(alsoChanged, filled, STRICT, ModelAssert.B_34);
         assertThat(kept.paths()).containsExactly("spectrum[0].mz");
         assertThat(kept.stale()).containsExactly("B_34");
         assertThat(ModelAssert.compare(nan, filled, STRICT, ModelAssert.B_34).equal()).isTrue();
         Model shorter = withSpectrum(nan, 0, s -> new Spectrum(s.description(), Arrays.copyOf(s.mz(), 5),
-                Arrays.copyOf(s.intensity(), 5), s.peaks()));
+                Arrays.copyOf(s.intensity(), 5), s.peaks(), Map.of(), Map.of(), s.intensityUnit(),
+                s.peakIntensityUnit()));
         assertThat(ModelAssert.compare(nan, shorter, STRICT, ModelAssert.B_34).paths())
                 .containsExactly("spectrum[0].mz", "spectrum[0].intensity");
     }
@@ -951,6 +962,7 @@ class ModelAssertTest {
 
     @Test
     void mixedModeLeavesOutDeclaredCountsAndRowCopyPeaks() {
+        // as MzMLReader reads them: no peak list and no intensity unit
         Model mzml = withSpectra(small, s -> s.description().signalContinuity() == SignalContinuity.CENTROID
                 ? new Spectrum(with(s.description(), "numberOfPeaks", 0L), s.mz(), s.intensity(), List.of())
                 : s);
@@ -958,7 +970,8 @@ class ModelAssertTest {
         assertThat(ModelAssert.assertEqual("mixed", mzml, small, MZML_VS_MZPEAK).differences()).isEmpty();
         assertThat(ModelAssert.assertEqual("mixed", small, mzml, MZPEAK_VS_MZML).differences()).isEmpty();
         Result strict = ModelAssert.compare(mzml, small, STRICT);
-        assertThat(kinds(strict)).containsExactly(Map.entry("spectrum[].numberOfPeaks", 34),
+        assertThat(kinds(strict)).containsExactly(Map.entry("spectrum[].intensityUnit", 34),
+                Map.entry("spectrum[].numberOfPeaks", 34), Map.entry("spectrum[].peakIntensityUnit", 34),
                 Map.entry("spectrum[].peaks.size", 34));
 
         Model points = withSpectrum(mzml, 0, s -> withDescription(s, d -> with(d, "numberOfDataPoints", 1L)));
@@ -1056,7 +1069,8 @@ class ModelAssertTest {
         // a difference
         Spectrum s0 = dia.spectrumList().get(0);
         Model arraysOnly = withSpectrum(withoutPeaks(dia), 0, s -> new Spectrum(s0.description(), s0.mz(),
-                s0.intensity(), List.of(), s0.arrays(), Map.of("MS:1003006", new double[0])));
+                s0.intensity(), List.of(), s0.arrays(), Map.of("MS:1003006", new double[0]), s0.intensityUnit(),
+                        s0.peakIntensityUnit()));
         String peakArrays = "spectrum[0].peakArrays: the mzML side has peak arrays [MS:1003006]: MzMLReader builds"
                 + " none (design 5.4)";
         assertThat(ModelAssert.compare(arraysOnly, arraysOnly, MZML_VS_MZPEAK).differences())
@@ -1073,7 +1087,8 @@ class ModelAssertTest {
         // where the mzML side has peaks, they are the difference and the peak lists are not compared pairwise, so
         // A_1 has nothing to hide: in mixed mode it hides only 'not a row copy'
         Model peaksOnly = withSpectrum(withoutPeaks(dia), 0, s -> new Spectrum(s0.description(), s0.mz(),
-                s0.intensity(), oneChangedPeakIntensity(s0).peaks(), s0.arrays(), Map.of()));
+                s0.intensity(), oneChangedPeakIntensity(s0).peaks(), s0.arrays(), Map.of(), s0.intensityUnit(),
+                        s0.peakIntensityUnit()));
         String mzmlPeaks = "spectrum[0].peaks: the mzML side has " + s0.peaks().size()
                 + " peaks: MzMLReader builds none (design 5.4)";
         Result peaksFirst = ModelAssert.compare(peaksOnly, arraysOnly, MZML_VS_MZPEAK, ModelAssert.A_1);
@@ -1188,7 +1203,8 @@ class ModelAssertTest {
         List<CentroidPeak> peaks = new ArrayList<>(s.peaks());
         CentroidPeak p = peaks.get(0);
         peaks.set(0, new CentroidPeak(p.mz(), p.intensity() + 1, p.index()));
-        return new Spectrum(s.description(), s.mz(), s.intensity(), peaks, s.arrays(), s.peakArrays());
+        return new Spectrum(s.description(), s.mz(), s.intensity(), peaks, s.arrays(), s.peakArrays(),
+                s.intensityUnit(), s.peakIntensityUnit());
     }
 
     /** {@code s} with its rows in reverse order, and with the last intensity changed when {@code change}. */
@@ -1211,7 +1227,8 @@ class ModelAssertTest {
         if (change) {
             intensity[n - 1] += 1;
         }
-        return new Spectrum(s.description(), mz, intensity, s.peaks(), arrays, s.peakArrays());
+        return new Spectrum(s.description(), mz, intensity, s.peaks(), arrays, s.peakArrays(), s.intensityUnit(),
+                s.peakIntensityUnit());
     }
 
     /** {@code s} with the points {@code i} and {@code i + 1} swapped in every array. */
@@ -1219,7 +1236,7 @@ class ModelAssertTest {
         Map<String, double[]> arrays = new LinkedHashMap<>();
         s.arrays().forEach((key, values) -> arrays.put(key, swap(values, i)));
         return new Spectrum(s.description(), swap(s.mz(), i), swap(s.intensity(), i), s.peaks(), arrays,
-                s.peakArrays());
+                s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit());
     }
 
     private static double[] swap(double[] values, int i) {
@@ -1234,7 +1251,8 @@ class ModelAssertTest {
         return withSpectrum(m, i, s -> {
             double[] mz = s.mz().clone();
             change.accept(mz);
-            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+            return new Spectrum(s.description(), mz, s.intensity(), s.peaks(), s.arrays(), s.peakArrays(),
+                    s.intensityUnit(), s.peakIntensityUnit());
         });
     }
 
@@ -1254,7 +1272,8 @@ class ModelAssertTest {
     }
 
     private static Spectrum withDescription(Spectrum s, UnaryOperator<SpectrumDescription> f) {
-        return new Spectrum(f.apply(s.description()), s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays());
+        return new Spectrum(f.apply(s.description()), s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays(),
+                s.intensityUnit(), s.peakIntensityUnit());
     }
 
     private static Model withSpectrum(Model m, int i, UnaryOperator<Spectrum> f) {
@@ -1272,7 +1291,7 @@ class ModelAssertTest {
     /** {@code m} with no peaks and no peak arrays, as {@code MzMLReader} reads every spectrum (design 5.4). */
     private static Model withoutPeaks(Model m) {
         return withSpectra(m, s -> new Spectrum(s.description(), s.mz(), s.intensity(), List.of(), s.arrays(),
-                Map.of()));
+                Map.of(), s.intensityUnit(), s.peakIntensityUnit()));
     }
 
     private static Model withChromatogram(Model m, UnaryOperator<Chromatogram> f) {

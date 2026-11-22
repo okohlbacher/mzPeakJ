@@ -23,6 +23,10 @@ import java.util.Optional;
  * mobility array (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154 or MS:1003156, also under a
  * {@code <key>@<column>} key) is in milliseconds, its unit in {@link CvTerms#DEFAULT_ARRAY_UNITS}: the reader converts
  * one stored in seconds or minutes. The reader keeps every other array as stored.
+ *
+ * <p>{@link #intensityUnit()} and {@link #peakIntensityUnit()} name the unit of {@link #intensity()} and of the
+ * {@link #peaks()} intensities, such as {@code MS:1000131} (number of detector counts) or {@code MS:1000132} (percent
+ * of base peak), or are null when it is not declared.
  */
 public final class Spectrum {
 
@@ -32,6 +36,8 @@ public final class Spectrum {
     private final List<CentroidPeak> peaks;
     private final Map<String, double[]> arrays;
     private final Map<String, double[]> peakArrays;
+    private final String intensityUnit;
+    private final String peakIntensityUnit;
     /** The key of {@link #ionMobility()}, or null. */
     private final String ionMobilityKey;
 
@@ -51,7 +57,27 @@ public final class Spectrum {
      */
     public Spectrum(SpectrumDescription description, double[] mz, double[] intensity, List<CentroidPeak> peaks,
                     Map<String, double[]> arrays, Map<String, double[]> peakArrays) {
+        this(description, mz, intensity, peaks, arrays, peakArrays, null, null);
+    }
+
+    /**
+     * A spectrum with additional signal arrays and intensity units.
+     *
+     * @param arrays            additional arrays parallel to {@code mz}; null is the same as an empty map
+     * @param peakArrays        additional arrays parallel to {@code peaks} in the order given here (the position a
+     *                          reader stores as {@link CentroidPeak#index()}); null is the same as an empty map
+     * @param intensityUnit     unit CURIE of {@code intensity}, or null when not declared
+     * @param peakIntensityUnit unit CURIE of the intensities of {@code peaks}, or null when not declared
+     * @throws IllegalArgumentException when {@code mz} and {@code intensity} differ in length, when a map has a
+     *                                  null key or value, or when an array of {@code arrays} differs in length from
+     *                                  {@code mz}, or one of {@code peakArrays} from {@code peaks}
+     */
+    public Spectrum(SpectrumDescription description, double[] mz, double[] intensity, List<CentroidPeak> peaks,
+                    Map<String, double[]> arrays, Map<String, double[]> peakArrays, String intensityUnit,
+                    String peakIntensityUnit) {
         this.description = description;
+        this.intensityUnit = intensityUnit;
+        this.peakIntensityUnit = peakIntensityUnit;
         this.mz = mz == null ? EMPTY : mz;
         this.intensity = intensity == null ? EMPTY : intensity;
         if (this.mz.length != this.intensity.length) {
@@ -121,6 +147,23 @@ public final class Spectrum {
     /** Raw/profile intensity array, parallel to {@link #mz()}. */
     public double[] intensity() {
         return intensity;
+    }
+
+    /**
+     * The unit CURIE of {@link #intensity()}, or null when it is not declared. On read it is the unit of the
+     * intensity column that supplied the values (null when the columns that did differ in unit, or the member has
+     * no array index).
+     */
+    public String intensityUnit() {
+        return intensityUnit;
+    }
+
+    /**
+     * The unit CURIE of the intensities of {@link #peaks()}, or null when it is not declared. On read it is the unit
+     * of the peaks member's intensity column that supplied them, as for {@link #intensityUnit()}.
+     */
+    public String peakIntensityUnit() {
+        return peakIntensityUnit;
     }
 
     /** Centroid peaks (empty if none). */
