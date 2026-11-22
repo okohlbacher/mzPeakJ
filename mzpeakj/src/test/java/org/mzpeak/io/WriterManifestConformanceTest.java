@@ -284,12 +284,15 @@ class WriterManifestConformanceTest {
                     assertThat(row.path("name").asText()).isEqualTo(column.name());
                     assertThat(row.path("accession").asText()).isEqualTo(column.accession());
                     assertThat(row.get("unit").isNull() ? null : row.get("unit").asText()).isEqualTo(column.unit());
+                    // D13-12: the wavelength representation is opt_spectrum_representation, which the current
+                    // manifests map at its first fallback, spectrum_representation
+                    boolean renamed = path.equals("opt_spectrum_representation");
                     int matched = 0;
                     for (JsonNode current : currentManifests) {
-                        JsonNode currentRow = currentRow(current, entry, path);
+                        JsonNode currentRow = currentRow(current, entry, renamed ? column.fallbacks().get(0) : path);
                         if (currentRow != null) {
-                            assertThat(row).as("%s: %s against a current manifest", name, path)
-                                    .isEqualTo(currentRow);
+                            assertThat(row).as("%s: %s against a current manifest", name, path).isEqualTo(renamed
+                                    ? ((ObjectNode) currentRow.deepCopy()).put("path", path) : currentRow);
                             matched++;
                         }
                     }

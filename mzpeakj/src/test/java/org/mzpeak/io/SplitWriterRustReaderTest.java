@@ -48,9 +48,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code number_of_auxiliary_arrays}, typed as in the reference's has_uv, an empty list and 0 per row, and an
  *       {@code ARROW:schema} footer entry that gives the Arrow reader the reference's 64-bit-offset types for them
  *       (ArrowSchemaHintTest); the Rust reader projects both for every wavelength spectrum and panics without them;
- *   <li>the wavelength columns of the reference: the representation, base peak intensity and TIC move to their
- *       columns, the spectrum type and the observed wavelength range are copied to theirs and stay in the list,
- *       where the Rust reader takes them from, so a read, write and read of has_uv keeps every Param in its order;
+ *   <li>the wavelength columns of the reference: the spectrum type, representation, observed wavelength range, base
+ *       peak intensity and TIC move to their columns and leave the list (W11: the reference also keeps the type and
+ *       the range in the list, which metadata-tables.md forbids, and the Rust reader gives them twice);
  *   <li>no {@code parameters} item lacks a name (Rust unwraps every name and panics): a nameless Param that stays in
  *       a list is written with its term's name, or its accession where the writer does not know the term, and a
  *       Param with neither name nor accession is refused, in both layouts, before anything is written.
@@ -116,12 +116,13 @@ class SplitWriterRustReaderTest {
     // ---- wavelength representation, base peak intensity and TIC -------------------------------------------------
 
     /**
-     * Legacy and current has_uv, read, written split and read again, give every wavelength spectrum exactly the
-     * Params read from the fixture, in the same order.
+     * Legacy and current has_uv, read, written split and read again, give every wavelength spectrum the Params read
+     * from the fixture, the column terms after the list in column order, the type without its name (W11,
+     * {@link WavelengthColumnsTest#readBack}).
      */
     @ParameterizedTest
     @MethodSource("hasUv")
-    void hasUvWavelengthParamsSurviveAWriteInOrder(Path fixture) {
+    void hasUvWavelengthParamsReadBackFromTheirColumns(Path fixture) {
         Source source = ForwardBackwardCorpusTest.readSource(fixture);
         Path out = write(source.wavelengthSpectra, source, tmp.resolve("out.mzpeak"));
         List<WavelengthSpectrum> back = ForwardBackwardCorpusTest.readSource(out).wavelengthSpectra;
@@ -130,7 +131,8 @@ class SplitWriterRustReaderTest {
             List<Param> expected = source.wavelengthSpectra.get(i).parameters();
             assertThat(expected).as("spectrum %d", i).extracting(Param::accession).containsExactly("MS:1000804",
                     "MS:1000619", "MS:1000618", "MS:1000796", "MS:1000128", "MS:1000505", "MS:1000285");
-            assertThat(back.get(i).parameters()).as("spectrum %d", i).isEqualTo(expected);
+            assertThat(back.get(i).parameters()).as("spectrum %d", i)
+                    .isEqualTo(WavelengthColumnsTest.readBack(expected));
         }
     }
 
@@ -139,13 +141,12 @@ class SplitWriterRustReaderTest {
     }
 
     /**
-     * Constructed wavelength spectra. A nameless or named representation moves to its column (the name is not
-     * written, as for every term-marker column); a finite base peak intensity and TIC in counts move to theirs. A
-     * spectrum type and a wavelength range in nanometres are copied to their columns and stay in the list. A
-     * representation with a value, a base peak intensity without unit, a non-finite TIC and a wavelength in another
-     * unit stay in the list only. Every nameless Param left in a list is written with a name: its term's (spectrum
-     * type, representation, dissociation method), else its accession. Reading back gives the list, then the columns
-     * whose accession the list does not repeat.
+     * Constructed wavelength spectra. A nameless or named representation or spectrum type moves to its column (the
+     * name is not written, as for every term-marker column); a finite base peak intensity and TIC in counts and a
+     * wavelength range in nanometres move to theirs. A representation with a value, a base peak intensity without
+     * unit, a non-finite TIC and a wavelength in another unit stay in the list only. Every nameless Param left in a
+     * list is written with a name: its term's (representation, dissociation method), else its accession. Reading
+     * back gives the list, then the columns whose accession the list does not repeat.
      */
     @Test
     void theWavelengthColumnsTakeWhatTheReferenceWritesThereAndNoListItemIsNameless() throws IOException {
@@ -171,7 +172,6 @@ class SplitWriterRustReaderTest {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Path out = write(waves, source, tmp.resolve("out.mzpeak"));
 
-        Param namedType = new Param("electromagnetic radiation spectrum", "MS:1000804", null, null);
         Param namedValuedRepresentation = new Param("profile spectrum", "MS:1000128", "x", null);
         Param namedUnknown = new Param("MS:4999999", "MS:4999999", 1L, null);
         Param namedCid = new Param("collision-induced dissociation", "MS:1000133", null, null);
@@ -180,8 +180,8 @@ class SplitWriterRustReaderTest {
         assertRow(rows.get(0), null, "MS:1000127", null, null, null, null, List.of(TITLE));
         assertRow(rows.get(1), null, "MS:1000128", null, null, 2.5, 7.0, List.of());
         assertRow(rows.get(2), "MS:1000804", null, null, null, null, null,
-                List.of(namedValuedRepresentation, unitlessBpi, nanTic, namedType));
-        assertRow(rows.get(3), null, null, 190.0, 400.0, null, null, List.of(namedUnknown, lowest, namedCid, highest));
+                List.of(namedValuedRepresentation, unitlessBpi, nanTic));
+        assertRow(rows.get(3), null, null, 190.0, 400.0, null, null, List.of(namedUnknown, namedCid));
         assertRow(rows.get(4), null, null, null, null, null, null, List.of(lowestInMetres));
         assertThat(nameless(out)).isEmpty();
 
@@ -189,18 +189,18 @@ class SplitWriterRustReaderTest {
         assertThat(back.get(0).parameters()).containsExactly(TITLE, centroid);
         assertThat(back.get(1).parameters()).containsExactly(new Param(null, "MS:1000128", null, null), bpi, tic);
         assertThat(back.get(2).parameters()).containsExactly(namedValuedRepresentation, unitlessBpi, nanTic,
-                namedType);
-        assertThat(back.get(3).parameters()).containsExactly(namedUnknown, lowest, namedCid, highest);
+                namelessType);
+        assertThat(back.get(3).parameters()).containsExactly(namedUnknown, namedCid, lowest, highest);
         assertThat(back.get(4).parameters()).containsExactly(lowestInMetres);
     }
 
     /**
      * Read, write and read where the spectrum type is only a column: the reader gives it as
-     * {@code Param(null, MS:1000804)} after the list; the writer copies it to the spectrum type column and writes it,
-     * named, to the list, where it reads back; a second write gives the same row.
+     * {@code Param(null, MS:1000804)} after the list; the writer moves it to the spectrum type column only (W11),
+     * where it reads back as it was read; a second write gives the same row.
      */
     @Test
-    void aTypeThatIsOnlyAColumnReadsBackNamedFromTheList() throws IOException {
+    void aTypeThatIsOnlyAColumnStaysAColumn() throws IOException {
         MessageType schema = Types.buildMessage()
                 .required(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
@@ -225,17 +225,17 @@ class SplitWriterRustReaderTest {
 
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Path first = write(List.of(wave(0, read)), source, tmp.resolve("first.mzpeak"));
-        Param named = new Param("electromagnetic radiation spectrum", "MS:1000804", null, null);
         Group written = rows(first.resolve(WAVELENGTH)).get(0);
         assertThat(ParquetGroups.optString(written, "spectrum_type")).isEqualTo("MS:1000804");
-        assertThat(ParquetGroups.readParams(written, "parameters")).containsExactly(TITLE, named);
+        assertThat(ParquetGroups.readParams(written, "parameters")).containsExactly(TITLE);
         assertThat(nameless(first)).isEmpty();
         List<Param> back = ForwardBackwardCorpusTest.readSource(first).wavelengthSpectra.get(0).parameters();
-        assertThat(back).containsExactly(TITLE, named);
+        assertThat(back).isEqualTo(read);
 
         Path second = write(List.of(wave(0, back)), source, tmp.resolve("second.mzpeak"));
-        assertThat(ParquetGroups.readParams(rows(second.resolve(WAVELENGTH)).get(0), "parameters"))
-                .containsExactly(TITLE, named);
+        Group again = rows(second.resolve(WAVELENGTH)).get(0);
+        assertThat(ParquetGroups.optString(again, "spectrum_type")).isEqualTo("MS:1000804");
+        assertThat(ParquetGroups.readParams(again, "parameters")).containsExactly(TITLE);
         assertThat(ForwardBackwardCorpusTest.readSource(second).wavelengthSpectra.get(0).parameters())
                 .isEqualTo(back);
     }
@@ -324,7 +324,7 @@ class SplitWriterRustReaderTest {
     private static void assertRow(Group row, String type, String representation, Double lowest, Double highest,
                                   Double bpi, Double tic, List<Param> params) {
         assertThat(ParquetGroups.optString(row, "spectrum_type")).isEqualTo(type);
-        assertThat(ParquetGroups.optString(row, "spectrum_representation")).isEqualTo(representation);
+        assertThat(ParquetGroups.optString(row, "opt_spectrum_representation")).isEqualTo(representation);
         assertThat(ParquetGroups.optDouble(row, "lowest_observed_wavelength")).isEqualTo(lowest);
         assertThat(ParquetGroups.optDouble(row, "highest_observed_wavelength")).isEqualTo(highest);
         assertThat(ParquetGroups.optDouble(row, "base_peak_intensity")).isEqualTo(bpi);

@@ -78,10 +78,10 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * <p>Index and count columns are UINT64, other integers INT32, floats DOUBLE. A Param moves to its standardized
  * column only if the reader rebuilds it equal apart from its name ({@link Promotion}, WR-5c): a summary value, the
  * spectrum type, an imaging position, the dissociation method or the collision energy, the ion mobility of a scan or
- * selected ion, and of a wavelength spectrum its representation, base peak intensity or total ion current. A
- * collision energy is promoted also when it is an integer or has no unit, as mzML writers give it: MS:1000045 is
- * defined in electronvolt, and it reads back as a Double in electronvolt. An ion mobility goes to the
- * {@code ion_mobility_value} and {@code ion_mobility_type} columns, which the reference writes after
+ * selected ion, and of a wavelength spectrum its type, representation, observed wavelength range, base peak intensity
+ * or total ion current. A collision energy is promoted also when it is an integer or has no unit, as mzML writers
+ * give it: MS:1000045 is defined in electronvolt, and it reads back as a Double in electronvolt. An ion mobility goes
+ * to the {@code ion_mobility_value} and {@code ion_mobility_type} columns, which the reference writes after
  * {@code ion_injection_time} and {@code peak_intensity} without a column mapping, only when it is the scope's one
  * Param with an ion mobility type and has one of the four types the reader names, with the unit it gives that type,
  * and a finite Double or Long value, which reads back as a Double ({@link #promoteIonMobility}); otherwise both cells
@@ -119,16 +119,17 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, spectrum type,
  *       representation, lowest and highest observed wavelength, point count, lambda max, base peak intensity and
  *       total ion current, in the reference's column order, its {@code parameters} and, as in spectra_metadata,
- *       empty auxiliary arrays. As in the reference, the spectrum type and the wavelength range are copied to their
- *       columns and stay in the list ({@link Promotion#mirror}), since the Rust reader takes them from the list
- *       only; the reader drops a column that repeats a list accession. The representation, base peak intensity and
- *       TIC move to their columns, which the reader appends to the Params in that order, after the list, as it reads
- *       them from the reference's has_uv, so a read, write and read keeps every Param in its order;
- *       wavelength_spectra_metadata_scans: one row per
- *       wavelength spectrum, with the schema and column mapping of spectra_metadata_scans without imaging positions,
- *       as in the reference: keyed by {@code source_index} with a global {@code scan_index}, whose
- *       {@code scan_start_time} is the spectrum's time, the other typed columns null and empty {@code parameters}
- *       and {@code scan_windows} lists.
+ *       empty auxiliary arrays. The representation column is {@code opt_spectrum_representation}, since
+ *       wavelength-spectra.md does not name it (D13-12). Each of these terms moves to its column and leaves the
+ *       list, which metadata-tables.md requires (W11): the reference also keeps the type and the wavelength range in
+ *       the list, so the Rust reader, which reads both, gives them twice for its has_uv, once for this output. The
+ *       reader appends the columns to the Params in column order, after the list, the type and representation
+ *       without a name, so a read of the reference's has_uv, a write and a read gives its Params in another order,
+ *       the type nameless; a further write and read keeps them as they are; wavelength_spectra_metadata_scans: one
+ *       row per wavelength spectrum, with the schema and column mapping of spectra_metadata_scans without imaging
+ *       positions, ion mobility and spectrum reference, which the wavelength scan table does not have (D13-12):
+ *       keyed by {@code source_index} with a global {@code scan_index}, whose {@code scan_start_time} is the
+ *       spectrum's time, the other typed columns null and empty {@code parameters} and {@code scan_windows} lists.
  * </ul>
  * As in the reference's output, the chromatogram members carry {@code chromatogram_count} as their only footer
  * key-value besides the Arrow hint, and the wavelength members the plan's file metadata and
@@ -338,7 +339,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final List<ColumnMapping> WAVELENGTH_MAPPING = mapping(Facet.WAVELENGTH_SPECTRUM,
             Set.of(WAVELENGTH_TYPE, WAVELENGTH_REPRESENTATION, LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH,
                     WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC));
-    /** The wavelength scans have the spectrum-scan schema and map its columns, as the reference does (V-25). */
+    /** The wavelength scans map the CV-mapped columns of the spectrum scans, as the reference does (V-25). */
     private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
             sameColumns(Facet.WAVELENGTH_SCAN, SCAN_COLUMNS));
 
@@ -498,7 +499,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      */
     private static void writeScans(Path file, WritePlan plan, Map<String, String> footer, List<Column> positions)
             throws IOException {
-        MessageType schema = scanSchema("spectra_metadata_scans", positions);
+        MessageType schema = scanSchema("spectra_metadata_scans", true, positions);
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         long scanIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
@@ -563,20 +564,31 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     /**
      * The scan schema named {@code name}: the typed columns, {@code parameters} and {@code scan_windows}, then the
-     * {@code positions} columns. Spectrum and wavelength-spectrum scans share it, as in the reference.
+     * {@code positions} columns. Spectrum and wavelength-spectrum scans share it, as in the reference, but for the
+     * {@code ion_mobility_value}, {@code ion_mobility_type} and {@code spectrum_reference} columns, which only
+     * spectrum scans ({@code massSpectrum}) have: the wavelength scan table of wavelength-spectra.md has none of them
+     * (D13-12).
      */
-    private static MessageType scanSchema(String name, List<Column> positions) {
+    private static MessageType scanSchema(String name, boolean massSpectrum, List<Column> positions) {
         Types.GroupBuilder<MessageType> builder = Types.buildMessage()
                 .required(PrimitiveTypeName.INT64).as(UINT64).named(SOURCE_INDEX)
                 .required(PrimitiveTypeName.INT64).as(UINT64).named(SCAN_INDEX)
                 .optional(PrimitiveTypeName.DOUBLE).named(field(SCAN_START_TIME))
                 .optional(PrimitiveTypeName.INT32).named(field(PRESET_SCAN_CONFIGURATION))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(field(FILTER_STRING))
-                .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME))
-                .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ION_MOBILITY_TYPE)
-                .optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID)
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(SPECTRUM_REFERENCE)
+                .optional(PrimitiveTypeName.DOUBLE).named(field(ION_INJECTION_TIME));
+        if (massSpectrum) {
+            builder = builder
+                    .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
+                    .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named(ION_MOBILITY_TYPE);
+        }
+        builder = builder.optional(PrimitiveTypeName.INT32).named(INSTRUMENT_CONFIGURATION_ID);
+        if (massSpectrum) {
+            builder = builder.optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                    .named(SPECTRUM_REFERENCE);
+        }
+        builder = builder
                 .addField(paramListField())
                 .addField(scanWindowListField());
         for (Column position : positions) {
@@ -750,9 +762,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     row.add(TIME, w.time());
                 }
                 Promotion params = new Promotion(w.parameters());
-                // The type and wavelength range are copied to their columns and stay in the list, as the reference
-                // writes them: the Rust reader takes them from the list only.
-                Param type = params.mirror(termOf(SpectrumSummary.SPECTRUM_TYPES));
+                Param type = params.promote(termOf(SpectrumSummary.SPECTRUM_TYPES));
                 if (type != null) {
                     row.add(field(WAVELENGTH_TYPE), type.accession());
                 }
@@ -760,12 +770,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 if (representation != null) {
                     row.add(field(WAVELENGTH_REPRESENTATION), representation.accession());
                 }
-                for (Column column : List.of(LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH)) {
-                    Param p = params.mirror(doubleIn(column));
-                    if (p != null) {
-                        row.add(field(column), (Double) p.value());
-                    }
-                }
+                promoteDoubles(row, params, LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH);
                 row.add(field(WAVELENGTH_POINTS), (long) w.size());
                 addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
                 promoteDoubles(row, params, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC);
@@ -778,14 +783,14 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     /**
      * Writes one scan per wavelength spectrum, with the spectrum-scan schema ({@link #scanSchema}, without imaging
-     * positions) as the reference does: its time as the {@code scan_start_time}, a global {@code scan_index}, the
-     * other typed columns null and empty {@code parameters} and {@code scan_windows} lists. The empty
-     * {@code parameters} list is there for the HEAD Python reader, which reads it from every scan of a spectrum it
-     * returns.
+     * positions, ion mobility and spectrum reference): its time as the {@code scan_start_time}, a global
+     * {@code scan_index}, the other typed columns null and empty {@code parameters} and {@code scan_windows} lists.
+     * The empty {@code parameters} list is there for the HEAD Python reader, which reads it from every scan of a
+     * spectrum it returns.
      */
     private static void writeWavelengthScans(Path file, WritePlan plan, Map<String, String> footer)
             throws IOException {
-        MessageType schema = scanSchema("wavelength_spectra_metadata_scans", List.of());
+        MessageType schema = scanSchema("wavelength_spectra_metadata_scans", false, List.of());
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
         long scanIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
@@ -839,8 +844,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * The Params of one scope as they are written (WR-5c, design §11.8). A Param moves to its column, and leaves the
      * {@code parameters} list, only if the reader rebuilds it equal apart from its name. Per column only the first
      * Param that qualifies is promoted, and only when no other Param of the list has its accession, so no accession
-     * is ever both a column and a parameter of the scope, except a {@link #mirror mirrored} one, which the reference
-     * writes in both.
+     * is ever both a column and a parameter of the scope (metadata-tables.md §Controlled Vocabulary Terms: MUST NOT
+     * write both).
      */
     static final class Promotion {
 
@@ -863,15 +868,6 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             }
             promoted[i] = true;
             return params.get(i);
-        }
-
-        /**
-         * The Param {@link #promote} would promote, left in the {@code parameters} list: for a column the reference
-         * writes next to the list entry.
-         */
-        Param mirror(Predicate<Param> qualifies) {
-            int i = find(qualifies);
-            return i < 0 ? null : params.get(i);
         }
 
         /** The position of the first Param not promoted that {@code qualifies}, or -1 as {@link #promote} says. */

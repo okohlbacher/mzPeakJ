@@ -15,7 +15,9 @@ import java.util.Set;
  * drift between them. Legacy names are kept here as data rather than in a second decoder.
  *
  * <p>Each facet lists its CV-mapped columns. The canonical rows are the union of the {@code column_mapping}s of the
- * 8 HUPO-PSI/mzPeak 2ee2589 example manifests, copied verbatim and in file order. Each row also lists fallbacks,
+ * 8 HUPO-PSI/mzPeak 2ee2589 example manifests, copied verbatim and in file order, but for the wavelength
+ * representation, whose canonical path is {@code opt_spectrum_representation} as metadata-tables.md §Column naming
+ * requires (the manifests' {@code spectrum_representation} is its first fallback). Each row also lists fallbacks,
  * the other names the same column has gone by: first the spec's alternate names, then the pin-era packed names
  * (HUPO-PSI/mzPeak 29e59b2, mzPeakJ 0.10.3 and earlier).
  *
@@ -147,8 +149,10 @@ final class ColumnTable {
         Facet w = Facet.WAVELENGTH_SPECTRUM;
         t.put(w, List.of(
                 marker(w, "spectrum_type", "MS:1000559", "spectrum type", "MS_1000559_spectrum_type"),
-                marker(w, "spectrum_representation", "MS:1000525", "spectrum representation",
-                        "MS_1000525_spectrum_representation"),
+                // wavelength-spectra.md has no representation column, so the name needs opt_ (D13-12); the
+                // reference's name stays a fallback
+                marker(w, "opt_spectrum_representation", "MS:1000525", "spectrum representation",
+                        "spectrum_representation", "MS_1000525_spectrum_representation"),
                 column(w, "lowest_observed_wavelength", "MS:1000619", "lowest observed wavelength", "UO:0000018",
                         "MS_1000619_lowest_observed_wavelength_unit_UO_0000018"),
                 column(w, "highest_observed_wavelength", "MS:1000618", "highest observed wavelength", "UO:0000018",
