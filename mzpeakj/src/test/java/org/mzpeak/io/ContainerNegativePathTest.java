@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>The legacy {@code small.mzpeak} keeps its member sizes in per-entry zip64 extra fields (one 0x0001 field of 16
  * bytes per record: size and compressed size), which the zip64 extra-field cases edit. The size and compression cases
  * run on a plain archive built from {@code small.unpacked.mzpeak}, whose 32-bit size fields hold the real values; the
- * DEFLATE cases compress its index. The zip64 end-of-central-directory sentinel and duplicate member names are not
+ * DEFLATE cases compress its index, which R9 rejects whatever its data. The zip64 end-of-central-directory sentinel and duplicate member names are not
  * covered, because RD-15 and RD-16 change them on purpose.
  */
 class ContainerNegativePathTest {
@@ -39,6 +39,9 @@ class ContainerNegativePathTest {
     private static final String INDEX = "mzpeak_index.json";
     private static final String METADATA = "spectra_metadata.parquet";
     private static final int SPECTRA = 48;
+    /** R9: the end of the message that rejects the DEFLATED index. */
+    private static final String DEFLATED_INDEX = ": member " + INDEX
+            + " is stored with ZIP compression method 8; mzPeak requires STORED members";
 
     @Test
     void unchangedCopiesOpen(@TempDir Path tmp) throws IOException {
@@ -138,7 +141,10 @@ class ContainerNegativePathTest {
         CdRecord index = zip.record(INDEX);
         zip.putShort(index.offset() + 10, 12); // BZIP2, in the central directory and the local header
         zip.putShort(index.localHeader() + 8, 12);
-        assertOpenFails(zip.save(tmp.resolve("method.mzpeak")), "unsupported ZIP compression method", INDEX);
+        Path archive = zip.save(tmp.resolve("method.mzpeak"));
+        // R9: any method but STORED is rejected, with the archive and the method named
+        assertOpenFails(archive, "mzPeak archive " + archive + ": member " + INDEX
+                + " is stored with ZIP compression method 12; mzPeak requires STORED members");
     }
 
     // ---- FN-11: zip64 extra fields, a short read, DEFLATE -----------------------------------------------------
@@ -186,7 +192,8 @@ class ContainerNegativePathTest {
         for (int i = 0; i < 16; i++) {
             zip.bytes[data + i] = (byte) 0xFF;
         }
-        assertOpenFails(zip.save(tmp.resolve("deflate-corrupt.mzpeak")), "Failed to inflate member", INDEX);
+        // R9: the method is rejected before the data is inflated
+        assertOpenFails(zip.save(tmp.resolve("deflate-corrupt.mzpeak")), DEFLATED_INDEX);
     }
 
     @Test
@@ -195,20 +202,23 @@ class ContainerNegativePathTest {
         CdRecord index = zip.record(INDEX);
         int size = zip.getInt(index.offset() + 24);
         zip.putInt(index.offset() + 24, size + 10);
-        assertOpenFails(zip.save(tmp.resolve("deflate-truncated.mzpeak")), "truncated/corrupt DEFLATE member",
-                INDEX, "inflated " + size + " of " + (size + 10) + " bytes");
+        // R9: the method is rejected before the data is inflated
+        assertOpenFails(zip.save(tmp.resolve("deflate-truncated.mzpeak")), DEFLATED_INDEX);
     }
 
     @Test
     void deflatedIndexTooLargeToReadIntoMemory(@TempDir Path tmp) throws IOException {
         ZipImage zip = ZipImage.of(deflatedIndexArchive(tmp));
         zip.putInt(zip.record(INDEX).offset() + 24, 0xFFFF_FFFE); // 4 GiB - 2, not the zip64 sentinel
-        assertOpenFails(zip.save(tmp.resolve("deflate-large.mzpeak")), "too large to read into memory", INDEX);
+        // R9: the method is rejected before the size is checked
+        assertOpenFails(zip.save(tmp.resolve("deflate-large.mzpeak")), DEFLATED_INDEX);
     }
 
     @Test
-    void anIntactDeflatedIndexOpens(@TempDir Path tmp) throws IOException {
-        assertThat(spectrumCount(deflatedIndexArchive(tmp))).isEqualTo(SPECTRA);
+    void anIntactDeflatedIndexIsRejected(@TempDir Path tmp) throws IOException {
+        // R9: mzPeak requires STORED members (docs/foundations/container.md)
+        Path archive = deflatedIndexArchive(tmp);
+        assertOpenFails(archive, "mzPeak archive " + archive + DEFLATED_INDEX);
     }
 
     @Test

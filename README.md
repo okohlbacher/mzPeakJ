@@ -231,8 +231,8 @@ try (MzPeakReader reader = MzPeakReader.open(MzPeakSource.zip("data/run.mzpeak",
 // Integrity: compare each member with the SHA-512 checksum in the manifest (never done on open)
 IntegrityReport report = MzPeakReader.verifyIntegrity(Path.of("data/run.mzpeak"));  // or reader.verifyIntegrity()
 System.out.println(report.outcome());                  // VALID, INVALID or UNVERIFIABLE (a checksum is missing)
-for (IntegrityReport.MemberResult m : report.failures()) {   // MISMATCH and MISSING_MEMBER, in manifest order
-    System.out.println(m.name() + ": " + m.status());
+for (IntegrityReport.MemberResult m : report.failures()) {   // MISMATCH, MISSING_MEMBER, REJECTED_MEMBER
+    System.out.println(m.name() + ": " + m.status());       // REJECTED_MEMBER: compressed/encrypted ZIP member, m.reason()
 }
 ```
 

@@ -8,7 +8,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mzpeak.io.parquet.ByteArrayInputFile;
 import org.mzpeak.io.parquet.FileSliceInputFile;
 
 import java.io.IOException;
@@ -28,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
-import java.util.zip.DataFormatException;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
@@ -40,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Characterizes what {@link ZipIndex} and {@link ZipSource} (through {@link MzPeakSource#open(Path)}) return, before
  * AP-6 moves them from {@link FileChannel} to {@code RandomAccessBytes}. It covers what {@link
  * ContainerNegativePathTest} and {@link Zip64Test} leave out: the offsets and sizes of the index, the member bytes
- * served in place, DEFLATE members, duplicate member names, files too short to be an archive and reads after
- * close. The oracle for member bytes is {@link ZipFile}, which shares no code with the reader.
+ * served in place, DEFLATE members (rejected since R9), duplicate member names, files too short to be an archive and
+ * reads after close. The oracle for member bytes is {@link ZipFile}, which shares no code with the reader.
  */
 class ZipSourceCharacterizationTest {
 
@@ -96,26 +94,30 @@ class ZipSourceCharacterizationTest {
         }
     }
 
+    /**
+     * R9 (was: a DEFLATE archive read like the directory, its members inflated into memory): every DEFLATE member is
+     * rejected, the manifest first, so the archive does not open.
+     */
     @Test
-    void deflatedArchiveReadsLikeTheDirectory(@TempDir Path tmp) throws IOException {
+    void deflatedArchiveIsRejected(@TempDir Path tmp) throws IOException {
         Path archive = writeArchive(tmp.resolve("deflated.mzpeak"), ZipEntry.DEFLATED, Map.of());
         Map<String, byte[]> expected = zipFileMembers(archive);
         try (MzPeakSource source = MzPeakSource.open(archive)) {
-            assertThat(source.readManifestBytes()).isEqualTo(Files.readAllBytes(UNPACKED.resolve(INDEX)));
-            for (Map.Entry<String, byte[]> member : expected.entrySet()) {
-                InputFile file = source.inputFile(member.getKey());
-                assertThat(file).as("inflated file of %s", member.getKey()).isInstanceOf(ByteArrayInputFile.class);
-                assertThat(readAll(file)).as("bytes of %s", member.getKey()).isEqualTo(member.getValue());
+            assertThatThrownBy(source::readManifestBytes)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage(deflated(archive, INDEX));
+            for (String member : expected.keySet()) {
+                assertThatThrownBy(() -> source.inputFile(member))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage(deflated(archive, member));
             }
         }
-        try (MzPeakReader directory = MzPeakReader.open(UNPACKED);
-             MzPeakReader deflated = MzPeakReader.open(archive)) {
-            List<String> content = TestSources.content(directory);
-            assertThat(content).noneMatch(line -> line.contains(" throws "));
-            assertThat(TestSources.content(deflated)).containsExactlyElementsOf(content);
-        }
+        assertThatThrownBy(() -> MzPeakReader.open(archive))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage(deflated(archive, INDEX));
     }
 
+    /** R9 (was: a truncated DEFLATE member): the method is rejected before the data is inflated. */
     @Test
     void deflatedMemberShorterThanItsDeclaredSize(@TempDir Path tmp) throws IOException {
         Path archive = writeArchive(tmp.resolve("deflated.mzpeak"), ZipEntry.DEFLATED, Map.of());
@@ -128,11 +130,11 @@ class ZipSourceCharacterizationTest {
         try (MzPeakSource source = MzPeakSource.open(archive)) {
             assertThatThrownBy(source::readManifestBytes)
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessage("truncated/corrupt DEFLATE member " + INDEX + " in " + archive
-                            + " (inflated " + size + " of " + (size + 1) + " bytes)");
+                    .hasMessage(deflated(archive, INDEX));
         }
     }
 
+    /** R9 (was: corrupt DEFLATE data): the method is rejected before the data is inflated. */
     @Test
     void corruptDeflateData(@TempDir Path tmp) throws IOException {
         Path archive = writeArchive(tmp.resolve("deflated.mzpeak"), ZipEntry.DEFLATED, Map.of());
@@ -145,9 +147,14 @@ class ZipSourceCharacterizationTest {
         try (MzPeakSource source = MzPeakSource.open(archive)) {
             assertThatThrownBy(source::readManifestBytes)
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessage("Failed to inflate member " + INDEX + " in " + archive)
-                    .hasCauseInstanceOf(DataFormatException.class);
+                    .hasMessage(deflated(archive, INDEX))
+                    .hasNoCause();
         }
+    }
+
+    private static String deflated(Path archive, String member) {
+        return "mzPeak archive " + archive + ": member " + member
+                + " is stored with ZIP compression method 8; mzPeak requires STORED members";
     }
 
     @Test

@@ -10,9 +10,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * A minimal ZIP central-directory reader: maps each member name to its compression method, size, and the byte
- * offset of its data within the archive. This lets STORED (uncompressed) members be read in place via
- * {@link org.mzpeak.io.parquet.FileSliceInputFile} rather than copied into memory. The archive is read through
+ * A minimal ZIP central-directory reader: maps each member name to its compression method, general-purpose flags,
+ * size, and the byte offset of its data within the archive. This lets STORED (uncompressed) members be read in place
+ * via {@link org.mzpeak.io.parquet.FileSliceInputFile} rather than copied into memory. The archive is read through
  * {@link RandomAccessBytes}, with positional reads only.
  *
  * <p>Members, offsets and the archive may exceed 4 GiB: per-entry zip64 extra fields and the zip64
@@ -26,9 +26,16 @@ final class ZipIndex {
 
     static final int STORED = 0;
     static final int DEFLATED = 8;
+    /** General-purpose flag bit 0: the member is encrypted. */
+    static final int ENCRYPTED = 1;
 
-    /** One central-directory entry. */
-    record Entry(String name, int method, long size, long compressedSize, long dataOffset) {
+    /** One central-directory entry; {@code flags} is its general-purpose bit flag. */
+    record Entry(String name, int method, int flags, long size, long compressedSize, long dataOffset) {
+
+        /** Whether the {@link #ENCRYPTED} flag is set. */
+        boolean encrypted() {
+            return (flags & ENCRYPTED) != 0;
+        }
     }
 
     /** Where the central directory lies and how many records it holds. */
@@ -86,6 +93,7 @@ final class ZipIndex {
             if (p > limit - 46 || cd.getInt(p) != CDH_SIG) {
                 throw new MzPeakException("corrupt zip central directory at offset " + p);
             }
+            int flags = cd.getShort(p + 8) & 0xFFFF;
             int method = cd.getShort(p + 10) & 0xFFFF;
             long compressedSize = cd.getInt(p + 20) & U32_MAX;
             long size = cd.getInt(p + 24) & U32_MAX;
@@ -121,14 +129,16 @@ final class ZipIndex {
             if (size < 0 || compressedSize < 0 || localHeaderOffset < 0 || localHeaderOffset > fileSize) {
                 throw new MzPeakException("corrupt zip entry '" + name + "': size/offset out of range");
             }
-            if (method == STORED && size != compressedSize) {
+            // The data of an encrypted member starts with an encryption header, so a STORED one is longer than its
+            // size. It is rejected when it is read (R9), not here: a member that is never read must not fail the open.
+            if (method == STORED && (flags & ENCRYPTED) == 0 && size != compressedSize) {
                 throw new MzPeakException("corrupt zip entry '" + name + "': STORED size mismatch");
             }
             long dataOffset = dataOffset(bytes, localHeaderOffset);
             if (dataOffset > fileSize || compressedSize > fileSize - dataOffset) {
                 throw new MzPeakException("corrupt zip entry '" + name + "': data range past end of archive");
             }
-            if (entries.put(name, new Entry(name, method, size, compressedSize, dataOffset)) != null) {
+            if (entries.put(name, new Entry(name, method, flags, size, compressedSize, dataOffset)) != null) {
                 occurrences.merge(name, 2, (n, one) -> n + 1);
             }
             p = (int) recordEnd;
