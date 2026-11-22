@@ -178,6 +178,23 @@ class FooterMetadataReaderTest {
                 new Param("text", "MS:1000529", "12", "UO:1"))));
     }
 
+    /**
+     * A footer param value that is a JSON array or object reads as its compact JSON text (C7), as the manifest reads
+     * it, not as an empty string.
+     */
+    @Test
+    void footerParamArrayAndObjectValuesReadAsTheirJsonText() {
+        Map<String, String> footer = Map.of("software_list", "[{\"id\": \"sw\", \"version\": \"1\", \"parameters\": ["
+                + "{\"name\": \"array\", \"value\": [1.5, 2.5, 3.5]},"
+                + " {\"name\": \"mixed\", \"value\": [1, \"a\", null, true]},"
+                + " {\"name\": \"object\", \"value\": {\"k\": [ 2 ]}}]}]");
+
+        assertThat(FooterMetadataReader.parse(footer).software()).containsExactly(new Software("sw", "1", List.of(
+                new Param("array", null, "[1.5,2.5,3.5]", null),
+                new Param("mixed", null, "[1,\"a\",null,true]", null),
+                new Param("object", null, "{\"k\":[2]}", null))));
+    }
+
     // ---- helpers ---------------------------------------------------------------------------
 
     /** A fresh, editable copy of the {@code metadata} object of the vendored {@code small.unpacked.mzpeak}. */

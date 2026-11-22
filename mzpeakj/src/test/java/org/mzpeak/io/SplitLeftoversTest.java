@@ -1,5 +1,7 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroup;
 import org.apache.parquet.schema.GroupType;
@@ -36,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * after the scope's {@code parameters} list (design 4.3, 5.2): the summary columns (lowest and highest observed m/z,
  * base peak, total ion current), the {@code spectrum_type} term marker and unknown {@code opt_} columns. Structural
  * columns ({@code data_processing_id}, {@code auxiliary_arrays}, {@code number_of_auxiliary_arrays}, the keys),
- * consumed columns, lists and null cells never do; the imaging positions count as consumed, so they appear once.
+ * consumed columns, lists of structs and null cells never do; a list of scalars becomes a Param whose value is its
+ * JSON text (C7). The imaging positions count as consumed, so they appear once.
  *
  * <p>Oracles: the FX-2 cells of the 8 current fixtures, read at the paths each member's column_mapping gives, and rows
  * constructed from current small.unpacked and Example_Processed.img.
@@ -284,6 +287,132 @@ class SplitLeftoversTest {
         }
     }
 
+    // ---- C7: list-valued columns ---------------------------------------------------------------------------------
+
+    /**
+     * A mapped list column becomes a Param with the mapping's name, accession and unit, whose value is the compact
+     * JSON text of the list (C7); a null list adds no Param.
+     */
+    @Test
+    void aMappedListColumnBecomesAParamWithTheJsonTextOfTheList() {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            Entry fixture = Facet.SPECTRUM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
+            List<ColumnMapping> mappings = new ArrayList<>(fixture.columnMapping());
+            mappings.add(new ColumnMapping("FAIMS compensation voltage", "opt_compensation_voltages", "MS:1001581",
+                    "UO:0000218", null));
+            Entry entry = new Entry(fixture.name(), fixture.entityType(), fixture.dataKind(), mappings,
+                    fixture.parameters(), fixture.checksum());
+            FacetRow spectrum0 = first(source, entry, Facet.SPECTRUM);
+            MessageType extended = extend(spectrum0.group().getType(),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.DOUBLE).named("opt_compensation_voltages"));
+            ColumnResolver columns = ColumnResolver.split(extended, entry, Facet.SPECTRUM);
+            Param voltages = new Param("FAIMS compensation voltage", "MS:1001581", "[-40.0,-60.0]", "UO:0000218");
+
+            Group g = new SimpleGroup(extended);
+            copy(spectrum0.group(), g, Set.of());
+            Group list = g.addGroup("opt_compensation_voltages");
+            list.addGroup("list").add("element", -40.0);
+            list.addGroup("list").add("element", -60.0);
+            List<Param> params = SpectrumRowDecoder.decode(new FacetRow(Facet.SPECTRUM, g, columns), 0).spectrumParams;
+            assertThat(params).last().isEqualTo(voltages);
+            assertThat(params).filteredOn(p -> p.hasAccession("MS:1001581")).containsExactly(voltages);
+
+            Group nullList = new SimpleGroup(extended);
+            copy(spectrum0.group(), nullList, Set.of());
+            assertThat(SpectrumRowDecoder.decode(new FacetRow(Facet.SPECTRUM, nullList, columns), 0).spectrumParams)
+                    .noneMatch(p -> p.hasAccession("MS:1001581"))
+                    .hasSize(6);
+        }
+    }
+
+    /**
+     * Unmapped list columns become Params under their field names, the values as JSON text: integers (unsigned ones
+     * not sign-extended), floats and booleans as JSON numbers and booleans, strings quoted, null elements
+     * {@code null}, in 3-level and 2-level lists, an empty list as {@code []}. Structs, lists of structs and lists of
+     * fixed-length byte arrays are skipped.
+     */
+    @Test
+    void unmappedListColumnsBecomeParamsWithTheJsonTextOfTheList() {
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current(SMALL_UNPACKED))) {
+            Entry entry = Facet.SPECTRUM.entry(MzPeakManifest.fromSource(source)).orElseThrow();
+            FacetRow spectrum0 = first(source, entry, Facet.SPECTRUM);
+            MessageType extended = extend(spectrum0.group().getType(),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.INT32).named("opt_int32"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.INT32)
+                            .as(LogicalTypeAnnotation.intType(32, false)).named("opt_uint32"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.INT64).named("opt_int64"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.INT64)
+                            .as(LogicalTypeAnnotation.intType(64, false)).named("opt_uint64"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.FLOAT).named("opt_float"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.BOOLEAN).named("opt_boolean"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.BINARY)
+                            .as(LogicalTypeAnnotation.stringType()).named("opt_string"),
+                    Types.optionalGroup().repeated(PrimitiveTypeName.INT32).named("item").named("opt_two_level"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.DOUBLE).named("opt_empty"),
+                    Types.optionalList().optionalElement(PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY).length(2)
+                            .named("opt_fixed"),
+                    Types.optionalList().optionalGroupElement()
+                            .optional(PrimitiveTypeName.INT32).named("a")
+                            .optional(PrimitiveTypeName.INT32).named("b")
+                            .named("opt_structs"),
+                    Types.optionalList().optionalGroupElement()
+                            .optional(PrimitiveTypeName.INT32).named("a")
+                            .named("opt_one_field_structs"),
+                    Types.optionalGroup().repeatedGroup()
+                            .optional(PrimitiveTypeName.INT32).named("a")
+                            .optional(PrimitiveTypeName.INT32).named("b")
+                            .named("item").named("opt_two_level_structs"),
+                    Types.optionalGroup()
+                            .optional(PrimitiveTypeName.INT32).named("a")
+                            .optional(PrimitiveTypeName.INT32).named("b")
+                            .named("opt_struct"),
+                    Types.optionalGroup().optional(PrimitiveTypeName.INT32).named("a").named("opt_one_field_struct"));
+            Group g = new SimpleGroup(extended);
+            copy(spectrum0.group(), g, Set.of());
+            Group int32 = g.addGroup("opt_int32");
+            int32.addGroup("list").add("element", -3);
+            int32.addGroup("list");
+            int32.addGroup("list").add("element", 7);
+            g.addGroup("opt_uint32").addGroup("list").add("element", -1);
+            g.addGroup("opt_int64").addGroup("list").add("element", -5L);
+            g.addGroup("opt_uint64").addGroup("list").add("element", -1L);
+            Group floats = g.addGroup("opt_float");
+            floats.addGroup("list").add("element", 1.5f);
+            floats.addGroup("list").add("element", 0.1f);
+            Group booleans = g.addGroup("opt_boolean");
+            booleans.addGroup("list").add("element", true);
+            booleans.addGroup("list").add("element", false);
+            Group strings = g.addGroup("opt_string");
+            strings.addGroup("list").add("element", "a \"b\"");
+            strings.addGroup("list");
+            Group twoLevel = g.addGroup("opt_two_level");
+            twoLevel.add("item", 1);
+            twoLevel.add("item", 2);
+            g.addGroup("opt_empty");
+            g.addGroup("opt_fixed").addGroup("list").add("element",
+                    org.apache.parquet.io.api.Binary.fromConstantByteArray(new byte[] {1, 2}));
+            g.addGroup("opt_structs").addGroup("list").addGroup("element").add("a", 1);
+            g.addGroup("opt_one_field_structs").addGroup("list").addGroup("element").add("a", 1);
+            g.addGroup("opt_two_level_structs").addGroup("item").add("a", 1);
+            g.addGroup("opt_struct").add("a", 1);
+            g.addGroup("opt_one_field_struct").add("a", 1);
+
+            SpectrumRowDecoder.SpectrumHead head = SpectrumRowDecoder.decode(
+                    new FacetRow(Facet.SPECTRUM, g, ColumnResolver.split(extended, entry, Facet.SPECTRUM)), 0);
+
+            assertThat(head.spectrumParams.subList(6, head.spectrumParams.size())).containsExactly(
+                    new Param("opt_int32", null, "[-3,null,7]", null),
+                    new Param("opt_uint32", null, "[4294967295]", null),
+                    new Param("opt_int64", null, "[-5]", null),
+                    new Param("opt_uint64", null, "[18446744073709551615]", null),
+                    new Param("opt_float", null, "[1.5,0.1]", null),
+                    new Param("opt_boolean", null, "[true,false]", null),
+                    new Param("opt_string", null, "[\"a \\\"b\\\"\",null]", null),
+                    new Param("opt_two_level", null, "[1,2]", null),
+                    new Param("opt_empty", null, "[]", null));
+        }
+    }
+
     // ---- FN-9: a column wins over a list entry; the delta-model and instrument configuration choices ------------
 
     /** A base_peak_mz column and a parameters-list entry of its accession give one Param, the column's. */
@@ -422,9 +551,10 @@ class SplitLeftoversTest {
     }
 
     /**
-     * The Params the non-null scalar cells of {@code row} give in column order, skipping structural columns and the
-     * consumed ones: a term-marker string as {@code Param(null, cell)}, a true term-marker boolean as the mapping's
-     * term, a mapped cell with the mapping's name, accession and unit, an unmapped cell under its field name.
+     * The Params the non-null scalar and scalar-list cells of {@code row} give in column order, skipping structural
+     * columns and the consumed ones: a term-marker string as {@code Param(null, cell)}, a true term-marker boolean as
+     * the mapping's term, a mapped cell with the mapping's name, accession and unit, an unmapped cell under its field
+     * name; a list cell's value is its JSON text.
      */
     private static List<Param> leftovers(Row row, Entry entry, Set<String> consumedAccessions,
                                          Set<String> consumedFields) {
@@ -432,9 +562,15 @@ class SplitLeftoversTest {
         for (Map.Entry<String, Object> cell : row.values().entrySet()) {
             String field = cell.getKey();
             Object value = cell.getValue();
-            if (value == null || value instanceof List || value instanceof Map || STRUCTURAL.contains(field)
-                    || consumedFields.contains(field)) {
+            // the cells do not tell an empty list of structs (scan_windows) from an empty scalar list
+            if (value == null || value instanceof Map || STRUCTURAL.contains(field) || consumedFields.contains(field)
+                    || value instanceof List<?> list
+                    && (list.isEmpty() || list.stream().anyMatch(e -> e instanceof Map))) {
                 continue;
+            }
+            boolean isList = value instanceof List;
+            if (isList) {
+                value = json(value);
             }
             Optional<ColumnMapping> mapped = entry.columnAtPath(field);
             if (mapped.isEmpty()) {
@@ -445,7 +581,7 @@ class SplitLeftoversTest {
             if (m.accession() != null && consumedAccessions.contains(m.accession())) {
                 continue;
             }
-            if (Boolean.TRUE.equals(m.termMarker()) && value instanceof String curie) {
+            if (!isList && Boolean.TRUE.equals(m.termMarker()) && value instanceof String curie) {
                 out.add(new Param(null, curie, null, null));
             } else if (Boolean.TRUE.equals(m.termMarker()) && value instanceof Boolean present) {
                 if (present) {
@@ -512,6 +648,15 @@ class SplitLeftoversTest {
     }
 
     // ---- helpers -------------------------------------------------------------------------------------------------
+
+    /** The compact JSON text of a list cell. */
+    private static String json(Object list) {
+        try {
+            return new ObjectMapper().writeValueAsString(list);
+        } catch (JsonProcessingException e) {
+            throw new AssertionError(e);
+        }
+    }
 
     private static Map<Long, List<Row>> bySourceIndex(List<Row> rows) {
         Map<Long, List<Row>> out = new LinkedHashMap<>();

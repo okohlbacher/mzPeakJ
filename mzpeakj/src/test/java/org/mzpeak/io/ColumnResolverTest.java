@@ -1,5 +1,7 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroupFactory;
 import org.apache.parquet.io.InputFile;
@@ -30,14 +32,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link ColumnResolver}: accession lookup through the member's column_mapping, then {@link ColumnTable} and its
- * legacy fallbacks; term markers; unsigned reads; and the scalar-only leftovers of a split scope. Values are checked
- * against the raw pyarrow cells of {@link GoldenMeta} (FX-2). Members are found by role through {@link Facet#entry}.
+ * legacy fallbacks; term markers; unsigned reads; and the scalar and scalar-list leftovers of a split scope. Values
+ * are checked against the raw pyarrow cells of {@link GoldenMeta} (FX-2). Members are found by role through
+ * {@link Facet#entry}.
  */
 class ColumnResolverTest {
 
     /** The fields the spectrum row decoder consumes (design §5.2), as the leftovers test passes them. */
     private static final Set<String> SPECTRUM_CONSUMED = Set.of("ms_level", "time", "scan_polarity",
-            "spectrum_representation", "number_of_data_points", "number_of_peaks");
+            "spectrum_representation", "number_of_data_points", "number_of_peaks",
+            "polynomial_delta_coordinate_interpolation");
 
     static Stream<String> smallFixtures() {
         return Stream.of("small.mzpeak", "small.chunked.mzpeak", "small.numpress.mzpeak", "small.unpacked.mzpeak");
@@ -189,7 +193,8 @@ class ColumnResolverTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("smallFixtures")
-    void smallSpectrumZeroLeftoversAreItsUnconsumedScalarCellsInSchemaOrder(String fixture) {
+    void smallSpectrumZeroLeftoversAreItsUnconsumedScalarCellsInSchemaOrder(String fixture)
+            throws JsonProcessingException {
         Table t = current(fixture, Facet.SPECTRUM);
         Row cells = GoldenMeta.load(fixture).rows(t.entry().name()).get(0);
         Group row = t.rows().get(0);
@@ -217,7 +222,8 @@ class ColumnResolverTest {
         assertThat(ColumnResolver.split(t.schema(), withoutMarker, Facet.SPECTRUM)
                 .leftovers(row, SPECTRUM_CONSUMED)).containsExactlyElementsOf(expected);
 
-        // with nothing consumed: the mapped and unmapped scalars too, still no structural column and no list
+        // with nothing consumed: the mapped and unmapped scalars and the delta model list (as JSON text, C7) too,
+        // still no structural column
         List<Param> all = new ArrayList<>(List.of(
                 new Param("ms level", "MS:1000511", 1L, null),
                 new Param("time", null, cells.get("time"), null),
@@ -229,6 +235,10 @@ class ColumnResolverTest {
             all.add(new Param("number of peaks", "MS:1003059", cells.get("number_of_peaks"), null));
         }
         all.addAll(expected.subList(3, 6));
+        Object model = cells.get("polynomial_delta_coordinate_interpolation");
+        assertThat(model).isInstanceOf(List.class);
+        all.add(new Param("polynomial delta coordinate interpolation", "MS:1003821",
+                new ObjectMapper().writeValueAsString(model), null));
         assertThat(cells.get("number_of_data_points")).isEqualTo(13589L);
         assertThat(columns.leftovers(row, Set.of())).containsExactlyElementsOf(all);
     }
@@ -250,17 +260,16 @@ class ColumnResolverTest {
         List<Row> cells = GoldenMeta.load(fixture).rows(t.entry().name());
         ColumnResolver columns = ColumnResolver.split(t.schema(), t.entry(), Facet.SPECTRUM);
         Set<String> names = Set.of("index", "id", "data_processing_id", "parameters", "auxiliary_arrays",
-                "number_of_auxiliary_arrays", "polynomial_delta_coordinate_interpolation");
+                "number_of_auxiliary_arrays");
         for (int i = 0; i < cells.size(); i++) {
             Group row = t.rows().get(i);
             assertThat(cells.get(i).get("number_of_auxiliary_arrays")).as("row %d", i).isEqualTo(0L);
             assertThat(cells.get(i).get("data_processing_id")).as("row %d", i).isNull();
             assertThat(ParquetGroups.has(row, "auxiliary_arrays")).as("row %d", i).isTrue();
             assertThat(ParquetGroups.groupList(row, "auxiliary_arrays")).as("row %d", i).isEmpty();
-            // one Param per non-null scalar cell that is not structural
+            // one Param per non-null scalar or list cell that is not structural (the lists of structs are)
             long scalars = cells.get(i).values().entrySet().stream()
-                    .filter(e -> e.getValue() != null && !(e.getValue() instanceof List)
-                            && !(e.getValue() instanceof Map))
+                    .filter(e -> e.getValue() != null && !(e.getValue() instanceof Map))
                     .filter(e -> !ColumnTable.structural(Facet.SPECTRUM).contains(e.getKey()))
                     .count();
             List<Param> leftovers = columns.leftovers(row, Set.of());
