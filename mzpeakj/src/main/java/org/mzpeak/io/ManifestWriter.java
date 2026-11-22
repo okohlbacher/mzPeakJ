@@ -68,9 +68,10 @@ final class ManifestWriter {
         PIN_29E59B2,
         /**
          * The current spec's spellings, {@link EntityType#canonical()} and {@link DataKind#canonical()}. Scan settings
-         * are written as the reference serialises them: every entry with its {@code id}, {@code source_file_refs},
-         * {@code targets} and {@code parameters}, and every param with {@code name}, {@code accession},
-         * {@code value} and {@code unit}, absent values as {@code null}. Written with the split metadata layout.
+         * are written in the shape of the spec's {@code schema/scan_settings_list.json}: every entry with its
+         * {@code id}, {@code source_file_references}, {@code targets} (each an object holding its {@code parameters})
+         * and {@code parameters}, and every param with {@code name}, {@code accession}, {@code value} and
+         * {@code unit}, absent values as {@code null}. Written with the split metadata layout.
          */
         CURRENT;
 
@@ -143,7 +144,9 @@ final class ManifestWriter {
                 n.put("id", ss.id());
             }
             if (current || !ss.sourceFileRefs().isEmpty()) {
-                ArrayNode refs = n.putArray("source_file_refs");
+                // The spec's schema/scan_settings_list.json names the references source_file_references; the pin
+                // dialect keeps the reference's source_file_refs.
+                ArrayNode refs = n.putArray(current ? "source_file_references" : "source_file_refs");
                 for (String ref : ss.sourceFileRefs()) {
                     refs.add(ref);
                 }
@@ -151,7 +154,9 @@ final class ManifestWriter {
             if (current || !ss.targets().isEmpty()) {
                 ArrayNode targets = n.putArray("targets");
                 for (List<Param> target : ss.targets()) {
-                    writeScanSettingsParams(targets.addArray(), target, current);
+                    // The spec's target is an object with its parameters; the pin's a bare array of them.
+                    ArrayNode params = current ? targets.addObject().putArray("parameters") : targets.addArray();
+                    writeScanSettingsParams(params, target, current);
                 }
             }
             writeScanSettingsParams(n.putArray("parameters"), ss.parameters(), current);

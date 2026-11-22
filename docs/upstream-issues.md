@@ -29,3 +29,8 @@ How the test sees them on mzPeakJ's own output:
   dataset the reader counts the TIC and BPC it derives from the spectra but `get_chromatogram` returns none for them.
   The test therefore also writes small.unpacked with its chromatogram without type.
 - R-3 shows on every wavelength spectrum of has_uv.
+
+A latent difference, not seen by the test: the reference's `ScanSettings` struct still uses the pin-era names,
+`source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the
+references `source_file_references` and makes each target an object with its `parameters`, which mzPeakJ's split
+layout writes. The Rust and Python readers do not parse `scan_settings_list`, so nothing breaks today.

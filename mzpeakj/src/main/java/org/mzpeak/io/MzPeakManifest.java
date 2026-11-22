@@ -364,7 +364,8 @@ public final class MzPeakManifest {
      * {@code schema/scan_settings_list.json} and the mzpeak-0.9 validator's): the references under
      * {@code source_file_references} when {@code source_file_refs} is absent or not an array, and a target that is an
      * object as its {@code parameters} array ({@code {"parameters": [...]}}); an object without one is an empty
-     * target. The writer writes the Rust form, {@code source_file_refs} and bare arrays.
+     * target. The writer writes the schema form in the split layout and the Rust form, {@code source_file_refs} and
+     * bare arrays, in the packed one.
      */
     static List<ScanSettings> parseScanSettings(JsonNode ssList) {
         if (ssList == null || !ssList.isArray()) return List.of();

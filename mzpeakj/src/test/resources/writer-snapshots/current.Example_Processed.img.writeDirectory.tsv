@@ -1,6 +1,6 @@
 # WriterSnapshotTest (WR-0a): current Example_Processed.img.mzpeak written by MzPeakWriter.writeDirectory
 member	kind	detail	sha256
-mzpeak_index.json	bytes	size=13140 masked_checksums=5	d976bee10b61db9628c1fd74cecf2121cdf1ccabdaa04aef61121e41833450a9
+mzpeak_index.json	bytes	size=13146 masked_checksums=5	cdf5dc2c93149dc2eab135215dc3a6799c8bc9a59b70b34f57d020bf826c26cc
 spectra_data.parquet	parquet	row_groups=1 rows=36856 schema=62bea4c686e38644 key_values=4:f98bc1c2939e619a records=f05cfe7307266dda	6440c6852564af55f53aef002bb1c8497b372bbf89a002959a0784117a9665dc
 spectra_metadata.parquet	parquet	row_groups=1 rows=9 schema=a26ea10a7559ff92 key_values=9:ff7c3b59a56dce1f records=12b76b051425441d	9f806a6bf9c27751edf4b4461e66fae93a75f4a3a124bca96f312e75197d6b3a
 spectra_metadata_precursors.parquet	parquet	row_groups=0 rows=0 schema=cfdd114948f4eb9f key_values=8:b948957ce270629f records=e3b0c44298fc1c14	b45f4e0a3eda00879105bb8c08ab740be25297621324e9ffa2319a718a641b48
