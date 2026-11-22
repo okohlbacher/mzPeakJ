@@ -287,6 +287,10 @@ final class FooterMetadataReader {
         return out;
     }
 
+    /**
+     * A param value as typed in JSON, as {@code MzPeakManifest.jsonValue} reads it: an array or object as its compact
+     * JSON text.
+     */
     private static Object value(JsonNode v) {
         if (v == null || v.isNull()) {
             return null;
@@ -299,6 +303,9 @@ final class FooterMetadataReader {
         }
         if (v.isNumber()) {
             return v.asDouble();
+        }
+        if (v.isContainerNode()) {
+            return v.toString();
         }
         return v.asText();
     }

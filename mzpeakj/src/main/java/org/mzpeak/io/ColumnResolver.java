@@ -1,5 +1,16 @@
 package org.mzpeak.io;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BigIntegerNode;
+import com.fasterxml.jackson.databind.node.BooleanNode;
+import com.fasterxml.jackson.databind.node.DoubleNode;
+import com.fasterxml.jackson.databind.node.FloatNode;
+import com.fasterxml.jackson.databind.node.IntNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.LongNode;
+import com.fasterxml.jackson.databind.node.NullNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation.IntLogicalTypeAnnotation;
@@ -13,6 +24,7 @@ import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Param;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -41,6 +53,10 @@ final class ColumnResolver {
     /** The physical types {@link ParquetGroups#optLong} and {@link ParquetGroups#optDouble} read. */
     private static final Set<PrimitiveTypeName> NUMERIC = EnumSet.of(
             PrimitiveTypeName.INT32, PrimitiveTypeName.INT64, PrimitiveTypeName.FLOAT, PrimitiveTypeName.DOUBLE);
+    /** The element types of the list columns that {@link #leftovers} turns into Params. */
+    private static final Set<PrimitiveTypeName> LIST_ELEMENTS = EnumSet.of(PrimitiveTypeName.BOOLEAN,
+            PrimitiveTypeName.INT32, PrimitiveTypeName.INT64, PrimitiveTypeName.FLOAT, PrimitiveTypeName.DOUBLE,
+            PrimitiveTypeName.BINARY);
 
     private final GroupType scope;
     /** The member's manifest entry in the split layout; {@code null} in the packed layout. */
@@ -63,15 +79,18 @@ final class ColumnResolver {
     private List<LeftoverField> plan;
 
     /**
-     * A field of a row type that may become a leftover Param: a primitive, non-repeated field that is neither
-     * structural nor a unit column.
+     * A field of a row type that may become a leftover Param: a primitive, non-repeated field or a list of scalars
+     * that is neither structural nor a unit column.
      *
      * @param index      the field's index in the row type
-     * @param type       the field's type
+     * @param field      the field's name
+     * @param type       the field's type, or its element type when it is a list
+     * @param list       whether the field is a list of scalars
      * @param mapping    its {@link #mapping}, or {@code null}
-     * @param termMarker its {@link #termMarker} flag
+     * @param termMarker its {@link #termMarker} flag; always {@code false} for a list
      */
-    private record LeftoverField(int index, PrimitiveType type, ColumnMapping mapping, boolean termMarker) {
+    private record LeftoverField(int index, String field, PrimitiveType type, boolean list, ColumnMapping mapping,
+                                 boolean termMarker) {
     }
 
     private ColumnResolver(GroupType scope, Entry entry, Facet facet, String prefix, String member) {
@@ -398,10 +417,11 @@ final class ColumnResolver {
     // ---- leftovers --------------------------------------------------------------------------------------------
 
     /**
-     * The scope's unconsumed scalar cells as Params, in schema order (split layout only; empty for packed). Only
-     * primitive, non-repeated fields directly in the scope are visited, never groups or lists. Structural fields
-     * ({@link ColumnTable#structural}), {@code consumed} fields, null cells and cells of a type no Param value
-     * holds (INT96, FIXED_LEN_BYTE_ARRAY) are skipped. The others become:
+     * The scope's unconsumed scalar and scalar-list cells as Params, in schema order (split layout only; empty for
+     * packed). Only primitive, non-repeated fields and lists of scalars directly in the scope are visited, never
+     * structs or lists of structs. Structural fields ({@link ColumnTable#structural}), {@code consumed} fields, null
+     * cells and cells of a type no Param value holds (INT96, FIXED_LEN_BYTE_ARRAY, and lists of them) are skipped.
+     * The others become:
      * <ul>
      *   <li>a term-marker string: {@code Param(null, cell)}, the cell as accession;
      *   <li>a term-marker boolean: {@code Param(mapping name, mapping accession)}, only when TRUE;
@@ -409,8 +429,9 @@ final class ColumnResolver {
      *       reads it;
      *   <li>an unmapped cell: {@code Param(field, null, value)}.
      * </ul>
-     * Values are Long for integers, Double for floats, String or Boolean. The unit columns that the mappings of this
-     * scope's fields name are consumed too.
+     * Values are Long for integers, Double for floats, String or Boolean; a list cell's value is the compact JSON
+     * text of the list (numbers as numbers, strings quoted, null elements {@code null}), and a list column is never
+     * read as a term marker. The unit columns that the mappings of this scope's fields name are consumed too.
      */
     List<Param> leftovers(Group row, Set<String> consumed) {
         Objects.requireNonNull(row, "row");
@@ -422,8 +443,9 @@ final class ColumnResolver {
     }
 
     /**
-     * {@link #leftovers} in both layouts: in the packed layout too, the struct's unconsumed scalar cells by the same
-     * rules, mapped through {@link ColumnTable} (its pin-era fallback names), since there is no column_mapping.
+     * {@link #leftovers} in both layouts: in the packed layout too, the struct's unconsumed scalar and list cells by
+     * the same rules, mapped through {@link ColumnTable} (its pin-era fallback names), since there is no
+     * column_mapping.
      */
     List<Param> leftoversInBothLayouts(Group row, Set<String> consumed) {
         Objects.requireNonNull(row, "row");
@@ -435,7 +457,7 @@ final class ColumnResolver {
         List<Param> out = new ArrayList<>();
         for (LeftoverField f : plan(row.getType())) {
             // the plan's fields are in the row type, so ParquetGroups.has is the repetition count by index
-            if (row.getFieldRepetitionCount(f.index()) == 0 || consumed.contains(f.type().getName())) {
+            if (row.getFieldRepetitionCount(f.index()) == 0 || consumed.contains(f.field())) {
                 continue;
             }
             Param p = leftover(row, f);
@@ -448,8 +470,9 @@ final class ColumnResolver {
 
     /**
      * The leftover plan of rows of {@code type}, made on first use and again whenever a row has another type
-     * instance (such as a projection): its primitive, non-repeated fields in schema order, without the structural
-     * fields ({@link ColumnTable#structural}) and the unit columns ({@link #unitColumns}).
+     * instance (such as a projection): its primitive, non-repeated fields and its lists of {@link #LIST_ELEMENTS} in
+     * schema order, without the structural fields ({@link ColumnTable#structural}) and the unit columns
+     * ({@link #unitColumns}).
      */
     private List<LeftoverField> plan(GroupType type) {
         if (type == planType) {
@@ -461,12 +484,17 @@ final class ColumnResolver {
         for (int i = 0; i < type.getFieldCount(); i++) {
             Type t = type.getType(i);
             String field = t.getName();
-            if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED) || structural.contains(field)
+            if (t.isRepetition(Type.Repetition.REPEATED) || structural.contains(field)
                     || unitColumns.contains(field)) {
                 continue;
             }
+            PrimitiveType cell = t.isPrimitive() ? t.asPrimitiveType() : scalarElement(t.asGroupType());
+            if (cell == null) {
+                continue;
+            }
+            boolean list = !t.isPrimitive();
             ColumnMapping m = mapping(field).orElse(null);
-            fields.add(new LeftoverField(i, t.asPrimitiveType(), m, m != null && termMarker(field)));
+            fields.add(new LeftoverField(i, field, cell, list, m, !list && m != null && termMarker(field)));
         }
         planType = type;
         plan = fields;
@@ -475,8 +503,8 @@ final class ColumnResolver {
 
     private Param leftover(Group row, LeftoverField f) {
         PrimitiveType type = f.type();
-        String field = type.getName();
-        Object value = switch (type.getPrimitiveTypeName()) {
+        String field = f.field();
+        Object value = f.list() ? listJson(row.getGroup(f.index(), 0), type) : switch (type.getPrimitiveTypeName()) {
             case BOOLEAN -> booleanValue(row, field);
             case INT32, INT64 -> longValue(row, field);
             case FLOAT, DOUBLE -> doubleValue(row, field);
@@ -499,6 +527,62 @@ final class ColumnResolver {
             }
         }
         return new Param(m.name(), m.accession(), value, unitAt(row, m));
+    }
+
+    /**
+     * The element type of a list of scalars, 3-level ({@code list -> element}) or 2-level (a repeated primitive), when
+     * it is one of {@link #LIST_ELEMENTS}; else (a struct, a list of structs, other element types) {@code null}.
+     */
+    private static PrimitiveType scalarElement(GroupType type) {
+        if (type.getFieldCount() != 1 || !type.getType(0).isRepetition(Type.Repetition.REPEATED)) {
+            return null;
+        }
+        Type slot = type.getType(0);
+        if (!slot.isPrimitive()) {
+            GroupType repeated = slot.asGroupType();
+            if (repeated.getFieldCount() != 1 || !repeated.getType(0).isPrimitive()) {
+                return null;
+            }
+            slot = repeated.getType(0);
+        }
+        PrimitiveType element = slot.asPrimitiveType();
+        return LIST_ELEMENTS.contains(element.getPrimitiveTypeName()) ? element : null;
+    }
+
+    /**
+     * The compact JSON text of the list cell {@code wrapper} of elements of {@code type} ({@link #scalarElement}):
+     * integers (unsigned ones not sign-extended), floats and booleans as JSON numbers and booleans, strings quoted,
+     * null elements {@code null}.
+     */
+    private static String listJson(Group wrapper, PrimitiveType type) {
+        ArrayNode out = JsonNodeFactory.instance.arrayNode();
+        boolean twoLevel = wrapper.getType().getType(0).isPrimitive();
+        int n = wrapper.getFieldRepetitionCount(0);
+        for (int i = 0; i < n; i++) {
+            if (twoLevel) {
+                out.add(element(wrapper, i, type));
+            } else {
+                Group slot = wrapper.getGroup(0, i);
+                out.add(slot.getFieldRepetitionCount(0) == 0 ? NullNode.getInstance() : element(slot, 0, type));
+            }
+        }
+        return out.toString();
+    }
+
+    /** Value {@code i} of the first field of {@code g}, of {@code type} (one of {@link #LIST_ELEMENTS}), as JSON. */
+    private static JsonNode element(Group g, int i, PrimitiveType type) {
+        return switch (type.getPrimitiveTypeName()) {
+            case BOOLEAN -> BooleanNode.valueOf(g.getBoolean(0, i));
+            case INT32 -> unsigned(type)
+                    ? LongNode.valueOf(Integer.toUnsignedLong(g.getInteger(0, i)))
+                    : IntNode.valueOf(g.getInteger(0, i));
+            case INT64 -> unsigned(type)
+                    ? BigIntegerNode.valueOf(new BigInteger(Long.toUnsignedString(g.getLong(0, i))))
+                    : LongNode.valueOf(g.getLong(0, i));
+            case FLOAT -> FloatNode.valueOf(g.getFloat(0, i));
+            case DOUBLE -> DoubleNode.valueOf(g.getDouble(0, i));
+            default -> TextNode.valueOf(g.getString(0, i));
+        };
     }
 
     /**
