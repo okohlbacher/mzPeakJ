@@ -89,7 +89,7 @@ class ModelAssertRulesTest {
         compared.addAll(SPECTRUM_DERIVED_FIELDS);
 
         assertThat(ModelAssert.SPECTRUM_COMPONENTS.keySet()).containsExactly("description", "mz", "intensity",
-                "peaks", "arrays", "peakArrays");
+                "peaks", "arrays", "peakArrays", "intensityUnit", "peakIntensityUnit");
         assertThat(fields).isEqualTo(compared);
     }
 

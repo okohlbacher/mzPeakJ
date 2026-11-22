@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,6 +47,11 @@ import java.util.function.DoubleUnaryOperator;
  * Null-marked m/z is resolved by {@link NullFill}; a spectrum whose null m/z cannot be filled throws only when it
  * is requested, not when it is decoded alongside another.
  *
+ * <p><b>Intensity unit</b> (R5): the unit of the plan entry that supplied a spectrum's intensities, the point
+ * intensity column or the chunk row's intensity, SLOF or PIC column ({@link ChunkRowDecoder.Row#intensityField()}).
+ * It is null when no entry supplied a value, when the entries that did differ in unit (with a WARNING), and for an
+ * {@link ArrayIndex.Source#INFERRED INFERRED} plan, whose entries carry no unit.
+ *
  * <p><b>Extra arrays:</b> every other array the plan lists ({@link SignalPlan#extras()}), such as diaPASEF's ion
  * mobility, is read parallel to the m/z, with null cells as NaN. A spectrum whose cells of an extra are all null
  * (NaN) gets no array for it, as does one whose only other cells sit at null-marked m/z that are dropped
@@ -66,10 +72,16 @@ final class SpectrumArrayStore implements AutoCloseable {
     /**
      * The decoded arrays of one spectrum.
      *
-     * @param extras the extra arrays, each parallel to {@code mz}, keyed as in {@link SignalPlan#extras()} and in
-     *               plan order; empty when the member has none
+     * @param extras        the extra arrays, each parallel to {@code mz}, keyed as in {@link SignalPlan#extras()}
+     *                      and in plan order; empty when the member has none
+     * @param intensityUnit the unit of the intensity column that supplied {@code intensity}, or null (see the class
+     *                      comment)
      */
-    record Arrays(double[] mz, double[] intensity, Map<String, double[]> extras) {
+    record Arrays(double[] mz, double[] intensity, Map<String, double[]> extras, String intensityUnit) {
+
+        Arrays(double[] mz, double[] intensity, Map<String, double[]> extras) {
+            this(mz, intensity, extras, null);
+        }
     }
 
     private static final System.Logger LOG = System.getLogger(SpectrumArrayStore.class.getName());
@@ -309,7 +321,9 @@ final class SpectrumArrayStore implements AutoCloseable {
         /** Point layout: the m/z values column, or null when the plan names none. */
         private final String mzField;
         /** Point layout: the value-bearing intensity columns, in index order; a row's first non-null one is read. */
-        private final List<String> intensityFields;
+        private final List<Column> intensityColumns;
+        /** The plan's intensity columns by field, for the unit of the column a chunk row's intensities came from. */
+        private final Map<String, Column> intensityByField = new HashMap<>();
         /** The member name in errors. */
         private final String member;
         /** Chunk layout: the row decoder; null for the point layout. */
@@ -328,6 +342,10 @@ final class SpectrumArrayStore implements AutoCloseable {
         private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
         /** The current spectrum's extras not dropped so far, in plan order. */
         private Map<String, DoubleArrayBuilder> extras;
+        /** The units of the current spectrum's intensity columns that supplied values, in first-use order. */
+        private Set<String> units = new LinkedHashSet<>();
+        /** The column that last supplied an intensity of the current spectrum. */
+        private Column lastSupplier;
 
         Accumulator(Map<Long, Arrays> result, Map<Long, MzPeakException> errors, boolean reconstructProfile, Map<Long, double[]> deltaModels,
                     SignalPlan plan, ChunkRowDecoder chunks, ExtraDrops drops, String member,
@@ -339,10 +357,12 @@ final class SpectrumArrayStore implements AutoCloseable {
             this.prefix = plan.prefix();
             this.indexField = plan.indexField();
             this.mzField = plan.axis().values() == null ? null : plan.axis().values().field();
-            this.intensityFields = plan.intensities().stream()
+            this.intensityColumns = plan.intensities().stream()
                     .filter(c -> c.format().valueBearing())
-                    .map(Column::field)
                     .toList();
+            for (Column column : plan.intensities()) {
+                intensityByField.put(column.field(), column);
+            }
             this.member = member;
             this.chunks = chunks;
             plan.extras().forEach((key, extra) -> extraFields.put(key,
@@ -377,6 +397,9 @@ final class SpectrumArrayStore implements AutoCloseable {
                 return;
             }
             ChunkRowDecoder.Row decoded = chunks.decode(row, si);
+            if (decoded.intensityField() != null) {
+                supplied(intensityByField.get(decoded.intensityField()));
+            }
             mzRows.add(decoded.axis());
             for (double v : decoded.intensity()) {
                 intensity.add(v);
@@ -396,7 +419,7 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
 
         private void acceptPoint(Group point, long si) {
-            if (mzField == null || intensityFields.isEmpty()) {
+            if (mzField == null || intensityColumns.isEmpty()) {
                 throw new MzPeakException(member + ": the signal plan names no "
                         + (mzField == null ? "m/z values" : "value-bearing intensity")
                         + " column, so the point rows of spectrum_index " + si + " cannot be read");
@@ -421,15 +444,42 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
         }
 
-        /** The first non-null value among the value-bearing intensity columns, in index order, or null. */
+        /**
+         * The first non-null value among the value-bearing intensity columns, in index order, or null; the column
+         * that has it is noted as a supplier of the current spectrum.
+         */
         private Double pointIntensity(Group point) {
-            for (String field : intensityFields) {
-                Double v = ParquetGroups.optDouble(point, field);
+            for (Column column : intensityColumns) {
+                Double v = ParquetGroups.optDouble(point, column.field());
                 if (v != null) {
+                    supplied(column);
                     return v;
                 }
             }
             return null;
+        }
+
+        /** Notes that {@code column} supplied intensities of the current spectrum. */
+        private void supplied(Column column) {
+            if (column != lastSupplier) {
+                lastSupplier = column;
+                units.add(column.unit());
+            }
+        }
+
+        /** The intensity unit of the current spectrum (see the class comment). */
+        private String intensityUnit() {
+            if (units.isEmpty()) {
+                return null;
+            }
+            if (units.size() > 1) {
+                Set<String> differing = units;
+                long si = current;
+                LOG.log(Level.WARNING, () -> member + ": the intensities of spectrum_index " + si + " come from"
+                        + " columns of different units " + differing + "; the intensity unit is left unset");
+                return null;
+            }
+            return units.iterator().next();
         }
 
         private long requireIndex(Group g) {
@@ -474,7 +524,7 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
             boolean repeated = result.containsKey(current) || errors.containsKey(current);
             if (arrays != null) {
-                result.put(current, arrays);
+                result.put(current, new Arrays(arrays.mz(), arrays.intensity(), arrays.extras(), intensityUnit()));
             } else {
                 errors.put(current, error);
             }
@@ -486,6 +536,8 @@ final class SpectrumArrayStore implements AutoCloseable {
             mzRows = new ArrayList<>();
             intensity = new DoubleArrayBuilder();
             extras = newExtras();
+            units = new LinkedHashSet<>();
+            lastSupplier = null;
         }
 
         /**

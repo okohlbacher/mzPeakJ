@@ -123,9 +123,10 @@ public final class ModelAssert {
      *
      * <p>In the two mixed modes (one model from {@code MzMLReader}, the other from {@link MzPeakReader}), which
      * differ only in which side is the mzPeak one: {@code numberOfDataPoints} and {@code numberOfPeaks} are not
-     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12). The peak lists ({@code peaks} and
-     * {@code peakArrays}): a non-empty {@code peaks()} or {@code peakArrays()} on the mzML side, which
-     * {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
+     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12), nor are a spectrum's
+     * {@code intensityUnit} and {@code peakIntensityUnit} ({@code MzMLReader} reads no spectrum intensity unit). The
+     * peak lists ({@code peaks} and {@code peakArrays}): a non-empty {@code peaks()} or {@code peakArrays()} on the
+     * mzML side, which {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
      * {@code spectrum[i].peakArrays} that {@link ModelAssert#A_1} does not hide, whatever the mzPeak side has (MJ-4);
      * the mzPeak side's peaks that are a row copy of its arrays ({@link ModelAssert#isRowCopy}, design 5.4, the reader
      * invariant for CENTROID spectra) are skipped with their peak arrays, and peaks that are not are one difference at
@@ -192,6 +193,8 @@ public final class ModelAssert {
         components.put("peaks", Spectrum::peaks);
         components.put("arrays", Spectrum::arrays);
         components.put("peakArrays", Spectrum::peakArrays);
+        components.put("intensityUnit", Spectrum::intensityUnit);
+        components.put("peakIntensityUnit", Spectrum::peakIntensityUnit);
         return Collections.unmodifiableMap(components);
     }
 
@@ -203,6 +206,8 @@ public final class ModelAssert {
             entry("Spectrum.peaks", Rule.list(Rule.RECORD)),
             entry("Spectrum.arrays", Rule.MAP_OF_ARRAYS),
             entry("Spectrum.peakArrays", Rule.MAP_OF_ARRAYS),
+            entry("Spectrum.intensityUnit", Rule.EXACT),
+            entry("Spectrum.peakIntensityUnit", Rule.EXACT),
 
             entry("SpectrumDescription.index", Rule.EXACT),
             entry("SpectrumDescription.id", Rule.EXACT),
@@ -325,6 +330,9 @@ public final class ModelAssert {
     /** The components mixed mode does not compare. */
     private static final Set<String> MIXED_UNCOMPARED =
             Set.of("SpectrumDescription.numberOfDataPoints", "SpectrumDescription.numberOfPeaks");
+
+    /** The {@link #SPECTRUM_COMPONENTS} mixed mode does not compare: MzMLReader reads no spectrum intensity unit. */
+    private static final Set<String> MIXED_UNCOMPARED_SPECTRUM = Set.of("intensityUnit", "peakIntensityUnit");
 
     /** The rule key of a record class: its simple name, under its enclosing classes ({@code FileMetadata.Contact}). */
     static String key(Class<?> type) {
@@ -577,6 +585,9 @@ public final class ModelAssert {
             for (Map.Entry<String, Function<Spectrum, Object>> c : SPECTRUM_COMPONENTS.entrySet()) {
                 String name = c.getKey();
                 Rule rule = rule("Spectrum." + name);
+                if (mode != Mode.STRICT && MIXED_UNCOMPARED_SPECTRUM.contains(name)) {
+                    continue;
+                }
                 if (mode != Mode.STRICT && (name.equals("peaks") || name.equals("peakArrays"))) {
                     mixedPeakList(path, name, rule, c.getValue(), expected, actual);
                     continue;
@@ -866,8 +877,8 @@ public final class ModelAssert {
 
     // ---- exclusions (design 6) ------------------------------------------------------------------------------------
 
-    private static final Pattern PEAK_LIST = Pattern.compile("spectrum\\[\\d+]\\.(peaks|peakArrays|numberOfPeaks)"
-            + "([.\\[].*)?");
+    private static final Pattern PEAK_LIST = Pattern.compile(
+            "spectrum\\[\\d+]\\.(peaks|peakArrays|peakIntensityUnit|numberOfPeaks)([.\\[].*)?");
     private static final Pattern RUN_ID = Pattern.compile("fileMetadata\\.run\\.id");
     private static final Pattern NO_COMBINATION =
             Pattern.compile("(spectrum|wavelengthSpectrum)\\[\\d+]\\.parameters\\[MS:1000795]");
@@ -893,9 +904,9 @@ public final class ModelAssert {
 
     /** A-1: peak lists that are not a row copy of the arrays (design 5.4). */
     public static final Exclusion A_1 = new Exclusion("A_1",
-            "A-1: the peak list (peaks, peakArrays and numberOfPeaks) of a spectrum whose peaks on one side are not a"
-                    + " row copy of its arrays (design 5.4) and on the other side are none or a row copy; in mixed"
-                    + " mode the one difference 'not a row copy', never one in the mzML side's own peak list: current"
+            "A-1: the peak list (peaks, peakArrays, peakIntensityUnit and numberOfPeaks) of a spectrum whose peaks on"
+                    + " one side are not a row copy of its arrays (design 5.4) and on the other side are none or a row"
+                    + " copy; in mixed mode the one difference 'not a row copy', never one in the mzML side's own peak list: current"
                     + " and legacy small.chunked, 14 spectra each",
             d -> PEAK_LIST.matcher(d.path()).matches() && !d.detail().startsWith(MZML_SIDE)
                     && d.expectedRoot() instanceof Spectrum e && d.actualRoot() instanceof Spectrum a

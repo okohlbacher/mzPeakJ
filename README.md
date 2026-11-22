@@ -210,6 +210,8 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     Map<String, double[]> arrays = s.arrays();          // parallel to mz(), e.g. MS:1003006 ion mobility
     Map<String, double[]> peakArrays = s.peakArrays();  // parallel to the stored peaks, by CentroidPeak.index()
     Optional<double[]> ionMobility = s.ionMobility();   // the first ion mobility array, if any
+    String unit = s.intensityUnit();                    // unit of intensity(), e.g. MS:1000131; null if undeclared
+    String peakUnit = s.peakIntensityUnit();            // unit of the peaks' intensities, likewise
     tic.ifPresent(c -> System.out.println(
             c.intensityUnit() + " " + c.arrays().keySet()));   // Chromatogram.arrays(): e.g. MS:1000131 [ms level]
 

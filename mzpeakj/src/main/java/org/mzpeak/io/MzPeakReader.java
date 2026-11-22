@@ -522,22 +522,27 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
         double[] mz;
         double[] intensity;
+        String intensityUnit;
         Map<String, double[]> arrays;
         if (profile != null) {
             mz = profile.mz();
             intensity = profile.intensity();
+            intensityUnit = profile.intensityUnit();
             arrays = profile.extras();
         } else if (centroids != null) {
             mz = centroids.mz();
             intensity = centroids.intensity();
+            intensityUnit = centroids.intensityUnit();
             arrays = centroids.extras();
         } else {
             mz = new double[0];
             intensity = new double[0];
+            intensityUnit = null;
             arrays = Map.of();
         }
         return new Spectrum(description, mz, intensity, peakList, arrays,
-                centroids == null ? Map.of() : centroids.extras());
+                centroids == null ? Map.of() : centroids.extras(), intensityUnit,
+                centroids == null ? null : centroids.intensityUnit());
     }
 
     // ---- range queries ----------------------------------------------------------------------------
