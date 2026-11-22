@@ -46,12 +46,13 @@ import java.util.function.Supplier;
  * writer refuses chromatograms of different time units; the reader refuses a time unit that
  * {@link Chromatogram#withTimeUnit} cannot convert, so every chromatogram converts. It counts what the mzPeak read
  * changes (design 6.1): extra arrays of spectra and chromatograms without a value other than NaN, empty ones included,
- * which it drops (B-26); spectra with a NaN m/z, which it interpolates (B-34); non-finite values of file-level params,
- * which come back as the Strings {@code Infinity}, {@code -Infinity} or {@code NaN} (B-35); chromatograms without
- * points, whose intensity unit it drops (B-36); and what the mzPeak writer adds (B-24): a spectrum type to spectra
- * without one, the five summary params to spectra with points and none of them, a scan to spectra without scans,
- * and a run default source file when the run names none. A failure closes the session, which removes the target and
- * the temp files it created.
+ * which it drops (B-26); non-finite values of file-level params, which come back as the Strings {@code Infinity},
+ * {@code -Infinity} or {@code NaN} (B-35); chromatograms without points, whose intensity unit it drops (B-36); and what
+ * the mzPeak writer adds (B-24): a spectrum type to spectra without one, the five summary params to spectra with
+ * points and none of them, a scan to spectra without scans, and a run default source file when the run names none. A
+ * NaN m/z, time, wavelength or intensity fails the conversion with the writer's message, which names the spectrum,
+ * chromatogram or wavelength spectrum and the position (W10). A failure closes the session, which removes the target
+ * and the temp files it created.
  *
  * <p>{@link #toMzML} refuses an existing target before it opens the input (Q66), then reads the mzPeak through
  * {@link MzPeakReader} with its default options (profile points reconstructed, both signal members) and writes it
@@ -80,7 +81,6 @@ public final class MzMLConversion {
     static final String B_24_SOURCE = "B-24 run defaultSourceFileRef added by the mzPeak writer (the first source"
             + " file, else a stub source file)";
     static final String B_26 = "B-26 extra arrays without a value other than NaN, which the mzPeak read drops";
-    static final String B_34 = "B-34 spectra with a NaN m/z, which the mzPeak read interpolates";
     static final String B_35 = "B-35 non-finite file-level param values, which the mzPeak read gives as the Strings"
             + " Infinity, -Infinity or NaN";
     static final String B_36 = "B-36 chromatograms without points, whose intensity unit the mzPeak read drops";
@@ -221,7 +221,6 @@ public final class MzMLConversion {
 
         @Override
         public void spectrum(Spectrum spectrum) {
-            losses.note(B_34, Arrays.stream(spectrum.mz()).anyMatch(Double::isNaN) ? 1 : 0);
             losses.note(B_26, nanOnly(spectrum.arrays()));
             SpectrumDescription d = spectrum.description();
             losses.note(B_24_TYPE, has(d.parameters(), MzMLTerms.SPECTRUM_TYPES.keySet()) ? 0 : 1);

@@ -29,9 +29,10 @@ import static org.mzpeak.io.ParquetOutput.UINT64;
  * of a single value), m/z encoded with Numpress linear and intensity with Numpress SLOF or PIC, each as a
  * {@code list<uint8>} byte list. A file has the column of its own intensity encoding only, and every row an empty
  * {@code mz_chunk_values} list. The plan's extra columns are {@code list<double>} chunk secondary columns, each sliced
- * with the chunk, and null in the rows of a spectrum that has no such array. {@code mz_chunk_start} and
- * {@code mz_chunk_end} are the first and last m/z the chunk's linear payload decodes to, both inclusive, so they bound
- * the values a reader gets rather than the input m/z Numpress rounds (W9). Each file's footer holds the array index of its columns and the counts ({@link ParquetOutput.SignalFile}).
+ * with the chunk, a NaN value as a null element (W10), and null in the rows of a spectrum that has no such array.
+ * {@code mz_chunk_start} and {@code mz_chunk_end} are the first and last m/z the chunk's linear payload decodes to,
+ * both inclusive, so they bound the values a reader gets rather than the input m/z Numpress rounds (W9). Each file's
+ * footer holds the array index of its columns and the counts ({@link ParquetOutput.SignalFile}).
  */
 final class NumpressSignalWriter {
 
@@ -237,12 +238,16 @@ final class NumpressSignalWriter {
                 inBytesWrapper.addGroup("list").add("item", inBuf[i] & 0xFF);
             }
 
-            // Each extra array's slice of this chunk, as plain doubles (null when the spectrum has none)
+            // Each extra array's slice of this chunk, as plain doubles (null when the spectrum has none), a NaN as a
+            // null element: parquet-java writes no column index for a page holding a NaN (W10)
             for (int k = 0; k < extraValues.length; k++) {
                 if (extraValues[k] != null) {
                     Group values = chunk.addGroup(extras.get(k).column());
                     for (int i = pos; i < end; i++) {
-                        values.addGroup("list").add("item", extraValues[k][i]);
+                        Group element = values.addGroup("list");
+                        if (!Double.isNaN(extraValues[k][i])) {
+                            element.add("item", extraValues[k][i]);
+                        }
                     }
                 }
             }

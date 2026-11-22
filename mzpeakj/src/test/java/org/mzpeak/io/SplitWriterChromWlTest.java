@@ -321,8 +321,9 @@ class SplitWriterChromWlTest {
     }
 
     /**
-     * Absent values stay absent: a chromatogram without id or type, a wavelength spectrum without id, time or lambda
-     * max, and a NaN lambda max read back as given; a scan of a spectrum without time has no start time.
+     * Absent values stay absent: a chromatogram without id or type and a wavelength spectrum without id, time or lambda
+     * max read back as given, and a NaN lambda max, written as null (W10), reads back absent; a scan of a spectrum
+     * without time has no start time.
      */
     @Test
     void absentValuesRoundTrip(@TempDir Path tmp) {
@@ -359,9 +360,9 @@ class SplitWriterChromWlTest {
             }
             List<WavelengthSpectrum> wavelengthBack = reader.wavelengthSpectra();
             assertThat(wavelengthBack).hasSize(2);
-            for (int i = 0; i < wavelengthBack.size(); i++) {
-                assertWavelengthSpectrumEqual(wavelengthSpectra.get(i), wavelengthBack.get(i));
-            }
+            assertWavelengthSpectrumEqual(wavelengthSpectra.get(0), wavelengthBack.get(0));
+            assertWavelengthSpectrumEqual(new WavelengthSpectrum(1, "w1", 0.5, null, new double[] {300.0},
+                    new double[] {1.0}), wavelengthBack.get(1));
         }
     }
 

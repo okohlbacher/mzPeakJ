@@ -131,7 +131,7 @@ public final class MzPeakWriter {
      * one; the packed layout leaves the id out.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
      * intensities and extra arrays with it, and a WARNING is logged for that entity (the caller's arrays are not
-     * modified). The sort orders the rows by {@link Double#compare}, so rows with a NaN move to the end.
+     * modified). The sort orders the rows by {@link Double#compare}, so -Infinity comes first and +Infinity last.
      * A CENTROID spectrum whose arrays are its peak list, peak arrays included, is written to spectra_peaks only,
      * unless one of its m/z is not finite: then its arrays go to spectra_data and its peak list to spectra_peaks, since
      * spectra_peaks would read such a row back as an invented peak.
@@ -164,6 +164,11 @@ public final class MzPeakWriter {
      * its key, whatever the row order. The typical violation is a spectrum with several precursors written without
      * its parent spectra; writing the parents as well avoids it. The selected ions of a spectrum are written in the
      * order of their precursor's precursor_index, null first, which the Rust reference reader also needs.
+     * No m/z, chromatogram time, wavelength or intensity (of arrays and peak lists) may be NaN, in any encoding:
+     * parquet-java writes no column index for a page holding a NaN, and the spec requires a page index for every
+     * column. A NaN in an extra array, and a NaN optional metadata double (an injection time, a scan window limit, an
+     * isolation window value, a selected-ion m/z or intensity, a lambda max, a Param value), is written as null; an
+     * extra array cell reads back as NaN, the others as absent.
      * With {@link SignalEncoding#NUMPRESS}, every m/z and intensity written must be in the range that encoding
      * documents.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
@@ -428,8 +433,7 @@ public final class MzPeakWriter {
          * m/z up to 21474.83 always do. Intensities must be in the range of the {@link NumpressIntensityEncoding}
          * (finite and at least 0; with PIC, rounding to at most 2147483647). A write with another value throws
          * {@link MzPeakException} naming the spectrum index, the array and the value before anything is written;
-         * {@link #POINT} writes such values (a NaN m/z reads back as a null of the point layout does: filled as part of
-         * a null pair or at an end of the spectrum, else rejected as an unpaired null).
+         * {@link #POINT} writes such values, but for a NaN, which no encoding writes.
          */
         NUMPRESS
     }

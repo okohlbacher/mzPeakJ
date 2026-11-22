@@ -53,8 +53,9 @@ import java.util.regex.Pattern;
  * its primary one and the selected ions other than the primary precursor's first (one warning), the Params of
  * wavelength spectra (another), and the polarities, data processing references, Params and precursors of
  * chromatograms (a third). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
- * scan settings without an id, which get one. With {@link SignalEncoding#NUMPRESS}, a value the Numpress codecs
- * cannot encode is refused as a contract violation.
+ * scan settings without an id, which get one. A NaN in an axis (m/z, chromatogram time, wavelength) or an intensity
+ * is refused as a contract violation in every encoding ({@link #requireNoNaN}), and with
+ * {@link SignalEncoding#NUMPRESS} so is a value the Numpress codecs cannot encode.
  *
  * <p>A {@link MzPeakWriter.Session} is planned one spectrum at a time ({@link #sessionSignal}) with the same checks,
  * its spectrum signal files get the extra columns of the keys it is opened with ({@link #spectrumExtras}), and its
@@ -249,7 +250,7 @@ final class WritePlanner {
      *                         declared, when a precursor_index that the layout writes is negative, or when it breaks
      *                         another rule of {@link #plan}: in the split layout, precursors that share a
      *                         precursor_index while a later one carries selected ions; peak indices that are no
-     *                         position of its peak arrays; a value Numpress cannot encode
+     *                         position of its peak arrays; a NaN m/z or intensity; a value Numpress cannot encode
      */
     static SpectrumSignal sessionSignal(Spectrum s, Set<String> declared, Options options, WriteReport report,
                                         int[] packedDrops) {
@@ -302,9 +303,20 @@ final class WritePlanner {
     /**
      * The signal of {@code s}, whose {@code entry} says where its rows go and how it is written: its main axis in
      * the order it is written, whose re-sort gets a warning in {@code report}, after the checks that its peak
-     * indices are positions of its peak arrays and, with Numpress, that its values can be encoded.
+     * indices are positions of its peak arrays, that its m/z and intensities, of its peak list too, are not NaN, and,
+     * with Numpress, that its values can be encoded.
      */
     private static SpectrumSignal signal(Spectrum s, SpectrumEntry entry, Options options, WriteReport report) {
+        String owner = "spectrum " + s.index();
+        requireNoNaN(owner, "m/z", s.mz());
+        requireNoNaN(owner, "intensity", s.intensity());
+        List<CentroidPeak> peaks = s.peaks();
+        for (int i = 0; i < peaks.size(); i++) {
+            if (Double.isNaN(peaks.get(i).intensity())) {
+                throw nanValue(owner, "the intensity of the peak at position " + i + " (m/z " + peaks.get(i).mz()
+                        + ")");
+            }
+        }
         SpectrumSignal signal = new SpectrumSignal(s, entry,
                 mainAxisOrder("spectrum", s.index(), s.mz(), s.intensity(), report));
         if (entry.peaks() && !entry.peaksFromArrays() && !s.peakArrays().isEmpty()) {
@@ -739,6 +751,30 @@ final class WritePlanner {
         }
     }
 
+    // No NaN in a signal column (D13-14, W10). Spec conformance.md l.36: a conformant writer writes a page index for
+    // every column, and parquet-java 1.18.2 writes no column index for a page that holds a NaN. A NaN extra cell is
+    // written as null, which the reader reads as NaN again; an axis or intensity value has no such form (a null m/z
+    // is a null-marked point, a null intensity reads as 0), so a NaN there is refused before anything is written,
+    // in every encoding.
+
+    /**
+     * Throws {@link MzPeakException} naming {@code owner}, the {@code array} and the position when a value of
+     * {@code values} is NaN.
+     */
+    private static void requireNoNaN(String owner, String array, double[] values) {
+        for (int i = 0; i < values.length; i++) {
+            if (Double.isNaN(values[i])) {
+                throw nanValue(owner, "the " + array + " at position " + i);
+            }
+        }
+    }
+
+    private static MzPeakException nanValue(String owner, String what) {
+        return new MzPeakException(owner + ": " + what + " is NaN; mzPeak writes no NaN m/z, time, wavelength or"
+                + " intensity, since a Parquet page holding a NaN gets no column index (conformance.md requires a"
+                + " page index for every column)");
+    }
+
     // Renumbering (design §11.5, WR-8). Spec spectra.md:91-93 and chromatograms.md:40: the indices of each entity
     // run 0..n-1, and a spectrum's precursor_index names a spectrum of the file. The Rust reader indexes its count
     // vectors by spectrum index, and a filtered subset (ExtractSpectra) is sparse, so every entity is written as
@@ -945,7 +981,8 @@ final class WritePlanner {
     /**
      * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
      * unique within each kind, the chromatograms all of the time unit of the first ({@link #requireSameTimeUnit}),
-     * and in the {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative.
+     * no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the {@link MetadataLayout#SPLIT} layout
+     * every chromatogram precursor_index non-negative.
      */
     private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                        MetadataLayout layout) {
@@ -957,6 +994,8 @@ final class WritePlanner {
             List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
             addPrecursorParams(c.precursors(), lists);
             requireNamedParams(owner("chromatogram", c.index(), c.id()), lists);
+            requireNoNaN("chromatogram " + c.index(), "time", c.time());
+            requireNoNaN("chromatogram " + c.index(), "intensity", c.intensity());
             if (layout == MetadataLayout.SPLIT) {
                 for (Precursor p : c.precursors()) {
                     requireNonNegativePrecursorIndex(p);
@@ -968,6 +1007,8 @@ final class WritePlanner {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
             requireNamedParams(owner("wavelength spectrum", w.index(), w.id()), List.of(w.parameters()));
+            requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
+            requireNoNaN("wavelength spectrum " + w.index(), "intensity", w.intensity());
         }
     }
 

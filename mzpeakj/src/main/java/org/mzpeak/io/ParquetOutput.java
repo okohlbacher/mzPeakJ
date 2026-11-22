@@ -243,7 +243,8 @@ final class ParquetOutput {
 
     /**
      * Write a {@code List<Param>} into a {@code parameters: large_list<item: struct<value-union,...>>} group.
-     * Symmetric to {@link org.mzpeak.io.parquet.ParquetGroups#readParams}.
+     * Symmetric to {@link org.mzpeak.io.parquet.ParquetGroups#readParams}, but for a NaN value, which is written as
+     * no value, since parquet-java writes no column index for a page holding a NaN (W10).
      */
     static void writeParams(Group owner, List<Param> params) {
         if (params.isEmpty()) {
@@ -257,7 +258,7 @@ final class ParquetOutput {
             Group valueGroup = item.addGroup("value");
             Object v = p.value();
             if (v instanceof Long l)    { valueGroup.add("integer", l); }
-            else if (v instanceof Double d) { valueGroup.add("float", d); }
+            else if (v instanceof Double d) { if (!d.isNaN()) { valueGroup.add("float", d); } }
             else if (v instanceof String s) { valueGroup.add("string", s); }
             else if (v instanceof Boolean b) { valueGroup.add("boolean", b); }
             if (p.accession() != null) { item.add("accession", p.accession()); }

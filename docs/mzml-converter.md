@@ -210,7 +210,7 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 
 | mzML | Model | Notes |
 |---|---|---|
-| MS:1000514 m/z array | `Spectrum.mz()` | in MS:1000040 or without unit, else rejected; a NaN m/z is interpolated by the mzPeak read (B-34) |
+| MS:1000514 m/z array | `Spectrum.mz()` | in MS:1000040 or without unit, else rejected; a NaN m/z fails the conversion (limit below) |
 | MS:1000515 intensity array | `intensity()` | spectra: in MS:1000131 or without unit, else rejected |
 | MS:1000617 wavelength, MS:1000595 time | the axis of a wavelength spectrum or chromatogram | wavelength in nm; time see chromatograms |
 | any other array type | `arrays()` keyed by the CURIE | see the units below |
@@ -291,6 +291,13 @@ L-9 the whole mzML document is held in memory before it is written: about 0.75 b
 ```
 
 L-7 (gzip input read without streaming) was withdrawn: jmzML 1.7.11 cannot read gzip input at all, so it is rejected.
+
+One limit is the mzPeak writer's, not jmzML's, so no warning line announces it: an mzML spectrum, chromatogram or
+wavelength spectrum with a NaN in its m/z, time, wavelength or intensity array fails the conversion (mzML → mzPeak)
+with the writer's message, which names the entity's index and the position, for example `spectrum 0: the intensity at
+position 1 is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, ...`, and leaves no target. parquet-java
+writes no column index for a page holding a NaN, and the spec requires a page index for every column (W10, D13-14). A
+NaN in any other array is written as null and reads back as NaN; an array of NaN only is dropped (B-26).
 Every write through jmzML's `MzMLMarshaller` also sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`; it changes no output.
 
@@ -336,7 +343,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-31 | 64-bit integer array values above 2^53, rounded to the nearest double | `MzMLReader` |
 | B-32 | ids renamed on the mzML write to keep them unique (a header or CV id equal to a written instrument configuration id) | `MzMLWriter`, as A-21 or A-24 |
 | B-33 | spectrum references whose kind (local or external) changes on the way back | `MzMLReader` |
-| B-34 | NaN m/z values, which the mzPeak read interpolates | `MzMLConversion` |
+| B-34 | withdrawn: a NaN m/z fails the conversion since 0.13.0 ([limits](#limits)) | — |
 | B-35 | non-finite file-level param values, which come back as the Strings `Infinity`, `-Infinity` or `NaN` | `MzMLConversion` |
 | B-36 | the intensity unit of a chromatogram without points | `MzMLConversion` |
 | B-37 | elements the schema does not allow where they stand: part of limit L-6 | not counted |

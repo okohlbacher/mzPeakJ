@@ -25,9 +25,9 @@ import static org.mzpeak.io.ParquetOutput.UINT64;
  * Writes the point layout of {@link MzPeakWriter}: one row per point, carrying the entity index, the axis value
  * and the intensity, for spectra (spectra_data and spectra_peaks, appended one spectrum at a time), chromatograms and
  * wavelength spectra; a spectrum or chromatogram row also carries the plan's extra columns, null where the entity has
- * no such array. A chromatogram row holds its intensity in the plan's intensity column of the chromatogram's unit and
- * null in the others. Each file's footer holds the array index of its columns and the counts
- * ({@link ParquetOutput.SignalFile}).
+ * no such array and where its value is NaN (W10). A chromatogram row holds its intensity in the plan's intensity
+ * column of the chromatogram's unit and null in the others. Each file's footer holds the array index of its columns
+ * and the counts ({@link ParquetOutput.SignalFile}).
  */
 final class PointSignalWriter {
 
@@ -171,7 +171,9 @@ final class PointSignalWriter {
     /**
      * One row: the entity {@code index}, the axis value {@code x}, the {@code intensity} in {@code intensityField},
      * and the point {@code row} of {@code extraValues}, each array the values of the extra column at its position of
-     * {@code extras}, written where the array is not null. Every other column of the row is null.
+     * {@code extras}, written where the array is not null and the value is not NaN: a NaN cell is written as null,
+     * which reads back as NaN, since parquet-java writes no column index for a page holding a NaN (W10). The axis
+     * value and the intensity are never NaN ({@link WritePlanner} refuses it). Every other column of the row is null.
      */
     private static void writePoint(SignalFile file, String indexField, long index, String xField, double x,
                                    String intensityField, double intensity, List<ExtraColumn> extras,
@@ -182,7 +184,7 @@ final class PointSignalWriter {
         point.add(xField, x);
         point.add(intensityField, intensity);
         for (int k = 0; k < extraValues.length; k++) {
-            if (extraValues[k] != null) {
+            if (extraValues[k] != null && !Double.isNaN(extraValues[k][row])) {
                 point.add(extras.get(k).column(), extraValues[k][row]);
             }
         }

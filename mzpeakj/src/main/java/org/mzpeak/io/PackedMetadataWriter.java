@@ -239,9 +239,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         if (se == null) {
             return;
         }
-        if (se.injectionTime() != null) {
-            scan.add("MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
-        }
+        addIfPresent(scan, "MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
         if (se.filterString() != null) {
             scan.add("MS_1000512_filter_string", se.filterString());
         }
@@ -280,8 +278,8 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         Group wrapper = scan.addGroup("scan_windows");
         for (ScanWindow w : windows) {
             Group item = wrapper.addGroup("list").addGroup("item");
-            item.add("MS_1000501_scan_window_lower_limit_unit_MS_1000040", w.lowerLimit());
-            item.add("MS_1000500_scan_window_upper_limit_unit_MS_1000040", w.upperLimit());
+            addIfPresent(item, "MS_1000501_scan_window_lower_limit_unit_MS_1000040", w.lowerLimit());
+            addIfPresent(item, "MS_1000500_scan_window_upper_limit_unit_MS_1000040", w.upperLimit());
         }
     }
 
@@ -321,7 +319,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
     /** Populate a {@code selected_ion} facet group. */
     private static void writeSelectedIon(Group si, long sourceIndex, SelectedIon ion) {
         si.add("source_index", sourceIndex);
-        si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
+        addIfPresent(si, "MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
         if (ion.charge() != null) {
             si.add("MS_1000041_charge_state", ion.charge());
         }
@@ -363,9 +361,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 if (Double.isFinite(w.time())) {
                     s.add("time", w.time());
                 }
-                if (w.lambdaMax() != null) {
-                    s.add("MS_1003812_lambda_max_unit_UO:0000018", w.lambdaMax());
-                }
+                addIfPresent(s, "MS_1003812_lambda_max_unit_UO:0000018", w.lambdaMax());
                 s.add("MS_1003060_number_of_data_points", (long) w.size());
                 writer.write(row);
             }
@@ -379,8 +375,12 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 || !p.isolationWindow().parameters().isEmpty();
     }
 
+    /**
+     * Sets {@code field} of {@code group} to {@code value} unless it is null or NaN: a NaN is written as null, since
+     * parquet-java writes no column index for a page holding a NaN (W10).
+     */
     private static void addIfPresent(Group group, String field, Double value) {
-        if (value != null) {
+        if (value != null && !value.isNaN()) {
             group.add(field, value);
         }
     }

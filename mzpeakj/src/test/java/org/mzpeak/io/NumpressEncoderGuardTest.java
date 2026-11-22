@@ -53,13 +53,28 @@ class NumpressEncoderGuardTest {
 
     private static Source source;
 
-    /** A replaced value of spectrum 3, the encoding it is written with and the error it gets. */
+    /**
+     * A replaced value of spectrum 3, the encoding it is written with and the error the encoder gives it
+     * ({@link #message()}) and the planner ({@link #plannerMessage()}).
+     */
     record Case(String name, boolean mz, int at, double value, NumpressIntensityEncoding encoding, String message) {
         @Override
         public String toString() {
             return name;
         }
+
+        /**
+         * The planner's error: the encoder's, but for a NaN, which the planner refuses in every encoding before it
+         * checks the Numpress range (W10).
+         */
+        String plannerMessage() {
+            return Double.isNaN(value) ? "spectrum 3: the " + (mz ? "m/z" : "intensity") + " at position " + at
+                    + NAN : message;
+        }
     }
+
+    private static final String NAN = " is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, since a"
+            + " Parquet page holding a NaN gets no column index (conformance.md requires a page index for every column)";
 
     static Stream<Arguments> cases() {
         return Stream.of(
@@ -81,7 +96,10 @@ class NumpressEncoderGuardTest {
                         + alternative);
     }
 
-    /** (a, c) writeArchive refuses the spectrum naming spectrum 3, the value and spectra_data, and leaves no target. */
+    /**
+     * (a, c) writeArchive refuses the spectrum naming spectrum 3, the value and spectra_data (a NaN with the planner's
+     * NaN error, W10), and leaves no target.
+     */
     @ParameterizedTest(name = "{0}")
     @MethodSource("cases")
     void writeArchiveRefusesTheValue(Case c, @TempDir Path tmp) {
@@ -92,7 +110,7 @@ class NumpressEncoderGuardTest {
 
         assertThatThrownBy(() -> MzPeakWriter.writeArchive(target, spectra, src.chromatograms, src.wavelengthSpectra,
                 src.scanSettings, src.fileMetadata, numpress(c.encoding())))
-                .isExactlyInstanceOf(MzPeakException.class).hasMessage(c.message());
+                .isExactlyInstanceOf(MzPeakException.class).hasMessage(c.plannerMessage());
         assertThat(target).doesNotExist();
     }
 
@@ -110,7 +128,7 @@ class NumpressEncoderGuardTest {
             }
             Spectrum bad = replaced(src.spectra.get(SPECTRUM), c);
             assertThatThrownBy(() -> session.addSpectrum(bad))
-                    .isExactlyInstanceOf(MzPeakException.class).hasMessage(c.message());
+                    .isExactlyInstanceOf(MzPeakException.class).hasMessage(c.plannerMessage());
         } finally {
             session.close();
         }

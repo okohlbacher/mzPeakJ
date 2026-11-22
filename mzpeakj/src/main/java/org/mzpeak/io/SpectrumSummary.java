@@ -126,8 +126,12 @@ final class SpectrumSummary {
         return Double.isFinite(value) ? value : null;
     }
 
+    /**
+     * Sets {@code field} of {@code group} to {@code value} unless it is null or NaN (a TIC of +Infinity and -Infinity),
+     * which is written as null (W10).
+     */
     private static void addIfPresent(Group group, String field, Double value) {
-        if (value != null) {
+        if (value != null && !value.isNaN()) {
             group.add(field, value);
         }
     }

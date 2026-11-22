@@ -532,9 +532,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     if (scan.filterString() != null) {
                         row.add(field(FILTER_STRING), scan.filterString());
                     }
-                    if (scan.injectionTime() != null) {
-                        row.add(field(ION_INJECTION_TIME), scan.injectionTime());
-                    }
+                    addIfPresent(row, field(ION_INJECTION_TIME), scan.injectionTime());
                     if (scan.instrumentConfigurationRef() != null) {
                         row.add(INSTRUMENT_CONFIGURATION_ID, scan.instrumentConfigurationRef());
                     }
@@ -553,8 +551,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     Group windows = row.addGroup(SCAN_WINDOWS);
                     for (ScanWindow w : scan.scanWindows()) {
                         Group item = windows.addGroup("list").addGroup("item");
-                        item.add(field(WINDOW_LOWER), w.lowerLimit());
-                        item.add(field(WINDOW_UPPER), w.upperLimit());
+                        addIfPresent(item, field(WINDOW_LOWER), w.lowerLimit());
+                        addIfPresent(item, field(WINDOW_UPPER), w.upperLimit());
                     }
                     writer.write(row);
                 }
@@ -672,7 +670,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                             row.add(PRECURSOR_INDEX, precursor.precursorIndex());
                         }
                         row.add(SELECTED_ION_INDEX, selectedIonIndex++);
-                        row.add(field(SELECTED_ION_MZ), ion.mz());
+                        addIfPresent(row, field(SELECTED_ION_MZ), ion.mz());
                         if (ion.charge() != null) {
                             row.add(field(CHARGE_STATE), ion.charge());
                         }
@@ -1050,9 +1048,12 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         return Map.copyOf(out);
     }
 
-    /** Sets {@code field} of {@code group} to {@code value} unless it is null. */
+    /**
+     * Sets {@code field} of {@code group} to {@code value} unless it is null or NaN: a NaN is written as null, since
+     * parquet-java writes no column index for a page holding a NaN (W10).
+     */
     private static void addIfPresent(Group group, String field, Double value) {
-        if (value != null) {
+        if (value != null && !value.isNaN()) {
             group.add(field, value);
         }
     }
