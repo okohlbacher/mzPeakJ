@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.conf.PlainParquetConfiguration;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroupFactory;
@@ -220,6 +221,40 @@ class NullFillSpecTest {
         }
     }
 
+    /**
+     * A spectrum whose rows continue into the next row group is decoded only in part with the spectra before it:
+     * spectrum 1 starts as [null, 200] at the end of row group 0, which alone cannot be filled without a model. That
+     * must not fail spectrum 0, and spectrum 1 read with both row groups is filled. A spectrum that cannot be filled
+     * still fails when it is requested, and only then: spectrum 2 is decoded with spectrum 1.
+     */
+    @Test
+    void aSpectrumContinuingIntoTheNextRowGroupDoesNotFailItsNeighbour() {
+        Path file = write(POINT, POINT_INDEX, 5,
+                pointRow(0, 100), pointRow(0, 101), pointRow(0, 102), pointRow(1, N), pointRow(1, 200),
+                pointRow(1, 201), pointRow(1, 202), pointRow(2, N), pointRow(2, 300));
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), MEMBER, true, Map.of())) {
+            assertThat(store.get(0).mz()).containsExactly(100, 101, 102);
+            assertThat(store.get(1).mz()).containsExactly(199, 200, 201, 202);
+            assertThatThrownBy(() -> store.get(2))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageContaining("spectrum_index 2")
+                    .hasMessageContaining("single stored m/z at position 1");
+            assertThat(store.get(0).mz()).containsExactly(100, 101, 102);
+        }
+    }
+
+    /** A spectrum that cannot be filled in one run of rows and appears in another is an unsorted member. */
+    @Test
+    void anUnfillableSpectrumInTwoRunsIsUnsorted() {
+        Path file = write(POINT, POINT_INDEX, 100,
+                pointRow(0, 100), pointRow(0, N), pointRow(0, 102), pointRow(1, 5), pointRow(0, 7));
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), MEMBER, true, Map.of())) {
+            assertThatThrownBy(() -> store.get(1))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageContaining("not sorted by spectrum_index (index 0");
+        }
+    }
+
     // ---- against the Python references ----------------------------------------------------------------------------
 
     /**
@@ -294,16 +329,21 @@ class NullFillSpecTest {
     private Path writePoint(long index, double... mz) {
         Group[] rows = new Group[mz.length];
         for (int i = 0; i < mz.length; i++) {
-            Group record = new SimpleGroupFactory(POINT).newGroup();
-            Group point = record.addGroup("point");
-            point.add("spectrum_index", index);
-            if (!Double.isNaN(mz[i])) {
-                point.add("mz", mz[i]);
-                point.add("intensity", 1f);
-            }
-            rows[i] = record;
+            rows[i] = pointRow(index, mz[i]);
         }
         return write(POINT, POINT_INDEX, rows);
+    }
+
+    /** A point row of spectrum {@code index}: a NaN m/z as a null cell with a null intensity, else intensity 1. */
+    private static Group pointRow(long index, double mz) {
+        Group record = new SimpleGroupFactory(POINT).newGroup();
+        Group point = record.addGroup("point");
+        point.add("spectrum_index", index);
+        if (!Double.isNaN(mz)) {
+            point.add("mz", mz);
+            point.add("intensity", 1f);
+        }
+        return record;
     }
 
     private Path writeChunks(Group... rows) {
@@ -345,10 +385,16 @@ class NullFillSpecTest {
     }
 
     private Path write(MessageType schema, String json, Group... rows) {
+        return write(schema, json, ParquetProperties.DEFAULT_ROW_GROUP_ROW_COUNT_LIMIT, rows);
+    }
+
+    /** Writes {@code rows} with {@code json} as the spectrum array index, at most {@code rowGroupRows} per group. */
+    private Path write(MessageType schema, String json, int rowGroupRows, Group... rows) {
         Path file = tmp.resolve("member-" + (written++) + ".parquet");
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
+                .withRowGroupRowCountLimit(rowGroupRows)
                 .withExtraMetaData(Map.of(INDEX_KEY, json))
                 .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
