@@ -108,14 +108,14 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * has entities of its kind:
  * <ul>
  *   <li>chromatograms_metadata: one row per chromatogram with its index, id, {@code scan_polarity} (1, -1, or null
- *       when unknown), its type as a term marker, its {@code data_processing_ref} (the spec's spelling; the column is
- *       there only when some chromatogram has one), its point count, its {@code parameters}, none promoted to a
- *       column, and, as in spectra_metadata, empty auxiliary arrays; chromatograms_metadata_precursors and
- *       chromatograms_metadata_selected_ions have the schemas of the spectrum facets and are written as those are,
- *       keyed by the chromatogram's index: one row per precursor of every chromatogram, with the
- *       {@code precursor_index} the planner maps through the chromatogram numbering, and one row per selected ion, in
- *       the same order and with the same promotions. Chromatogram products are not modelled, and no products member
- *       is written;
+ *       when unknown), its type as a term marker, its {@code data_processing_id} (the spec's spelling, which 0.12.0
+ *       wrote as {@code data_processing_ref}; the column is there only when some chromatogram has one), its point
+ *       count, its {@code parameters}, none promoted to a column, and, as in spectra_metadata, empty auxiliary
+ *       arrays; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the schemas of the
+ *       spectrum facets and are written as those are, keyed by the chromatogram's index: one row per precursor of
+ *       every chromatogram, with the {@code precursor_index} the planner maps through the chromatogram numbering,
+ *       and one row per selected ion, in the same order and with the same promotions. Chromatogram products are not
+ *       modelled, and no products member is written;
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, spectrum type,
  *       representation, lowest and highest observed wavelength, point count, lambda max, base peak intensity and
  *       total ion current, in the reference's column order, its {@code parameters} and, as in spectra_metadata,
@@ -171,7 +171,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final String SELECTED_ION_INDEX = "selected_ion_index";
     private static final String ACTIVATION = "activation";
     private static final String PARAMETERS = "parameters";
-    private static final String DATA_PROCESSING_REF = "data_processing_ref";
+    private static final String DATA_PROCESSING_ID = "data_processing_id";
     /** The typed ion mobility of a scan or selected ion, not CV-mapped, as in the reference's manifest (V-24). */
     private static final String ION_MOBILITY_VALUE = "ion_mobility_value";
     private static final String ION_MOBILITY_TYPE = "ion_mobility_type";
@@ -678,7 +678,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     // ---- chromatograms_metadata and its facets ------------------------------------------------------------------
 
     /**
-     * Writes one row per chromatogram, with the {@code data_processing_ref} column after the type only when some
+     * Writes one row per chromatogram, with the {@code data_processing_id} column after the type only when some
      * chromatogram has a data processing reference, so that a write without one keeps the schema it had before the
      * model had references. The precursors go to their own members.
      */
@@ -696,7 +696,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 .named(field(CHROMATOGRAM_TYPE));
         if (dataProcessingRefs) {
             builder = builder.optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
-                    .named(DATA_PROCESSING_REF);
+                    .named(DATA_PROCESSING_ID);
         }
         MessageType schema = builder
                 .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(CHROMATOGRAM_POINTS))
@@ -722,7 +722,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     row.add(field(CHROMATOGRAM_TYPE), c.typeCurie());
                 }
                 if (c.dataProcessingRef() != null) {
-                    row.add(DATA_PROCESSING_REF, c.dataProcessingRef());
+                    row.add(DATA_PROCESSING_ID, c.dataProcessingRef());
                 }
                 row.add(field(CHROMATOGRAM_POINTS), (long) c.size());
                 params(row, c.parameters());

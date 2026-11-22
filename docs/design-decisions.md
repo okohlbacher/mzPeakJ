@@ -124,8 +124,9 @@ decisions cause.
 - **No overwriting**: the converter, the CLI, `MzMLWriter.open` and the public session API refuse an existing target;
   the batch `MzPeakWriter.write*` overloads keep replacing (2026-11-08). *Why:* a conversion must never destroy data;
   the batch overloads keep their published behaviour.
-- **The chromatogram data-processing column is written `data_processing_ref`**, read as that or Rust's
-  `data_processing_id` (2026-11-08). *Why:* the spec spelling.
+- **The chromatogram data-processing column is written `data_processing_id`**, read as that or the
+  `data_processing_ref` 0.12.0 wrote (2026-11-08, name changed 2026-11-22, X-13). *Why:* the spec spelling
+  (`chromatograms.md`, l.53); 0.12.0 had taken `data_processing_ref` for it.
 - **A NaN m/z in mzML input is warned (B-34), not rejected** (2026-11-08); with mzPeak Numpress output it is refused.
   *Why:* it carries no information, and rejecting the whole file would fail conversions other tools accept.
 - **mzML output is always 64-bit float, zlib by default, no MS-Numpress** (2026-11-09). *Why:* exact for `double[]`;

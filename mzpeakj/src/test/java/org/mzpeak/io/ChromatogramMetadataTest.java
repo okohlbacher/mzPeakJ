@@ -56,8 +56,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * through {@link Polarity#fromCode} (0 is unknown), {@code data_processing_ref}, else Rust's
  * {@code data_processing_id}, and the {@code parameters} list followed, in the split layout, by the leftover columns
  * whose accession is new; the precursors are read and written since MZ-6 ({@link ChromatogramPrecursorTest}). The
- * split writer writes the polarity, the reference (spec spelling, design Q18) and the Params; the packed writer,
- * whose schema is frozen, writes none of them and warns once. The cv-list prefix scan covers the Params (design §7).
+ * split writer writes the polarity, the reference (as {@code data_processing_id}, the spec's spelling, since X-13;
+ * 0.12.0 wrote {@code data_processing_ref}) and the Params; the packed writer, whose schema is frozen, writes none of
+ * them and warns once. The cv-list prefix scan covers the Params (design §7).
  *
  * <p>Oracle: the vendored HUPO-PSI fixtures; the raw cells of the current ones through {@link GoldenMeta}.
  */
@@ -116,19 +117,71 @@ class ChromatogramMetadataTest {
 
         List<Group> rows = rows(out.resolve(METADATA));
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName()).containsExactly("index", "id",
-                "scan_polarity", "chromatogram_type", "data_processing_ref", "number_of_data_points", "parameters",
+                "scan_polarity", "chromatogram_type", "data_processing_id", "number_of_data_points", "parameters",
                 "auxiliary_arrays", "number_of_auxiliary_arrays");
         assertThat(rows.get(0).getInteger("scan_polarity", 0)).isEqualTo(1);
-        assertThat(rows.get(0).getString("data_processing_ref", 0)).isEqualTo(DATA_PROCESSING);
+        assertThat(rows.get(0).getString("data_processing_id", 0)).isEqualTo(DATA_PROCESSING);
         assertThat(ParquetGroups.readParams(rows.get(0), "parameters")).containsExactly(SOURCE_PARAM, MS_LEVEL);
         assertThat(ParquetGroups.has(rows.get(1), "scan_polarity")).isFalse();
-        assertThat(ParquetGroups.has(rows.get(1), "data_processing_ref")).isFalse();
+        assertThat(ParquetGroups.has(rows.get(1), "data_processing_id")).isFalse();
         assertThat(ParquetGroups.readParams(rows.get(1), "parameters")).isEmpty();
     }
 
     /**
+     * X-13: a member as 0.12.0 wrote it, with the reference in {@code data_processing_ref} where the spec has
+     * {@code data_processing_id}, still reads. The split write of has_uv's TIC with the data processing
+     * {@code pwiz_Reader_conversion} gets its metadata member replaced by one in the 0.12.0 schema with the same
+     * cells, and the reader returns the reference again.
+     */
+    @Test
+    void aZeroTwelveMemberWithDataProcessingRefStillReads() {
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current(HAS_UV));
+        Chromatogram tic = withMetadata(source.chromatograms.get(0), Polarity.POSITIVE, DATA_PROCESSING,
+                List.of(SOURCE_PARAM), List.of());
+        Path out = tmp.resolve("legacy.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, List.of(tic, source.chromatograms.get(1)),
+                source.wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT);
+
+        MessageType legacy = Types.buildMessage()
+                .required(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
+                .optional(PrimitiveTypeName.INT32).named("scan_polarity")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("chromatogram_type")
+                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
+                .named("data_processing_ref")
+                .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false))
+                .named("number_of_data_points")
+                .addField(ParquetOutput.paramListField())
+                .named("chromatograms_metadata");
+        SimpleGroupFactory factory = new SimpleGroupFactory(legacy);
+        List<Group> copies = new ArrayList<>();
+        for (Group written : rows(out.resolve(METADATA))) {
+            Group copy = factory.newGroup().append("index", written.getLong("index", 0))
+                    .append("id", written.getString("id", 0))
+                    .append("chromatogram_type", written.getString("chromatogram_type", 0))
+                    .append("number_of_data_points", written.getLong("number_of_data_points", 0));
+            if (ParquetGroups.has(written, "scan_polarity")) {
+                copy.append("scan_polarity", written.getInteger("scan_polarity", 0));
+            }
+            if (ParquetGroups.has(written, "data_processing_id")) {
+                copy.append("data_processing_ref", written.getString("data_processing_id", 0));
+            }
+            ParquetOutput.writeParams(copy, ParquetGroups.readParams(written, "parameters"));
+            copies.add(copy);
+        }
+        write(out.resolve(METADATA), legacy, copies.toArray(new Group[0]));
+
+        assertThat(rows(out.resolve(METADATA)).get(0).getType().containsField("data_processing_id")).isFalse();
+        List<Chromatogram> back = chromatograms(out);
+        assertThat(back).extracting(Chromatogram::dataProcessingRef).containsExactly(DATA_PROCESSING, null);
+        assertThat(back.get(0).polarity()).isEqualTo(Polarity.POSITIVE);
+        assertThat(back.get(0).parameters()).containsExactly(SOURCE_PARAM);
+        assertThat(back.get(0).time()).isEqualTo(tic.time());
+    }
+
+    /**
      * A negative polarity is written as -1 and an unknown one as null; without a data processing reference the
-     * member has no {@code data_processing_ref} column, as before MZ-5.
+     * member has no {@code data_processing_id} column, as before MZ-5.
      */
     @Test
     void aNegativePolarityIsMinusOneAndNoReferenceMeansNoColumn() {
@@ -589,7 +642,11 @@ class ChromatogramMetadataTest {
 
     /** Writes {@code rows} as the member {@link #METADATA} of the temporary dataset directory. */
     private void write(MessageType schema, Group... rows) {
-        Path file = tmp.resolve(METADATA);
+        write(tmp.resolve(METADATA), schema, rows);
+    }
+
+    /** Writes {@code rows} to {@code file}, replacing it. */
+    private static void write(Path file, MessageType schema, Group... rows) {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)

@@ -37,9 +37,9 @@ final class ChromatogramMetadataDecoder {
     private static final String POLARITY = "MS:1000465";
     /** Number of data points: the length of the data arrays, so not a Param. */
     private static final String N_POINTS = "MS:1003060";
-    /** The data processing reference as the spec spells it. */
+    /** The data processing reference as mzPeakJ 0.12.0 and earlier wrote it. */
     private static final String F_DATA_PROCESSING_REF = "data_processing_ref";
-    /** The data processing reference as the Rust writer spells it. */
+    /** The data processing reference as the spec, the Rust writer and mzPeakJ since 0.13.0 spell it. */
     private static final String F_DATA_PROCESSING_ID = "data_processing_id";
 
     private ChromatogramMetadataDecoder() {
