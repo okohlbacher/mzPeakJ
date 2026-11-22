@@ -16,6 +16,7 @@ import java.util.Arrays;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * {@link ChunkRowDecoder} on constructed chunk rows of spectrum signal members, for the plans and rows that the
@@ -227,6 +228,45 @@ class ChunkRowDecoderTest {
                         + " (SLOF intensity column intensity_numpress_slof_bytes)");
     }
 
+    /**
+     * X-9 (R3): on a delta row and on a grid row with SLOF, PIC and plain intensities all filled, the SLOF values are
+     * read; with a SLOF payload of its header only, the PIC values are. The plain list is read only without either.
+     */
+    @Test
+    void slofThenPicWinOverThePlainIntensityOnDeltaAndGridRows() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY, MZ_GRID,
+                bytes("intensity_numpress_slof_bytes"), bytes("intensity_numpress_pic_bytes"));
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        for (boolean grid : new boolean[] {false, true}) {
+            double[] mz = grid ? new double[] {7.0, 15.0} : new double[] {100.5, 100.75};
+            for (boolean headerOnlySlof : new boolean[] {false, true}) {
+                Group chunk = row(schema);
+                if (grid) {
+                    chunk.add("chunk_encoding", ChunkCodecs.GRID_ENCODING);
+                    addGrid(chunk, GridModels.LINEAR, 7, 8);
+                } else {
+                    chunk.add("chunk_encoding", DELTA);
+                    chunk.add("mz_chunk_start", 100.0);
+                    addList(chunk, "mz_chunk_values", 0.5, 0.25);
+                }
+                addList(chunk, "intensity", 50, 60);
+                addBytes(chunk, "intensity_numpress_slof_bytes", headerOnlySlof ? slof() : slof(10, 20));
+                addBytes(chunk, "intensity_numpress_pic_bytes", pic(30, 40));
+
+                ChunkRowDecoder.Row row = decoder.decode(chunk, 0);
+
+                assertThat(row.axis()).as("grid %s", grid).containsExactly(mz);
+                if (headerOnlySlof) {
+                    assertThat(row.intensity()).as("grid %s", grid).containsExactly(30.0, 40.0);
+                } else {
+                    assertThat(row.intensity()).as("grid %s", grid).hasSize(2);
+                    assertThat(row.intensity()[0]).isCloseTo(10.0, within(10.0 * 1e-3));
+                    assertThat(row.intensity()[1]).isCloseTo(20.0, within(20.0 * 1e-3));
+                }
+            }
+        }
+    }
+
     // ---- Numpress columns -----------------------------------------------------------------------------------------
 
     @Test
@@ -426,6 +466,18 @@ class ChunkRowDecoderTest {
         for (byte b : bytes) {
             list.addGroup("list").add("element", b & 0xff);
         }
+    }
+
+    /** The SLOF payload of {@code values}; of none, its 8-byte header only. */
+    private static byte[] slof(double... values) {
+        byte[] buffer = new byte[8 + values.length * 2];
+        double fixedPoint = values.length == 0 ? 1.0 : MSNumpress.optimalSlofFixedPoint(values, values.length);
+        return Arrays.copyOf(buffer, MSNumpress.encodeSlof(values, values.length, buffer, fixedPoint));
+    }
+
+    private static byte[] pic(double... values) {
+        byte[] buffer = new byte[values.length * 5];
+        return Arrays.copyOf(buffer, MSNumpress.encodePic(values, values.length, buffer));
     }
 
     /** Adds {@code mz_grid} with {@code gridType} (none when null), parameters {@code [0, 1]} and {@code indices}. */

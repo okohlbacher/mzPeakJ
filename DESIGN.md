@@ -444,10 +444,10 @@ doubles, never narrowed to float32 (D-5; `NumpressConformanceTest`, `NumpressPic
 
 **Fail loudly.** A chunk the reader cannot decode throws an `MzPeakException` instead of being dropped or
 misdecoded: a grid chunk without a grid or with an unknown `grid_type` (below), an unknown `chunk_encoding`,
-Numpress intensity that decodes to values without a Numpress m/z source, Numpress m/z that decodes to values
-without an intensity column, a value in a `*numpress*` column the plan does not decode, and a value in an
-intensity chunk transform other than SLOF and PIC when no plain list of the row carries a value and no SLOF or
-PIC payload decodes to values.
+SLOF or PIC intensity whose length fits neither the m/z values nor values+1 (1:1 on grid and Numpress rows),
+Numpress m/z that decodes to values without an intensity column, a value in a `*numpress*` column the plan
+does not decode, and a value in an intensity chunk transform other than SLOF and PIC when no plain list of the
+row carries a value and no SLOF or PIC payload decodes to values.
 
 **Coordinate grids** (`MS:1003826`, draft). A grid chunk stores its axis as a struct `{grid_type, parameters,
 indices}` in the column that the array index lists as the axis's `MS:1003826` chunk transform (`mz_grid` in
@@ -458,8 +458,8 @@ otherwise a non-null Numpress linear column selects the Numpress path, by its pr
 the delta path takes the rest. So a member may mix grid rows with delta rows.
 
 - **Main axis.** The indices are delta-encoded: their running sum, kept in a `long`, gives each point's grid
-  index, and the first index is absolute. The m/z values pair 1:1 with the plain intensity list; no chunk start
-  point is emitted.
+  index, and the first index is absolute. The m/z values pair 1:1 with the row's intensities (SLOF, else PIC,
+  else the plain list); no chunk start point is emitted.
 - **Extra arrays** stored as a grid (their `MS:1003826` transform column carries a value, such as
   diaPASEF.grid's ion mobility) use absolute indices and land in the extras (§3.6).
 
