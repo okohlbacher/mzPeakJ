@@ -78,8 +78,6 @@ final class WritePlanner {
     private static final Set<String> CHROMATOGRAM_SIGNAL_COLUMNS = Set.of("chromatogram_index", "time");
     /** The column of the primary intensity of every signal file. */
     private static final String INTENSITY_COLUMN = "intensity";
-    /** UO:0000031 minute, the time unit chromatograms_data declares when there are no chromatograms. */
-    private static final String MINUTE = "UO:0000031";
     /** The column names signal-data.md:119-139 recommends, for the array types an extra column may have. */
     private static final Map<String, String> SHORT_NAMES = Map.ofEntries(
             Map.entry("MS:1000516", "charge"),
@@ -106,7 +104,8 @@ final class WritePlanner {
     static WritePlan plan(List<Spectrum> spectra, List<Chromatogram> chromatograms,
                           List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                           FileMetadata fileMetadata, Options options) {
-        List<Spectrum> ordered = validateAndOrder(spectra, chromatograms, wavelengthSpectra,
+        List<Chromatogram> inMinutes = inMinutes(chromatograms);
+        List<Spectrum> ordered = validateAndOrder(spectra, inMinutes, wavelengthSpectra,
                 options.metadataLayout());
         requireWritableScanSettings(scanSettings);
         Map<Long, Long> writtenIndex = new HashMap<>();
@@ -137,7 +136,7 @@ final class WritePlanner {
         }
         warnPackedDrops(packedDrops, report);
         return complete(options, Collections.unmodifiableList(spectrumEntries),
-                Collections.unmodifiableList(spectrumSignals), List.copyOf(extras.values()), chromatograms,
+                Collections.unmodifiableList(spectrumSignals), List.copyOf(extras.values()), inMinutes,
                 wavelengthSpectra, scanSettings,
                 FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), report);
     }
@@ -213,7 +212,6 @@ final class WritePlanner {
         return new WritePlan(options, spectra, signals, Collections.unmodifiableList(chromatogramEntries),
                 Collections.unmodifiableList(wavelengthEntries), writesSpectraData, spectrumExtras,
                 chromatogramIntensities, List.copyOf(chromatogramExtras.values()),
-                chromatogramOrder.isEmpty() ? MINUTE : chromatogramOrder.get(0).timeUnit(),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(footer), report);
     }
@@ -981,9 +979,8 @@ final class WritePlanner {
 
     /**
      * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
-     * unique within each kind, the chromatograms all of the time unit of the first ({@link #requireSameTimeUnit}),
-     * no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the {@link MetadataLayout#SPLIT} layout
-     * every chromatogram precursor_index non-negative.
+     * unique within each kind, no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the
+     * {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative.
      */
     private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                        MetadataLayout layout) {
@@ -991,7 +988,6 @@ final class WritePlanner {
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
             requireUnique(seen, c.index(), "chromatogram index");
-            requireSameTimeUnit(chromatograms.get(0), c);
             List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
             addPrecursorParams(c.precursors(), lists);
             requireWritableParams(owner("chromatogram", c.index(), c.id()), lists);
@@ -1085,17 +1081,29 @@ final class WritePlanner {
         }
     }
 
+    /** {@code chromatograms}, each {@link #inMinutes(Chromatogram) in minutes}, in the same order. */
+    private static List<Chromatogram> inMinutes(List<Chromatogram> chromatograms) {
+        List<Chromatogram> out = new ArrayList<>(chromatograms.size());
+        for (Chromatogram c : chromatograms) {
+            out.add(inMinutes(c));
+        }
+        return out;
+    }
+
     /**
-     * Throws {@link MzPeakException} when {@code c} has another {@link Chromatogram#timeUnit()} than {@code first}:
-     * chromatograms_data declares one time unit for all its chromatograms (D-12), and the writer converts none.
-     * Checked by {@link #plan} and {@link #planFinish} and by a session as each chromatogram is added, before
-     * anything of it is written.
+     * {@code c} with its times in minutes (UO:0000031), the unit chromatograms_data stores them in (W3, D13-1;
+     * chromatograms.md: "the units MUST be minutes"): {@code c} itself when they are, else a copy converted once by
+     * {@link Chromatogram#withTimeUnit} from second, millisecond or hour. Called by {@link #plan} and by a session as
+     * each chromatogram is added, before anything of it is written; the caller's chromatogram is never modified.
+     *
+     * @throws MzPeakException when its {@link Chromatogram#timeUnit()} is another unit
      */
-    static void requireSameTimeUnit(Chromatogram first, Chromatogram c) {
-        if (!c.timeUnit().equals(first.timeUnit())) {
-            throw new MzPeakException("chromatograms " + first.index() + " (" + first.timeUnit() + ") and "
-                    + c.index() + " (" + c.timeUnit() + ") have different time units; convert one with"
-                    + " Chromatogram.withTimeUnit before writing");
+    static Chromatogram inMinutes(Chromatogram c) {
+        try {
+            return c.withTimeUnit(ArrayIndex.MINUTE_UNIT);
+        } catch (IllegalArgumentException e) {
+            throw new MzPeakException("chromatogram " + c.index() + ": time unit " + c.timeUnit()
+                    + " cannot be converted to minutes", e);
         }
     }
 

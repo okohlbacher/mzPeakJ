@@ -781,6 +781,32 @@ class ModelAssertTest {
                 .containsExactly("spectrum[0].mz", "spectrum[0].intensity");
     }
 
+    /**
+     * W_3: small's chromatogram in seconds in expected and in minutes, as stored, in actual; not when the times of
+     * actual differ from the converted ones, the other way round, or from a unit that cannot be converted.
+     */
+    @Test
+    void w3HidesChromatogramTimesConvertedToMinutes() {
+        Model seconds = withChromatogram(small, c -> c.withTimeUnit("UO:0000010"));
+        assertThat(ModelAssert.assertEqual("W_3", seconds, small, STRICT, ModelAssert.W_3).hidden())
+                .containsExactly(Map.entry("W_3", 2));
+
+        Model shifted = withChromatogram(small, c -> {
+            double[] time = c.time().clone();
+            time[1] += 1e-9;
+            return with(c, "time", time);
+        });
+        Result kept = ModelAssert.compare(seconds, shifted, STRICT, ModelAssert.W_3);
+        assertThat(kept.paths()).containsExactly("chromatogram[0].time", "chromatogram[0].timeUnit");
+        assertThat(kept.stale()).containsExactly("W_3");
+        assertThat(ModelAssert.compare(small, seconds, STRICT, ModelAssert.W_3).paths())
+                .containsExactly("chromatogram[0].time", "chromatogram[0].timeUnit");
+
+        Model days = withChromatogram(small, c -> with(c, "timeUnit", "UO:0000033"));
+        assertThat(ModelAssert.compare(days, small, STRICT, ModelAssert.W_3).paths())
+                .containsExactly("chromatogram[0].timeUnit");
+    }
+
     // ---- negative controls: each exclusion hides only what design 6.1 and 6.2 define ------------------------------
 
     @Test
@@ -937,7 +963,7 @@ class ModelAssertTest {
     @Test
     void exclusionsHaveTheirDesignIdsAndCannotBePassedTwice() {
         assertThat(ModelAssert.EXCLUSIONS).extracting(Exclusion::id).containsExactly("A_1", "A_2", "A_7", "A_8",
-                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34");
+                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34", "W_3");
         assertThat(ModelAssert.EXCLUSIONS).allSatisfy(e -> {
             assertThat(e.description()).startsWith(e.id().replace('_', '-') + ": ");
             assertThat(e).hasToString(e.id());

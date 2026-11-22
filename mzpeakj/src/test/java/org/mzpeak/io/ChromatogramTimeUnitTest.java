@@ -40,7 +40,7 @@ import static org.mzpeak.io.MemberRewriter.rewriteInPlace;
 /**
  * D-12a (V-21): {@link Chromatogram#timeUnit()}. The reader keeps the stored chromatogram times and reports their
  * unit, the unit of the time values column, else of the chunk start column, else minute; {@link
- * Chromatogram#withTimeUnit} converts. The writer writes the time unit (V-22,
+ * Chromatogram#withTimeUnit} converts. The writer stores the times in minutes (W3,
  * {@link WriterChromatogramTimeUnitTest}).
  *
  * <p>Every vendored fixture stores its chromatogram times in minutes, so its chromatograms read the same values
@@ -134,7 +134,7 @@ class ChromatogramTimeUnitTest {
 
     /**
      * (b) The seconds copy with the data rows of its chromatogram removed: the chromatogram, now without points,
-     * still takes the unit of the member's time column, UO:0000010, and the dataset writes back in seconds.
+     * still takes the unit of the member's time column, UO:0000010, and the dataset writes back in minutes (W3).
      */
     @Test
     void aChromatogramWithoutDataRowsTakesTheUnitOfTheTimeColumn() throws IOException {
@@ -158,7 +158,7 @@ class ChromatogramTimeUnitTest {
         MzPeakWriter.writeDirectory(out, List.of(), read);
         try (MzPeakReader back = MzPeakReader.open(out)) {
             assertThat(back.chromatograms()).extracting(Chromatogram::id, Chromatogram::size, Chromatogram::timeUnit)
-                    .containsExactly(tuple(read.get(0).id(), 0, SECOND));
+                    .containsExactly(tuple(read.get(0).id(), 0, MINUTE));
         }
     }
 
@@ -361,6 +361,8 @@ class ChromatogramTimeUnitTest {
         assertThat(minutes.parameters()).isEqualTo(seconds.parameters());
         assertThat(minutes.precursors()).isEqualTo(seconds.precursors());
         assertThat(minutes.time()).containsExactly(1, 2);
+        assertThat(minutes.timeUnit()).isEqualTo(MINUTE);
+        assertThat(minutes.arrays().get("ms level")).isSameAs(seconds.arrays().get("ms level"));
 
         Chromatogram other = new Chromatogram(seconds.index(), seconds.id(), seconds.typeCurie(), seconds.time(),
                 seconds.intensity(), seconds.intensityUnit(), seconds.arrays(), seconds.polarity(),
@@ -390,7 +392,7 @@ class ChromatogramTimeUnitTest {
     /**
      * (e) The package-private copy that remaps a chromatogram's precursors keeps its time unit (the 12-argument
      * copy); a seconds chromatogram whose precursor names a chromatogram written under another index is written
-     * (SPLIT) in seconds with the renumbered precursor. Until V-22 the writer converted it to minutes;
+     * (SPLIT) in minutes (W3) with the renumbered precursor. From V-22 until W3 the writer wrote it in seconds;
      * {@link WriterChromatogramTimeUnitTest} pins the writer's time unit.
      */
     @Test
@@ -412,9 +414,9 @@ class ChromatogramTimeUnitTest {
         MzPeakWriter.writeDirectory(out, List.of(), List.of(parent, child));
         try (MzPeakReader back = MzPeakReader.open(out)) {
             List<Chromatogram> read = back.chromatograms();
-            assertThat(read).extracting(Chromatogram::timeUnit).containsExactly(SECOND, SECOND);
-            assertThat(read.get(0).time()).containsExactly(60);
-            assertThat(read.get(1).time()).containsExactly(120, 180);
+            assertThat(read).extracting(Chromatogram::timeUnit).containsExactly(MINUTE, MINUTE);
+            assertThat(read.get(0).time()).containsExactly(1);
+            assertThat(read.get(1).time()).containsExactly(2, 3);
             assertThat(read.get(1).precursors().get(0).precursorIndex()).isEqualTo(0L);
         }
     }
