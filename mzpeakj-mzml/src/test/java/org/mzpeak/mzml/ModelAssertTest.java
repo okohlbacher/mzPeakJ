@@ -750,7 +750,7 @@ class ModelAssertTest {
             mz[3] = Double.NaN;
             return new Spectrum(s.description(), mz, s.intensity(), s.peaks());
         });
-        // the mzPeak read fills the leading NaN with the first finite m/z (NullFill.interpolateGaps)
+        // the 0.12.0 mzPeak read filled the leading NaN with the first finite m/z, the shape B-34 hides
         Model filled = withMz(small, 0, m -> m[0] = m[1]);
         assertThat(ModelAssert.assertEqual("B_34", nan, filled, STRICT, ModelAssert.B_34).hidden())
                 .containsExactly(Map.entry("B_34", 1));
@@ -885,7 +885,7 @@ class ModelAssertTest {
             m[3] = Double.NaN;
             m[last] = Double.NaN;
         });
-        // a leading or trailing NaN takes the nearest finite m/z, as NullFill.interpolateGaps fills it
+        // a leading or trailing NaN takes the nearest finite m/z, as the 0.12.0 mzPeak read filled it
         Consumer<double[]> carried = m -> {
             m[0] = mz[1];
             m[last] = mz[last - 1];

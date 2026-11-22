@@ -220,7 +220,9 @@ class WriterDispositionTest {
      * Numpress linear cannot encode it), so such a spectrum keeps both files: its arrays, non-finite row included, go
      * to spectra_data and its peak list to spectra_peaks. Re-read, {@code peaks()} equals the source's (m/z and
      * intensity; {@link CentroidPeak#index()} is the position in the stored peak list), the stored spectra_data rows
-     * are {@code Arrays.equals} to the source, and so are the re-read arrays apart from a NaN m/z.
+     * are {@code Arrays.equals} to the source, and so are the re-read arrays apart from a NaN m/z. Since R2 (X-8) the
+     * reader takes the stored NaN m/z between two stored values for an unpaired null and rejects it with profile
+     * reconstruction on (X-18, W10, rejects a NaN m/z at writing); without reconstruction it drops that row.
      */
     @ParameterizedTest
     @ValueSource(doubles = {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
@@ -232,18 +234,21 @@ class WriterDispositionTest {
 
         Path out = write(tmp, s);
 
-        try (MzPeakReader r = MzPeakReader.open(out)) {
+        boolean nan = Double.isNaN(nonFinite);
+        try (MzPeakReader r = MzPeakReader.open(out, !nan)) {
             Spectrum back = r.getSpectrum(0).orElseThrow();
             assertThat(mzs(back.peaks())).containsExactly(mzs(s.peaks()));
             assertThat(intensities(back.peaks())).containsExactly(intensities(s.peaks()));
-            assertThat(back.intensity()).isEqualTo(intensity);
-            if (Double.isNaN(nonFinite)) {
-                assertThat(back.mz()).hasSize(3);
-                assertThat(back.mz()[0]).isEqualTo(100.0);
-                assertThat(back.mz()[2]).isEqualTo(300.0);
+            if (nan) {
+                assertThat(back.mz()).containsExactly(100.0, 300.0);
+                assertThat(back.intensity()).containsExactly(1.0, 3.0);
             } else {
+                assertThat(back.intensity()).isEqualTo(intensity);
                 assertThat(Arrays.equals(back.mz(), mz)).as("re-read m/z %s", Arrays.toString(back.mz())).isTrue();
             }
+        }
+        if (nan) {
+            assertUnpairedNullOnRead(out);
         }
         assertThat(WritePlanner.isPeakCopy(s)).isTrue();
         assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, true, true, false));
@@ -258,7 +263,8 @@ class WriterDispositionTest {
 
     /**
      * An array-only CENTROID spectrum (the SRM shape) with a non-finite m/z row stays in spectra_data, for the same
-     * reason: in spectra_peaks the reader would turn that row into a peak.
+     * reason: in spectra_peaks the reader would turn that row into a peak. A NaN m/z reads as in
+     * {@link #centroidPeakCopyWithANonFiniteMzRowKeepsBothFiles}.
      */
     @ParameterizedTest
     @ValueSource(doubles = {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
@@ -269,16 +275,28 @@ class WriterDispositionTest {
 
         Path out = write(tmp, s);
 
-        try (MzPeakReader r = MzPeakReader.open(out)) {
+        boolean nan = Double.isNaN(nonFinite);
+        try (MzPeakReader r = MzPeakReader.open(out, !nan)) {
             Spectrum back = r.getSpectrum(0).orElseThrow();
             assertThat(back.peaks()).isEmpty();
-            assertThat(back.intensity()).isEqualTo(intensity);
+            assertThat(back.intensity()).isEqualTo(nan ? new double[] {1.0, 3.0} : intensity);
+        }
+        if (nan) {
+            assertUnpairedNullOnRead(out);
         }
         assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, true, false, false));
         assertThat(route(out, 0)).isEqualTo("data=3 peaks=- number_of_data_points=3 number_of_peaks=-");
         double[][] data = storedRows(out.resolve(DATA), 0);
         assertThat(Arrays.equals(data[0], mz)).as("stored m/z %s", Arrays.toString(data[0])).isTrue();
         assertThat(Arrays.equals(data[1], intensity)).as("stored intensity %s", Arrays.toString(data[1])).isTrue();
+    }
+
+    /** The default read of spectrum 0 of {@code out}, whose m/z row 1 is a stored NaN, throws (R2, X-8). */
+    private static void assertUnpairedNullOnRead(Path out) {
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThatThrownBy(() -> r.getSpectrum(0)).isInstanceOf(MzPeakException.class)
+                    .hasMessageContaining("unpaired null m/z at position 1 of spectrum_index 0");
+        }
     }
 
     /**

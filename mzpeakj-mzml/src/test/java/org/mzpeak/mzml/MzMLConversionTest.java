@@ -342,6 +342,11 @@ class MzMLConversionTest {
         ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26);
     }
 
+    /**
+     * Two NaN m/z in a row are counted and read back between their neighbours, as the mzPeak read fills a null pair. A
+     * single NaN m/z between two others reads as an unpaired null, which the mzPeak read rejects since R2 (X-8); X-18
+     * (W10) rejects a NaN m/z at conversion.
+     */
     @Test
     void aNaNMzIsCountedAndInterpolatedBetweenItsNeighbours() throws IOException {
         double[] mz = new double[15];
@@ -349,6 +354,7 @@ class MzMLConversionTest {
             mz[i] = i;
         }
         mz[5] = Double.NaN;
+        mz[6] = Double.NaN;
         Path file = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
         Model m1 = model(file);
         assertThat(m1.spectrumList().get(0).mz()[5]).isNaN();
@@ -358,10 +364,18 @@ class MzMLConversionTest {
         assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES,
                 MzMLConversion.B_34 + " (1)"));
         Model m3 = model(b.mzml);
-        double filled = m3.spectrumList().get(0).mz()[5];
-        assertThat(filled).isBetween(4.0, 6.0);
+        assertThat(m3.spectrumList().get(0).mz()[5]).isEqualTo(5.0);
+        assertThat(m3.spectrumList().get(0).mz()[6]).isEqualTo(6.0);
         assertThat(ModelAssert.assertEqual("NaN m/z", m1, m3, STRICT, ModelAssert.A_26, ModelAssert.B_34).hidden())
                 .containsExactly(Map.entry("A_26", 1), Map.entry("B_34", 1));
+
+        mz[6] = 6;
+        Path single = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
+        Path singleMzPeak = dir.resolve("single.mzpeak");
+        MzMLConversion.toMzPeak(single, singleMzPeak, false, MzPeakWriter.Options.defaults());
+        assertThatThrownBy(() -> MzMLConversion.toMzML(singleMzPeak, dir.resolve("single.mzML"), true))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("unpaired null m/z at position 5 of spectrum_index 0");
     }
 
     @Test

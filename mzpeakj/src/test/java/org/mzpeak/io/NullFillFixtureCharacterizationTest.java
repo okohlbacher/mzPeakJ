@@ -108,20 +108,23 @@ class NullFillFixtureCharacterizationTest {
     /**
      * The values of some filled points of spectrum 0:an interior pair (7, 8) in the point and the chunk layout, and
      * in small.chunked the last point of its first chunk row and the first of its second (775, 776), which are the two
-     * nulls of one pair split across the rows.
+     * nulls of one pair split across the rows. Since R2 (X-8) each steps by the second median of its stored
+     * segment's spacing, the spec's rule, where 0.12.0 stepped by the stored delta model; the values are the spec's
+     * Python {@code fill_nulls} ones ({@code specfill/small.chunked.specfill.tsv}) and, for Example_Processed.img,
+     * the HEAD Python reader's golden ones.
      */
     @ParameterizedTest(name = "{0} {1}")
     @CsvSource({
-            "small.mzpeak,                 7,   202.60831465319626",
-            "small.mzpeak,                 8,   204.75933490906888",
-            "small.mzpeak,                 775, 252.42923215778364",
-            "small.mzpeak,                 776, 252.96506619710865",
-            "small.chunked.mzpeak,         7,   202.60831465319626",
-            "small.chunked.mzpeak,         8,   204.75933490906888",
-            "small.chunked.mzpeak,         775, 252.42923215778364",
-            "small.chunked.mzpeak,         776, 252.96506619710865",
-            "Example_Processed.img.mzpeak,  11,  108.91666869665156",
-            "Example_Processed.img.mzpeak,  12,  109.16666717408039"
+            "small.mzpeak,                 7,   202.60831465752347",
+            "small.mzpeak,                 8,   204.7593349014789",
+            "small.mzpeak,                 775, 252.42923215313309",
+            "small.mzpeak,                 776, 252.96506619056743",
+            "small.chunked.mzpeak,         7,   202.60831465752347",
+            "small.chunked.mzpeak,         8,   204.7593349014789",
+            "small.chunked.mzpeak,         775, 252.42923215313309",
+            "small.chunked.mzpeak,         776, 252.96506619056743",
+            "Example_Processed.img.mzpeak,  11,  108.91667175292969",
+            "Example_Processed.img.mzpeak,  12,  109.16667175292969"
     })
     void filledValuesOfSpectrumZero(String fixture, int position, double expected) {
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.current(fixture))) {

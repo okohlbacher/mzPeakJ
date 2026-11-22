@@ -68,11 +68,12 @@ class NumpressRangeTest {
             + " 4294967295 at its fixed point 100000 (m/z 42949.67295)";
 
     /**
-     * The read-back digest recorded on the base code (da74f60), the same for both outputs and both modes: the metadata
+     * The read-back digest recorded on the base code (da74f60) and re-recorded when R2 (X-8) changed the null fill of
+     * the source the writes start from, the same for both outputs and both modes: the metadata
      * layout does not change the signal, and Numpress chunks carry no null markers.
      */
     private static final String PIC_READ_BACK = "entries=48 absent=none values=536796"
-            + " sha256=d48b2d8b74bde14d859dcee4b43fcda6ffc8155cd7820ff9ff96578f7ed18e5f";
+            + " sha256=c4ded46919dbd15fef2a83e1463099cf17f78cc7e282c5b99420b7b6dcdd32d2";
 
     private static Source source;
 
@@ -371,7 +372,9 @@ class NumpressRangeTest {
 
     /**
      * The point layout writes every refused spectrum, and each reads back as written, apart from the NaN m/z: the
-     * reader takes a stored NaN m/z for its null placeholder and interpolates it (design §6.1 B-34).
+     * reader takes a stored NaN m/z for its null placeholder (design §6.1 B-34), and since R2 (X-8) one between two
+     * stored m/z for an unpaired null, which the default read rejects (X-18, W10, rejects a NaN m/z at writing) and a
+     * read without profile reconstruction drops.
      */
     @Test
     void thePointLayoutWritesTheRefusedSpectra(@TempDir Path tmp) {
@@ -380,19 +383,21 @@ class NumpressRangeTest {
         cases.add(new Unencodable("PIC count 2^31", MZ, new double[] {3.0, ABOVE_PIC}, "intensity", ABOVE_PIC));
         for (int i = 0; i < cases.size(); i++) {
             Unencodable u = cases.get(i);
-            Spectrum back = readBack(write(tmp.resolve(i + ".mzpeak"), profile(u.mz(), u.intensity()),
-                    Options.defaults()));
+            Path out = write(tmp.resolve(i + ".mzpeak"), profile(u.mz(), u.intensity()), Options.defaults());
+            if (u.name().equals("m/z NaN")) {
+                assertThatThrownBy(() -> readBack(out)).isInstanceOf(MzPeakException.class)
+                        .hasMessageContaining("unpaired null m/z at position 1 of spectrum_index 0");
+                try (MzPeakReader reader = MzPeakReader.open(out, false)) {
+                    Spectrum stored = reader.getSpectrumAt(reader.size() - 1);
+                    assertThat(stored.mz()).containsExactly(100.0, 100.5);
+                    assertThat(stored.intensity()).containsExactly(3.0, 5.0);
+                }
+                continue;
+            }
+            Spectrum back = readBack(out);
             assertThat(Arrays.equals(back.intensity(), u.intensity())).as("intensity of %s: %s", u,
                     Arrays.toString(back.intensity())).isTrue();
-            if (u.name().equals("m/z NaN")) {
-                assertThat(back.mz()).hasSize(3);
-                assertThat(back.mz()[0]).isEqualTo(100.0);
-                assertThat(back.mz()[1]).as("interpolated m/z").isEqualTo(100.25);
-                assertThat(back.mz()[2]).isEqualTo(100.5);
-            } else {
-                assertThat(Arrays.equals(back.mz(), u.mz())).as("m/z of %s: %s", u, Arrays.toString(back.mz()))
-                        .isTrue();
-            }
+            assertThat(Arrays.equals(back.mz(), u.mz())).as("m/z of %s: %s", u, Arrays.toString(back.mz())).isTrue();
         }
     }
 

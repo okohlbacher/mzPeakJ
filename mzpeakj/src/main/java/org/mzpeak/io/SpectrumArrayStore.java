@@ -20,6 +20,7 @@ import org.mzpeak.io.parquet.ParquetGroups;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.System.Logger.Level;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -301,7 +302,10 @@ final class SpectrumArrayStore implements AutoCloseable {
         private final Map<String, DoubleUnaryOperator> toMilliseconds;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
+        /** Point layout: the current spectrum's m/z. */
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
+        /** Chunk layout: the current spectrum's m/z, one array per chunk row, filled row by row on flush. */
+        private List<double[]> mzRows = new ArrayList<>();
         private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
         /** The current spectrum's extras not dropped so far, in plan order. */
         private Map<String, DoubleArrayBuilder> extras;
@@ -353,11 +357,9 @@ final class SpectrumArrayStore implements AutoCloseable {
                 return;
             }
             ChunkRowDecoder.Row decoded = chunks.decode(row, si);
-            double[] axis = decoded.axis();
-            double[] values = decoded.intensity();
-            for (int i = 0; i < axis.length; i++) {
-                mz.add(axis[i]);
-                intensity.add(values[i]);
+            mzRows.add(decoded.axis());
+            for (double v : decoded.intensity()) {
+                intensity.add(v);
             }
             for (Iterator<Map.Entry<String, DoubleArrayBuilder>> it = extras.entrySet().iterator(); it.hasNext(); ) {
                 Map.Entry<String, DoubleArrayBuilder> extra = it.next();
@@ -428,24 +430,28 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
         }
 
+        /**
+         * Completes the current spectrum: null-marked m/z filled ({@code reconstructProfile}) per chunk row, or for
+         * the point layout per spectrum, else dropped.
+         */
         void flush() {
-            double[] mzArray = mz.toArray();
+            List<double[]> rows = chunks == null ? List.of(mz.toArray()) : mzRows;
             double[] intensityArray = intensity.toArray();
             Map<String, double[]> extraArrays = extraArrays();
-            double[] model = deltaModels == null ? null : deltaModels.get(current);
             Arrays arrays;
-            if (reconstructProfile && model != null && model.length > 0) {
-                // Exact reconstruction: fill null-marked m/z by stepping with the stored polynomial delta model.
-                NullFill.polynomialFill(mzArray, model);
-                arrays = new Arrays(mzArray, intensityArray, extraArrays);
+            if (reconstructProfile) {
+                double[] model = deltaModels == null ? null : deltaModels.get(current);
+                arrays = new Arrays(NullFill.fill(rows, chunks != null, model, member, current), intensityArray,
+                        extraArrays);
             } else {
-                arrays = NullFill.finalizeArrays(mzArray, intensityArray, extraArrays, reconstructProfile);
+                arrays = NullFill.dropNulls(NullFill.concat(rows), intensityArray, extraArrays);
             }
             if (result.putIfAbsent(current, arrays) != null) {
                 throw new MzPeakException("signal file is not sorted by spectrum_index (index " + current
                         + " appears in multiple non-contiguous runs)");
             }
             mz = new DoubleArrayBuilder();
+            mzRows = new ArrayList<>();
             intensity = new DoubleArrayBuilder();
             extras = newExtras();
         }

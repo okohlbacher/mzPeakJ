@@ -1128,7 +1128,8 @@ public final class ModelAssert {
     /**
      * {@code v} lies between the nearest finite values of {@code values} before and after {@code i}, inclusive; with
      * a finite value on one side only (a leading or trailing NaN run), {@code v} is bit-equal to it, the value the
-     * mzPeak read carries to the end (design 6.1 B-34, {@code NullFill.interpolateGaps}).
+     * 0.12.0 mzPeak read carried to the end (design 6.1 B-34); the read since R2 (X-8) steps a leading or trailing
+     * null outwards by the local spacing instead, which this rule does not hide.
      */
     private static boolean betweenNeighbours(double[] values, int i, double v) {
         double before = Double.NaN;

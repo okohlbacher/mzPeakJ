@@ -18,9 +18,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * set (packed metadata) and the current set (split metadata, profile reconstruction from MS:1003821).
  * small.unpacked (point layout), small.mzpeak (the same point layout in a STORED ZIP) and small.chunked
  * (delta-chunk layout) hold the same 48 spectra, so every decoded m/z and intensity array must be bit-identical
- * between them, with and without profile reconstruction. This guards the chunk delta decode (null-aware
- * MS:1003089, chunk_start-as-a-point) for the 14 null-marked profile spectra, which the spot checks in
- * {@link MzPeakContainersTest} do not reach.
+ * between them, with and without profile reconstruction, but for the filled m/z of small.chunked: the null fill works
+ * per chunk row there (R2, X-8), so where a row boundary splits a null pair or a stored segment its filled m/z differ
+ * slightly from the point layout's. This guards the chunk delta decode (null-aware MS:1003089, chunk_start-as-a-point)
+ * for the 14 null-marked profile spectra, which the spot checks in {@link MzPeakContainersTest} do not reach.
  *
  * <p>Peaks: small.chunked additionally stores secondary centroid peaks for its 14 profile spectra (spectrum 0:
  * 1612 peaks), which small.unpacked does not have. Unpacked and chunked peak lists are therefore compared only
@@ -32,6 +33,8 @@ class LayoutEquivalenceTest {
     private static final String UNPACKED = "small.unpacked.mzpeak";
     private static final String PACKED = "small.mzpeak";
     private static final String CHUNKED = "small.chunked.mzpeak";
+    /** The filled m/z of small.chunked that differ from the point layout's: the fill works per chunk row (R2). */
+    private static final int FILLED_APART = 10;
 
     static Stream<Arguments> setsAndModes() {
         return Stream.of("legacy", "current")
@@ -49,6 +52,7 @@ class LayoutEquivalenceTest {
             assertThat(chunked.size()).isEqualTo(48);
 
             int centroidPeakListsCompared = 0;
+            int filledApart = 0;
             for (int ordinal = 0; ordinal < point.size(); ordinal++) {
                 Spectrum a = point.getSpectrumAt(ordinal);
                 long idx = a.index();
@@ -61,7 +65,7 @@ class LayoutEquivalenceTest {
 
                 // delta-chunk layout: arrays for all 48, peaks only where the point layout has them
                 Spectrum c = chunked.getSpectrum(idx).orElseThrow();
-                assertIdentical("small.chunked spectrum " + idx + " m/z", a.mz(), c.mz());
+                filledApart += assertIdenticalButFilled("small.chunked spectrum " + idx + " m/z", a, c.mz());
                 assertIdentical("small.chunked spectrum " + idx + " intensity", a.intensity(), c.intensity());
                 if (!a.peaks().isEmpty()) {
                     assertThat(c.peaks()).as("small.chunked spectrum %d peaks", idx).isEqualTo(a.peaks());
@@ -69,6 +73,8 @@ class LayoutEquivalenceTest {
                 }
             }
             assertThat(centroidPeakListsCompared).as("centroid spectra with comparable peak lists").isEqualTo(34);
+            assertThat(filledApart).as("filled small.chunked m/z apart from the point layout's")
+                    .isEqualTo(reconstructProfile ? FILLED_APART : 0);
         }
     }
 
@@ -127,6 +133,25 @@ class LayoutEquivalenceTest {
     }
 
     /** {@link Arrays#equals(double[], double[])}, reporting the first differing position on failure. */
+    /**
+     * {@code actual} equals the m/z of {@code expected} but at filled points (intensity 0), which may differ by up to
+     * the golden tolerance for filled m/z; the number of those that differ.
+     */
+    private static int assertIdenticalButFilled(String what, Spectrum expected, double[] actual) {
+        double[] mz = expected.mz();
+        assertThat(actual).as("%s length", what).hasSameSizeAs(mz);
+        int apart = 0;
+        for (int k = 0; k < mz.length; k++) {
+            if (Double.compare(mz[k], actual[k]) != 0) {
+                assertThat(expected.intensity()[k]).as("%s at %d: a stored point differs", what, k).isZero();
+                assertThat(Math.abs(mz[k] - actual[k])).as("%s at %d", what, k)
+                        .isLessThanOrEqualTo(Golden.Tolerance.DEFAULT.filledAbsDa());
+                apart++;
+            }
+        }
+        return apart;
+    }
+
     static void assertIdentical(String what, double[] expected, double[] actual) {
         assertThat(Arrays.equals(expected, actual))
                 .as(() -> {

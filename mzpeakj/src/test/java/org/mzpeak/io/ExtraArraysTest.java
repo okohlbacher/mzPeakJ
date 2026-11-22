@@ -284,15 +284,15 @@ class ExtraArraysTest {
     // ---- (f) the null fill keeps the extras parallel ------------------------------------------------------------
 
     @Test
-    void finalizeArraysDropsTheNullMarkedPointsFromTheExtrasToo() {
+    void dropNullsDropsTheNullMarkedPointsFromTheExtrasToo() {
         double[] a = {1, 2, 3, 4, 5};
         double[] b = {Double.NaN, 7, 8, 9, 10};
         Map<String, double[]> extras = new LinkedHashMap<>();
         extras.put("b", b);
         extras.put("a", a);
 
-        SpectrumArrayStore.Arrays kept = NullFill.finalizeArrays(new double[] {100, Double.NaN, 102, Double.NaN, 104},
-                new double[] {50, 0, 52, 0, 54}, extras, false);
+        SpectrumArrayStore.Arrays kept = NullFill.dropNulls(new double[] {100, Double.NaN, 102, Double.NaN, 104},
+                new double[] {50, 0, 52, 0, 54}, extras);
 
         assertThat(kept.mz()).containsExactly(100, 102, 104);
         assertThat(kept.intensity()).containsExactly(50, 52, 54);
@@ -303,35 +303,36 @@ class ExtraArraysTest {
     }
 
     @Test
-    void finalizeArraysKeepsTheExtrasAsReadWhenTheGapsAreFilled() {
-        double[] a = {1, 2, 3, 4, 5};
-        double[] b = {Double.NaN, Double.NaN, 8, Double.NaN, 10};
-        Map<String, double[]> extras = new LinkedHashMap<>();
-        extras.put("a", a);
-        extras.put("b", b);
+    void theExtrasAreKeptAsReadWhenTheGapsAreFilled() {
+        Path file = write(POINT, POINT_INDEX,
+                pointRow(0, 100.0, 50.0, 1.0, null),
+                pointRow(0, 101.0, 51.0, 2.0, null),
+                pointRow(0, null, null, 3.0, null), // a null pair: 102 and 103
+                pointRow(0, null, null, null, null),
+                pointRow(0, 104.0, 54.0, 5.0, 10.0),
+                pointRow(0, 105.0, 55.0, 6.0, null));
 
-        SpectrumArrayStore.Arrays filled = NullFill.finalizeArrays(
-                new double[] {100, Double.NaN, 102, Double.NaN, 104}, new double[] {50, 0, 52, 0, 54}, extras, true);
-
-        assertThat(filled.mz()).containsExactly(100, 101, 102, 103, 104);
-        assertThat(filled.extras().keySet()).containsExactly("a", "b");
-        assertThat(filled.extras().get("a")).isSameAs(a).containsExactly(1, 2, 3, 4, 5);
-        assertThat(filled.extras().get("b")).isSameAs(b).containsExactly(Double.NaN, Double.NaN, 8, Double.NaN, 10);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true, Map.of())) {
+            SpectrumArrayStore.Arrays filled = store.get(0);
+            assertThat(filled.mz()).containsExactly(100, 101, 102, 103, 104, 105);
+            assertThat(filled.intensity()).containsExactly(50, 51, 0, 0, 54, 55);
+            assertThat(filled.extras().keySet()).containsExactly(IM, IM + "@im_b");
+            assertThat(filled.extras().get(IM)).containsExactly(1, 2, 3, Double.NaN, 5, 6);
+            assertThat(filled.extras().get(IM + "@im_b"))
+                    .containsExactly(Double.NaN, Double.NaN, Double.NaN, Double.NaN, 10, Double.NaN);
+        }
     }
 
     @Test
-    void finalizeArraysWithoutNullMarkedPointsKeepsEveryArray() {
+    void dropNullsWithoutNullMarkedPointsKeepsEveryArray() {
         double[] mz = {100, 101};
         double[] intensity = {5, 6};
         double[] a = {1, 2};
-        for (boolean reconstructProfile : new boolean[] {true, false}) {
-            SpectrumArrayStore.Arrays arrays = NullFill.finalizeArrays(mz, intensity, Map.of("a", a),
-                    reconstructProfile);
-            assertThat(arrays.mz()).isSameAs(mz);
-            assertThat(arrays.intensity()).isSameAs(intensity);
-            assertThat(arrays.extras().get("a")).isSameAs(a);
-        }
-        assertThat(NullFill.finalizeArrays(new double[] {Double.NaN, 1}, new double[] {0, 2}, false).extras())
+        SpectrumArrayStore.Arrays arrays = NullFill.dropNulls(mz, intensity, Map.of("a", a));
+        assertThat(arrays.mz()).isSameAs(mz);
+        assertThat(arrays.intensity()).isSameAs(intensity);
+        assertThat(arrays.extras().get("a")).isSameAs(a);
+        assertThat(NullFill.dropNulls(new double[] {Double.NaN, 1}, new double[] {0, 2}, Map.of()).extras())
                 .isEmpty();
     }
 
@@ -441,8 +442,8 @@ class ExtraArraysTest {
     void twoIonMobilityColumnsAreBothExposed() {
         Peak[] p = Peak.firstOfDiaPasefRefSpectrum2(5);
         Path file = write(POINT, POINT_INDEX,
+                pointRow(2, null, null, null, null), // a null-marked point, the left flank of the first stored one
                 pointRow(2, p[0].mz, p[0].intensity, p[0].mobility, p[0].mobility),
-                pointRow(2, null, null, null, null), // a null-marked point
                 pointRow(2, p[1].mz, p[1].intensity, p[1].mobility, p[1].mobility),
                 pointRow(2, p[2].mz, p[2].intensity, p[2].mobility, p[2].mobility),
                 pointRow(4, p[3].mz, p[3].intensity, null, p[3].mobility),
@@ -468,30 +469,33 @@ class ExtraArraysTest {
 
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true, Map.of())) {
             SpectrumArrayStore.Arrays two = store.get(2);
-            assertExact("filled m/z", new double[] {p[0].mz, p[0].mz + (p[1].mz - p[0].mz) * 1 / 2, p[1].mz,
-                    p[2].mz}, two.mz());
-            assertExact("filled intensity", new double[] {intensity[0], 0.0, intensity[1], intensity[2]},
+            // one step of the second median spacing of the stored m/z below the first, the smaller of two spacings
+            double spacing = Math.min(p[1].mz - p[0].mz, p[2].mz - p[1].mz);
+            assertExact("filled m/z", new double[] {p[0].mz - spacing, p[0].mz, p[1].mz, p[2].mz}, two.mz());
+            assertExact("filled intensity", new double[] {0.0, intensity[0], intensity[1], intensity[2]},
                     two.intensity());
             assertThat(two.extras().keySet()).containsExactly(IM, qualified);
-            assertExact(IM, new double[] {p[0].mobility, Double.NaN, p[1].mobility, p[2].mobility},
+            assertExact(IM, new double[] {Double.NaN, p[0].mobility, p[1].mobility, p[2].mobility},
                     two.extras().get(IM));
             assertThat(two.extras().get(qualified)).hasSize(4);
-            assertThat(two.extras().get(qualified)[1]).isNaN();
+            assertThat(two.extras().get(qualified)[0]).isNaN();
         }
     }
 
     // ---- FN-13: the delta-model fill and spectra across row groups -----------------------------------------------
 
     /**
-     * reconstructProfile with a stored delta model fills the null-marked m/z by stepping; the extras stay parallel to
-     * the filled m/z and keep their stored cells, NaN at the filled rows (kills SA5, which dropped them there).
+     * reconstructProfile with a stored delta model fills the null-marked m/z by stepping, with the model from a single
+     * stored point (R2); the extras stay parallel to the filled m/z and keep their stored cells, NaN at the filled
+     * rows (kills SA5, which dropped them there).
      */
     @Test
     void theDeltaModelFillKeepsTheExtrasAsStored() {
         Peak[] p = Peak.firstOfDiaPasefRefSpectrum2(3);
         Path file = write(POINT, POINT_INDEX,
                 pointRow(2, p[0].mz, p[0].intensity, p[0].mobility, p[0].mobility),
-                pointRow(2, null, null, null, null), // a null-marked point
+                pointRow(2, null, null, null, null), // a null pair after a single stored point
+                pointRow(2, null, null, null, null),
                 pointRow(2, p[1].mz, p[1].intensity, p[1].mobility, null),
                 pointRow(2, p[2].mz, p[2].intensity, p[2].mobility, p[2].mobility));
         double step = 0.0125;
@@ -499,13 +503,14 @@ class ExtraArraysTest {
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), true,
                 Map.of(2L, new double[] {step}))) {
             SpectrumArrayStore.Arrays two = store.get(2);
-            assertExact("m/z", new double[] {p[0].mz, p[0].mz + step, p[1].mz, p[2].mz}, two.mz());
-            assertExact("intensity", new double[] {(float) p[0].intensity, 0.0, (float) p[1].intensity,
+            assertExact("m/z", new double[] {p[0].mz, p[0].mz + step, p[1].mz - (p[2].mz - p[1].mz), p[1].mz,
+                    p[2].mz}, two.mz());
+            assertExact("intensity", new double[] {(float) p[0].intensity, 0.0, 0.0, (float) p[1].intensity,
                     (float) p[2].intensity}, two.intensity());
             assertThat(two.extras().keySet()).containsExactly(IM, IM + "@im_b");
-            assertExact(IM, new double[] {p[0].mobility, Double.NaN, p[1].mobility, p[2].mobility},
+            assertExact(IM, new double[] {p[0].mobility, Double.NaN, Double.NaN, p[1].mobility, p[2].mobility},
                     two.extras().get(IM));
-            assertExact(IM + "@im_b", new double[] {(float) p[0].mobility, Double.NaN, Double.NaN,
+            assertExact(IM + "@im_b", new double[] {(float) p[0].mobility, Double.NaN, Double.NaN, Double.NaN,
                     (float) p[2].mobility}, two.extras().get(IM + "@im_b"));
         }
     }
@@ -607,8 +612,8 @@ class ExtraArraysTest {
         Peak[] p = Peak.firstOfDiaPasefRefSpectrum2(2);
         Path file = write(POINT, POINT_INDEX,
                 pointRow(2, p[0].mz, p[0].intensity, null, p[0].mobility),
-                pointRow(2, null, null, p[0].mobility, null), // null-marked, its im_a cell the only number
-                pointRow(2, p[1].mz, p[1].intensity, null, p[1].mobility));
+                pointRow(2, p[1].mz, p[1].intensity, null, p[1].mobility),
+                pointRow(2, null, null, p[0].mobility, null)); // null-marked, its im_a cell the only number
 
         try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
             SpectrumArrayStore.Arrays two = store.get(2);
@@ -620,18 +625,18 @@ class ExtraArraysTest {
             SpectrumArrayStore.Arrays two = store.get(2);
             assertThat(two.mz()).hasSize(3);
             assertThat(two.extras().keySet()).containsExactly(IM, IM + "@im_b");
-            assertExact(IM, new double[] {Double.NaN, p[0].mobility, Double.NaN}, two.extras().get(IM));
+            assertExact(IM, new double[] {Double.NaN, Double.NaN, p[0].mobility}, two.extras().get(IM));
         }
     }
 
     @Test
-    void finalizeArraysDropsAnExtraLeftWithOnlyNaN() {
+    void dropNullsDropsAnExtraLeftWithOnlyNaN() {
         Map<String, double[]> extras = new LinkedHashMap<>();
         extras.put("a", new double[] {Double.NaN, 7, Double.NaN});
         extras.put("b", new double[] {1, 2, 3});
 
-        SpectrumArrayStore.Arrays kept = NullFill.finalizeArrays(new double[] {100, Double.NaN, 102},
-                new double[] {50, 0, 52}, extras, false);
+        SpectrumArrayStore.Arrays kept = NullFill.dropNulls(new double[] {100, Double.NaN, 102},
+                new double[] {50, 0, 52}, extras);
 
         assertThat(kept.mz()).containsExactly(100, 102);
         assertThat(kept.extras().keySet()).containsExactly("b");

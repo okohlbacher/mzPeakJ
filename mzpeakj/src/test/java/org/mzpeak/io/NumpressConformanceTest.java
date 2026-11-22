@@ -73,21 +73,21 @@ class NumpressConformanceTest {
     private static final double LINEAR_TOLERANCE = 1e-4;
 
     /**
-     * {@code <encoding> reconstructProfile=<mode>} to the read-back digest recorded on the base code (aee4e0f).
-     * Numpress chunks carry no null markers, so both modes read the same arrays. SLOF intensities are decoded with
+     * {@code <encoding> reconstructProfile=<mode>} to the read-back digest recorded on the base code (aee4e0f),
+     * re-recorded when R2 (X-8) changed the null fill of the source the writes start from. Numpress chunks carry no null markers, so both modes read the same arrays. SLOF intensities are decoded with
      * {@link Math#exp}, whose last bit depends on the platform, so they are hashed rounded to float32
      * ({@link SignalDigest#float32}; SLOF digests recorded so on aarch64 and checked on x86_64); PIC intensities and
      * the linear m/z are exact and hashed raw.
      */
     private static final Map<String, String> READ_BACK = Map.of(
             "SLOF reconstructProfile=false", "entries=48 absent=none values=536796"
-                    + " sha256=79e804866a84e38783df10d1bb1cdf78640c606070c95b8fc982cece31d14e22",
+                    + " sha256=75e50269ae577f62fc4a7e6d560bdb935cd27b0ca4328ccd39bd0318a95a5d15",
             "SLOF reconstructProfile=true", "entries=48 absent=none values=536796"
-                    + " sha256=79e804866a84e38783df10d1bb1cdf78640c606070c95b8fc982cece31d14e22",
+                    + " sha256=75e50269ae577f62fc4a7e6d560bdb935cd27b0ca4328ccd39bd0318a95a5d15",
             "PIC reconstructProfile=false", "entries=48 absent=none values=536796"
-                    + " sha256=d48b2d8b74bde14d859dcee4b43fcda6ffc8155cd7820ff9ff96578f7ed18e5f",
+                    + " sha256=c4ded46919dbd15fef2a83e1463099cf17f78cc7e282c5b99420b7b6dcdd32d2",
             "PIC reconstructProfile=true", "entries=48 absent=none values=536796"
-                    + " sha256=d48b2d8b74bde14d859dcee4b43fcda6ffc8155cd7820ff9ff96578f7ed18e5f");
+                    + " sha256=c4ded46919dbd15fef2a83e1463099cf17f78cc7e282c5b99420b7b6dcdd32d2");
 
     private static Source source;
 
