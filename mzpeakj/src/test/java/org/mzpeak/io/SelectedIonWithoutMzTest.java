@@ -1,9 +1,11 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.mzpeak.examples.ConvertToDta;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.parquet.ParquetGroups;
@@ -11,9 +13,11 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SelectedIon;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -76,6 +80,47 @@ class SelectedIonWithoutMzTest {
                 assertThat(ParquetGroups.has(g, MZ)).as("the selected_ion_mz cell is null").isFalse();
                 assertThat(ParquetGroups.optInt(g, CHARGE)).isEqualTo(2);
             });
+        }
+    }
+
+    /**
+     * ConvertToDta needs the precursor m/z for the MH+ line: the edited spectrum, whose only ion has no m/z, gets no
+     * .dta file (as before R7, when the ion was dropped) instead of one headed "NaN 2"; every other MS2 spectrum does.
+     */
+    @Test
+    void convertToDtaSkipsTheSpectrumWhoseOnlyIonHasNoMz(@TempDir Path tmp) throws IOException {
+        Path copy = MemberRewrite.copy(SMALL, tmp.resolve("in"));
+        Path file = copy.resolve(MEMBER);
+        MemberRewrite.Member m = MemberRewrite.read(file);
+        Group first = m.rows.get(0);
+        long sourceIndex = ParquetGroups.optLong(first, "source_index");
+        m.rows.set(0, MemberRewrite.copyRow(first, m.schema, MZ, g -> g.append(CHARGE, 2)));
+        MemberRewrite.write(m, file);
+        String id;
+        try (MzPeakReader reader = MzPeakReader.open(copy)) {
+            id = reader.metadata().stream().filter(d -> d.index() == sourceIndex).findFirst().orElseThrow().id();
+        }
+        String scan = id.substring(id.indexOf("scan=") + "scan=".length());
+
+        Path original = tmp.resolve("original");
+        Path edited = tmp.resolve("edited");
+        ConvertToDta.main(new String[]{SMALL.toString(), original.toString()});
+        ConvertToDta.main(new String[]{copy.toString(), edited.toString()});
+
+        List<String> before = fileNames(original);
+        String dropped = "small." + scan + "." + scan + ".2.dta";
+        assertThat(before).contains(dropped);
+        List<String> expected = new ArrayList<>(before);
+        expected.remove(dropped);
+        assertThat(fileNames(edited)).containsExactlyElementsOf(expected);
+        for (String name : expected) {
+            assertThat(Files.readString(edited.resolve(name))).isEqualTo(Files.readString(original.resolve(name)));
+        }
+    }
+
+    private static List<String> fileNames(Path dir) throws IOException {
+        try (Stream<Path> files = Files.list(dir)) {
+            return files.map(p -> p.getFileName().toString()).sorted().toList();
         }
     }
 
