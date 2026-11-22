@@ -36,7 +36,9 @@ ZIP was chosen because members can be accessed at arbitrary byte offsets.
 members are STORED (no ZIP-level compression — Parquet files use their own ZSTD), `ZipSource` parses the
 central directory (`ZipIndex`) and reads each Parquet member **in place** from its byte range via a seekable
 `FileSliceInputFile` over the archive's shared `RandomAccessBytes` (positional reads; a `FileChannel` for a local
-file) — no copy into memory. A DEFLATE member, which the spec does not use, is inflated into memory as a fallback.
+file) — no copy into memory. The spec requires STORED members and forbids ZIP encryption (R9): a member the
+manifest lists that is compressed or has the encryption flag (general-purpose bit 0) fails `open` with a message naming
+it; a member it does not list is never read.
 For other storage, `MzPeakSource.zip` and `MzPeakSource.unpacked` read caller-supplied `RandomAccessBytes`
 (§8.2).
 
@@ -1052,10 +1054,11 @@ unit per row, for a `unit` given as a JSON array of segments, which the reader r
 **Integrity** (RD-19). `verifyIntegrity()` checks the members of an open reader, and the static
 `MzPeakReader.verifyIntegrity(Path)` a directory or archive without opening a reader: it reads only the manifest,
 decodes no metadata and checks no version, so a corrupt member that `open` would refuse is reported, not thrown.
-Nothing is verified on `open`. The result is an `IntegrityReport(outcome, members)`, one
-`MemberResult(name, status, expected, actual)` per manifest entry in manifest order, with `actual` the SHA-512 of
-the member's bytes (128 lowercase hex characters; null for a missing member) and `expected` the manifest's checksum
-(compared case-insensitively) or null:
+No checksum is verified on `open`. The result is an `IntegrityReport(outcome, members)`, one
+`MemberResult(name, status, expected, actual, reason)` per manifest entry in manifest order, with `actual` the SHA-512
+of the member's bytes (128 lowercase hex characters; null for a missing or rejected member), `expected` the manifest's
+checksum (compared case-insensitively) or null, and `reason` the message for a rejected member, else null (the
+4-argument constructor gives null):
 
 | `Status` | Meaning |
 |---|---|
@@ -1063,12 +1066,14 @@ the member's bytes (128 lowercase hex characters; null for a missing member) and
 | `MISMATCH` | they differ |
 | `MISSING_CHECKSUM` | the manifest declares none |
 | `MISSING_MEMBER` | the dataset has no such member |
+| `REJECTED_MEMBER` | a ZIP member that is compressed or encrypted (R9); not read |
 
-The `Outcome` is `INVALID` if any member is `MISMATCH` or `MISSING_MEMBER`, else `UNVERIFIABLE` if any is
-`MISSING_CHECKSUM` (every legacy fixture: pin-era manifests have no checksums), else `VALID` (every current fixture
-and every dataset mzPeakJ writes). `valid()` is `outcome() == VALID`; `failures()` lists the `MISMATCH` and
-`MISSING_MEMBER` results. A member is missing only when the source says so (a ZIP without the entry, a directory
-without the regular file, an `unpacked` opener returning `null`); any other read failure throws `MzPeakException`.
+The `Outcome` is `INVALID` if any member is `MISMATCH`, `MISSING_MEMBER` or `REJECTED_MEMBER`, else `UNVERIFIABLE`
+if any is `MISSING_CHECKSUM` (every legacy fixture: pin-era manifests have no checksums), else `VALID` (every current
+fixture and every dataset mzPeakJ writes). `valid()` is `outcome() == VALID`; `failures()` lists the `MISMATCH`,
+`MISSING_MEMBER` and `REJECTED_MEMBER` results. A member is missing only when the source says so (a ZIP without the
+entry, a directory without the regular file, an `unpacked` opener returning `null`); any other read failure throws
+`MzPeakException`.
 
 **Deviations from the reference readers.** All are deliberate; the tests named pin them:
 

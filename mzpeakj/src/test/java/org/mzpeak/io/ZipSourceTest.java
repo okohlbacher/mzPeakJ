@@ -3,22 +3,16 @@ package org.mzpeak.io;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.zip.Inflater;
-import java.util.zip.InflaterInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -26,9 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * {@link ZipSource} where its storage fails or its DEFLATE members disagree with their declared sizes: an archive
- * file that is gone when it is opened, bytes that fail to close, end early or are no archive, a DEFLATE member that
- * inflates to more than its declared size or whose compressed data is cut short, and a compressed member above 2 GiB.
+ * {@link ZipSource} where its storage fails or its members cannot be read: an archive file that is gone when it is
+ * opened, bytes that fail to close, end early or are no archive, a DEFLATE member, which R9 rejects whatever its data,
+ * and a STORED member above 2 GiB.
  * The paths the fixtures and {@link ZipSourceCharacterizationTest} reach are not repeated here.
  */
 class ZipSourceTest {
@@ -102,76 +96,46 @@ class ZipSourceTest {
         }
     }
 
+    /**
+     * R9: a DEFLATE member is rejected before any of its data is read, whether its data inflates to its declared size,
+     * to more, is cut short or is missing.
+     */
     @Test
-    void anIntactDeflatedManifest() throws IOException {
-        byte[] manifest = Files.readAllBytes(UNPACKED.resolve(INDEX));
-        try (MzPeakSource source = MzPeakSource.zip("memory:deflated",
-                RemoteSourceTest.inMemory(deflatedManifest().bytes))) {
-            assertThat(source.readManifestBytes()).isEqualTo(manifest);
-        }
-    }
-
-    /** The data inflates to one byte more than the size the central directory declares. */
-    @Test
-    void aDeflatedMemberThatInflatesToMoreThanItsDeclaredSize() throws IOException {
-        Deflated zip = deflatedManifest();
-        int size = zip.le().getInt(zip.record + 24);
-        zip.le().putInt(zip.record + 24, size - 1);
-        try (MzPeakSource source = MzPeakSource.zip("memory:longer", RemoteSourceTest.inMemory(zip.bytes))) {
-            assertThatThrownBy(source::readManifestBytes)
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("truncated/corrupt DEFLATE member " + INDEX + " in memory:longer (inflated "
-                            + (size - 1) + " of " + (size - 1) + " bytes)");
+    void aDeflatedManifestIsRejectedWhateverItsData() throws IOException {
+        String rejected = ": member " + INDEX
+                + " is stored with ZIP compression method 8; mzPeak requires STORED members";
+        Deflated intact = deflatedManifest();
+        Deflated longer = deflatedManifest();
+        longer.le().putInt(longer.record + 24, longer.le().getInt(longer.record + 24) - 1);
+        Deflated cut = deflatedManifest();
+        cut.le().putInt(cut.record + 20, cut.le().getInt(cut.record + 20) / 2);
+        Deflated empty = deflatedManifest();
+        empty.le().putInt(empty.record + 20, 0);
+        for (Deflated zip : new Deflated[] {intact, longer, cut, empty}) {
+            try (MzPeakSource source = MzPeakSource.zip("memory:deflated", RemoteSourceTest.inMemory(zip.bytes))) {
+                assertThatThrownBy(source::readManifestBytes)
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("mzPeak archive memory:deflated" + rejected);
+                assertThatThrownBy(() -> source.inputFile(INDEX))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("mzPeak archive memory:deflated" + rejected);
+            }
         }
     }
 
     /**
-     * The central directory declares half the compressed size: the inflater runs out of input with the stream
-     * unfinished, after what the first half inflates to, which {@link InflaterInputStream} measures here.
+     * A STORED manifest one byte above the in-memory limit of {@code Integer.MAX_VALUE - 8} bytes, in a sparse archive
+     * of a little over 2 GiB: it is too large to read into memory, but it is still served in place.
      */
     @Test
-    void aDeflatedMemberWhoseCompressedDataIsCutShort() throws IOException {
-        Deflated zip = deflatedManifest();
-        int size = zip.le().getInt(zip.record + 24);
-        int compressed = zip.le().getInt(zip.record + 20);
-        int half = compressed / 2;
-        zip.le().putInt(zip.record + 20, half);
-        int inflated = inflatedBeforeTheInputEnds(Arrays.copyOfRange(zip.bytes, zip.data, zip.data + half));
-        assertThat(inflated).isPositive().isLessThan(size);
-        try (MzPeakSource source = MzPeakSource.zip("memory:cut", RemoteSourceTest.inMemory(zip.bytes))) {
-            assertThatThrownBy(source::readManifestBytes)
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("truncated/corrupt DEFLATE member " + INDEX + " in memory:cut (inflated "
-                            + inflated + " of " + size + " bytes)");
-        }
-    }
-
-    @Test
-    void aDeflatedMemberWithoutCompressedData() throws IOException {
-        Deflated zip = deflatedManifest();
-        int size = zip.le().getInt(zip.record + 24);
-        zip.le().putInt(zip.record + 20, 0);
-        try (MzPeakSource source = MzPeakSource.zip("memory:empty", RemoteSourceTest.inMemory(zip.bytes))) {
-            assertThatThrownBy(source::readManifestBytes)
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("truncated/corrupt DEFLATE member " + INDEX + " in memory:empty (inflated 0 of "
-                            + size + " bytes)");
-        }
-    }
-
-    /**
-     * A DEFLATE member of 10 bytes whose compressed data is one byte above the in-memory limit of
-     * {@code Integer.MAX_VALUE - 8} bytes, in a sparse archive of a little over 2 GiB.
-     */
-    @Test
-    void aCompressedMemberAboveTheInMemoryLimit() {
-        long compressed = Integer.MAX_VALUE - 7L;
+    void aStoredManifestAboveTheInMemoryLimit() throws IOException {
+        long size = Integer.MAX_VALUE - 7L;
         byte[] name = INDEX.getBytes(StandardCharsets.UTF_8);
-        ZipIndexTest.Le header = new ZipIndexTest.Le().i32(0x04034b50).i16(20).i16(0).i16(ZipIndex.DEFLATED).i32(0)
-                .i32(0).i32((int) compressed).i32(10).i16(name.length).i16(0).put(name);
-        long cdOffset = header.size() + compressed;
+        ZipIndexTest.Le header = new ZipIndexTest.Le().i32(0x04034b50).i16(20).i16(0).i16(ZipIndex.STORED).i32(0)
+                .i32(0).i32((int) size).i32((int) size).i16(name.length).i16(0).put(name);
+        long cdOffset = header.size() + size;
         ZipIndexTest.Le directory = new ZipIndexTest.Le().i32(0x02014b50).i16(20).i16(20).i16(0)
-                .i16(ZipIndex.DEFLATED).i32(0).i32(0).i32((int) compressed).i32(10).i16(name.length).i16(0).i16(0)
+                .i16(ZipIndex.STORED).i32(0).i32(0).i32((int) size).i32((int) size).i16(name.length).i16(0).i16(0)
                 .i16(0).i16(0).i32(0).i32(0).put(name);
         ZipIndexTest.Le eocd = new ZipIndexTest.Le().i32(0x06054b50).i16(0).i16(0).i16(1).i16(1)
                 .i32(directory.size()).i32((int) cdOffset).i16(0);
@@ -183,24 +147,9 @@ class ZipSourceTest {
             assertThatThrownBy(source::readManifestBytes)
                     .isInstanceOf(MzPeakException.class)
                     .hasMessage("mzPeak member " + INDEX + " is too large to read into memory in memory:large");
-            assertThatThrownBy(() -> source.inputFile(INDEX))
-                    .isInstanceOf(MzPeakException.class)
-                    .hasMessage("mzPeak member " + INDEX + " is too large to read into memory in memory:large");
+            assertThat(source.inputFile(INDEX).getLength()).isEqualTo(size);
         }
         assertThat(bytes.closed).isTrue();
-    }
-
-    /** The bytes {@code compressed} inflate to before they run out, read through {@link InflaterInputStream}. */
-    private static int inflatedBeforeTheInputEnds(byte[] compressed) throws IOException {
-        int count = 0;
-        try (InputStream in = new InflaterInputStream(new ByteArrayInputStream(compressed), new Inflater(true))) {
-            while (in.read() != -1) {
-                count++;
-            }
-            throw new AssertionError("the cut stream inflated completely");
-        } catch (EOFException expected) {
-            return count;
-        }
     }
 
     /** {@code delegate}, whose close counts on {@code closes} and then throws {@code failure}. */

@@ -9,8 +9,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Checks of an {@link MzPeakSource}'s members that the public interface does not offer: whether a member exists, and
- * the checksums of {@link MzPeakReader#verifyIntegrity()} (RD-19).
+ * Checks of an {@link MzPeakSource}'s members that the public interface does not offer: whether a member exists,
+ * whether a ZIP member is stored in a way mzPeak forbids (R9), and the checksums of
+ * {@link MzPeakReader#verifyIntegrity()} (RD-19).
  */
 final class MzPeakSources {
 
@@ -50,11 +51,34 @@ final class MzPeakSources {
     }
 
     /**
-     * One result per entry of {@code manifest}, in manifest order: {@link Status#MISSING_MEMBER} for a member that
-     * {@link #presence} finds {@link MemberPresence#ABSENT}, else the SHA-512 of the member's bytes compared,
-     * ignoring case, with the declared checksum.
+     * Why the member {@code name} of {@code source} is not read (R9): a ZIP member that is encrypted or not STORED.
+     * {@code null} for a member that can be read, a member the archive does not have, and other sources.
+     */
+    static String rejection(MzPeakSource source, String name) {
+        return source instanceof ZipSource zip ? zip.rejection(name) : null;
+    }
+
+    /**
+     * Rejects the first member {@code manifest} lists that {@link #rejection} gives a reason for.
      *
-     * @throws MzPeakException if a member that is not absent cannot be read
+     * @throws MzPeakException with that reason
+     */
+    static void checkListedMembers(MzPeakSource source, MzPeakManifest manifest) {
+        for (MzPeakManifest.Entry entry : manifest.files()) {
+            String reason = rejection(source, entry.name());
+            if (reason != null) {
+                throw new MzPeakException(reason);
+            }
+        }
+    }
+
+    /**
+     * One result per entry of {@code manifest}, in manifest order: {@link Status#MISSING_MEMBER} for a member that
+     * {@link #presence} finds {@link MemberPresence#ABSENT}, {@link Status#REJECTED_MEMBER} with the reason for one
+     * that {@link #rejection} rejects, else the SHA-512 of the member's bytes compared, ignoring case, with the
+     * declared checksum.
+     *
+     * @throws MzPeakException if a member that is neither absent nor rejected cannot be read
      */
     static IntegrityReport verify(MzPeakSource source, MzPeakManifest manifest) {
         List<MemberResult> results = new ArrayList<>();
@@ -63,6 +87,11 @@ final class MzPeakSources {
             String expected = entry.checksum();
             if (presence(source, name) == MemberPresence.ABSENT) {
                 results.add(new MemberResult(name, Status.MISSING_MEMBER, expected, null));
+                continue;
+            }
+            String reason = rejection(source, name);
+            if (reason != null) {
+                results.add(new MemberResult(name, Status.REJECTED_MEMBER, expected, null, reason));
                 continue;
             }
             String actual = sha512(source, name);

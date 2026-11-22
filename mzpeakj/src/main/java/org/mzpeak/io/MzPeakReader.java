@@ -299,14 +299,19 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      * <p>With {@link Options#versionCheck()} on, the manifest's {@code metadata.version} must have a major version
      * of 0; a missing, non-string or unparseable version logs a WARNING and the dataset is read as 0.x.
      *
+     * <p>Every member the manifest lists in a ZIP archive must be STORED and unencrypted (R9); a member it does not
+     * list is not checked.
+     *
      * @throws NullPointerException if {@code source} or {@code options} is {@code null}
-     * @throws MzPeakException if the version check is on and the format version's major is above 0
+     * @throws MzPeakException if the version check is on and the format version's major is above 0, or a ZIP member
+     *                         the manifest lists is compressed or encrypted
      */
     public static MzPeakReader open(MzPeakSource source, Options options) {
         Objects.requireNonNull(source, "source");
         try {
             Objects.requireNonNull(options, "options");
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
+            MzPeakSources.checkListedMembers(source, manifest);
             if (options.versionCheck()) {
                 checkFormatVersion(manifest, source.describe());
             }
@@ -358,10 +363,10 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
 
     /**
      * Compare the SHA-512 checksum the manifest declares for each member of this dataset with the checksum of the
-     * member's bytes (RD-19). Every member is read in full; nothing is verified on {@code open}.
+     * member's bytes (RD-19). Every member is read in full; no checksum is verified on {@code open}.
      *
      * @throws IllegalStateException if this reader is closed
-     * @throws MzPeakException       if a member that is not missing cannot be read
+     * @throws MzPeakException       if a member that is neither missing nor rejected cannot be read
      * @see #verifyIntegrity(Path)
      */
     public IntegrityReport verifyIntegrity() {
@@ -373,11 +378,12 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
      * Compare the SHA-512 checksum the manifest declares for each member of the dataset (directory or ZIP) at
      * {@code dataset} with the checksum of the member's bytes (RD-19). Opens only the dataset and its manifest: the
      * metadata is not decoded and the format version is not checked, so a corrupt member that {@link #open(Path)}
-     * would refuse is reported, not thrown.
+     * would refuse is reported, not thrown. A compressed or encrypted ZIP member (R9) is reported
+     * {@link IntegrityReport.Status#REJECTED_MEMBER}, with the reason.
      *
      * @throws NullPointerException if {@code dataset} is {@code null}
-     * @throws MzPeakException      if the dataset or its manifest cannot be read, or a member that is not missing
-     *                              cannot be read
+     * @throws MzPeakException      if the dataset or its manifest cannot be read, or a member that is neither missing
+     *                              nor rejected cannot be read
      */
     public static IntegrityReport verifyIntegrity(Path dataset) {
         Objects.requireNonNull(dataset, "dataset");
