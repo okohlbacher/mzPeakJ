@@ -7,6 +7,8 @@ with pyarrow; each case is a function of the script, listed in its `CASES`. The 
 | File | Made from | Change | Used by |
 |---|---|---|---|
 | `small.spectra_metadata.brotli.parquet` | `small.unpacked.mzpeak/spectra_metadata.parquet` | every column chunk BROTLI (no Java library writes BROTLI); Parquet schema (but the root group's name), rows and footer key-values kept, pyarrow writes its own `ARROW:schema` | `CodecReadTest`, `PureJavaCodecFactoryTest` (X-1, C1) |
+| `small.spectra_peaks.empty-rowgroup.parquet` | `small.unpacked.mzpeak/spectra_peaks.parquet` | no rows: one row group of 0 rows; Parquet schema (but the root group's name), codec (ZSTD) and footer key-values kept (they still count the source's spectra and points), pyarrow writes its own `ARROW:schema` | `EmptyRowGroupTest` (X-4, C3) |
+| `small.spectra_data.split-empty.parquet` | `small.unpacked.mzpeak/spectra_data.parquet` | three row groups: the first 6000 points of spectrum 0, then 0 rows, then the rest of spectrum 0 and every later spectrum; Parquet schema (but the root group's name), rows, codec (ZSTD), column encodings and footer key-values kept, pyarrow writes its own `ARROW:schema` | `EmptyRowGroupTest` (X-4, C3) |
 
 A test that puts a crafted member into a dataset copy updates the member's checksum in the copy's manifest.
 
@@ -26,5 +28,5 @@ uv run --no-project --python 3.13.12 --with-requirements mzpeakj/src/test/resour
 ```
 
 The script writes into its own directory by default (`--out DIR` elsewhere) and checks every file it writes
-(codecs, rows and key-values as described). Regenerating with the pinned environment reproduces the committed files
+(codecs, row groups, rows and key-values as described). Regenerating with the pinned environment reproduces the committed files
 byte for byte.
