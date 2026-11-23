@@ -382,6 +382,45 @@ class RustReaderAcceptanceTest {
     }
 
     /**
+     * D13-28 (X-40, R-16): has_uv with a param in UO:0000010 (second) and one without unit added to spectrum 0, its
+     * first scan, chromatogram 0 and wavelength spectrum 0, written split as an archive (the split layout refuses a
+     * unit such as {@code seconds} there, on which Rust panics): Rust reads every spectrum, chromatogram and
+     * wavelength spectrum without a panic, and spectrum 0's and chromatogram 0's params with the unit second and
+     * without unit.
+     */
+    @Test
+    void rustReadsParamsWithACurieUnitAndWithoutUnit() throws Exception {
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
+        Param second = new Param("x40 second", "MS:1000786", 1.5, "UO:0000010");
+        Param unitless = new Param("x40 unitless", null, "v", null);
+        List<Spectrum> spectra = new ArrayList<>(source.spectra);
+        spectra.set(0, SplitParamCurieTest.withScanParam(SplitParamCurieTest.withParam(
+                SplitParamCurieTest.withParam(spectra.get(0), second), unitless), second));
+        List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
+        chromatograms.set(0, SplitParamCurieTest.withParam(SplitParamCurieTest.withParam(chromatograms.get(0),
+                second), unitless));
+        List<WavelengthSpectrum> waves = new ArrayList<>(source.wavelengthSpectra);
+        waves.set(0, SplitParamCurieTest.withParam(SplitParamCurieTest.withParam(waves.get(0), second), unitless));
+        Path out = tmp.resolve("curies.mzpeak");
+        MzPeakWriter.writeArchive(out, spectra, chromatograms, waves, source.scanSettings, source.fileMetadata,
+                SPLIT);
+
+        Dump dump = rdump(out);
+        assertThat(dump.records("S")).hasSize(spectra.size()).allSatisfy(r -> assertThat(r.has("panic")
+                || r.has("none")).as("%s", r).isFalse());
+        assertThat(dump.records("C")).hasSize(chromatograms.size()).allSatisfy(r -> assertThat(r.has("panic")
+                || r.has("none")).as("%s", r).isFalse());
+        assertThat(dump.records("W")).hasSize(waves.size()).allSatisfy(r -> assertThat(r.has("panic")
+                || r.has("none")).as("%s", r).isFalse());
+        for (JsonNode desc : List.of(dump.records("S").get(0).path("desc"), dump.records("C").get(0).path("desc"))) {
+            Map<String, String> units = new HashMap<>();
+            desc.path("params").forEach(p -> units.put(p.path("name").asText(), p.path("unit").asText()));
+            assertThat(units).as("%s", desc).containsEntry("x40 second", "Second")
+                    .containsEntry("x40 unitless", "Unknown");
+        }
+    }
+
+    /**
      * W2 (D13-16): small.unpacked with spectrum 0 given params {@code Integer 3}, {@code Float 1.5f} and
      * {@code List.of(1, 2)} (its first scan {@code List.of("x", 1.5f)}), a software with the param
      * {@code List.of("a", "b")} and scan settings with the param {@code List.of(1, 2)}, written split as an archive:

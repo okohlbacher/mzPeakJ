@@ -298,8 +298,10 @@ class WriterDeclarationsTest {
 
     /**
      * D13-26: a param unit that is not a CURIE, such as {@code seconds} or {@code counts: per second} (a colon but
-     * not the shape {@code PREFIX:local}), is not prefix-checked and is written as given; so is a CV prefix the caller's cv list declares with all four fields, which metadata.cv_list then
-     * declares. A file description without contents (a null list) has no param to check.
+     * not the shape {@code PREFIX:local}), is not prefix-checked and is written as given by the packed layout; so
+     * is a CV prefix the caller's cv list declares with all four fields, which metadata.cv_list then declares. A file
+     * description without contents (a null list) has no param to check. The split layout refuses such a unit
+     * (D13-28, X-40, {@link SplitParamCurieTest}).
      */
     @Test
     void aUnitThatIsNoCurieAndACallerDeclaredPrefixAreWrittenAsGiven(@TempDir Path tmp) throws IOException {
@@ -310,7 +312,8 @@ class WriterDeclarationsTest {
                 .withFileMetadata(m -> new FileMetadata(new FileDescription(null,
                         m.fileDescription().sourceFiles()), m.instrumentConfigurations(), m.dataProcessingMethods(),
                         m.samples(), m.software(), m.run()))
-                .withOptions(MzPeakWriter.Options.defaults().withCvList(List.of(foo)));
+                .withOptions(MzPeakWriter.Options.defaults().withCvList(List.of(foo))
+                        .withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
         Path out = tmp.resolve("out.mzpeak");
 
         MzPeakWriter.writeDirectory(out, w.spectra(), w.chromatograms(), w.wavelengthSpectra(), w.scanSettings(),

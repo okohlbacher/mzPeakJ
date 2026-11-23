@@ -31,8 +31,8 @@ the test yet.
 | R-12 | In the Numpress (chunked) layout, (a) the chunk decoder labels the intensity of a spectrum stored in a per-unit transform column, such as `intensity_MS_1000132_numpress_slof_bytes`, as `DetectorCounts` (the values are right), and (b) the range read `extract_signal` panics with "list array" | (a) any Numpress spectra_data with spectra in two intensity units, which mzPeakJ writes since 0.13.0 (R5); (b) mzPeakJ's Numpress output, also with one intensity unit; not the reference's small.numpress | (a) wrong intensity unit; (b) range reads of Numpress data fail |
 | R-13 | A compressed auxiliary array does not decode: `AuxiliaryArrayVisitor` (`src/reader/visitor.rs:1880-1925`) hands the stored bytes to mzdata as the array's data with its compression, and mzdata takes the data of a compressed array for base64 text ("The content was not properly Base64 encoded"); auxiliary-arrays.md stores the compressed bytes themselves ("No base64 encoding is used") | any auxiliary array with a compression other than MS:1000576, such as zlib (MS:1000574) | array unreadable |
 | R-14 | The auxiliary arrays of a chunked spectrum whose chunks span several row groups are dropped: the chunk path of `get_spectrum_arrays` (`src/reader.rs:552-565`) returns before `load_auxiliary_arrays_for_spectrum`, which the single-row-group and point paths call | a spectrum with auxiliary arrays in the chunked (Numpress) layout across a row-group boundary | arrays missing |
-| R-15 | `AuxiliaryArrayVisitor` panics on an auxiliary array whose name has no accession or one mzdata's `ArrayType::from_accession` does not map, or whose data type or compression `BinaryDataArrayType::from_accession` or `BinaryCompressionType::from_accession` does not map (`src/reader/visitor.rs:1896-1897`, `1912`, `1922`, each `.unwrap()`); auxiliary-arrays.md only requires CV terms | an auxiliary array named MS:1002478 (mean charge array), or of another CV data type or compression; mzPeakJ refuses to write such arrays (provisional D13-28) | entity unreadable |
-| R-16 | A param unit or accession that is not an mzdata CURIE (`PREFIX:number`, the number a u32) panics in every `parameters` list: `ParameterVisitor` reads accessions and units through `AnyCURIEArray` and `UnitArray` (`src/reader/visitor/curie_array_visitor.rs:379`, `389`), which call `parse().unwrap()` (`:34`, `:70`, `:257`) | a param with the unit `seconds` (which C6 reads and D13-26 writes as given) or the accession `MS:abc`, seen on spectra, scans and wavelength spectra; chromatogram params go through the same visitor | entity unreadable |
+| R-15 | `AuxiliaryArrayVisitor` panics on an auxiliary array whose name has no accession or one mzdata's `ArrayType::from_accession` does not map, or whose data type or compression `BinaryDataArrayType::from_accession` or `BinaryCompressionType::from_accession` does not map (`src/reader/visitor.rs:1896-1897`, `1912`, `1922`, each `.unwrap()`); auxiliary-arrays.md only requires CV terms | an auxiliary array named MS:1002478 (mean charge array), or of another CV data type or compression; mzPeakJ refuses to write such arrays (D13-28) | entity unreadable |
+| R-16 | A param unit or accession that is not an mzdata CURIE (`PREFIX:number`, the number a u32) panics in every `parameters` list: `ParameterVisitor` reads accessions and units through `AnyCURIEArray` and `UnitArray` (`src/reader/visitor/curie_array_visitor.rs:379`, `389`), which call `parse().unwrap()` (`:34`, `:70`, `:257`) | a param with the unit `seconds` (which C6 reads) or the accession `MS:abc`, seen on spectra, scans and wavelength spectra; chromatogram params go through the same visitor; mzPeakJ refuses to write such a param in the split layout (D13-28, X-40) | entity unreadable |
 | R-17 | The auxiliary arrays of a spectrum with 0 data points are dropped: `get_spectrum` reads the arrays, and with them the auxiliary arrays, only when the spectrum's `data_point_counts` entry is above 0 (`src/reader.rs:1796-1831`) | a spectrum without profile points, such as a centroid-only one, that has auxiliary arrays | arrays missing |
 
 How the test sees them on mzPeakJ's own output:
@@ -104,7 +104,7 @@ How the test sees them on mzPeakJ's own output:
   the array, while it reads spectrum 0's (all its chunks in row group 0; parquet-java checks the row-group size
   first after 100 rows, so spectrum 0 cannot span row groups in a write by mzPeakJ). mzPeakJ reads both.
 
-- R-15 has no rdump record: mzPeakJ refuses to write such an array (provisional D13-28), so the evidence is the
+- R-15 has no rdump record: mzPeakJ refuses to write such an array (D13-28), so the evidence is the
   reference's source at `2ee2589`, `AuxiliaryArrayVisitor` in `src/reader/visitor.rs`:
 
   ```rust
@@ -124,8 +124,14 @@ How the test sees them on mzPeakJ's own output:
   {"index":0,"kind":"W","panic":"called `Result::unwrap()` on an `Err` value: MissingNamespaceSeparator"}
   ```
 
-  mzPeakJ writes and reads such a param unit as given (D13-26); for the units and param accessions of auxiliary
-  arrays the writer refuses it (D13-28).
+  The Rust reference reader panics on such a value (`parse().unwrap()`), so mzPeakJ refuses to write it (D13-28,
+  X-40): the split layout refuses a param accession or unit that is neither null nor `PREFIX:number` (the number a
+  u32) on every `parameters` list it writes (spectra, scans, precursors with their isolation windows and
+  activations, selected ions, chromatograms, wavelength spectra and wavelength scans), naming the entity, its index,
+  the param's position and the field, before anything is written; so does every layout for the units and param
+  accessions of auxiliary arrays. A unit `UO:0000010` and a null unit read without a panic
+  (`RustReaderAcceptanceTest`). The reader still reads such a param unit as given, and the packed layout, which the
+  Rust reader does not read, still writes it as given (D13-26).
 
 - R-17 shows with rdump on current small.unpacked written split with spectrum 0 and spectrum 1 each given the
   uncompressed float64 array MS:1000517 [1, 2, 3], spectrum 1 without its profile points: rdump reads spectrum 0's
