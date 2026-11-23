@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.Entry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
@@ -62,9 +63,12 @@ final class ChromatogramMetadataDecoder {
      *                          selected-ion rows whose {@code source_index} is its index; empty when there are none
      * @param products          its products in {@code product_index} order, as {@link ProductRowDecoder} decodes the
      *                          product rows whose {@code source_index} is its index; empty when there are none
+     * @param auxiliaryArrays   its auxiliary arrays, as {@link AuxiliaryArrayDecoder} reads them; empty when there are
+     *                          none
      */
     record Header(long index, String id, String typeCurie, Polarity polarity, String dataProcessingRef,
-                  List<Param> parameters, List<Precursor> precursors, List<Product> products) {
+                  List<Param> parameters, List<Precursor> precursors, List<Product> products,
+                  List<AuxiliaryArray> auxiliaryArrays) {
     }
 
     /**
@@ -124,7 +128,8 @@ final class ChromatogramMetadataDecoder {
                 dataProcessingRef = columns.stringValue(g, columns.resolveName(F_DATA_PROCESSING_ID));
             }
             byIndex.put(index, new Header(index, id, type, polarity, dataProcessingRef,
-                    parameters(columns.params(g), columns.leftovers(g, consumed)), List.of(), List.of()));
+                    parameters(columns.params(g), columns.leftovers(g, consumed)), List.of(), List.of(),
+                    AuxiliaryArrayDecoder.decode(g, columns.member(), "chromatogram " + index)));
         });
         // The member was read, so it has a shape: packed, split, or empty without rows.
         ParquetFooter footer = ParquetFooter.read(file);
@@ -153,7 +158,8 @@ final class ChromatogramMetadataDecoder {
             out.add(new Header(h.index(), h.id(), h.typeCurie(), h.polarity(), h.dataProcessingRef(), h.parameters(),
                     PrecursorJoin.join(facetRows.get(Facet.CHROMATOGRAM_PRECURSOR).get(h.index()),
                             facetRows.get(Facet.CHROMATOGRAM_SELECTED_ION).get(h.index())),
-                    ProductRowDecoder.decode(facetRows.get(Facet.CHROMATOGRAM_PRODUCT).get(h.index()))));
+                    ProductRowDecoder.decode(facetRows.get(Facet.CHROMATOGRAM_PRODUCT).get(h.index())),
+                    h.auxiliaryArrays()));
         }
         return List.copyOf(out);
     }

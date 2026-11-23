@@ -153,6 +153,8 @@ public final class ModelAssert {
         DOUBLE,
         /** {@code double[]}: same length, every element bit-exact ({@link Double#compare}). */
         DOUBLE_ARRAY,
+        /** {@code byte[]}: {@link Arrays#equals(byte[], byte[])}. */
+        BYTE_ARRAY,
         /** {@code List<Param>}: a multiset of (accession, else name; value; unit), one difference per accession. */
         PARAMS,
         /** A list: same size (else one {@code .size} difference), then pairwise in order by the element rule. */
@@ -168,6 +170,7 @@ public final class ModelAssert {
         static final Rule EXACT = new Rule(Kind.EXACT, null);
         static final Rule DOUBLE = new Rule(Kind.DOUBLE, null);
         static final Rule DOUBLE_ARRAY = new Rule(Kind.DOUBLE_ARRAY, null);
+        static final Rule BYTE_ARRAY = new Rule(Kind.BYTE_ARRAY, null);
         static final Rule PARAMS = new Rule(Kind.PARAMS, null);
         static final Rule RECORD = new Rule(Kind.RECORD, null);
         static final Rule MAP_OF_ARRAYS = new Rule(Kind.MAP_OF_ARRAYS, null);
@@ -195,6 +198,7 @@ public final class ModelAssert {
         components.put("peakArrays", Spectrum::peakArrays);
         components.put("intensityUnit", Spectrum::intensityUnit);
         components.put("peakIntensityUnit", Spectrum::peakIntensityUnit);
+        components.put("auxiliaryArrays", Spectrum::auxiliaryArrays);
         return Collections.unmodifiableMap(components);
     }
 
@@ -208,6 +212,7 @@ public final class ModelAssert {
             entry("Spectrum.peakArrays", Rule.MAP_OF_ARRAYS),
             entry("Spectrum.intensityUnit", Rule.EXACT),
             entry("Spectrum.peakIntensityUnit", Rule.EXACT),
+            entry("Spectrum.auxiliaryArrays", Rule.list(Rule.RECORD)),
 
             entry("SpectrumDescription.index", Rule.EXACT),
             entry("SpectrumDescription.id", Rule.EXACT),
@@ -276,6 +281,7 @@ public final class ModelAssert {
             entry("Chromatogram.precursors", Rule.list(Rule.RECORD)),
             entry("Chromatogram.timeUnit", Rule.EXACT),
             entry("Chromatogram.products", Rule.list(Rule.RECORD)),
+            entry("Chromatogram.auxiliaryArrays", Rule.list(Rule.RECORD)),
 
             entry("WavelengthSpectrum.index", Rule.EXACT),
             entry("WavelengthSpectrum.id", Rule.EXACT),
@@ -284,6 +290,21 @@ public final class ModelAssert {
             entry("WavelengthSpectrum.wavelength", Rule.DOUBLE_ARRAY),
             entry("WavelengthSpectrum.intensity", Rule.DOUBLE_ARRAY),
             entry("WavelengthSpectrum.parameters", Rule.PARAMS),
+            entry("WavelengthSpectrum.auxiliaryArrays", Rule.list(Rule.RECORD)),
+
+            entry("AuxiliaryArray.name", Rule.RECORD),
+            entry("AuxiliaryArray.data", Rule.BYTE_ARRAY),
+            entry("AuxiliaryArray.dataType", Rule.EXACT),
+            entry("AuxiliaryArray.compression", Rule.EXACT),
+            entry("AuxiliaryArray.items", Rule.EXACT),
+            entry("AuxiliaryArray.unit", Rule.EXACT),
+            entry("AuxiliaryArray.parameters", Rule.PARAMS),
+            entry("AuxiliaryArray.dataProcessingId", Rule.EXACT),
+
+            entry("Param.name", Rule.EXACT),
+            entry("Param.accession", Rule.EXACT),
+            entry("Param.value", Rule.EXACT),
+            entry("Param.unit", Rule.EXACT),
 
             entry("FileMetadata.fileDescription", Rule.RECORD),
             entry("FileMetadata.instrumentConfigurations", Rule.list(Rule.RECORD)),
@@ -656,6 +677,7 @@ public final class ModelAssert {
                     }
                     switch (rule.kind()) {
                         case DOUBLE_ARRAY -> array(path, (double[]) expected, (double[]) actual);
+                        case BYTE_ARRAY -> bytes(path, (byte[]) expected, (byte[]) actual);
                         case PARAMS -> params(path, (List<?>) expected, (List<?>) actual);
                         case LIST -> list(path, rule.element(), (List<?>) expected, (List<?>) actual);
                         case RECORD -> record(path, expected, actual);
@@ -684,6 +706,13 @@ public final class ModelAssert {
             }
             differ(path, expected, actual, count + " of " + expected.length + " values differ, first [" + first
                     + "]: expected " + expected[first] + ", got " + actual[first]);
+        }
+
+        private void bytes(String path, byte[] expected, byte[] actual) {
+            if (!Arrays.equals(expected, actual)) {
+                differ(path, expected, actual, "expected " + expected.length + " bytes "
+                        + Arrays.toString(expected) + ", got " + actual.length + " bytes " + Arrays.toString(actual));
+            }
         }
 
         private void params(String path, List<?> expected, List<?> actual) {

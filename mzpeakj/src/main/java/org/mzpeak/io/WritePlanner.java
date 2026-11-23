@@ -939,7 +939,7 @@ final class WritePlanner {
         }
         return new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(), c.intensityUnit(),
                 c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), precursors, c.timeUnit(),
-                c.products());
+                c.products(), c.auxiliaryArrays());
     }
 
     // Attribution check (design §11.5, WR-8). The mzPeakJ reader attaches a selected ion to the first precursor of its

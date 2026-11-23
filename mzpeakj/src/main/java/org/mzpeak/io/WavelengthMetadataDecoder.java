@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.Entry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Param;
 
 import java.util.ArrayList;
@@ -38,8 +39,11 @@ final class WavelengthMetadataDecoder {
      * @param time       its {@code time}, or {@code NaN} when the cell is null
      * @param lambdaMax  its MS:1003812 (lambda max) cell, in nm, or {@code null}
      * @param parameters its Params, as {@link #decode} reads them
+     * @param auxiliaryArrays its auxiliary arrays, as {@link AuxiliaryArrayDecoder} reads them; empty when there are
+     *                   none
      */
-    record Header(long index, String id, double time, Double lambdaMax, List<Param> parameters) {
+    record Header(long index, String id, double time, Double lambdaMax, List<Param> parameters,
+                  List<AuxiliaryArray> auxiliaryArrays) {
     }
 
     /**
@@ -68,7 +72,8 @@ final class WavelengthMetadataDecoder {
             Double lambdaMax = columns.doubleValue(g, consume(consumed, columns.resolve(LAMBDA_MAX)));
             consume(consumed, columns.resolve(N_POINTS));
             byIndex.put(index, new Header(index, id, time == null ? Double.NaN : time, lambdaMax,
-                    parameters(columns.params(g), columns.leftoversInBothLayouts(g, consumed))));
+                    parameters(columns.params(g), columns.leftoversInBothLayouts(g, consumed)),
+                    AuxiliaryArrayDecoder.decode(g, columns.member(), "wavelength spectrum " + index)));
         });
         return List.copyOf(byIndex.values());
     }

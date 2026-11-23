@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.SignalContinuity;
@@ -43,7 +44,8 @@ final class SpectrumRowDecoder {
      * {@code spectrum_type} term marker. A column wins over a list entry of the same accession: such an entry is
      * dropped, as {@link PrecursorRowDecoder} does for the activation. Its data processing reference is its
      * {@code data_processing_id} cell, else its {@code data_processing_ref} cell, or {@code null}; neither column, a
-     * structural one ({@link ColumnTable#structural}), gives a Param.
+     * structural one ({@link ColumnTable#structural}), gives a Param. Its auxiliary arrays are read by
+     * {@link AuxiliaryArrayDecoder}.
      */
     static SpectrumHead decode(FacetRow spectrum, long idx) {
         ColumnResolver columns = spectrum.columns();
@@ -69,6 +71,7 @@ final class SpectrumRowDecoder {
         }
         b.spectrumParams = columns.params(g);
         b.mzDeltaModel = deltaModel(columns, g, consumed);
+        b.auxiliaryArrays = AuxiliaryArrayDecoder.decode(g, columns.member(), "spectrum " + idx);
         List<Param> leftovers = columns.leftoversInBothLayouts(g, consumed);
         if (!leftovers.isEmpty()) {
             Set<String> columnAccessions = new HashSet<>();
@@ -116,7 +119,7 @@ final class SpectrumRowDecoder {
 
     /**
      * Mutable assembly holder for one spectrum's core fields and data processing reference, plus its m/z delta model
-     * polynomial coefficients (empty when the row has none).
+     * polynomial coefficients (empty when the row has none) and its auxiliary arrays.
      */
     static final class SpectrumHead {
         long index;
@@ -130,5 +133,6 @@ final class SpectrumRowDecoder {
         List<Param> spectrumParams = List.of();
         String dataProcessingRef;
         double[] mzDeltaModel;
+        List<AuxiliaryArray> auxiliaryArrays = List.of();
     }
 }

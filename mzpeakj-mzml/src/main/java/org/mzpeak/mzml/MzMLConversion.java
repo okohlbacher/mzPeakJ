@@ -299,7 +299,8 @@ public final class MzMLConversion {
                     d.retentionTime(), d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
                     d.scans(), precursors, d.parameters(), d.dataProcessingRef(), d.products());
             return new Spectrum(description, spectrum.mz(), spectrum.intensity(), spectrum.peaks(), spectrum.arrays(),
-                    spectrum.peakArrays(), spectrum.intensityUnit(), spectrum.peakIntensityUnit());
+                    spectrum.peakArrays(), spectrum.intensityUnit(), spectrum.peakIntensityUnit(),
+                    spectrum.auxiliaryArrays());
         }
     }
 

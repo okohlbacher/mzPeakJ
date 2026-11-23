@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -211,7 +212,9 @@ class LegacyMetadataSnapshotTest {
         assertThat(components(Param.class)).containsExactly("name", "accession", "value", "unit");
         // The wavelength line writes the arrays as their length.
         assertThat(components(WavelengthSpectrum.class)).containsExactly("index", "id", "time", "lambdaMax",
-                "wavelength", "intensity", "parameters");
+                "wavelength", "intensity", "parameters", "auxiliaryArrays");
+        assertThat(components(AuxiliaryArray.class)).containsExactly("name", "data", "dataType", "compression",
+                "items", "unit", "parameters", "dataProcessingId");
     }
 
     private static List<String> components(Class<? extends Record> type) {

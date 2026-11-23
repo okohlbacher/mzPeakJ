@@ -515,7 +515,7 @@ class ChromatogramMetadataTest {
         assertThat(decode(entry)).containsExactly(new ChromatogramMetadataDecoder.Header(0, "TIC", "MS:1000235",
                 Polarity.NEGATIVE, null, List.of(SOURCE_PARAM, listedLevel,
                         new Param("total ion current", "MS:1000285", 1.5, "MS:1000131"),
-                        new Param("comment", null, "note", null)), List.of(), List.of()));
+                        new Param("comment", null, "note", null)), List.of(), List.of(), List.of()));
     }
 
     /**
@@ -546,7 +546,7 @@ class ChromatogramMetadataTest {
         write(schema, row);
         assertThat(decode(new Entry(METADATA, "chromatogram", "metadata"))).containsExactly(
                 new ChromatogramMetadataDecoder.Header(0, "TIC", "MS:1000235", Polarity.POSITIVE, "dp1",
-                        List.of(SOURCE_PARAM), List.of(), List.of()));
+                        List.of(SOURCE_PARAM), List.of(), List.of(), List.of()));
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------
