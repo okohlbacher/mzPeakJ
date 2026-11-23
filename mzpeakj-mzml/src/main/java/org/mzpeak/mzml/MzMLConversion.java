@@ -141,6 +141,8 @@ public final class MzMLConversion {
         Cvs cvs = new Cvs(mzml, header.cvList());
         List<List<Param>> headerParams = headerParams(header.fileMetadata(), header.scanSettings());
         cvs.check("the file metadata or scan settings", headerParams, List.of());
+        // The session checks the CV prefixes of the spectrum arrays when it opens (W12); this message says why.
+        cvs.check("a spectrum array", List.of(), List.copyOf(survey.spectrumArrays()));
         Losses losses = new Losses();
         losses.note(B_35, nonFinite(headerParams));
         losses.note(B_24_SOURCE, header.fileMetadata().run().defaultSourceFileId() == null ? 1 : 0);

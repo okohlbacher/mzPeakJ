@@ -16,7 +16,6 @@ import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
-import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
 import org.mzpeak.model.meta.FileMetadata.MsRun;
 
 import java.io.IOException;
@@ -340,27 +339,21 @@ class WriteLossAuditTest {
 
     /**
      * {@code meta} as the writer completes it: a run without {@code default_data_processing_id} gets the first data
-     * processing's id, the spec requiring one (diaPASEF.ref's run has none); a {@code default_instrument_id} that
-     * names no configuration gets a stub configuration of that id with the first configuration's software (WR-9;
-     * diaPASEF.ref names 1 and has only 0).
+     * processing's id, the spec requiring one (diaPASEF.ref's run has none). The configuration diaPASEF.ref's run
+     * names but does not declare, which the writer rejects (W12), {@link ForwardBackwardCorpusTest#readSource} has
+     * added ({@link Fixtures#withDeclaredDefaults}).
      */
     private static FileMetadata withWriterDefaults(FileMetadata meta) {
         MsRun run = meta.run();
         if (run == null) {
             return meta;
         }
-        List<InstrumentConfiguration> configurations = new ArrayList<>(meta.instrumentConfigurations());
-        Integer instrument = run.defaultInstrumentId();
-        if (instrument != null && configurations.stream().noneMatch(ic -> ic.id() == instrument)) {
-            configurations.add(new InstrumentConfiguration(instrument, List.of(),
-                    configurations.get(0).softwareReference(), List.of()));
-        }
         String dataProcessing = run.defaultDataProcessingId() != null || meta.dataProcessingMethods().isEmpty()
                 ? run.defaultDataProcessingId() : meta.dataProcessingMethods().get(0).id();
-        MsRun completed = new MsRun(run.id(), instrument, dataProcessing, run.defaultSourceFileId(), run.startTime(),
-                run.parameters());
-        return new FileMetadata(meta.fileDescription(), configurations, meta.dataProcessingMethods(),
-                meta.samples(), meta.software(), completed);
+        MsRun completed = new MsRun(run.id(), run.defaultInstrumentId(), dataProcessing, run.defaultSourceFileId(),
+                run.startTime(), run.parameters());
+        return new FileMetadata(meta.fileDescription(), meta.instrumentConfigurations(),
+                meta.dataProcessingMethods(), meta.samples(), meta.software(), completed);
     }
 
     private static List<SpectrumDescription> descriptions(List<Spectrum> spectra) {

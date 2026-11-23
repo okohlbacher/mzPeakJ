@@ -385,10 +385,15 @@ Writer notes:
   `chromatograms_metadata` carries empty `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
   them. The wavelength representation column is `opt_spectrum_representation` (the spec's wavelength table does not
   name it); the reader also reads the reference's `spectrum_representation`.
-- Every reference in the file-level documents resolves: a run default or software reference that names nothing
-  gets a stub entity of that id (an instrument configuration, data processing, source file or software), with one
-  WARNING each; files whose references resolve are written unchanged. diaPASEF.ref and diaPASEF.grid, whose run
-  names instrument configuration 1 while only 0 exists, are written with a stub configuration 1.
+- Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written,
+  naming the entity: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
+  of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
+  name an entry of the file metadata (not checked without file metadata), and the prefix of every CURIE (param
+  accessions and units, extra-array keys, chromatogram types and intensity units) must be one of
+  `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
+  written as given. A null run default gets the first entry of its list, else a stub entity with one WARNING.
+  diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
+  read; add configuration 1 to write them.
 - A `SPLIT` write of a legacy (packed) dataset keeps the summary values it stores (observed m/z range, base peak,
   TIC) instead of deriving them from the arrays, since the reader now gives them as Params; a spectrum without them
   still gets derived values. This deviates from a default of the 0.12.0 design round, see

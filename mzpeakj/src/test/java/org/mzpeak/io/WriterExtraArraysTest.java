@@ -11,6 +11,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.ArrayIndex.BufferFormat;
 import org.mzpeak.io.ArrayIndex.Entry;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
@@ -327,17 +328,26 @@ class WriterExtraArraysTest {
                 .containsExactly(1.0, 2.0);
     }
 
-    /** A CURIE whose prefix no known CV has is written as given, and the write warns that the CV is not declared. */
+    /**
+     * A CURIE array type whose prefix no known CV has is refused before anything is written (W12, D13-6); with the
+     * caller's entry of its CV it is written as given, and that CV is declared.
+     */
     @Test
-    void anUnknownCvUsedAsAnArrayTypeIsReported(@TempDir Path tmp) throws IOException {
+    void anUnknownCvUsedAsAnArrayTypeIsRefusedUnlessTheCallerDeclaresIt(@TempDir Path tmp) throws IOException {
         Path out = tmp.resolve("zzz.mzpeak");
+        List<Spectrum> spectra = List.of(twoPoints(0, Map.of("ZZZ:0000001", new double[] {1.0, 2.0})));
 
-        List<String> warnings = warnings(() -> MzPeakWriter.writeDirectory(out,
-                List.of(twoPoints(0, Map.of("ZZZ:0000001", new double[] {1.0, 2.0})))));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra)).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("spectrum 0: array uses ZZZ:0000001, whose CV prefix ZZZ metadata.cv_list"
+                        + " would not declare");
+        assertThat(out).doesNotExist();
 
-        assertThat(warnings).singleElement().asString()
-                .contains("ZZZ").contains("is not a controlled vocabulary mzPeakJ knows");
-        assertThat(cvIds(out)).containsExactly("MS", "UO");
+        List<String> warnings = warnings(() -> MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(),
+                List.of(), FileMetadata.EMPTY, MzPeakWriter.Options.defaults().withCvList(List.of(
+                        new CvEntry("ZZZ", "Zzz ontology", "https://example.org/zzz/2/zzz.obo", "2")))));
+
+        assertThat(warnings).isEmpty();
+        assertThat(cvIds(out)).containsExactly("MS", "UO", "ZZZ");
         assertThat(extraEntries(out, DataKind.PEAKS)).extracting(Entry::field).containsExactly("zzz_0000001");
     }
 

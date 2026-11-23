@@ -72,8 +72,7 @@ class FileMetadataContactsTest {
     @ParameterizedTest
     @EnumSource(MetadataLayout.class)
     void tinyContactAndScanSettingsReadBackEqual(MetadataLayout layout, @TempDir Path tmp) throws IOException {
-        FileMetadata meta = withFileDescription(new FileDescription(SMALL.fileMetadata.fileDescription().contents(),
-                SMALL.fileMetadata.fileDescription().sourceFiles(), List.of(TINY_CONTACT)));
+        FileMetadata meta = withSourceFile("sf_parameters", List.of(TINY_CONTACT));
         Path out = write(tmp.resolve("tiny.mzpeak"), List.of(TINY_SETTINGS), meta, layout, false);
 
         try (MzPeakReader reader = MzPeakReader.open(out)) {
@@ -143,15 +142,14 @@ class FileMetadataContactsTest {
         ScanSettings idless = new ScanSettings(null, List.of(new Param("top down", "IMS:1000401", null, null)),
                 List.of("sf1"), List.of(target));
 
-        Path split = write(tmp.resolve("split.mzpeak"), List.of(idless), SMALL.fileMetadata, MetadataLayout.SPLIT,
-                false);
+        FileMetadata meta = withSourceFile("sf1", List.of());
+        Path split = write(tmp.resolve("split.mzpeak"), List.of(idless), meta, MetadataLayout.SPLIT, false);
         try (MzPeakReader reader = MzPeakReader.open(split)) {
             assertThat(reader.scanSettings()).containsExactly(new ScanSettings("scan_settings_0",
                     idless.parameters(), List.of("sf1"), List.of(target)));
         }
 
-        Path packed = write(tmp.resolve("packed.mzpeak"), List.of(idless), SMALL.fileMetadata,
-                MetadataLayout.PACKED, false);
+        Path packed = write(tmp.resolve("packed.mzpeak"), List.of(idless), meta, MetadataLayout.PACKED, false);
         JsonNode entry = MAPPER.readTree(packed.resolve(INDEX).toFile()).path("metadata").path("scan_settings_list")
                 .path(0);
         assertThat(entry.toString()).isEqualTo("{\"source_file_refs\":[\"sf1\"],\"targets\":[[{\"name\":"
@@ -402,6 +400,17 @@ class FileMetadataContactsTest {
                     options);
         }
         return out;
+    }
+
+    /**
+     * Small's file metadata with the source file {@code id} after its own, so that a scan setting may name it (W12),
+     * and with {@code contacts}.
+     */
+    private static FileMetadata withSourceFile(String id, List<Contact> contacts) {
+        FileDescription d = SMALL.fileMetadata.fileDescription();
+        List<SourceFile> sourceFiles = new ArrayList<>(d.sourceFiles());
+        sourceFiles.add(new SourceFile(id, id + ".par", "file:///settings", List.of()));
+        return withFileDescription(new FileDescription(d.contents(), sourceFiles, contacts));
     }
 
     /** Small's file metadata with {@code description} in place of its file description. */

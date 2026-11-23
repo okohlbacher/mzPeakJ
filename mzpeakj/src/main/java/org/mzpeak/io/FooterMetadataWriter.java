@@ -53,6 +53,11 @@ import java.util.Set;
  * its list), as the specification requires these keys; the packed layout keeps the pin-era dialect, with
  * {@code default_instrument_id} and those values left out.
  * Each stub is logged once as a WARNING naming its document, its id and the reference that names it.
+ *
+ * <p>{@link MzPeakWriter} rejects an explicit reference that names nothing before it serializes
+ * ({@link WritePlanner#declarations}, W12), so in a write a stub is added only for a null reference: a null run
+ * default without an entity of its list, or a configuration or processing method without software when no software
+ * has an id.
  */
 final class FooterMetadataWriter {
 

@@ -100,7 +100,8 @@ final class ManifestWriter {
      * this manifest, that is of a column mapping, a scan-settings param or a file-metadata document; then every other
      * CV in use that the caller's cv list of the plan's options holds, in that list's order. A CV the caller's list
      * holds is declared with the list's entry ({@link KnownCvs#declare}). A prefix neither {@link KnownCvs} nor the
-     * caller's list knows is not declared and gets one warning in the plan's report.
+     * caller's list knows is not declared and gets one warning in the plan's report; {@link MzPeakWriter} rejects such
+     * a prefix before it writes anything ({@link WritePlanner#declarations}, W12).
      */
     static void writeManifest(Path directory, List<WrittenMember> members, WritePlan plan, Dialect dialect)
             throws IOException {
