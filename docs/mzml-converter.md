@@ -308,7 +308,8 @@ So does, by the writer's W12 checks (D13-6, D13-9), a term whose CV prefix the m
 `instrumentConfigurationRef` is still dropped (B-39). In the default `split` layout so does, by D13-28 (X-40), a
 cvParam of a spectrum, scan, precursor, selected ion, chromatogram or wavelength spectrum whose accession or unit
 accession is not `PREFIX:number` with a number up to 4294967295, such as an NCIT term (`NCIT:C25330`), on which the
-Rust reference reader panics; `--layout packed` writes it as given.
+Rust reference reader panics; `--layout packed` writes it as given in the param lists that layout writes (it drops
+chromatogram and wavelength-spectrum Params and wavelength scans with a WARNING).
 Every write through jmzML's `MzMLMarshaller` also sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`; it changes no output.
 

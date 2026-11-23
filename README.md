@@ -628,7 +628,8 @@ m/z, intensity, wavelength and time arrays in a unit the model cannot carry; and
 wavelength or time and intensity arrays) of different declared lengths. The mzPeak writer's checks fail a
 conversion too ([converter limits](docs/mzml-converter.md#limits)): a NaN in an axis or intensity array, a CURIE of
 a CV the `cvList` does not declare, a reference that names nothing of the header and, in the default `split`
-layout, a cvParam accession or unit that is not `PREFIX:number` (such as an NCIT term; `--layout packed` writes it).
+layout, a cvParam accession or unit that is not `PREFIX:number` (such as an NCIT term; `--layout packed` writes it where it writes the param list, and drops chromatogram and
+wavelength-spectrum Params and wavelength scans).
 Lenient: of two compression or two data type terms on one array, jmzML decodes by the one it knows, and the other
 is not checked. Counted under B-40: the
 attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads

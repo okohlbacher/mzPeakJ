@@ -898,7 +898,7 @@ zone too.
   `wavelength spectrum`, empty column mappings, only the first scan and the primary precursor of a spectrum,
   no wavelength-spectrum Params (one WARNING; the pin-era wavelength schema has no `parameters` list), no
   chromatogram polarity, data processing reference, Params or precursors (one WARNING), and no auxiliary arrays and
-  wavelength scans (one WARNING each, after the same checks as the split layout's).
+  wavelength scans (one WARNING each, after the checks common to both layouts).
   Isolation-window Params go to the pin-era `isolation_window.parameters` list. Since V-17 (0.12.0) a spectrum
   type or summary term written as a column no longer stays in the `parameters` list as well (§2.4); otherwise the
   layout is frozen. The HEAD Python reader rejects it ("Old concatenated storage layout not supported"), and so

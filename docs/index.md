@@ -157,9 +157,9 @@ compatibility layout (`MetadataLayout.PACKED`); by default it writes the split l
 Current version: **0.12.0** ([release notes](releases/0.12.0.md); see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
-read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact delta-model reconstruction;
-tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion mobility + imaging position
-from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
+read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; profile reconstruction of null-marked
+points by the spec's null-pair rule; tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion
+mobility + imaging position from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
 
 **Known deferred** — chunk/delta write, page-level pushdown, Maven Central publication. Metadata-only access,
 which the Rust reader offers as a detail level, is covered by `select()` with a `SignalQuery`.
