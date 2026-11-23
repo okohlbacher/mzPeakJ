@@ -114,11 +114,11 @@ final class ChromatogramStore {
             if (d == null) {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), new double[0], new double[0], null,
                         Map.of(), h.polarity(), h.dataProcessingRef(), h.parameters(), h.precursors(), timeUnit,
-                        h.products()));
+                        h.products(), h.auxiliaryArrays()));
             } else {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), d.time(), d.intensity(),
                         d.intensityUnit(), d.arrays(), h.polarity(), h.dataProcessingRef(), h.parameters(),
-                        h.precursors(), timeUnit, h.products()));
+                        h.precursors(), timeUnit, h.products(), h.auxiliaryArrays()));
             }
         }
         return new ChromatogramStore(all, plan);

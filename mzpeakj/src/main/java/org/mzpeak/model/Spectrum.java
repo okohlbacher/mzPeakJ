@@ -27,6 +27,9 @@ import java.util.Optional;
  * <p>{@link #intensityUnit()} and {@link #peakIntensityUnit()} name the unit of {@link #intensity()} and of the
  * {@link #peaks()} intensities, such as {@code MS:1000131} (number of detector counts) or {@code MS:1000132} (percent
  * of base peak), or are null when it is not declared.
+ *
+ * <p>Arrays stored in the spectrum's metadata row rather than its signal data, such as one whose length differs from
+ * {@link #mz()}, are in {@link #auxiliaryArrays()}, with their bytes as stored.
  */
 public final class Spectrum {
 
@@ -38,6 +41,7 @@ public final class Spectrum {
     private final Map<String, double[]> peakArrays;
     private final String intensityUnit;
     private final String peakIntensityUnit;
+    private final List<AuxiliaryArray> auxiliaryArrays;
     /** The key of {@link #ionMobility()}, or null. */
     private final String ionMobilityKey;
 
@@ -75,6 +79,26 @@ public final class Spectrum {
     public Spectrum(SpectrumDescription description, double[] mz, double[] intensity, List<CentroidPeak> peaks,
                     Map<String, double[]> arrays, Map<String, double[]> peakArrays, String intensityUnit,
                     String peakIntensityUnit) {
+        this(description, mz, intensity, peaks, arrays, peakArrays, intensityUnit, peakIntensityUnit, List.of());
+    }
+
+    /**
+     * A spectrum with additional signal arrays, intensity units and auxiliary arrays.
+     *
+     * @param arrays            additional arrays parallel to {@code mz}; null is the same as an empty map
+     * @param peakArrays        additional arrays parallel to {@code peaks} in the order given here (the position a
+     *                          reader stores as {@link CentroidPeak#index()}); null is the same as an empty map
+     * @param intensityUnit     unit CURIE of {@code intensity}, or null when not declared
+     * @param peakIntensityUnit unit CURIE of the intensities of {@code peaks}, or null when not declared
+     * @param auxiliaryArrays   the spectrum's auxiliary arrays, of any length; null is the same as an empty list
+     * @throws IllegalArgumentException when {@code mz} and {@code intensity} differ in length, when a map has a
+     *                                  null key or value, or when an array of {@code arrays} differs in length from
+     *                                  {@code mz}, or one of {@code peakArrays} from {@code peaks}
+     * @throws NullPointerException     when {@code auxiliaryArrays} holds a {@code null} element
+     */
+    public Spectrum(SpectrumDescription description, double[] mz, double[] intensity, List<CentroidPeak> peaks,
+                    Map<String, double[]> arrays, Map<String, double[]> peakArrays, String intensityUnit,
+                    String peakIntensityUnit, List<AuxiliaryArray> auxiliaryArrays) {
         this.description = description;
         this.intensityUnit = intensityUnit;
         this.peakIntensityUnit = peakIntensityUnit;
@@ -86,6 +110,7 @@ public final class Spectrum {
         }
         this.arrays = copy(arrays, "arrays", this.mz.length, "mz");
         this.peakArrays = copy(peakArrays, "peakArrays", peaks == null ? 0 : peaks.size(), "the peak list");
+        this.auxiliaryArrays = auxiliaryArrays == null ? List.of() : List.copyOf(auxiliaryArrays);
         String imKey = null;
         for (String key : this.arrays.keySet()) {
             if (CvTerms.ION_MOBILITY_ARRAYS.contains(key)) {
@@ -188,6 +213,15 @@ public final class Spectrum {
      */
     public Map<String, double[]> peakArrays() {
         return peakArrays;
+    }
+
+    /**
+     * The spectrum's auxiliary arrays, in the order of its metadata row (empty if none): arrays stored with the
+     * metadata rather than the signal data, whose bytes are kept as stored ({@link AuxiliaryArray#doubles()} decodes
+     * them). Unmodifiable.
+     */
+    public List<AuxiliaryArray> auxiliaryArrays() {
+        return auxiliaryArrays;
     }
 
     /** The array of {@link #arrays()} with {@code key}, if present. */

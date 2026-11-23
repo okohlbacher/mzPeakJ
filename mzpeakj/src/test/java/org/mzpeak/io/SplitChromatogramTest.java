@@ -276,11 +276,11 @@ class SplitChromatogramTest {
 
     /**
      * The header of a chromatogram of unknown polarity, without data processing reference, without Params and
-     * without precursors and products.
+     * without precursors, products and auxiliary arrays.
      */
     private static ChromatogramMetadataDecoder.Header header(long index, String id, String typeCurie) {
         return new ChromatogramMetadataDecoder.Header(index, id, typeCurie, Polarity.UNKNOWN, null, List.of(),
-                List.of(), List.of());
+                List.of(), List.of(), List.of());
     }
 
     /** A split chromatogram table with {@code index}, {@code id} and the type column {@code typeColumn}. */

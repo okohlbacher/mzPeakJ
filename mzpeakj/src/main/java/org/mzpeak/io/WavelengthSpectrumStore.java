@@ -109,7 +109,7 @@ final class WavelengthSpectrumStore {
             double[] wavelength = xy == null ? new double[0] : xy.x();
             double[] intensity = xy == null ? new double[0] : xy.intensity();
             all.add(new WavelengthSpectrum(h.index(), h.id(), h.time(), h.lambdaMax(), wavelength, intensity,
-                    h.parameters()));
+                    h.parameters(), h.auxiliaryArrays()));
         }
         return new WavelengthSpectrumStore(all, plan);
     }

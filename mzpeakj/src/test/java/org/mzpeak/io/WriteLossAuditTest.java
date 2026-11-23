@@ -11,7 +11,9 @@ import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.Param;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -45,7 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code scan_windows} and the stored times;
  *   <li>(d) what mzPeakJ reads but does not write ({@link #READ_ONLY}): the products and the precursor MS level
  *       (R6, D13-21), which none of these fixtures has, are lost by both layouts on the crafted copy of
- *       {@link PrecursorMsLevelAndProductsTest}.
+ *       {@link PrecursorMsLevelAndProductsTest}; and the auxiliary arrays (R1), which the writer writes empty until
+ *       its unit (X-32), are lost by both layouts on has_uv given one auxiliary array per entity type.
  * </ul>
  */
 class WriteLossAuditTest {
@@ -78,7 +81,10 @@ class WriteLossAuditTest {
             "SpectrumDescription.products", "no products member is written (D13-21): the Rust reference panics on"
                     + " a products member (src/reader/metadata.rs DataKind::Products => todo!())",
             "Chromatogram.products", "no products member is written, as for spectra (D13-21)",
-            "Precursor.msLevel", "the precursor ms_level is read only (D13-21)");
+            "Precursor.msLevel", "the precursor ms_level is read only (D13-21)",
+            "Spectrum.auxiliaryArrays", "read only so far (R1, X-31): the writer writes auxiliary_arrays empty",
+            "Chromatogram.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)",
+            "WavelengthSpectrum.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)");
 
     /** The metadata members of each fixture: Example_Processed.img has no chromatograms, has_uv wavelength spectra. */
     private static final Map<String, Integer> METADATA_MEMBERS = Map.of("small.unpacked.mzpeak", 7,
@@ -252,8 +258,8 @@ class WriteLossAuditTest {
 
     @Test
     void theProductsAndThePrecursorMsLevelAreWriteLosses(@TempDir Path tmp) throws IOException {
-        assertThat(READ_ONLY.keySet()).containsExactlyInAnyOrder("SpectrumDescription.products",
-                "Chromatogram.products", "Precursor.msLevel");
+        assertThat(READ_ONLY.keySet()).contains("SpectrumDescription.products", "Chromatogram.products",
+                "Precursor.msLevel");
         Source source = ForwardBackwardCorpusTest.readSource(PrecursorMsLevelAndProductsTest.craft(tmp, true));
         SpectrumDescription five = source.spectra.get((int) PrecursorMsLevelAndProductsTest.SPECTRUM).description();
         assertThat(five.products()).isEqualTo(PrecursorMsLevelAndProductsTest.PRODUCTS);
@@ -281,6 +287,42 @@ class WriteLossAuditTest {
                     .primaryPrecursor()).as("%s", layout).isNotNull();
             assertThat(back.chromatograms).as("%s", layout).isNotEmpty()
                     .allMatch(c -> c.products().isEmpty());
+        }
+    }
+
+    @Test
+    void theAuxiliaryArraysAreWriteLosses(@TempDir Path tmp) {
+        assertThat(READ_ONLY.keySet()).containsExactlyInAnyOrder("SpectrumDescription.products",
+                "Chromatogram.products", "Precursor.msLevel", "Spectrum.auxiliaryArrays",
+                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays");
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
+        List<AuxiliaryArray> one = List.of(new AuxiliaryArray(new Param("signal to noise array", "MS:1000517", null,
+                null), new byte[8], "MS:1000523", "MS:1000576", 1, null, List.of(), null));
+        Spectrum s = source.spectra.get(0);
+        List<Spectrum> spectra = new ArrayList<>(source.spectra);
+        spectra.set(0, new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(), s.arrays(), s.peakArrays(),
+                s.intensityUnit(), s.peakIntensityUnit(), one));
+        Chromatogram c = source.chromatograms.get(0);
+        List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
+        chromatograms.set(0, new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(),
+                c.intensityUnit(), c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), c.precursors(),
+                c.timeUnit(), c.products(), one));
+        WavelengthSpectrum w = source.wavelengthSpectra.get(0);
+        List<WavelengthSpectrum> wavelengths = new ArrayList<>(source.wavelengthSpectra);
+        wavelengths.set(0, new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(), w.wavelength(),
+                w.intensity(), w.parameters(), one));
+
+        for (MetadataLayout layout : MetadataLayout.values()) {
+            Path out = tmp.resolve("aux-" + layout + ".mzpeak");
+            MzPeakWriter.writeDirectory(out, spectra, chromatograms, wavelengths, source.scanSettings,
+                    source.fileMetadata, Options.defaults().withMetadataLayout(layout));
+            Source back = ForwardBackwardCorpusTest.readSource(out);
+            assertThat(back.spectra).as("%s", layout).hasSameSizeAs(spectra)
+                    .allMatch(b -> b.auxiliaryArrays().isEmpty());
+            assertThat(back.chromatograms).as("%s", layout).hasSameSizeAs(chromatograms)
+                    .allMatch(b -> b.auxiliaryArrays().isEmpty());
+            assertThat(back.wavelengthSpectra).as("%s", layout).hasSameSizeAs(wavelengths)
+                    .allMatch(b -> b.auxiliaryArrays().isEmpty());
         }
     }
 

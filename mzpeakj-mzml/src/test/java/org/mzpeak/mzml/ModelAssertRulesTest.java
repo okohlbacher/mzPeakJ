@@ -3,6 +3,7 @@ package org.mzpeak.mzml;
 import org.junit.jupiter.api.Test;
 import org.mzpeak.io.MzPeakManifest;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
@@ -65,7 +66,7 @@ class ModelAssertRulesTest {
         assertThat(problems).as("components without a fitting rule").isEmpty();
         assertThat(records).containsExactlyInAnyOrder(SpectrumDescription.class, ScanEvent.class, ScanWindow.class,
                 Precursor.class, Product.class, IsolationWindow.class, SelectedIon.class, Activation.class,
-                CentroidPeak.class,
+                CentroidPeak.class, AuxiliaryArray.class, Param.class,
                 Chromatogram.class, WavelengthSpectrum.class, FileMetadata.class, FileMetadata.FileDescription.class,
                 FileMetadata.SourceFile.class, FileMetadata.Contact.class, FileMetadata.InstrumentConfiguration.class,
                 FileMetadata.Component.class, FileMetadata.Software.class, FileMetadata.DataProcessing.class,
@@ -78,7 +79,8 @@ class ModelAssertRulesTest {
                 "Precursor.msLevel", "Product.precursorIndex",
                 "FileMetadata.FileDescription.contacts", "FileMetadata.Contact.name",
                 "FileMetadata.Contact.affiliation", "FileMetadata.Contact.parameters", "ScanSettings.sourceFileRefs",
-                "ScanSettings.targets", "MzPeakManifest.CvEntry.version");
+                "ScanSettings.targets", "MzPeakManifest.CvEntry.version", "Spectrum.auxiliaryArrays",
+                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays", "AuxiliaryArray.data");
     }
 
     @Test
@@ -93,7 +95,7 @@ class ModelAssertRulesTest {
         compared.addAll(SPECTRUM_DERIVED_FIELDS);
 
         assertThat(ModelAssert.SPECTRUM_COMPONENTS.keySet()).containsExactly("description", "mz", "intensity",
-                "peaks", "arrays", "peakArrays", "intensityUnit", "peakIntensityUnit");
+                "peaks", "arrays", "peakArrays", "intensityUnit", "peakIntensityUnit", "auxiliaryArrays");
         assertThat(fields).isEqualTo(compared);
     }
 
@@ -223,11 +225,14 @@ class ModelAssertRulesTest {
         if (type == double[].class) {
             return Rule.DOUBLE_ARRAY;
         }
+        if (type == byte[].class) {
+            return Rule.BYTE_ARRAY;
+        }
         if (type instanceof Class<?> c) {
             if (c.isRecord()) {
                 return Rule.RECORD;
             }
-            assertThat(c.isArray()).as("an array other than double[]: %s", c).isFalse();
+            assertThat(c.isArray()).as("an array other than double[] and byte[]: %s", c).isFalse();
             return Rule.EXACT;
         }
         ParameterizedType p = (ParameterizedType) type;

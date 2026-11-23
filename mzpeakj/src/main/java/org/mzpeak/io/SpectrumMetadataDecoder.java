@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.SpectrumDescription;
 
 import java.util.ArrayList;
@@ -68,10 +69,14 @@ final class SpectrumMetadataDecoder {
     }
 
     private static Decoded empty() {
-        return new Decoded(new ArrayList<>(), new HashMap<>());
+        return new Decoded(new ArrayList<>(), new HashMap<>(), new HashMap<>());
     }
 
-    /** Decoded spectrum metadata plus the per-spectrum m/z delta model polynomial coefficients. */
-    record Decoded(List<SpectrumDescription> descriptions, Map<Long, double[]> deltaModels) {
+    /**
+     * Decoded spectrum metadata plus the per-spectrum m/z delta model polynomial coefficients and the auxiliary arrays
+     * of the spectra that have any.
+     */
+    record Decoded(List<SpectrumDescription> descriptions, Map<Long, double[]> deltaModels,
+                   Map<Long, List<AuxiliaryArray>> auxiliaryArrays) {
     }
 }

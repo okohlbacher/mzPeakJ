@@ -194,7 +194,7 @@ class SplitWavelengthTest {
                 List.of(), null);
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry))
-                    .containsExactly(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0, List.of()));
+                    .containsExactly(new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0, List.of(), List.of()));
         }
     }
 
@@ -215,8 +215,8 @@ class SplitWavelengthTest {
         Entry entry = new Entry("wavelength_spectra_metadata.parquet", "wavelength_spectrum", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(entry.name()), entry)).containsExactly(
-                    new WavelengthMetadataDecoder.Header(1, "last", Double.NaN, null, List.of()),
-                    new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0, List.of()));
+                    new WavelengthMetadataDecoder.Header(1, "last", Double.NaN, null, List.of(), List.of()),
+                    new WavelengthMetadataDecoder.Header(0, ID0, TIME0, 374.0, List.of(), List.of()));
         }
     }
 

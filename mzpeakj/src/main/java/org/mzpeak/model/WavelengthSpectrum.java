@@ -15,13 +15,18 @@ import java.util.List;
  * @param parameters the spectrum's CV and user params, such as its spectrum type, representation, observed
  *                   wavelength range and title; never {@code null}, may be empty. Unmodifiable, a copy of the given
  *                   list
+ * @param auxiliaryArrays the arrays stored in the spectrum's metadata row rather than its signal data, of any length,
+ *                   with their bytes as stored ({@link AuxiliaryArray#doubles()} decodes them), in the order of the
+ *                   row; never {@code null}, may be empty. Unmodifiable, a copy of the given list
  */
 public record WavelengthSpectrum(long index, String id, double time, Double lambdaMax,
-                                 double[] wavelength, double[] intensity, List<Param> parameters) {
+                                 double[] wavelength, double[] intensity, List<Param> parameters,
+                                 List<AuxiliaryArray> auxiliaryArrays) {
 
     /**
      * @throws IllegalArgumentException when {@code wavelength} and {@code intensity} differ in length
-     * @throws NullPointerException     when {@code parameters} holds a {@code null} element
+     * @throws NullPointerException     when {@code parameters} or {@code auxiliaryArrays} holds a {@code null}
+     *                                  element
      */
     public WavelengthSpectrum {
         wavelength = wavelength == null ? new double[0] : wavelength;
@@ -31,6 +36,13 @@ public record WavelengthSpectrum(long index, String id, double time, Double lamb
                     "wavelength/intensity length mismatch: " + wavelength.length + " vs " + intensity.length);
         }
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
+        auxiliaryArrays = auxiliaryArrays == null ? List.of() : List.copyOf(auxiliaryArrays);
+    }
+
+    /** A wavelength spectrum without auxiliary arrays. */
+    public WavelengthSpectrum(long index, String id, double time, Double lambdaMax,
+                              double[] wavelength, double[] intensity, List<Param> parameters) {
+        this(index, id, time, lambdaMax, wavelength, intensity, parameters, List.of());
     }
 
     /** A wavelength spectrum without parameters. */

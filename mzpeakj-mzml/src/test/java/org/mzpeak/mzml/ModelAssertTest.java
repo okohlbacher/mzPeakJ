@@ -8,6 +8,7 @@ import org.mzpeak.io.Fixtures;
 import org.mzpeak.io.MzPeakManifest;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
@@ -159,6 +160,24 @@ class ModelAssertTest {
         assertThat(ModelAssert.compare(small, shorter, STRICT).differences()).containsExactly(
                 "spectrum[0].mz: expected 13589 values, got 10",
                 "spectrum[0].intensity: expected 13589 values, got 10");
+    }
+
+    /** The bytes of an auxiliary array are compared by value; the other components of the array by their rules. */
+    @Test
+    void byteArrayRuleComparesTheBytesOfAuxiliaryArrays() {
+        Model given = withChromatogram(small, c -> with(c, "auxiliaryArrays", List.of(auxiliary(new byte[] {1, 2}))));
+        Model same = withChromatogram(small, c -> with(c, "auxiliaryArrays", List.of(auxiliary(new byte[] {1, 2}))));
+        Model changed = withChromatogram(small, c -> with(c, "auxiliaryArrays",
+                List.of(auxiliary(new byte[] {1, 3}))));
+
+        assertThat(ModelAssert.compare(given, same, STRICT).equal()).isTrue();
+        assertOnly(given, changed, "chromatogram[0].auxiliaryArrays[0].data",
+                "chromatogram[0].auxiliaryArrays[0].data: expected 2 bytes [1, 2], got 2 bytes [1, 3]");
+        Model spectrum = withSpectrum(small, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
+                s.arrays(), s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit(),
+                List.of(auxiliary(new byte[] {1, 2}))));
+        assertOnly(small, spectrum, "spectrum[0].auxiliaryArrays.size",
+                "spectrum[0].auxiliaryArrays.size: expected 0 elements, got 1");
     }
 
     @Test
@@ -1365,6 +1384,12 @@ class ModelAssertTest {
     private static Model withoutPeaks(Model m) {
         return withSpectra(m, s -> new Spectrum(s.description(), s.mz(), s.intensity(), List.of(), s.arrays(),
                 Map.of(), s.intensityUnit(), s.peakIntensityUnit()));
+    }
+
+    /** An uncompressed auxiliary array of {@code data}, its data type MS:1000519 (32-bit integer). */
+    private static AuxiliaryArray auxiliary(byte[] data) {
+        return new AuxiliaryArray(new Param("signal to noise array", "MS:1000517", null, null), data, "MS:1000519",
+                "MS:1000576", data.length / 4, null, List.of(), null);
     }
 
     private static Model withChromatogram(Model m, UnaryOperator<Chromatogram> f) {

@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import org.mzpeak.io.SpectrumMetadataDecoder.Decoded;
 import org.mzpeak.io.SpectrumRowDecoder.SpectrumHead;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SpectrumDescription;
@@ -27,6 +28,7 @@ final class SpectrumFacetAssembler {
     private final Map<Long, List<FacetRow>> selectedIonsBySource = new HashMap<>();
     private final Map<Long, List<FacetRow>> productsBySource = new HashMap<>();
     private final Map<Long, double[]> deltaModels = new HashMap<>();
+    private final Map<Long, List<AuxiliaryArray>> auxiliaryArrays = new HashMap<>();
 
     /**
      * Takes one row whose (non-negative) key is {@code key}. A spectrum row is decoded at once; scan, precursor,
@@ -46,6 +48,9 @@ final class SpectrumFacetAssembler {
                 double[] model = head.mzDeltaModel;
                 if (model.length > 0) {
                     deltaModels.put(key, model);
+                }
+                if (!head.auxiliaryArrays.isEmpty()) {
+                    auxiliaryArrays.put(key, head.auxiliaryArrays);
                 }
             }
             case SPECTRUM_SCAN -> bucket(scansBySource, key, row);
@@ -73,7 +78,7 @@ final class SpectrumFacetAssembler {
                     b.spectrumParams, b.dataProcessingRef, ProductRowDecoder.decode(productsBySource.get(b.index))));
         }
         out.sort((a, b) -> Long.compare(a.index(), b.index()));
-        return new Decoded(out, deltaModels);
+        return new Decoded(out, deltaModels, auxiliaryArrays);
     }
 
     /**

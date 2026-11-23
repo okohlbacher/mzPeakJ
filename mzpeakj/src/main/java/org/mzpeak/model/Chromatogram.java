@@ -54,11 +54,15 @@ import java.util.Map;
  * @param products          the product ion selections, as in selected reaction monitoring, in
  *                          {@link Product#productIndex()} order; never {@code null}, may be empty. Unmodifiable, a
  *                          copy of the given list. Read from the products facet; mzPeakJ does not write them
+ * @param auxiliaryArrays   the arrays stored in the chromatogram's metadata row rather than its signal data, of any
+ *                          length, with their bytes as stored ({@link AuxiliaryArray#doubles()} decodes them), in
+ *                          the order of the row; never {@code null}, may be empty. Unmodifiable, a copy of the given
+ *                          list
  */
 public record Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
                            String intensityUnit, Map<String, double[]> arrays, Polarity polarity,
                            String dataProcessingRef, List<Param> parameters, List<Precursor> precursors,
-                           String timeUnit, List<Product> products) {
+                           String timeUnit, List<Product> products, List<AuxiliaryArray> auxiliaryArrays) {
 
     /** UO:0000031 minute, the default {@link #timeUnit}. */
     private static final String MINUTE = "UO:0000031";
@@ -77,8 +81,8 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
      * @throws IllegalArgumentException when {@code time} and {@code intensity} differ in length, or when
      *                                  {@code arrays} has a null key, a null value or a value whose length differs
      *                                  from {@code time}'s
-     * @throws NullPointerException     when {@code parameters}, {@code precursors} or {@code products} holds a
-     *                                  {@code null} element
+     * @throws NullPointerException     when {@code parameters}, {@code precursors}, {@code products} or
+     *                                  {@code auxiliaryArrays} holds a {@code null} element
      */
     public Chromatogram {
         time = time == null ? new double[0] : time;
@@ -93,6 +97,16 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
         precursors = precursors == null ? List.of() : List.copyOf(precursors);
         timeUnit = timeUnit == null ? MINUTE : timeUnit;
         products = products == null ? List.of() : List.copyOf(products);
+        auxiliaryArrays = auxiliaryArrays == null ? List.of() : List.copyOf(auxiliaryArrays);
+    }
+
+    /** A chromatogram without auxiliary arrays. */
+    public Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
+                        String intensityUnit, Map<String, double[]> arrays, Polarity polarity,
+                        String dataProcessingRef, List<Param> parameters, List<Precursor> precursors,
+                        String timeUnit, List<Product> products) {
+        this(index, id, typeCurie, time, intensity, intensityUnit, arrays, polarity, dataProcessingRef, parameters,
+                precursors, timeUnit, products, List.of());
     }
 
     /** A chromatogram without products. */
@@ -156,7 +170,7 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
             converted[i] = from > to ? time[i] * (double) (from / to) : time[i] / (double) (to / from);
         }
         return new Chromatogram(index, id, typeCurie, converted, intensity, intensityUnit, arrays, polarity,
-                dataProcessingRef, parameters, precursors, unit, products);
+                dataProcessingRef, parameters, precursors, unit, products, auxiliaryArrays);
     }
 
     private static Map<String, double[]> copyArrays(Map<String, double[]> arrays, int length) {

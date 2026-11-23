@@ -5,6 +5,7 @@ import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.DoubleRange;
@@ -191,6 +192,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
     private final Options options;
     private final List<SpectrumDescription> descriptions;
     private final Map<Long, double[]> deltaModels;
+    private final Map<Long, List<AuxiliaryArray>> auxiliaryArrays;
     private final Map<Long, Integer> indexToOrdinal;
     private final Map<Integer, Long> scanNumberToIndex;
     private final Map<String, Long> idToIndex;
@@ -224,6 +226,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         this.options = options;
         this.descriptions = decoded.descriptions();
         this.deltaModels = decoded.deltaModels();
+        this.auxiliaryArrays = decoded.auxiliaryArrays();
         this.metadataFileName = metadataFileName;
         this.dataFileName = dataFileName;
         this.peaksFileName = peaksFileName;
@@ -542,7 +545,7 @@ public final class MzPeakReader implements Iterable<Spectrum>, AutoCloseable {
         }
         return new Spectrum(description, mz, intensity, peakList, arrays,
                 centroids == null ? Map.of() : centroids.extras(), intensityUnit,
-                centroids == null ? null : centroids.intensityUnit());
+                centroids == null ? null : centroids.intensityUnit(), auxiliaryArrays.get(index));
     }
 
     // ---- range queries ----------------------------------------------------------------------------

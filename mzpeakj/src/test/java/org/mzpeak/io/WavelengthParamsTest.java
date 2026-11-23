@@ -328,7 +328,7 @@ class WavelengthParamsTest {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(METADATA), entry)).containsExactly(
                     new WavelengthMetadataDecoder.Header(0, "w0", 0.5, 374.0, List.of(user, lowest,
                             new Param("base peak intensity", "MS:1000505", 1.5, "MS:1000131"),
-                            new Param("comment", null, "note", null))));
+                            new Param("comment", null, "note", null)), List.of()));
         }
     }
 
@@ -343,7 +343,7 @@ class WavelengthParamsTest {
         Entry entry = new Entry(METADATA, "wavelength_spectrum", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(METADATA), entry)).containsExactly(
-                    new WavelengthMetadataDecoder.Header(0, "w0", Double.NaN, null, List.of()));
+                    new WavelengthMetadataDecoder.Header(0, "w0", Double.NaN, null, List.of(), List.of()));
         }
     }
 
