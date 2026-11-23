@@ -77,7 +77,9 @@ import java.util.regex.Pattern;
  * <p>A {@link MzPeakWriter.Session} is planned one spectrum at a time ({@link #sessionSignal}) with the same checks,
  * its spectrum signal files get the intensity columns of the units and the extra columns of the keys it is opened
  * with ({@link #spectrumIntensities}, {@link #spectrumExtras}), and its
- * chromatograms and wavelength spectra are planned at its finish ({@link #planFinish}) as here.
+ * chromatograms and wavelength spectra are checked one by one as they are added
+ * ({@link #requireWritable(Chromatogram, MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum,
+ * MetadataLayout)}) and planned at its finish ({@link #planFinish}) as here.
  */
 final class WritePlanner {
 
@@ -218,7 +220,9 @@ final class WritePlanner {
      * The plan of a {@link MzPeakWriter.Session} at its finish (design §7, MZ-11): its {@code spectra}, appended and
      * numbered 0..n-1 as added, with their signal already written and their precursors as given, the
      * {@code spectrumIntensities} and {@code spectrumExtras} of its spectrum signal files, and the chromatograms and
-     * wavelength spectra added to it, which are checked, ordered and numbered as {@link #plan} does it. The plan has
+     * wavelength spectra added to it, which were checked when they were added ({@link #requireWritable(Chromatogram,
+     * MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum, MetadataLayout)}) and are here checked for their
+     * indices ({@link #requireIndices}), ordered and numbered as {@link #plan} does it. The plan has
      * no spectrum signals. {@code footer} is the session's serialized file metadata, {@code unwritten} what the
      * writer drops of the spectra added ({@link #countUnwritten(Spectrum, int[])}), and {@code report} holds the
      * warnings of the spectra added.
@@ -228,7 +232,7 @@ final class WritePlanner {
                                 List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                 List<ScanSettings> scanSettings, Map<String, String> footer, int[] unwritten,
                                 WriteReport report) {
-        validateOthers(chromatograms, wavelengthSpectra, options.metadataLayout());
+        requireIndices(chromatograms, wavelengthSpectra);
         return complete(options, options.metadataLayout() == MetadataLayout.SPLIT ? withChains(spectra) : spectra,
                 List.of(), spectrumIntensities, spectrumExtras, chromatograms, wavelengthSpectra, scanSettings, footer,
                 unwritten, report);
@@ -1319,11 +1323,10 @@ final class WritePlanner {
     }
 
     /**
-     * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
-     * unique within each kind, their Params writable ({@link #requireWritableParams(String, List)}), those of the
-     * wavelength scans included, no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the
-     * {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative and no wavelength scan with
-     * a spectrum reference, which the wavelength scan table has no column for.
+     * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra, entity by entity: their indices
+     * non-negative and unique within each kind, then each entity's own checks
+     * ({@link #requireWritable(Chromatogram, MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum,
+     * MetadataLayout)}).
      */
     private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                        MetadataLayout layout) {
@@ -1331,37 +1334,75 @@ final class WritePlanner {
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
             requireUnique(seen, c.index(), "chromatogram index");
-            List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
-            addPrecursorParams(c.precursors(), lists);
-            addAuxiliaryParams(c.auxiliaryArrays(), lists);
-            requireWritableParams(owner("chromatogram", c.index(), c.id()), lists);
-            requireNoNaN("chromatogram " + c.index(), "time", c.time());
-            requireNoNaN("chromatogram " + c.index(), "intensity", c.intensity());
-            if (layout == MetadataLayout.SPLIT) {
-                for (Precursor p : c.precursors()) {
-                    requireNonNegativePrecursorIndex(p);
-                }
-            }
+            requireWritable(c, layout);
         }
         seen.clear();
         for (WavelengthSpectrum w : wavelengthSpectra) {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
-            List<List<Param>> lists = new ArrayList<>(List.of(w.parameters()));
-            for (int i = 0; i < w.scans().size(); i++) {
-                ScanEvent scan = w.scans().get(i);
-                lists.add(scan.parameters());
-                if (layout == MetadataLayout.SPLIT && scan.spectrumReference() != null) {
-                    throw new MzPeakException(owner("wavelength spectrum", w.index(), w.id()) + ": scan " + i
-                            + " has the spectrum reference " + scan.spectrumReference() + ", which mzPeak cannot"
-                            + " write: the wavelength scan table has no spectrum_reference column (D13-12)");
-                }
-            }
-            addAuxiliaryParams(w.auxiliaryArrays(), lists);
-            requireWritableParams(owner("wavelength spectrum", w.index(), w.id()), lists);
-            requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
-            requireNoNaN("wavelength spectrum " + w.index(), "intensity", w.intensity());
+            requireWritable(w, layout);
         }
+    }
+
+    /**
+     * The checks across the chromatograms and wavelength spectra of a session, at its finish: their indices
+     * non-negative and unique within each kind, as {@link #validateOthers} checks them.
+     */
+    private static void requireIndices(List<Chromatogram> chromatograms,
+                                       List<WavelengthSpectrum> wavelengthSpectra) {
+        Set<Long> seen = new HashSet<>();
+        for (Chromatogram c : chromatograms) {
+            requireNonNegative(c.index(), "chromatogram index");
+            requireUnique(seen, c.index(), "chromatogram index");
+        }
+        seen.clear();
+        for (WavelengthSpectrum w : wavelengthSpectra) {
+            requireNonNegative(w.index(), "wavelength spectrum index");
+            requireUnique(seen, w.index(), "wavelength spectrum index");
+        }
+    }
+
+    /**
+     * The checks of chromatogram {@code c} alone, which a session runs when it is added: its Params writable
+     * ({@link #requireWritableParams(String, List)}), those of its precursors and auxiliary arrays included, no NaN
+     * time or intensity ({@link #requireNoNaN}), and in the {@link MetadataLayout#SPLIT} layout every precursor_index
+     * non-negative.
+     */
+    static void requireWritable(Chromatogram c, MetadataLayout layout) {
+        List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
+        addPrecursorParams(c.precursors(), lists);
+        addAuxiliaryParams(c.auxiliaryArrays(), lists);
+        requireWritableParams(owner("chromatogram", c.index(), c.id()), lists);
+        requireNoNaN("chromatogram " + c.index(), "time", c.time());
+        requireNoNaN("chromatogram " + c.index(), "intensity", c.intensity());
+        if (layout == MetadataLayout.SPLIT) {
+            for (Precursor p : c.precursors()) {
+                requireNonNegativePrecursorIndex(p);
+            }
+        }
+    }
+
+    /**
+     * The checks of wavelength spectrum {@code w} alone, which a session runs when it is added: its Params writable
+     * ({@link #requireWritableParams(String, List)}), those of its scans and auxiliary arrays included, no NaN
+     * wavelength or intensity ({@link #requireNoNaN}), and in the {@link MetadataLayout#SPLIT} layout no scan with a
+     * spectrum reference, which the wavelength scan table has no column for.
+     */
+    static void requireWritable(WavelengthSpectrum w, MetadataLayout layout) {
+        List<List<Param>> lists = new ArrayList<>(List.of(w.parameters()));
+        for (int i = 0; i < w.scans().size(); i++) {
+            ScanEvent scan = w.scans().get(i);
+            lists.add(scan.parameters());
+            if (layout == MetadataLayout.SPLIT && scan.spectrumReference() != null) {
+                throw new MzPeakException(owner("wavelength spectrum", w.index(), w.id()) + ": scan " + i
+                        + " has the spectrum reference " + scan.spectrumReference() + ", which mzPeak cannot"
+                        + " write: the wavelength scan table has no spectrum_reference column (D13-12)");
+            }
+        }
+        addAuxiliaryParams(w.auxiliaryArrays(), lists);
+        requireWritableParams(owner("wavelength spectrum", w.index(), w.id()), lists);
+        requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
+        requireNoNaN("wavelength spectrum " + w.index(), "intensity", w.intensity());
     }
 
     /**

@@ -28,6 +28,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -242,6 +243,34 @@ class WavelengthScansTest {
                 + " scan 0 has the spectrum reference scan=7, which mzPeak cannot write: the wavelength scan table"
                 + " has no spectrum_reference column (D13-12)");
         assertThat(out).doesNotExist();
+    }
+
+    /**
+     * A session refuses a wavelength spectrum whose scan has a spectrum reference when it is added, with the message of
+     * the batch write, and does not add it: the session goes on and finishes with the valid wavelength spectrum.
+     */
+    @Test
+    void aSessionRefusesASpectrumReferenceOfAWavelengthScanWhenItIsAdded() {
+        WavelengthSpectrum referenced = wavelength(List.of(new ScanEvent(1.5, null, null, null, null, "scan=7",
+                List.of(), List.of())));
+        WavelengthSpectrum valid = wavelength(List.of(new ScanEvent(1.5, null, null, null, null, null,
+                List.of(new ScanWindow(200, 400)), List.of())));
+        Path out = tmp.resolve("session.mzpeak");
+        try (MzPeakWriter.Session session = MzPeakWriter.openDirectory(out, FileMetadata.EMPTY, List.of(), Set.of(),
+                MzPeakWriter.Options.defaults())) {
+            assertThatThrownBy(() -> session.addWavelengthSpectrum(referenced)).isInstanceOf(MzPeakException.class)
+                    .hasMessage("wavelength spectrum 0 (w0): scan 0 has the spectrum reference scan=7, which mzPeak"
+                            + " cannot write: the wavelength scan table has no spectrum_reference column (D13-12)");
+            session.addWavelengthSpectrum(valid);
+            session.finish();
+        }
+        try (MzPeakReader back = MzPeakReader.open(out)) {
+            assertThat(back.wavelengthSpectra()).hasSize(1);
+            WavelengthSpectrum w = back.getWavelengthSpectrum(0).orElseThrow();
+            assertThat(w.scans()).containsExactly(valid.scans().get(0));
+            assertThat(w.wavelength()).containsExactly(200.0, 400.0);
+            assertThat(w.intensity()).containsExactly(1.0, 2.0);
+        }
     }
 
     /**

@@ -219,9 +219,9 @@ class ParamValueTypesTest {
                     .hasMessage("spectrum 0 (" + s0.description().id()
                             + "): the value of the parameter \"w2 time\" is a java.time.Instant" + REFUSED);
             session.addSpectrum(s0);
-            session.addWavelengthSpectrum(new WavelengthSpectrum(0, "w0", 1.0, null, new double[] {200, 210},
-                    new double[] {1, 2}, List.of(param("w2 time", at))));
-            assertThatThrownBy(session::finish).isInstanceOf(MzPeakException.class)
+            assertThatThrownBy(() -> session.addWavelengthSpectrum(new WavelengthSpectrum(0, "w0", 1.0, null,
+                    new double[] {200, 210}, new double[] {1, 2}, List.of(param("w2 time", at)))))
+                    .isInstanceOf(MzPeakException.class)
                     .hasMessage("wavelength spectrum 0 (w0): the value of the parameter \"w2 time\" is a"
                             + " java.time.Instant" + REFUSED);
         }

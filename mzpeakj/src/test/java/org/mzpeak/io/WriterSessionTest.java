@@ -15,6 +15,7 @@ import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.WriterSnapshotTest.FixtureSet;
 import org.mzpeak.io.WriterSnapshotTest.Overload;
 import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -590,6 +591,36 @@ class WriterSessionTest {
                     .hasMessageStartingWith("spectrum 0: precursor_index 1 names no spectrum of the 1 written");
         }
         assertThat(failed).doesNotExist();
+    }
+
+    /**
+     * A chromatogram with a NaN time is refused when it is added, with the message of the batch write, and is not
+     * added: the session finishes with the chromatogram added after it.
+     */
+    @Test
+    void aChromatogramWithANaNTimeIsRefusedWhenItIsAddedAndTheSessionGoesOn(@TempDir Path tmp) {
+        Source s = source(SMALL);
+        Chromatogram c = s.chromatograms.get(0);
+        double[] time = c.time().clone();
+        time[1] = Double.NaN;
+        Chromatogram nan = new Chromatogram(c.index(), c.id(), c.typeCurie(), time, c.intensity(), c.intensityUnit(),
+                c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), c.precursors(), c.timeUnit(),
+                c.products(), c.auxiliaryArrays());
+        Path out = tmp.resolve("out");
+        try (Session session = MzPeakWriter.openDirectory(out, s.fileMetadata, s.scanSettings, Set.of(),
+                Options.defaults())) {
+            session.addSpectrum(s.spectra.get(0));
+            assertThatThrownBy(() -> session.addChromatogram(nan))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("chromatogram " + c.index() + ": the time at position 1 is NaN;");
+            session.addChromatogram(c);
+            session.finish();
+        }
+        try (MzPeakReader back = MzPeakReader.open(out)) {
+            assertThat(back.chromatograms()).hasSize(1);
+            assertThat(back.chromatograms().get(0).id()).isEqualTo(c.id());
+            assertThat(back.chromatograms().get(0).time()).doesNotContain(Double.NaN);
+        }
     }
 
     /** A chromatogram that breaks the contract fails the finish, which then removes what the session wrote. */
