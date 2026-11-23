@@ -5,6 +5,7 @@ import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
@@ -290,6 +291,7 @@ public final class ModelAssert {
             entry("WavelengthSpectrum.wavelength", Rule.DOUBLE_ARRAY),
             entry("WavelengthSpectrum.intensity", Rule.DOUBLE_ARRAY),
             entry("WavelengthSpectrum.parameters", Rule.PARAMS),
+            entry("WavelengthSpectrum.scans", Rule.list(Rule.RECORD)),
             entry("WavelengthSpectrum.auxiliaryArrays", Rule.list(Rule.RECORD)),
 
             entry("AuxiliaryArray.name", Rule.RECORD),
@@ -928,6 +930,8 @@ public final class ModelAssert {
     private static final Pattern CV_FIELD = Pattern.compile("cvList\\[\\d+]\\.(fullName|uri|version)");
     private static final Pattern SIGNAL = Pattern.compile("spectrum\\[\\d+]\\.(mz|intensity|arrays(\\[.*)?)");
     private static final Pattern MZ = Pattern.compile("spectrum\\[\\d+]\\.mz");
+    private static final Pattern WAVELENGTH_SCANS =
+            Pattern.compile("wavelengthSpectrum\\[\\d+]\\.scans(\\.size|\\[\\d+]\\..*)");
     private static final Pattern CHROMATOGRAM_TIME = Pattern.compile("chromatogram\\[\\d+]\\.(time|timeUnit)");
     /** UO:0000031 minute, the unit the mzPeak writer stores chromatogram times in (W3). */
     private static final String MINUTE = "UO:0000031";
@@ -1042,6 +1046,16 @@ public final class ModelAssert {
             d -> MZ.matcher(d.path()).matches() && d.expected() instanceof double[] e
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
+    /** R-8: the scans of a wavelength spectrum, which the converter does not map yet. */
+    public static final Exclusion R_8 = new Exclusion("R_8",
+            "R-8: the scans of a wavelength spectrum (R8, D13-24) whose actual spectrum has none or only the one scan"
+                    + " with the spectrum time that the mzPeak writer writes, since the converter does not map"
+                    + " wavelength scans yet (X-36) and the writer writes no other (X-34): current has_uv 520 spectra"
+                    + " (in A two differences each, its injection time and instrument configuration, read back as"
+                    + " null), legacy has_uv 520 (in A, no scans read from the packed layout, one read back)",
+            d -> WAVELENGTH_SCANS.matcher(d.path()).matches() && d.expectedRoot() instanceof WavelengthSpectrum
+                    && d.actualRoot() instanceof WavelengthSpectrum a && writtenScans(a));
+
     /** W-3: chromatogram times the mzPeak writer stores in minutes. */
     public static final Exclusion W_3 = new Exclusion("W_3",
             "W-3: the time array and time unit of a chromatogram whose time unit is not minute (UO:0000031) in"
@@ -1065,7 +1079,13 @@ public final class ModelAssert {
 
     /** Every exclusion above. */
     public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, A_26, B_22,
-            B_34, W_3, W_8);
+            B_34, R_8, W_3, W_8);
+
+    /** Whether {@code w} has no scans or only the one scan with its time that the mzPeak writer writes (R_8). */
+    private static boolean writtenScans(WavelengthSpectrum w) {
+        return w.scans().isEmpty() || w.scans().equals(List.of(new ScanEvent(w.time(), null, null, null, null, null,
+                List.of(), List.of())));
+    }
 
     /**
      * W-3: {@code expected} has another time unit than minute, {@code actual} has minute and the times of

@@ -41,8 +41,9 @@ import java.util.function.Function;
  *   <li>A {@link Param} reads {@code (name|accession|Class:value|unit)}, where {@code Class} is the simple name
  *       of the value's runtime class, so a value that changes type (Long to Integer, say) changes the line.
  *   <li>A {@link Chromatogram} header reads {@code index|id|typeCurie|time.length}, a {@link WavelengthSpectrum}
- *       header {@code index|id|time|lambdaMax|length|[parameters]}, followed by {@code |aux=[...]} only when it has
- *       auxiliary arrays (R1), each {@code (name|dataType|compression|items|unit|hex bytes|[parameters]|dp)}.
+ *       header {@code index|id|time|lambdaMax|length|[parameters]}, followed by {@code |scans=[...]} only when it
+ *       has scans (R8), each as a spectrum's scan, and {@code |aux=[...]} only when it has auxiliary arrays (R1),
+ *       each {@code (name|dataType|compression|items|unit|hex bytes|[parameters]|dp)}.
  *   <li>Doubles are written by {@link #num(double)}, not {@link Double#toString(double)}: the latter's output
  *       changed in JDK 19 (JDK-4511638), and CI builds on JDK 17 and 21.
  * </ul>
@@ -73,6 +74,7 @@ final class Canonical {
     static String describe(WavelengthSpectrum w) {
         return w.index() + "|" + str(w.id()) + "|" + num(w.time()) + "|" + num(w.lambdaMax())
                 + "|" + w.wavelength().length + "|" + list(w.parameters(), Canonical::param)
+                + (w.scans().isEmpty() ? "" : "|scans=" + list(w.scans(), Canonical::scan))
                 + (w.auxiliaryArrays().isEmpty() ? "" : "|aux=" + list(w.auxiliaryArrays(), Canonical::auxiliary));
     }
 

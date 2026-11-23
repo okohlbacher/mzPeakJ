@@ -94,8 +94,9 @@ class MzMLRoundTripATest {
      * The 13 fixtures with the A table of design 12.4, keyed by display name. The hidden counts are differences, not
      * spectra: A_1 hides three per peak list (peaks.size, numberOfPeaks and peakIntensityUnit; the 14 MS1 profile
      * spectra of small.chunked carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_2, A_8,
-     * A_17 and A_18 one each. No fixture needs A_16 since V-17 (D-9a): the legacy spectra read with their stored
-     * spectrum type and five summary params (before, A_16 hid one type and five summary params per legacy spectrum).
+     * A_17 and A_18 one each; R_8 two per wavelength spectrum of current has_uv (the injection time and instrument
+     * configuration of its scan) and one of legacy has_uv (its scan count). No fixture needs A_16 since V-17 (D-9a):
+     * the legacy spectra read with their stored spectrum type and five summary params (before, A_16 hid one type and five summary params per legacy spectrum).
      *
      * <p>Mapping-rule violations (design 6.4, 12.4): none for the outputs of any fixture. diaPASEF.ref and .grid lack
      * nothing the six rules check (IC 0 holds the instrument model MS:1003005 timsTOF Pro, every spectrum a spectrum
@@ -115,7 +116,8 @@ class MzMLRoundTripATest {
                 List.of(hides(ModelAssert.A_1, 3 * 14), hides(ModelAssert.A_7, 48)), List.of(a7(48), A_1_CHUNKED),
                 msUo, List.of()));
         f.put("current has_uv.mzpeak", new Fixture(Fixtures.current("has_uv.mzpeak"),
-                List.of(hides(ModelAssert.A_7, 212 + 520)), List.of(a7(212 + 520)), msUo, List.of()));
+                List.of(hides(ModelAssert.A_7, 212 + 520), hides(ModelAssert.R_8, 2 * 520)), List.of(a7(212 + 520)),
+                msUo, List.of()));
         for (String name : List.of("diaPASEF.ref.mzpeak", "diaPASEF.grid.mzpeak")) {
             f.put("current " + name, new Fixture(Fixtures.current(name), List.of(hides(ModelAssert.A_2, 1),
                     hides(ModelAssert.A_7, 9), hides(ModelAssert.A_8, 1), hides(ModelAssert.A_18, 1)), A_DIAPASEF,
@@ -136,7 +138,7 @@ class MzMLRoundTripATest {
         f.put("legacy small.chunked.mzpeak", new Fixture(Fixtures.legacy("small.chunked.mzpeak"), legacyChunked,
                 legacyChunkedLosses, msUo, List.of()));
         f.put("legacy has_uv.mzpeak", new Fixture(Fixtures.legacy("has_uv.mzpeak"), List.of(hides(ModelAssert.A_7,
-                212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_17, 1)),
+                212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_17, 1), hides(ModelAssert.R_8, 520)),
                 List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_9 + " (211)", a7(212 + 520)), msUo, List.of()));
         return f;
     }

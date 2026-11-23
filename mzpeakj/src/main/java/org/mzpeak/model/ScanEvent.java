@@ -13,7 +13,8 @@ import java.util.OptionalDouble;
  * @param presetScanConfiguration    preset scan configuration index (MS:1000616); may be {@code null}
  * @param instrumentConfigurationRef index of the instrument configuration used for this scan; may be {@code null}
  * @param spectrumReference          reference to another spectrum (used in some MS imaging workflows); may be {@code null}
- * @param scanWindows                acquisition m/z windows; never {@code null}, may be empty
+ * @param scanWindows                acquisition windows, in m/z for a {@link SpectrumDescription}'s scan and in nm
+ *                                   for a {@link WavelengthSpectrum}'s; never {@code null}, may be empty
  * @param parameters                 additional CV/user params from the scan facet; never {@code null}, may be empty
  */
 public record ScanEvent(double startTime,

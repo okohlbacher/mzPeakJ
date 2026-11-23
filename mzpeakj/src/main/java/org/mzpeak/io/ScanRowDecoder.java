@@ -10,7 +10,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Decodes one scan row of the spectrum metadata into a {@link ScanEvent}; columns are resolved by accession. */
+/**
+ * Decodes one scan row of the spectrum or wavelength spectrum metadata into a {@link ScanEvent}; columns are resolved
+ * by accession.
+ */
 final class ScanRowDecoder {
 
     // scan facet

@@ -16,6 +16,7 @@ import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.Product;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -822,6 +823,34 @@ class ModelAssertTest {
     }
 
     /**
+     * R_8: has_uv's wavelength spectrum 0 with its scan in expected and in actual none or the one scan with its time
+     * that the mzPeak writer writes; not when actual has another scan, so not the other way round either.
+     */
+    @Test
+    void r8HidesWavelengthScansTheConverterDoesNotMapYet() {
+        double time = hasUv.wavelengthSpectra().get(0).time();
+        ScanEvent written = new ScanEvent(time, null, null, null, null, null, List.of(), List.of());
+        Model none = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
+                w -> with(w, "scans", List.of())));
+        Model timeOnly = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
+                w -> with(w, "scans", List.of(written))));
+        assertThat(ModelAssert.assertEqual("R_8 none", hasUv, none, STRICT, ModelAssert.R_8).hidden())
+                .containsExactly(Map.entry("R_8", 1));
+        assertThat(ModelAssert.assertEqual("R_8 written", hasUv, timeOnly, STRICT, ModelAssert.R_8).hidden())
+                .containsExactly(Map.entry("R_8", 2));
+
+        Model other = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
+                w -> with(w, "scans", List.of(new ScanEvent(time, null, null, null, 1, null, List.of(), List.of())))));
+        Result kept = ModelAssert.compare(hasUv, other, STRICT, ModelAssert.R_8);
+        assertThat(kept.paths()).containsExactly("wavelengthSpectrum[0].scans[0].injectionTime",
+                "wavelengthSpectrum[0].scans[0].instrumentConfigurationRef");
+        assertThat(kept.stale()).containsExactly("R_8");
+        assertThat(ModelAssert.compare(timeOnly, hasUv, STRICT, ModelAssert.R_8).paths()).containsExactly(
+                "wavelengthSpectrum[0].scans[0].injectionTime",
+                "wavelengthSpectrum[0].scans[0].instrumentConfigurationRef");
+    }
+
+    /**
      * W_3: small's chromatogram in seconds in expected and in minutes, as stored, in actual; not when the times of
      * actual differ from the converted ones, the other way round, or from a unit that cannot be converted.
      */
@@ -1029,7 +1058,7 @@ class ModelAssertTest {
     @Test
     void exclusionsHaveTheirDesignIdsAndCannotBePassedTwice() {
         assertThat(ModelAssert.EXCLUSIONS).extracting(Exclusion::id).containsExactly("A_1", "A_2", "A_7", "A_8",
-                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34", "W_3", "W_8");
+                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34", "R_8", "W_3", "W_8");
         assertThat(ModelAssert.EXCLUSIONS).allSatisfy(e -> {
             assertThat(e.description()).startsWith(e.id().replace('_', '-') + ": ");
             assertThat(e).hasToString(e.id());
