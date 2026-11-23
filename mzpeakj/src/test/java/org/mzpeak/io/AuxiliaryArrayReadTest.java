@@ -200,7 +200,10 @@ class AuxiliaryArrayReadTest {
 
     // ---- required fields ----------------------------------------------------------------------------------------
 
-    /** Each field the spec requires, missing, is rejected with a message naming the member, entity and field. */
+    /**
+     * Each field the spec requires, missing, is rejected with a message naming the member, entity and field; but
+     * {@code items}, which is derived from the data.
+     */
     @Test
     void aMissingRequiredFieldIsRejectedNamingIt() {
         byte[] stored = float64(1.0);
@@ -224,11 +227,12 @@ class AuxiliaryArrayReadTest {
             data(item, stored);
             item.append("data_type", FLOAT64).append("items", 1L);
         }, "has no compression,");
-        assertRejected(item -> {
+        // items is derived when absent (U1, AuxiliaryArrayDecoderTest)
+        assertThat(firstSpectrumArray(item -> {
             name(item);
             data(item, stored);
             item.append("data_type", FLOAT64).append("compression", NONE);
-        }, "has no items,");
+        }).items()).isEqualTo(1);
     }
 
     // ---- the decoder on crafted rows ----------------------------------------------------------------------------

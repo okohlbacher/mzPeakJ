@@ -5,10 +5,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.ImagingPosition;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
+import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
@@ -166,6 +169,29 @@ class CorpusTest {
                         .isEqualTo(s.mz().length);
             }
         });
+    }
+
+    /**
+     * Reads every chromatogram and wavelength spectrum, with their auxiliary arrays (U1: those mzpeak-convert 0.17.2
+     * writes have no {@code items}), and checks that each array's length matches its axis.
+     */
+    @Tag("corpus")
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("corpusFiles")
+    void canReadChromatogramsAndWavelengthSpectra(Path file) {
+        assumeThat(isSentinel(file)).as("no corpus files — skip").isFalse();
+        try (MzPeakReader r = MzPeakReader.open(file)) {
+            for (Chromatogram c : r.chromatograms()) {
+                assertThat(c.intensity()).as("chromatogram %d intensity in %s", c.index(), file.getFileName())
+                        .hasSameSizeAs(c.time());
+                c.auxiliaryArrays().forEach(AuxiliaryArray::doubles);
+            }
+            for (WavelengthSpectrum w : r.wavelengthSpectra()) {
+                assertThat(w.intensity()).as("wavelength spectrum %d intensity in %s", w.index(),
+                        file.getFileName()).hasSameSizeAs(w.wavelength());
+                w.auxiliaryArrays().forEach(AuxiliaryArray::doubles);
+            }
+        }
     }
 
     /**
