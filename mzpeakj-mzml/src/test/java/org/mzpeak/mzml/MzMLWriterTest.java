@@ -571,7 +571,8 @@ class MzMLWriterTest {
     void theFixedLineSaysTheConverterDoesNotUseArrayUnitsYet() {
         assertThat(MzMLWriter.NOT_VISIBLE).containsExactly(
                 "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every"
-                        + " array is written as 64-bit floats in the default unit of its key, or without unit");
+                        + " array is written as 64-bit floats in the default unit of its key, or without unit, a"
+                        + " spectrum's intensity in its intensity unit");
     }
 
     @Test

@@ -566,15 +566,38 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void anIntensityArrayInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+    void anIntensityArrayInPercentIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20,
                 "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
-                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""));
+                "name=\"intensity array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000187\""));
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000515 array in unit MS:1000132 cannot be"
-                        + " converted to MS:1000131");
+                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000515 array in unit UO:0000187 is none of"
+                        + " the spectrum intensity units MS:1000131, MS:1000132, MS:1000814");
+    }
+
+    /**
+     * R5 (D13-20): an MS spectrum's intensity array in percent of base peak or counts per second keeps its unit as
+     * the spectrum's intensity unit, one without unit reads as detector counts; the survey gives the units first seen
+     * first, the values are read as stored.
+     */
+    @Test
+    void anIntensityArrayKeepsItsSpectrumIntensityUnit(@TempDir Path dir) throws IOException {
+        String counts = "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"";
+        Path file = tinyWith(dir, s -> replaceAfter(replaceAfter(replaceAfter(s, SCAN_19, counts,
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000814\""), SCAN_20,
+                counts, "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""),
+                SCAN_21, " unitCvRef=\"MS\" unitAccession=\"MS:1000131\" unitName=\"number of counts\"", ""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).extracting(Spectrum::intensityUnit)
+                .containsExactly("MS:1000814", "MS:1000132", "MS:1000131", "MS:1000131");
+        assertThat(run.spectra.get(0).intensity()).startsWith(15, 14);
+        assertThat(run.reader.spectrumIntensityUnits()).containsExactly("MS:1000814", "MS:1000132", "MS:1000131");
+        assertThat(new MzMLReader(file).spectrumIntensityUnits())
+                .containsExactly("MS:1000814", "MS:1000132", "MS:1000131");
     }
 
     @Test
@@ -604,15 +627,28 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void anIntensityOnlySpectrumInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+    void anIntensityOnlySpectrumInPercentIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> removeFirstArray(replaceAfter(s, SCAN_19,
                 "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
-                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""), SCAN_19));
+                "name=\"intensity array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000187\""), SCAN_19));
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000515 array in unit MS:1000132 cannot be"
-                        + " converted to MS:1000131");
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000515 array in unit UO:0000187 is none of"
+                        + " the spectrum intensity units MS:1000131, MS:1000132, MS:1000814");
+    }
+
+    /** A wavelength spectrum's intensity array, unlike an MS spectrum's, is still only taken in MS:1000131. */
+    @Test
+    void aWavelengthSpectrumsIntensityInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        Path file = tofWith(dir, s -> replaceAfter(s, UV_0,
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage(prefix(file, "spectrum #212 (merged=212 row=0)") + "its MS:1000515 array in unit"
+                        + " MS:1000132 cannot be converted to MS:1000131");
     }
 
     @Test
@@ -1690,7 +1726,7 @@ class MzMLReaderRunTest {
 
         assertThat(run.spectra.get(0).description().scans().get(0).scanWindows()).isEmpty();
         assertThat(run.spectra.get(1).description().scans().get(0).scanWindows()).hasSize(1);
-        assertThat(run.reader.warnings()).contains("B-17 scan windows without both limits in m/z dropped (1)");
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_17_WINDOW + " (1)");
     }
 
     @Test
@@ -1702,7 +1738,7 @@ class MzMLReaderRunTest {
         Run run = read(file);
 
         assertThat(run.spectra.get(0).description().scans().get(0).scanWindows()).isEmpty();
-        assertThat(run.reader.warnings()).contains("B-17 scan windows without both limits in m/z dropped (1)",
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_17_WINDOW + " (1)",
                 "B-17 scan window params other than the limits lost (1)");
     }
 
@@ -2018,9 +2054,20 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-28 extra arrays of wavelength spectra dropped (1)");
     }
 
+    /**
+     * R8 (D13-24): a wavelength spectrum keeps its scans, the first one's start time as its time, a second scan, a
+     * scan's instrument configuration and a window in nm; it loses a precursor list and a scan's spectrum reference
+     * (B-23), and a window in m/z (B-17).
+     */
     @Test
-    void wavelengthSpectrumContentBesidesTheStartTimeIsLost(@TempDir Path dir) throws IOException {
-        String scan = "<scan>\n" + cv("MS:1000016", "scan start time", "0.5", "UO:0000031") + "\n</scan>\n";
+    void wavelengthSpectrumScansAreKeptAndPrecursorsAndScanReferencesLost(@TempDir Path dir) throws IOException {
+        String scan = "<scan spectrumRef=\"merged=0\">\n" + cv("MS:1000016", "scan start time", "0.5", "UO:0000031")
+                + "\n<scanWindowList count=\"2\">\n<scanWindow>\n"
+                + cv("MS:1000501", "scan window lower limit", "200", "UO:0000018") + "\n"
+                + cv("MS:1000500", "scan window upper limit", "400", "UO:0000018") + "\n</scanWindow>\n<scanWindow>\n"
+                + cv("MS:1000501", "scan window lower limit", "200", "MS:1000040") + "\n"
+                + cv("MS:1000500", "scan window upper limit", "400", "MS:1000040")
+                + "\n</scanWindow>\n</scanWindowList>\n</scan>\n";
         String precursors = "<precursorList count=\"1\">\n<precursor>\n<activation/>\n</precursor>\n</precursorList>\n";
         Path file = tofWith(dir, s -> {
             String edited = replaceAfter(s, UV_0, "</scanList>", scan + "</scanList>");
@@ -2035,11 +2082,17 @@ class MzMLReaderRunTest {
 
         Run run = read(file);
 
-        assertThat(run.wavelengthSpectra.get(0).time()).isEqualTo(0.001833333333);
+        WavelengthSpectrum first = run.wavelengthSpectra.get(0);
+        assertThat(first.time()).isEqualTo(0.001833333333);
+        assertThat(first.scans()).containsExactly(
+                new ScanEvent(0.001833333333, null, null, null, null, null, List.of(), List.of()),
+                new ScanEvent(0.5, null, null, null, null, null, List.of(new ScanWindow(200, 400)), List.of()));
         assertThat(run.wavelengthSpectra.get(1).time()).isNaN();
-        // a second scan, a precursor list and a scan's configuration ref; a wavelength spectrum without scans loses none
-        assertThat(run.reader.warnings()).contains(
-                "B-23 wavelength spectrum content other than the first scan's start time lost (3)");
+        assertThat(run.wavelengthSpectra.get(1).scans()).isEmpty();
+        assertThat(run.wavelengthSpectra.get(3).scans()).extracting(ScanEvent::instrumentConfigurationRef)
+                .containsExactly(0);
+        // the precursor list and the second scan's spectrum reference
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_23 + " (2)", MzMLReader.B_17_WINDOW + " (1)");
     }
 
     /** Each of the three wavelength spectrum types makes a spectrum without arrays a wavelength spectrum. */
@@ -2079,7 +2132,8 @@ class MzMLReaderRunTest {
         assertThat(run.spectra.get(0).description().primaryPrecursor().precursorIndex()).isNull();
         assertThat(run.reader.warnings()).contains(
                 "B-11 MS spectra after wavelength spectra, their interleaving lost (3)",
-                "B-23 wavelength spectrum content other than the first scan's start time lost (1)",
+                // its scan keeps its start time, filter string and the rest; its window in m/z is dropped
+                MzMLReader.B_17_WINDOW + " (1)", MzMLReader.B_17_PARAMS + " (2)",
                 "B-33 spectrum references whose kind (local or external) changes on the way back (1)");
     }
 

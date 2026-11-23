@@ -163,7 +163,7 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 | `@instrumentConfigurationRef` | `instrumentConfigurationRef` (int, rule IC) | a ref naming nothing reads as null (B-39) |
 | `@spectrumRef`, `@externalSpectrumID` | `spectrumReference` | one string; its kind can change on the way back (B-33, B-41, B-42) |
 | `@sourceFileRef` | — | lost (B-16) |
-| `scanWindow` MS:1000501 / MS:1000500 | `ScanWindow(lower, upper)` in m/z | windows lacking a limit in m/z, and other window params, lost (B-17) |
+| `scanWindow` MS:1000501 / MS:1000500 | `ScanWindow(lower, upper)` in m/z (in nm for a wavelength spectrum) | windows lacking a limit in that unit, and other window params, lost (B-17) |
 | other params (ion mobility included) | `parameters` | A: the ion mobility terms first |
 
 ### Precursors
@@ -202,7 +202,8 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 |---|---|---|
 | spectrum classified as wavelength | one `WavelengthSpectrum`, index = UV ordinal | A: written after all MS spectra |
 | `@id` | `id` | |
-| the first scan's MS:1000016 | `time` (min) | other scan content lost (B-23) |
+| the first scan's MS:1000016 | `time` (min) | A: a time other than the first scan's start time is lost (A-9) |
+| `scanList` scans | `scans` (R8) | as for MS spectra, their windows in nm (UO:0000018); a scan's spectrum reference and the precursors lost (B-23). B: the mzPeak writer stores the windows as float32 in nm. A: a wavelength spectrum without scans gets one holding its time (A-8) |
 | MS:1003812 lambda max | `lambdaMax` | in nm or without unit, else kept as a param |
 | other params | `parameters` | |
 | wavelength array, intensity array | `wavelength()`, `intensity()` | nm and MS:1000131; further arrays dropped (B-28) |
@@ -212,7 +213,7 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 | mzML | Model | Notes |
 |---|---|---|
 | MS:1000514 m/z array | `Spectrum.mz()` | in MS:1000040 or without unit, else rejected; a NaN m/z fails the conversion (limit below) |
-| MS:1000515 intensity array | `intensity()` | spectra: in MS:1000131 or without unit, else rejected |
+| MS:1000515 intensity array | `intensity()` | MS spectra: in MS:1000131, MS:1000132 (percent of base peak) or MS:1000814 (counts per second), kept as `intensityUnit`, or without unit, read as MS:1000131; else rejected. The survey collects the units and the session declares them (`Options.withSpectrumIntensityUnits`, R5); lost for a spectrum without points in a unit other than MS:1000131 (B-36). A: written in `intensityUnit`, MS:1000131 when it is null. Wavelength spectra: in MS:1000131 or without unit, else rejected |
 | MS:1000617 wavelength, MS:1000595 time | the axis of a wavelength spectrum or chromatogram | wavelength in nm; time see chromatograms |
 | any other array type | `arrays()` keyed by the CURIE | see the units below |
 | MS:1000786 non-standard data array | `arrays()` keyed by its name | B: a name that is an array-type accession is rejected. A: every key that is not a known array type is written as MS:1000786 with the key as name; a nameless one gets the name 'non-standard data array' (A-33) |
@@ -233,7 +234,7 @@ The model has no array units; the unit of each key is fixed by `CvTerms.DEFAULT_
 | Key | Unit |
 |---|---|
 | MS:1000514 m/z | MS:1000040 |
-| MS:1000515 intensity | MS:1000131 |
+| MS:1000515 intensity | MS:1000131 (an MS spectrum's in its `intensityUnit`, R5) |
 | MS:1000595 time | UO:0000031 minute |
 | MS:1000617 wavelength | UO:0000018 nanometer |
 | MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156 (drift-time arrays) | UO:0000028 millisecond |
@@ -333,13 +334,13 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-14 | lexical forms of values, userParam types, unit names; unitless summary, peak-intensity and collision-energy params given their default unit (warned: type mismatches kept as text, units set) | `MzMLReader` |
 | B-15 | scan start times converted to minutes and drift-time arrays to milliseconds | `MzMLReader` |
 | B-16 | `scan@sourceFileRef` and `precursor@sourceFileRef` | `MzMLReader` |
-| B-17 | scan windows without both limits in m/z, and scan window params other than the limits | `MzMLReader` |
+| B-17 | scan windows without both limits in m/z (in nm for wavelength spectra), and scan window params other than the limits | `MzMLReader` |
 | B-18 | withdrawn: a selected ion without m/z is kept with m/z NaN since 0.13.0 | — |
 | B-19 | selected ions of later precursors with the same parent, moved to the first precursor | `MzMLConversion` |
 | B-20 | the spectrum `productList` | `MzMLReader` |
 | B-21 | array data type and compression (silent); warned: other array params, array `dataProcessingRef`, declared units of arrays without default unit, arrays in a unit other than their default, ASCII arrays, arrays without array type | `MzMLReader` |
 | B-22 | m/z, time or wavelength arrays that are not ascending, written sorted | library warning |
-| B-23 | wavelength spectrum content other than the first scan's start time | `MzMLReader` |
+| B-23 | precursors and scan spectrum references of wavelength spectra | `MzMLReader` |
 | B-24 | additions of the mzPeak writer: spectrum types, the five summary params, a scan for spectra without one, the run's default source file | `MzMLConversion` |
 | B-25 | the input index and checksum, not verified | silent |
 | B-26 | extra arrays without a value other than NaN, which the mzPeak read drops | `MzMLConversion` |
@@ -352,7 +353,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-33 | spectrum references whose kind (local or external) changes on the way back | `MzMLReader` |
 | B-34 | withdrawn: a NaN m/z fails the conversion since 0.13.0 ([limits](#limits)) | — |
 | B-35 | non-finite file-level param values, which come back as the Strings `Infinity`, `-Infinity` or `NaN` | `MzMLConversion` |
-| B-36 | the intensity unit of a chromatogram without points | `MzMLConversion` |
+| B-36 | the intensity unit of a chromatogram without points, and of a spectrum without points in a unit other than MS:1000131 | `MzMLConversion` |
 | B-37 | elements the schema does not allow where they stand: part of limit L-6 | not counted |
 | B-38 | withdrawn (ids and refs are taken as jmzML gives them, L-6) | — |
 | B-39 | instrument configuration refs that name no instrument configuration, read as null | `MzMLReader` |
@@ -377,7 +378,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | A-10 | run start times that are no xs:dateTime | `MzMLWriter` |
 | A-11 | chromatogram precursors after the first | `MzMLWriter` |
 | A-12 | instrument components of type UNKNOWN, and component lists without a source, analyzer or detector | `MzMLWriter` |
-| A-13 | array units and data types as stored in mzPeak, which the converter does not use yet (the library reads the spectrum intensity units since 0.13.0): arrays are written as 64-bit floats in the default unit of their key (a chromatogram's time in its `timeUnit`), or without unit | `MzMLWriter`, fixed line |
+| A-13 | array units and data types as stored in mzPeak, which the converter does not use yet: arrays are written as 64-bit floats in the default unit of their key (a chromatogram's time in its `timeUnit`, a spectrum's intensity in its `intensityUnit`), or without unit | `MzMLWriter`, fixed line |
 | A-14 | withdrawn (auxiliary arrays are written since 0.13.0; what they lose is A-34 and A-35) | — |
 | A-15 | withdrawn (no mzML output option changes values) | — |
 | A-16 | spectrum types derived from the MS level of spectra without one | `MzMLWriter` |

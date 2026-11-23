@@ -120,8 +120,9 @@ decisions cause.
 - **No array descriptor API; fixed default units per array key** (`CvTerms.DEFAULT_ARRAY_UNITS`); an array in a unit
   the model cannot carry is converted, dropped or rejected, never relabelled (2026-11-08). *Why:* never write a unit the
   data were not in.
-- **Spectrum intensity arrays outside MS:1000131 are rejected** (2026-11-08). *Why:* the model had no spectrum
-  intensity unit. It has since 0.13.0 (`Spectrum.intensityUnit()`, X-29); the converter's half (X-36) is open.
+- **Spectrum intensity arrays outside MS:1000131, MS:1000132 and MS:1000814 are rejected** (2026-11-08; the
+  converter keeps the unit since 0.13.0, X-36). *Why:* before 0.13.0 the model had no spectrum intensity unit; it has
+  `Spectrum.intensityUnit()` since X-29, and the converter declares the units its survey finds to the session.
 - **No overwriting**: the converter, the CLI, `MzMLWriter.open` and the public session API refuse an existing target;
   the batch `MzPeakWriter.write*` overloads keep replacing (2026-11-08). *Why:* a conversion must never destroy data;
   the batch overloads keep their published behaviour.
