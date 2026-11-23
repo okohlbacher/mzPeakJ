@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -113,9 +114,12 @@ class UpstreamInteropTest {
             "}))",
             "");
 
-    /** D-12b (V-22): the arrays of chromatogram 0 of one dataset, as the Python reader reads them. */
+    /**
+     * D-12b (V-22), W3: the arrays of chromatogram 0 of one dataset, as the Python reader reads them, and the units
+     * of the time columns of its chromatogram array index.
+     */
     private static final String CHROMATOGRAM_ARRAYS_PROBE = String.join("\n",
-            "\"\"\"Chromatogram 0's arrays (mzPeakJ UpstreamInteropTest, V-22).\"\"\"",
+            "\"\"\"Chromatogram 0's arrays and time unit (mzPeakJ UpstreamInteropTest, V-22, W3).\"\"\"",
             "import json",
             "import sys",
             "",
@@ -124,7 +128,10 @@ class UpstreamInteropTest {
             "",
             "reader = MzPeakFile(sys.argv[1])",
             "data = reader.chromatogram_data[0]",
-            "print(json.dumps({str(k): [float(x) for x in v] for k, v in data.items() if isinstance(v, np.ndarray)}))",
+            "out = {str(k): [float(x) for x in v] for k, v in data.items() if isinstance(v, np.ndarray)}",
+            "index = reader.chromatogram_data.array_index.values()",
+            "out[\"time unit\"] = [e.unit for e in index if e.array_type == \"MS:1000595\"]",
+            "print(json.dumps(out))",
             "");
 
     /** V-24: the ion mobility columns of the scans and selected-ion frames, in row order, a null cell as null. */
@@ -297,11 +304,13 @@ class UpstreamInteropTest {
     }
 
     /**
-     * D-12b (V-22): small.unpacked with its chromatogram in seconds, written split as an archive: the Python reader
-     * reads the stored times, the seconds as written, and the archive passes {@code check_archive_integrity()}.
+     * W3 (D13-1): small.unpacked with its chromatogram in seconds, written split as an archive: the writer stores the
+     * times in minutes, the Python reader reads them, the input times divided by 60, from a time column in
+     * UO:0000031, and the archive passes {@code check_archive_integrity()}. Until W3 the times were written, and
+     * read, in seconds (D-12b, V-22).
      */
     @Test
-    void thePythonReaderReadsTheStoredTimesOfAChromatogramInSeconds() throws IOException {
+    void thePythonReaderReadsAChromatogramWrittenFromSeconds() throws IOException {
         Path dir = Files.createDirectories(tmp.resolve("seconds"));
         ForwardBackwardCorpusTest.Source small = ForwardBackwardCorpusTest.readSource(
                 Fixtures.current("small.unpacked.mzpeak"));
@@ -315,7 +324,9 @@ class UpstreamInteropTest {
         Result probed = python(script, archive, "seconds.json");
         assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
         JsonNode arrays = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
-        assertThat(doubles(arrays.path("time array"))).as("%s", arrays).isEqualTo(seconds.time());
+        assertThat(arrays.path("time unit").toString()).as("%s", arrays).isEqualTo("[\"UO:0000031\"]");
+        assertThat(doubles(arrays.path("time array"))).as("%s", arrays)
+                .isEqualTo(Arrays.stream(seconds.time()).map(t -> t / 60).toArray());
         assertThat(doubles(arrays.path("intensity array"))).as("%s", arrays).isEqualTo(seconds.intensity());
 
         Result counted = python(probe, archive, "seconds-counts.json");

@@ -139,36 +139,47 @@ class MzMLConversionTest {
         assertThat(Files.isRegularFile(b.mzpeak)).isTrue();
         Model m3 = model(b.mzml);
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2007-06-27T15:23:45Z");
-        assertThat(ModelAssert.assertEqual("tiny B", model(tiny), m3, STRICT, ModelAssert.A_26).hidden())
-                .containsExactly(Map.entry("A_26", 1));
+        assertThat(ModelAssert.assertEqual("tiny B", model(tiny), m3, STRICT, ModelAssert.A_26,
+                ModelAssert.W_3).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4));
     }
 
     /**
-     * D-12c (V-23): tiny's two chromatograms, whose time arrays are in seconds, keep their unit and values both ways:
-     * the mzPeak dataset reads {@code timeUnit} UO:0000010 with the mzML's values, and the mzML written from it holds
-     * time arrays with {@code unitAccession="UO:0000010"} whose values are bit-identical to the source's, both as
-     * jmzML decodes them.
+     * W3 (D13-1): tiny's two chromatograms, whose time arrays are in seconds, are stored in minutes: the mzPeak
+     * dataset reads {@code timeUnit} UO:0000031 with the mzML's values divided by 60, and the mzML written from it
+     * holds time arrays with {@code unitAccession="UO:0000031"} and those minutes, both as jmzML decodes them. Until
+     * W3 they kept their unit and values both ways (D-12c, V-23).
      */
     @Test
-    void tinysChromatogramTimesKeepTheirUnitAndValuesBothWays() throws IOException {
+    void tinysChromatogramTimesAreStoredInMinutes() throws IOException {
         Path tiny = MzMLFixtures.extract(MzMLFixtures.TINY, dir);
         List<List<Object>> source = jmzmlTimeArrays(tiny);
         assertThat(source).hasSize(2).allSatisfy(a -> assertThat(a.get(0)).isEqualTo("UO:0000010"));
         assertThat(source).extracting(List::size).containsExactly(16, 11);
+        List<List<Object>> minutes = new ArrayList<>();
+        for (List<Object> array : source) {
+            List<Object> converted = new ArrayList<>(List.of("UO:0000031"));
+            for (Object bits : array.subList(1, array.size())) {
+                converted.add(Double.doubleToRawLongBits(Double.longBitsToDouble((Long) bits) / 60));
+            }
+            minutes.add(converted);
+        }
 
         B b = b(tiny, false);
 
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Chromatogram> chromatograms = reader.chromatograms();
-            assertThat(chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000010");
+            assertThat(chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
             for (int c = 0; c < 2; c++) {
                 assertThat(Arrays.stream(chromatograms.get(c).time()).mapToObj(Double::doubleToRawLongBits)
-                        .toList()).as("chromatogram %d", c).isEqualTo(source.get(c).subList(1, source.get(c).size()));
+                        .toList()).as("chromatogram %d", c)
+                        .isEqualTo(minutes.get(c).subList(1, minutes.get(c).size()));
             }
         }
-        assertThat(jmzmlTimeArrays(b.mzml)).isEqualTo(source);
+        assertThat(jmzmlTimeArrays(b.mzml)).isEqualTo(minutes);
         assertThat(Files.readString(b.mzml, StandardCharsets.UTF_8))
-                .contains("accession=\"MS:1000595\" name=\"time array\" unitAccession=\"UO:0000010\"");
+                .contains("accession=\"MS:1000595\" name=\"time array\" unitAccession=\"UO:0000031\"")
+                .doesNotContain("name=\"time array\" unitAccession=\"UO:0000010\"");
     }
 
     /**
@@ -327,7 +338,7 @@ class MzMLConversionTest {
                 .get(0);
         assertThat(written.getExternalSpectrumID()).isEqualTo("scan=19");
         assertThat(written.getSpectrumRef()).isNull();
-        ModelAssert.assertEqual("external precursor", m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        ModelAssert.assertEqual("external precursor", m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
     }
 
     @Test
@@ -343,7 +354,7 @@ class MzMLConversionTest {
         Scan scan = jmzmlSpectra(b.mzml).get(1).getScanList().getScan().get(0);
         assertThat(scan.getSpectrumRef()).isEqualTo("scan=19");
         assertThat(scan.getExternalSpectrumID()).isNull();
-        ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
     }
 
     /**
@@ -395,7 +406,7 @@ class MzMLConversionTest {
             assertThat(Param.find(reader.fileMetadata().fileDescription().contents(), "MS:1000127").orElseThrow()
                     .value()).isEqualTo("Infinity");
         }
-        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
         assertThat(result.paths()).containsExactly("fileMetadata.fileDescription.contents[MS:1000127]");
     }
 
@@ -417,7 +428,7 @@ class MzMLConversionTest {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::intensityUnit).containsExactly(null, null);
         }
-        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
         assertThat(result.paths()).containsExactly("chromatogram[0].intensityUnit");
     }
 
@@ -438,7 +449,7 @@ class MzMLConversionTest {
         }
         Model m3 = model(b.mzml);
         assertThat(m3.spectrumList().get(0).arrays()).isEmpty();
-        assertThat(ModelAssert.compare(m1, m3, STRICT, ModelAssert.A_26).paths())
+        assertThat(ModelAssert.compare(m1, m3, STRICT, ModelAssert.A_26, ModelAssert.W_3).paths())
                 .containsExactly("spectrum[0].arrays[" + SN + "]");
     }
 
@@ -478,8 +489,9 @@ class MzMLConversionTest {
                 "2005-07-20T19:44:22.1234Z", "2005-07-20T19:44:22.123Z") + " (1)"));
         Model m3 = model(b.mzml);
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2005-07-20T19:44:22.123Z");
-        assertThat(ModelAssert.assertEqual("A-26", model(file), m3, STRICT, ModelAssert.A_26).hidden())
-                .containsExactly(Map.entry("A_26", 1));
+        assertThat(ModelAssert.assertEqual("A-26", model(file), m3, STRICT, ModelAssert.A_26,
+                ModelAssert.W_3).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4));
     }
 
     /**
@@ -504,7 +516,7 @@ class MzMLConversionTest {
         String mzml = Files.readString(b.mzml, StandardCharsets.UTF_8);
         assertThat(mzml).doesNotContain("<sourceFile", "defaultSourceFileRef", "mzpeakj_source");
         assertThat(b.toMzML.warnings()).containsExactlyElementsOf(writerLimits(TINY_A_26));
-        ModelAssert.assertEqual("without source files", m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        ModelAssert.assertEqual("without source files", m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
     }
 
     /**
@@ -771,10 +783,10 @@ class MzMLConversionTest {
     }
 
     /**
-     * D-12c: the mzPeak writer refuses chromatograms of different time units (D-12b), so the converter converts the
-     * times of every chromatogram whose unit differs from the first chromatogram's into that unit and counts them
-     * (B-15): an mzML whose sic is in minutes and whose tic is in seconds converts as it did at v0.11.1, the sic's
-     * times in seconds.
+     * D-12c: the converter converts the times of every chromatogram whose unit differs from the first chromatogram's
+     * into that unit and counts them (B-15), as when the mzPeak writer refused chromatograms of different time units
+     * (D-12b): an mzML whose sic is in minutes and whose tic is in seconds converts the sic's times to seconds, and the
+     * mzPeak writer then stores both in minutes (W3), the seconds divided by 60.
      */
     @Test
     void chromatogramsOfDifferentTimeUnitsAreConvertedToTheFirstChromatogramsUnit() throws IOException {
@@ -789,9 +801,10 @@ class MzMLConversionTest {
         assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_15_CHROMATOGRAM_TIMES + " (1)");
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Chromatogram> written = reader.chromatograms();
-            assertThat(written).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000010");
-            assertThat(written.get(0).time()).containsExactly(read.get(0).time());
-            assertThat(written.get(1).time()).containsExactly(sicInSeconds);
+            assertThat(written).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
+            assertThat(written.get(0).time())
+                    .containsExactly(Arrays.stream(read.get(0).time()).map(t -> t / 60).toArray());
+            assertThat(written.get(1).time()).containsExactly(Arrays.stream(sicInSeconds).map(t -> t / 60).toArray());
         }
     }
 
@@ -825,7 +838,8 @@ class MzMLConversionTest {
 
     /**
      * D-12c (V-23): a later chromatogram without arrays, the sic, takes the time unit the first chromatogram, the
-     * tic, declares: the run's unit is the first declared one, not the last chromatogram's (none).
+     * tic, declares: the run's unit is the first declared one, not the last chromatogram's (none). The mzPeak writer
+     * stores both in minutes (W3).
      */
     @Test
     void aLaterChromatogramWithoutArraysTakesTheFirstDeclaredTimeUnit() throws IOException {
@@ -843,13 +857,13 @@ class MzMLConversionTest {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(15, 0);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
-                    .containsExactly("UO:0000010", "UO:0000010");
+                    .containsExactly("UO:0000031", "UO:0000031");
         }
     }
 
     /**
      * D-12c (V-23 review): the tic without its intensity array loses its time array too (B-9) but keeps the time
-     * array's unit, seconds as the sic's, so the conversion succeeds and the empty tic reads back in seconds.
+     * array's unit, seconds as the sic's, so the conversion succeeds; the empty tic reads back in minutes (W3).
      */
     @Test
     void aTimeOnlyChromatogramConvertsWithItsTimeArraysUnit() throws IOException {
@@ -866,16 +880,16 @@ class MzMLConversionTest {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(0, 10);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
-                    .containsExactly("UO:0000010", "UO:0000010");
+                    .containsExactly("UO:0000031", "UO:0000031");
         }
         assertThat(model(b.mzml).chromatograms()).extracting(Chromatogram::timeUnit)
-                .containsExactly("UO:0000010", "UO:0000010");
+                .containsExactly("UO:0000031", "UO:0000031");
     }
 
     /**
      * D-12c (V-23 review): the tic without its time array loses its intensity array too (B-9) and, without times,
-     * takes the run's chromatogram time unit, the sic's seconds, so the conversion succeeds and the empty tic reads
-     * back in seconds.
+     * takes the run's chromatogram time unit, the sic's seconds, so the conversion succeeds; the empty tic reads
+     * back in minutes (W3).
      */
     @Test
     void anIntensityOnlyChromatogramConvertsWithTheRunsTimeUnit() throws IOException {
@@ -888,13 +902,13 @@ class MzMLConversionTest {
         B b = b(file, false);
 
         assertThat(b.toMzPeak.warnings()).contains(MzMLReader.B_9 + " (1)");
-        assertEmptyTicInSeconds(b);
+        assertEmptyTicInMinutes(b);
     }
 
     /**
      * D-12c (V-23 review): the tic without binaryDataArrayList has no arrays to lose and, without times, takes the
-     * run's chromatogram time unit, the sic's seconds, so the conversion succeeds and the empty tic reads back in
-     * seconds.
+     * run's chromatogram time unit, the sic's seconds, so the conversion succeeds; the empty tic reads back in
+     * minutes (W3).
      */
     @Test
     void aChromatogramWithoutArraysConvertsWithTheRunsTimeUnit() throws IOException {
@@ -907,17 +921,17 @@ class MzMLConversionTest {
         B b = b(file, false);
 
         assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLReader.B_9));
-        assertEmptyTicInSeconds(b);
+        assertEmptyTicInMinutes(b);
     }
 
-    private static void assertEmptyTicInSeconds(B b) throws IOException {
+    private static void assertEmptyTicInMinutes(B b) throws IOException {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(0, 10);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
-                    .containsExactly("UO:0000010", "UO:0000010");
+                    .containsExactly("UO:0000031", "UO:0000031");
         }
         assertThat(model(b.mzml).chromatograms()).extracting(Chromatogram::timeUnit)
-                .containsExactly("UO:0000010", "UO:0000010");
+                .containsExactly("UO:0000031", "UO:0000031");
     }
 
     @Test

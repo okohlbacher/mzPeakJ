@@ -53,6 +53,8 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     static final String COUNTS_UNIT = "MS:1000131";
     /** MS:1000040, m/z: the unit of the m/z axis. */
     static final String MZ_UNIT = "MS:1000040";
+    /** UO:0000031, minute: the unit of the chromatogram time axis (chromatograms.md: "the units MUST be minutes"). */
+    static final String MINUTE_UNIT = "UO:0000031";
     /** UO:0000018, nanometer: the unit of the wavelength axis. */
     static final String NANOMETER_UNIT = "UO:0000018";
     /** The {@code buffer_priority} of the first logical array of each array type the writer records. */
@@ -255,8 +257,8 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
 
         /**
          * A column of the main axis, at sorting rank 1: the entity's axis as 64-bit floats in {@code unit}, m/z
-         * (MS:1000514) in {@link #MZ_UNIT}, time (MS:1000595) in the chromatograms' time unit
-         * ({@link WritePlan#chromatogramTimeUnit()}) or wavelength (MS:1000617) in {@link #NANOMETER_UNIT}.
+         * (MS:1000514) in {@link #MZ_UNIT}, time (MS:1000595) in {@link #MINUTE_UNIT} or wavelength (MS:1000617) in
+         * {@link #NANOMETER_UNIT}.
          */
         Builder axis(String field, BufferFormat format, String transform, String unit) {
             String name = switch (context) {

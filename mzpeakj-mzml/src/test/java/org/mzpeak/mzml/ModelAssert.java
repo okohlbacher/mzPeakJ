@@ -889,6 +889,9 @@ public final class ModelAssert {
     private static final Pattern RUN_START_TIME = Pattern.compile("fileMetadata\\.run\\.startTime");
     private static final Pattern SIGNAL = Pattern.compile("spectrum\\[\\d+]\\.(mz|intensity|arrays(\\[.*)?)");
     private static final Pattern MZ = Pattern.compile("spectrum\\[\\d+]\\.mz");
+    private static final Pattern CHROMATOGRAM_TIME = Pattern.compile("chromatogram\\[\\d+]\\.(time|timeUnit)");
+    /** UO:0000031 minute, the unit the mzPeak writer stores chromatogram times in (W3). */
+    private static final String MINUTE = "UO:0000031";
 
     /** The start of the detail of a mixed-mode difference in the mzML side's own peak list, which A_1 never hides. */
     static final String MZML_SIDE = "the mzML side has ";
@@ -1000,9 +1003,34 @@ public final class ModelAssert {
             d -> MZ.matcher(d.path()).matches() && d.expected() instanceof double[] e
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
+    /** W-3: chromatogram times the mzPeak writer stores in minutes. */
+    public static final Exclusion W_3 = new Exclusion("W_3",
+            "W-3: the time array and time unit of a chromatogram whose time unit is not minute (UO:0000031) in"
+                    + " expected and is minute in actual, the times of actual bit-equal to those of expected converted"
+                    + " by Chromatogram.withTimeUnit, as the mzPeak writer stores them (W3, D13-1): tiny's two"
+                    + " chromatograms and diaPASEF.mzML's two in B, and the corpus timsTOF mzML's nine, seconds ->"
+                    + " minutes",
+            d -> CHROMATOGRAM_TIME.matcher(d.path()).matches() && d.expectedRoot() instanceof Chromatogram e
+                    && d.actualRoot() instanceof Chromatogram a && inMinutes(e, a));
+
     /** Every exclusion above. */
     public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, A_26, B_22,
-            B_34);
+            B_34, W_3);
+
+    /**
+     * W-3: {@code expected} has another time unit than minute, {@code actual} has minute and the times of
+     * {@code expected} converted to minutes, bit for bit; false when {@code expected}'s unit cannot be converted.
+     */
+    private static boolean inMinutes(Chromatogram expected, Chromatogram actual) {
+        if (expected.timeUnit().equals(MINUTE) || !actual.timeUnit().equals(MINUTE)) {
+            return false;
+        }
+        try {
+            return Arrays.equals(expected.withTimeUnit(MINUTE).time(), actual.time());
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
 
     /**
      * A-26: {@code actual} is {@code expected} as jmzML's {@code CalendarAdapter} writes it, in the JVM's default time

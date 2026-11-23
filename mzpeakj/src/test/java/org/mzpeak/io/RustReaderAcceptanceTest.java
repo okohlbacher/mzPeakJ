@@ -32,6 +32,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -187,11 +188,12 @@ class RustReaderAcceptanceTest {
     }
 
     /**
-     * D-12b (V-22): small.unpacked with its chromatogram in seconds, written split as an archive: Rust reads the
-     * chromatogram with its time array in seconds and the times as written.
+     * W3 (D13-1): small.unpacked with its chromatogram in seconds, written split as an archive: the writer stores the
+     * times in minutes, and Rust reads the chromatogram with its time array in minutes and the input times divided by
+     * 60. Until W3 the times were written, and read, in seconds (D-12b, V-22).
      */
     @Test
-    void rustReadsAChromatogramInSeconds() throws Exception {
+    void rustReadsAChromatogramWrittenFromSeconds() throws Exception {
         Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Chromatogram seconds = WriterChromatogramTimeUnitTest.secondsChromatogram(tmp);
         Path out = tmp.resolve("seconds.mzpeak");
@@ -203,8 +205,8 @@ class RustReaderAcceptanceTest {
             assertThat(c.has("panic") || c.has("none")).as("%s", c).isFalse();
             assertThat(c.path("id").asText()).isEqualTo(seconds.id());
             JsonNode time = c.path("arrays").path("TimeArray");
-            assertThat(time.path("unit").asText()).as("%s", c).isEqualTo("Second");
-            assertThat(dump.array(time)).isEqualTo(seconds.time());
+            assertThat(time.path("unit").asText()).as("%s", c).isEqualTo("Minute");
+            assertThat(dump.array(time)).isEqualTo(Arrays.stream(seconds.time()).map(t -> t / 60).toArray());
             assertThat(dump.array(c.path("arrays").path("IntensityArray"))).isEqualTo(seconds.intensity());
         });
     }

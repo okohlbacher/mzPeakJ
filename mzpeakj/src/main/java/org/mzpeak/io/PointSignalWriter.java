@@ -126,13 +126,13 @@ final class PointSignalWriter {
      * Write the plan's chromatograms_data rows: each chromatogram's time and intensity in the order of its
      * {@link WritePlan.SignalArrays}, the intensity in the column of its unit ({@link WritePlan#intensityColumn}),
      * with the values of the plan's extra columns from its {@link Chromatogram#arrays()} in the same order. The time
-     * column is declared in the plan's {@link WritePlan#chromatogramTimeUnit()}, the times written as given.
+     * column is declared in minutes ({@link ArrayIndex#MINUTE_UNIT}), the unit the planner converted the times to.
      */
     static void writeChromatogramData(Path file, WritePlan plan) throws IOException {
         List<IntensityColumn> intensities = plan.chromatogramIntensities();
         List<ExtraColumn> extras = plan.chromatogramExtras();
         try (SignalFile out = new SignalFile(file, pointSchema("chromatogram_index", "time", intensities, extras),
-                pointIndex(SignalEntity.CHROMATOGRAM, "time", plan.chromatogramTimeUnit(), intensities, extras),
+                pointIndex(SignalEntity.CHROMATOGRAM, "time", ArrayIndex.MINUTE_UNIT, intensities, extras),
                 plan.options())) {
             out.setEntityCount(plan.chromatograms().size());
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
