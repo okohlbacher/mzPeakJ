@@ -101,7 +101,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * {@code MzMLMarshaller} to a temp file next to the target, which it then moves to the target without replacing
  * anything there. Nothing is written before {@code finish()}; the whole document is held in memory until then. Every
  * writer notes the limit lines {@link #LIMITS} (design 6.0) and the fixed lines {@link #NOT_VISIBLE} of the losses it
- * cannot see (A-13, A-14), and what the mzML cannot carry as it is is counted in
+ * does not count (A-13, A-14), and what the mzML cannot carry as it is is counted in
  * {@link #warnings()} (design 6.2), as is every PSI mapping-rule violation it passes through (design 6.4: spectra
  * without exactly one spectrum type and representation, scanLists without exactly one combination term, spectrum
  * precursor activations without dissociation method, instrument configurations synthesized or without exactly one
@@ -196,14 +196,15 @@ public final class MzMLWriter implements AutoCloseable {
                     + " near -Xmx)");
 
     /**
-     * The losses of design 6.2 the converter cannot see and so cannot count, noted as fixed lines after
-     * {@link #LIMITS}: A-13, the units and data types of arrays as stored in mzPeak; A-14, auxiliary arrays.
+     * The losses of design 6.2 the converter does not count, noted as fixed lines after {@link #LIMITS}: A-13, the
+     * units and data types of arrays as stored in mzPeak; A-14, auxiliary arrays. The library reads the auxiliary
+     * arrays (R1) and the spectrum intensity units (R5); the converter does not use them yet.
      */
     static final List<String> NOT_VISIBLE = List.of(
-            "A-13 array units and data types as stored in mzPeak are not visible to the converter: every array is"
-                    + " written as 64-bit floats in the default unit of its key, or without unit",
-            "A-14 auxiliary_arrays of the mzPeak input are not visible to the converter (the library does not read"
-                    + " them)");
+            "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every array"
+                    + " is written as 64-bit floats in the default unit of its key, or without unit",
+            "A-14 auxiliary_arrays of the mzPeak input, which the converter does not use yet: they are not"
+                    + " written");
 
     // The losses of design 6.2 this writer counts, one line each in warnings().
     static final String A_1 = "A-1 peak lists that are not a row copy of the spectrum's arrays dropped";

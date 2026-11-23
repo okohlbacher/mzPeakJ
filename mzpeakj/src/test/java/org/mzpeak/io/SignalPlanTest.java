@@ -250,9 +250,11 @@ class SignalPlanTest {
         List<WavelengthSpectrum> wavelength;
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
             reader.iterator().forEachRemaining(spectra::add);
-            chromatograms = reader.chromatograms();
+            chromatograms = Fixtures.chromatogramsWithoutReferences(reader.chromatograms());
             wavelength = reader.wavelengthSpectra();
         }
+        // written without file metadata, which declares nothing a reference could name (W12)
+        spectra = new ArrayList<>(Fixtures.withoutReferences(spectra));
         assertThat(spectra).isNotEmpty();
         assertThat(chromatograms).isNotEmpty();
         assertThat(wavelength).isNotEmpty();
@@ -826,7 +828,7 @@ class SignalPlanTest {
             reader.iterator().forEachRemaining(spectra::add);
         }
         Path pic = tmp.resolve("pic.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(pic, spectra, List.of(), FileMetadata.EMPTY,
+        MzPeakWriter.writeDirectoryNumpress(pic, Fixtures.withoutReferences(spectra), List.of(), FileMetadata.EMPTY,
                 MzPeakWriter.NumpressIntensityEncoding.PIC);
 
         SignalPlan plan = plansOf(pic).get("SPECTRUM/DATA_ARRAYS");

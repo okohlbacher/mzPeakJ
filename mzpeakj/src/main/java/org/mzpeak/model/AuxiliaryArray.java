@@ -76,7 +76,9 @@ public record AuxiliaryArray(Param name, byte[] data, String dataType, String co
      * @throws UnsupportedOperationException when the compression or the data type is not one of these; the message
      *                                       names it
      * @throws IllegalStateException         when the zlib data is corrupt or truncated, or the decompressed bytes do
-     *                                       not hold {@link #items()} values of the data type
+     *                                       not hold {@link #items()} values of the data type; zlib data is inflated
+     *                                       only as far as their size and one byte more, and not at all when no Java
+     *                                       array holds them
      */
     public double[] doubles() {
         int width = switch (dataType) {
@@ -86,7 +88,7 @@ public record AuxiliaryArray(Param name, byte[] data, String dataType, String co
                     + ": the data type " + dataType + " cannot be decoded; supported are MS:1000521 (32-bit float),"
                     + " MS:1000523 (64-bit float), MS:1000519 (32-bit integer) and MS:1000522 (64-bit integer)");
         };
-        byte[] bytes = decompressed();
+        byte[] bytes = decompressed(width);
         if (bytes.length % width != 0 || items != bytes.length / width) {
             throw new IllegalStateException("auxiliary array " + name.name() + ": " + bytes.length
                     + " bytes do not hold " + items + " values of " + dataType + " (" + width + " bytes each)");
@@ -104,15 +106,31 @@ public record AuxiliaryArray(Param name, byte[] data, String dataType, String co
         return out;
     }
 
-    /** {@link #data()} decompressed as {@link #compression()} says. */
-    private byte[] decompressed() {
+    /**
+     * {@link #data()} decompressed as {@link #compression()} says, for values {@code width} bytes each. zlib data is
+     * inflated only up to the {@link #items()} values and one byte more, so that a small payload that inflates far
+     * beyond its declared size (a zlib bomb) is refused without being inflated in full.
+     */
+    private byte[] decompressed(int width) {
         switch (compression) {
             case NO_COMPRESSION -> {
                 return data;
             }
             case ZLIB_COMPRESSION -> {
+                // items * width + 1 must fit in an int; items >= 0 and the division cannot overflow
+                if (items > (Integer.MAX_VALUE - 1L) / width) {
+                    throw new IllegalStateException("auxiliary array " + name.name() + ": " + items + " values of "
+                            + dataType + " (" + width + " bytes each) are more than a Java array holds");
+                }
+                int expected = (int) items * width;
                 try (InflaterInputStream in = new InflaterInputStream(new ByteArrayInputStream(data))) {
-                    return in.readAllBytes();
+                    byte[] bytes = in.readNBytes(expected + 1);
+                    if (bytes.length > expected) {
+                        throw new IllegalStateException("auxiliary array " + name.name() + ": more than " + expected
+                                + " bytes do not hold " + items + " values of " + dataType + " (" + width
+                                + " bytes each)");
+                    }
+                    return bytes;
                 } catch (IOException e) {
                     throw new IllegalStateException("auxiliary array " + name.name() + ": the zlib data cannot be"
                             + " decompressed: " + e.getMessage(), e);

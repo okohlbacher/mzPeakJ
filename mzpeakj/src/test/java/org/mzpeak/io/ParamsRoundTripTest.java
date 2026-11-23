@@ -47,7 +47,8 @@ class ParamsRoundTripTest {
 
         // Write and re-read
         Path out = tmp.resolve("params.mzpeak");
-        MzPeakWriter.writeDirectory(out, spectra, chromatograms);
+        MzPeakWriter.writeDirectory(out, Fixtures.withoutReferences(spectra),
+                Fixtures.chromatogramsWithoutReferences(chromatograms));
 
         try (MzPeakReader r = MzPeakReader.open(out)) {
             SpectrumDescription d2 = r.getMetadata(2).orElseThrow();
@@ -91,7 +92,8 @@ class ParamsRoundTripTest {
         }
 
         Path out = tmp.resolve("full.mzpeak");
-        MzPeakWriter.writeDirectory(out, spectra, chromatograms);
+        MzPeakWriter.writeDirectory(out, Fixtures.withoutReferences(spectra),
+                Fixtures.chromatogramsWithoutReferences(chromatograms));
 
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.size()).isEqualTo(48);

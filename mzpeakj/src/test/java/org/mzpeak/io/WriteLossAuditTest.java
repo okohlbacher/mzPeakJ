@@ -28,6 +28,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -52,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       its unit (X-32), are lost by both layouts on has_uv given one auxiliary array per entity type; and the
  *       wavelength scans (R8), for which the writer writes one scan with the spectrum time until its unit (X-34),
  *       which (b) expects of has_uv.
+ *   <li>(e) a write that drops any of (d) says so in one WARNING with counts, until the writer units write them.
  * </ul>
  */
 class WriteLossAuditTest {
@@ -334,6 +337,91 @@ class WriteLossAuditTest {
             assertThat(back.wavelengthSpectra).as("%s", layout).hasSameSizeAs(wavelengths)
                     .allMatch(b -> b.auxiliaryArrays().isEmpty());
         }
+    }
+
+    // ---- (e) the warning about what is not written ----------------------------------------------------------------
+
+    /**
+     * Rewriting has_uv warns once that the scans of its 520 wavelength spectra, each naming instrument configuration
+     * 0, are not written beyond one scan holding the time; given one auxiliary array per entity type, the warning
+     * counts those too. With every wavelength scan the time-only one the writer writes, two such scans of one
+     * spectrum are counted, and with none instead nothing is dropped and nothing is warned. The crafted copy of {@link PrecursorMsLevelAndProductsTest}
+     * counts its products and precursor MS level. Batch writes and sessions, in both layouts, warn alike.
+     */
+    @Test
+    void aWriteThatDropsReadComponentsWarnsOnceWithCounts(@TempDir Path tmp) throws IOException {
+        Source uv = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
+        String scans = "the scans of 520 wavelength spectra beyond one scan holding the spectrum time";
+        assertThat(unwrittenWarnings(uv, tmp.resolve("uv"))).containsOnly(WritePlanner.UNWRITTEN + scans);
+
+        AuxiliaryArray aux = new AuxiliaryArray(new Param("signal to noise array", "MS:1000517", null, null),
+                new byte[8], "MS:1000523", "MS:1000576", 1, null, List.of(), null);
+        Spectrum s = uv.spectra.get(0);
+        uv.spectra.set(0, new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(), s.arrays(),
+                s.peakArrays(), s.intensityUnit(), s.peakIntensityUnit(), List.of(aux)));
+        Chromatogram c = uv.chromatograms.get(0);
+        uv.chromatograms.set(0, new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(),
+                c.intensityUnit(), c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), c.precursors(),
+                c.timeUnit(), c.products(), List.of(aux)));
+        WavelengthSpectrum w = uv.wavelengthSpectra.get(0);
+        uv.wavelengthSpectra.set(0, new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(),
+                w.wavelength(), w.intensity(), w.parameters(), w.scans(), List.of(aux)));
+        assertThat(unwrittenWarnings(uv, tmp.resolve("aux"))).containsOnly(WritePlanner.UNWRITTEN
+                + "the auxiliary arrays of 1 spectrum, 1 chromatogram and 1 wavelength spectrum; " + scans);
+
+        List<WavelengthSpectrum> timeOnly = new ArrayList<>();
+        for (WavelengthSpectrum x : uv.wavelengthSpectra) {
+            ScanEvent at = new ScanEvent(x.time(), null, null, null, null, null, List.of(), List.of());
+            timeOnly.add(new WavelengthSpectrum(x.index(), x.id(), x.time(), x.lambdaMax(), x.wavelength(),
+                    x.intensity(), x.parameters(), x.index() == 3 ? List.of(at, at) : List.of(at), List.of()));
+        }
+        uv.wavelengthSpectra = timeOnly;
+        uv.spectra.set(0, s);
+        uv.chromatograms.set(0, c);
+        assertThat(unwrittenWarnings(uv, tmp.resolve("two-scans"))).containsOnly(WritePlanner.UNWRITTEN
+                + "the scans of 1 wavelength spectrum beyond one scan holding the spectrum time");
+        WavelengthSpectrum three = timeOnly.get(3);
+        uv.wavelengthSpectra.set(3, new WavelengthSpectrum(three.index(), three.id(), three.time(),
+                three.lambdaMax(), three.wavelength(), three.intensity(), three.parameters(), List.of(), List.of()));
+        assertThat(unwrittenWarnings(uv, tmp.resolve("none"))).isEmpty();
+
+        Source crafted = ForwardBackwardCorpusTest.readSource(PrecursorMsLevelAndProductsTest.craft(tmp, true));
+        assertThat(unwrittenWarnings(crafted, tmp.resolve("crafted"))).containsOnly(WritePlanner.UNWRITTEN
+                + "the products of 2 spectra and 1 chromatogram; the MS level of 1 precursor");
+    }
+
+    /**
+     * The WARNING messages about what is not written of the batch writes of {@code s} into {@code dir} in both
+     * layouts and of a session of it in each, the same message repeated by each write.
+     */
+    private static List<String> unwrittenWarnings(Source s, Path dir) {
+        List<String> out = new ArrayList<>();
+        for (MetadataLayout layout : MetadataLayout.values()) {
+            Options options = Options.defaults().withMetadataLayout(layout);
+            out.addAll(writerWarnings(() -> MzPeakWriter.writeDirectory(dir.resolve("batch-" + layout), s.spectra,
+                    s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata, options)));
+            Set<String> keys = new java.util.LinkedHashSet<>();
+            s.spectra.forEach(x -> keys.addAll(x.arrays().keySet()));
+            s.spectra.forEach(x -> keys.addAll(x.peakArrays().keySet()));
+            out.addAll(writerWarnings(() -> {
+                try (MzPeakWriter.Session session = MzPeakWriter.openDirectory(dir.resolve("session-" + layout),
+                        s.fileMetadata, s.scanSettings, keys, options)) {
+                    s.spectra.forEach(session::addSpectrum);
+                    s.chromatograms.forEach(session::addChromatogram);
+                    s.wavelengthSpectra.forEach(session::addWavelengthSpectrum);
+                    session.finish();
+                }
+            }));
+        }
+        List<String> unwritten = out.stream().filter(m -> m.startsWith(WritePlanner.UNWRITTEN)).toList();
+        assertThat(unwritten).as("one warning of each of the four writes").hasSizeLessThanOrEqualTo(4)
+                .satisfiesAnyOf(l -> assertThat(l).isEmpty(), l -> assertThat(l).hasSize(4));
+        return unwritten;
+    }
+
+    private static List<String> writerWarnings(Runnable write) {
+        return ArrayIndexTest.captureLog(MzPeakWriter.class, write).stream()
+                .filter(r -> r.getLevel() == Level.WARNING).map(LogRecord::getMessage).toList();
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

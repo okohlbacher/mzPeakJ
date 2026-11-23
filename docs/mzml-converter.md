@@ -375,8 +375,8 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | A-10 | run start times that are no xs:dateTime | `MzMLWriter` |
 | A-11 | chromatogram precursors after the first | `MzMLWriter` |
 | A-12 | instrument components of type UNKNOWN, and component lists without a source, analyzer or detector | `MzMLWriter` |
-| A-13 | array units and data types as stored in mzPeak, which the converter does not see: arrays are written as 64-bit floats in the default unit of their key (a chromatogram's time in its `timeUnit`), or without unit | `MzMLWriter`, fixed line |
-| A-14 | `auxiliary_arrays` of the mzPeak input, which the library does not read | `MzMLWriter`, fixed line |
+| A-13 | array units and data types as stored in mzPeak, which the converter does not use yet (the library reads the spectrum intensity units since 0.13.0): arrays are written as 64-bit floats in the default unit of their key (a chromatogram's time in its `timeUnit`), or without unit | `MzMLWriter`, fixed line |
+| A-14 | `auxiliary_arrays` of the mzPeak input, which the converter does not use yet (the library reads them since 0.13.0) | `MzMLWriter`, fixed line |
 | A-15 | withdrawn (no mzML output option changes values) | — |
 | A-16 | spectrum types derived from the MS level of spectra without one | `MzMLWriter` |
 | A-17 | CVs in use but not in the cv list, declared | `MzMLWriter` |

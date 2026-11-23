@@ -133,12 +133,13 @@ class ChromatogramDataDecoderTest {
     }
 
     /**
-     * A plan without a chunk start column decodes the deltas of every chunk from time 0, as a spectrum chunk row
-     * without a start (C4: before, every chunk was skipped and the member read as empty); the same rows decode from
-     * their start with the plan inferred from the column names, which has the start.
+     * A plan without a chunk start column cannot decode the deltas of a chunk, which chunked-layout.md requires to
+     * have a start: the read fails naming the chromatogram (until the final fix-up of 0.13.0 the deltas were decoded
+     * from time 0, which invented times; before C4 every chunk was skipped). The same rows decode from their start
+     * with the plan inferred from the column names, which has the start.
      */
     @Test
-    void aPlanWithoutTheChunkStartDecodesFromZero() {
+    void aPlanWithoutTheChunkStartIsRefused() {
         InputFile data = write(index(INDEX_ENTRY, VALUES, LIST),
                 row(0, 10.0, List.of(1.0, 1.0), null, List.of(1f, 2f, 3f), null, null),
                 row(1, 5.0, List.of(0.5), null, List.of(4f, 5f), null, null));
@@ -146,12 +147,10 @@ class ChromatogramDataDecoderTest {
         assertThat(plan.layout()).isEqualTo(SignalPlan.Layout.CHUNK);
         assertThat(plan.axis().start()).isNull();
 
-        Map<Long, ChromatogramDataDecoder.Decoded> withoutStart = ChromatogramDataDecoder.decode(data, MEMBER, plan,
-                true);
-        assertThat(withoutStart.keySet()).containsExactly(0L, 1L);
-        assertThat(withoutStart.get(0L).time()).containsExactly(0.0, 1.0, 2.0);
-        assertThat(withoutStart.get(0L).intensity()).containsExactly(1.0, 2.0, 3.0);
-        assertThat(withoutStart.get(1L).time()).containsExactly(0.0, 0.5);
+        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(data, MEMBER, plan, true))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("chunk row of chromatogram_index 0 has no time chunk start column in its signal"
+                        + " plan, which chunked-layout.md requires of a chunk whose values are not absolute");
 
         Map<Long, ChromatogramDataDecoder.Decoded> inferred =
                 ChromatogramDataDecoder.decode(data, MEMBER, inferredPlan(data), true);

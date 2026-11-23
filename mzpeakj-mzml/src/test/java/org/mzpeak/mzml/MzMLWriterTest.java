@@ -563,6 +563,19 @@ class MzMLWriterTest {
 
     // ---- (j) the other rules of the mapping -------------------------------------------------------------------
 
+    /**
+     * The fixed lines A-13 and A-14 say that the converter does not use the array units and auxiliary arrays yet; the
+     * library reads them since 0.13.0 (they said it did not).
+     */
+    @Test
+    void theFixedLinesSayTheConverterDoesNotUseArrayUnitsAndAuxiliaryArraysYet() {
+        assertThat(MzMLWriter.NOT_VISIBLE).containsExactly(
+                "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every"
+                        + " array is written as 64-bit floats in the default unit of its key, or without unit",
+                "A-14 auxiliary_arrays of the mzPeak input, which the converter does not use yet: they are not"
+                        + " written");
+    }
+
     @Test
     void whatMzMLRequiresAndTheModelLacksIsSynthesized() throws IOException {
         for (Written w : write("empty", contents(FileMetadata.EMPTY))) {

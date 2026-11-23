@@ -2,12 +2,14 @@
 
 Found while checking mzPeakJ-written files with the Rust reference reader (`mzpeak_prototyping` of
 [HUPO-PSI/mzPeak](https://github.com/HUPO-PSI/mzPeak) at `2ee2589`, 2026-11-10). The issues are not filed upstream
-(maintainer, 2026-11-11). Each but R-10 and R-11 also shows on the reference's own example files, so none is caused
-by mzPeakJ; R-10 and R-11 follow from spec rules mzPeakJ keeps (see below).
+(maintainer, 2026-11-11). Each but R-10, R-11 and R-12 also shows on the reference's own example files, so none is
+caused by mzPeakJ; R-10, R-11 and the first half of R-12 follow from spec rules mzPeakJ keeps (see below), the second
+half of R-12 is not traced yet.
 
 The reader is checked with [`tools/rdump`](../tools/rdump/README.md), a small dumper on the reference's public API.
 `RustReaderAcceptanceTest` (CI job `rust-reader`) expects R-1, R-2, R-3, R-10 and R-11 on the files mzPeakJ writes and
 fails on any other unreadable entity; when one of them no longer occurs, the test fails too, so the table is updated.
+R-12 was found with rdump by hand (2026-11-23) and is not asserted by the test yet.
 
 | # | Problem | Where it shows | Effect |
 |---|---|---|---|
@@ -22,6 +24,7 @@ fails on any other unreadable entity; when one of them no longer occurs, the tes
 | R-9 | The packed (legacy) layout no longer opens (`metadata.rs:334`) | the 5 legacy upstream fixtures themselves | legacy files unreadable |
 | R-10 | A null cell of an extra array reads as 0.0 (`src/reader/point.rs:128`, `val.unwrap_or_default()`) instead of NaN or absent; so does a null element of a Numpress chunk's extra list | any file with a null extra cell; mzPeakJ writes a NaN extra cell as null since 0.13.0 (W10) | value reported as 0 |
 | R-11 | The range read `extract_signal` projects only the first intensity column of the point layout (`src/reader/point.rs:528`, `array_indices.get(&ArrayType::IntensityArray)`), so a spectrum whose intensities are in another column, such as `intensity_MS_1000132` (percent of base peak), comes back without intensity; reading it by index (`get_spectrum`) is right | any spectra_data with spectra in two intensity units; mzPeakJ writes one intensity column per unit since 0.13.0 (R5) | intensities missing in range reads |
+| R-12 | In the Numpress (chunked) layout, (a) the chunk decoder labels the intensity of a spectrum stored in a per-unit transform column, such as `intensity_MS_1000132_numpress_slof_bytes`, as `DetectorCounts` (the values are right), and (b) the range read `extract_signal` panics with "list array" | (a) any Numpress spectra_data with spectra in two intensity units, which mzPeakJ writes since 0.13.0 (R5); (b) mzPeakJ's Numpress output, also with one intensity unit; not the reference's small.numpress | (a) wrong intensity unit; (b) range reads of Numpress data fail |
 
 How the test sees them on mzPeakJ's own output:
 
@@ -65,6 +68,14 @@ How the test sees them on mzPeakJ's own output:
   mz                  [200.0909090936184, 200.1818181872368]
   intensity           [NaN, NaN]   (null cells)
   ```
+
+- R-12, not asserted by the test, shows on Numpress (SLOF) archives that mzPeakJ writes split. On the two-unit copy
+  of current small.unpacked (the R-11 file, written with `SignalEncoding.NUMPRESS`), rdump reads spectrum 1 by index
+  with its two intensities right but labelled `DetectorCounts`, where the point layout gives `PercentBasePeak`; and
+  `rdump ... --signal-range 0 1` records `{"kind":"R","panic":"list array"}`. The range read panics the same way on
+  current small.unpacked written as Numpress with its one intensity unit, while on the reference's own
+  small.numpress it returns the `intensity_numpress_slof_bytes` column undecoded (no intensity). The spec requires a
+  column for each intensity unit, so (a) has no form both accept; the cause of (b) is not traced.
 
 A latent difference, not seen by the test: the reference's `ScanSettings` struct still uses the pin-era names,
 `source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the

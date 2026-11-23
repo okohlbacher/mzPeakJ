@@ -139,6 +139,7 @@ final class WritePlanner {
         // What the packed layout drops: scans after the first, precursors after the primary one, selected ions other
         // than the primary precursor's first, and data processing references.
         int[] packedDrops = new int[4];
+        int[] unwritten = new int[UNWRITTEN_KINDS];
         List<List<Precursor>> written = new ArrayList<>(ordered.size());
         for (Spectrum s : ordered) {
             written.add(writtenPrecursors(s.description().precursors(), writtenIndex));
@@ -153,6 +154,7 @@ final class WritePlanner {
                 countPackedDrops(s, precursors, packedDrops);
             }
             addExtraKeys(s, extraKeys);
+            countUnwritten(s, unwritten);
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumSignal signal = signal(s, disposition(s).renumbered(i, precursors), options, report);
             units.addAll(signal.intensityUnits());
@@ -172,7 +174,7 @@ final class WritePlanner {
         return complete(options, Collections.unmodifiableList(spectrumEntries),
                 Collections.unmodifiableList(spectrumSignals), intensities, List.copyOf(extras), inMinutes,
                 wavelengthSpectra, scanSettings,
-                FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), report);
+                FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), unwritten, report);
     }
 
     /**
@@ -180,17 +182,19 @@ final class WritePlanner {
      * numbered 0..n-1 as added, with their signal already written and their precursors as given, the
      * {@code spectrumIntensities} and {@code spectrumExtras} of its spectrum signal files, and the chromatograms and
      * wavelength spectra added to it, which are checked, ordered and numbered as {@link #plan} does it. The plan has
-     * no spectrum signals. {@code footer} is the session's serialized file metadata, and {@code report} holds the
+     * no spectrum signals. {@code footer} is the session's serialized file metadata, {@code unwritten} what the
+     * writer drops of the spectra added ({@link #countUnwritten(Spectrum, int[])}), and {@code report} holds the
      * warnings of the spectra added.
      */
     static WritePlan planFinish(Options options, List<SpectrumEntry> spectra,
                                 List<IntensityColumn> spectrumIntensities, List<ExtraColumn> spectrumExtras,
                                 List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
-                                List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
+                                List<ScanSettings> scanSettings, Map<String, String> footer, int[] unwritten,
+                                WriteReport report) {
         validateOthers(chromatograms, wavelengthSpectra, options.metadataLayout());
         return complete(options, options.metadataLayout() == MetadataLayout.SPLIT ? withChains(spectra) : spectra,
                 List.of(), spectrumIntensities, spectrumExtras, chromatograms, wavelengthSpectra, scanSettings, footer,
-                report);
+                unwritten, report);
     }
 
     // MSn selected-ion chain (design D13-18, W7). Spec spectra.md (spectra_metadata_precursors): for higher MSn the
@@ -263,13 +267,14 @@ final class WritePlanner {
     /**
      * The plan of the planned spectra with their signals, the chromatograms and wavelength spectra, which are already
      * checked by {@link #validateOthers} and are here ordered, numbered and checked further, and the scan settings,
-     * which the split layout gives ids.
+     * which the split layout gives ids. {@code unwritten} holds what the writer drops of the spectra; the
+     * chromatograms and wavelength spectra are added to it and the one warning about it is given here.
      */
     private static WritePlan complete(Options options, List<SpectrumEntry> spectra, List<SpectrumSignal> signals,
                                       List<IntensityColumn> spectrumIntensities, List<ExtraColumn> spectrumExtras,
                                       List<Chromatogram> chromatograms,
                                       List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
-                                      Map<String, String> footer, WriteReport report) {
+                                      Map<String, String> footer, int[] unwritten, WriteReport report) {
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
         List<Entry<Chromatogram>> chromatogramEntries = new ArrayList<>(chromatogramOrder.size());
         Set<String> chromatogramColumns = new HashSet<>(CHROMATOGRAM_SIGNAL_COLUMNS);
@@ -288,6 +293,7 @@ final class WritePlanner {
             chromatogramEntries.add(new Entry<>(c, i,
                     mainAxisOrder("chromatogram", c.index(), c.time(), c.intensity(), report)));
             countChromatogramDrops(c, chromatogramDrops);
+            countUnwritten(c, unwritten);
         }
         if (options.metadataLayout() == MetadataLayout.PACKED) {
             warnPackedChromatogramDrops(chromatogramDrops, report);
@@ -305,7 +311,9 @@ final class WritePlanner {
                 withParams++;
                 params += w.parameters().size();
             }
+            countUnwritten(w, unwritten);
         }
+        warnUnwritten(unwritten, report);
         if (withParams > 0 && options.metadataLayout() == MetadataLayout.PACKED) {
             report.warn(counted(withParams, "wavelength spectrum carries", "wavelength spectra carry")
                     + " parameters (" + params + " in all), which the packed metadata layout does not write");
@@ -488,6 +496,125 @@ final class WritePlanner {
         report.warn("scan settings " + joined(positions) + (positions.size() == 1 ? " has" : " have")
                 + " no id, which the current manifest requires; written as " + joined(ids));
         return Collections.unmodifiableList(out);
+    }
+
+    // Components the reader returns that the writer does not write yet: the auxiliary arrays (R1), the products and
+    // the precursor MS level (R6, D13-21) and the wavelength scans (R8), which the writer units X-32 and X-34 are to
+    // write. Until they do, a write that drops any of them says so in one WARNING with counts, as the packed layout
+    // does of what it drops; what is written does not change. A wavelength spectrum is written with one scan holding
+    // its time, so its scans are dropped unless they are exactly that scan.
+
+    /** The kinds {@link #countUnwritten(Spectrum, int[])} and its siblings count, in the order of the warning. */
+    private static final int AUX_SPECTRA = 0;
+    private static final int AUX_CHROMATOGRAMS = 1;
+    private static final int AUX_WAVELENGTH_SPECTRA = 2;
+    private static final int PRODUCT_SPECTRA = 3;
+    private static final int PRODUCT_CHROMATOGRAMS = 4;
+    private static final int MS_LEVEL_PRECURSORS = 5;
+    private static final int WAVELENGTH_SCANS = 6;
+    /** The length of the counts of what the writer drops. */
+    static final int UNWRITTEN_KINDS = 7;
+
+    /**
+     * Adds to {@code unwritten} what the writer drops of {@code s}: whether it has auxiliary arrays or products, and
+     * its precursors that have an MS level.
+     */
+    static void countUnwritten(Spectrum s, int[] unwritten) {
+        if (!s.auxiliaryArrays().isEmpty()) {
+            unwritten[AUX_SPECTRA]++;
+        }
+        if (!s.description().products().isEmpty()) {
+            unwritten[PRODUCT_SPECTRA]++;
+        }
+        countMsLevels(s.description().precursors(), unwritten);
+    }
+
+    /**
+     * Adds to {@code unwritten} what the writer drops of {@code c}: whether it has auxiliary arrays or products, and
+     * its precursors that have an MS level.
+     */
+    private static void countUnwritten(Chromatogram c, int[] unwritten) {
+        if (!c.auxiliaryArrays().isEmpty()) {
+            unwritten[AUX_CHROMATOGRAMS]++;
+        }
+        if (!c.products().isEmpty()) {
+            unwritten[PRODUCT_CHROMATOGRAMS]++;
+        }
+        countMsLevels(c.precursors(), unwritten);
+    }
+
+    /**
+     * Adds to {@code unwritten} what the writer drops of {@code w}: whether it has auxiliary arrays, and whether its
+     * scans are other than none or the one scan holding only its time, which is all the writer writes of them.
+     */
+    private static void countUnwritten(WavelengthSpectrum w, int[] unwritten) {
+        if (!w.auxiliaryArrays().isEmpty()) {
+            unwritten[AUX_WAVELENGTH_SPECTRA]++;
+        }
+        List<ScanEvent> scans = w.scans();
+        if (scans.size() > 1 || scans.size() == 1
+                && !scans.get(0).equals(new ScanEvent(w.time(), null, null, null, null, null, null, null))) {
+            unwritten[WAVELENGTH_SCANS]++;
+        }
+    }
+
+    private static void countMsLevels(List<Precursor> precursors, int[] unwritten) {
+        for (Precursor p : precursors) {
+            if (p.msLevel() != null) {
+                unwritten[MS_LEVEL_PRECURSORS]++;
+            }
+        }
+    }
+
+    /**
+     * Records in {@code report} the one warning about what the writer drops ({@code unwritten}), if anything, naming
+     * each component and entity kind with a count above 0, such as "mzPeakJ reads but does not write yet: the
+     * auxiliary arrays of 1 spectrum and 1 chromatogram; the scans of 2 wavelength spectra beyond one scan holding the
+     * spectrum time".
+     */
+    static void warnUnwritten(int[] unwritten, WriteReport report) {
+        List<String> parts = new ArrayList<>();
+        addPart(parts, "the auxiliary arrays of ", counts(unwritten[AUX_SPECTRA], "spectrum", "spectra",
+                unwritten[AUX_CHROMATOGRAMS], "chromatogram", "chromatograms",
+                unwritten[AUX_WAVELENGTH_SPECTRA], "wavelength spectrum", "wavelength spectra"), "");
+        addPart(parts, "the products of ", counts(unwritten[PRODUCT_SPECTRA], "spectrum", "spectra",
+                unwritten[PRODUCT_CHROMATOGRAMS], "chromatogram", "chromatograms"), "");
+        addPart(parts, "the MS level of ", counts(unwritten[MS_LEVEL_PRECURSORS], "precursor", "precursors"), "");
+        addPart(parts, "the scans of ", counts(unwritten[WAVELENGTH_SCANS], "wavelength spectrum",
+                "wavelength spectra"), " beyond one scan holding the spectrum time");
+        if (!parts.isEmpty()) {
+            report.warn(UNWRITTEN + String.join("; ", parts));
+        }
+    }
+
+    /** The start of the warning of {@link #warnUnwritten}. */
+    static final String UNWRITTEN = "mzPeakJ reads but does not write yet: ";
+
+    /**
+     * {@code countsAndNames}, triples of a count and its singular and plural name, as the counts above 0, each with
+     * its name, such as {@code 1 spectrum}.
+     */
+    private static List<String> counts(Object... countsAndNames) {
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < countsAndNames.length; i += 3) {
+            int n = (Integer) countsAndNames[i];
+            if (n > 0) {
+                out.add(counted(n, (String) countsAndNames[i + 1], (String) countsAndNames[i + 2]));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Adds {@code what}, {@code counts} joined as {@code a, b and c}, and {@code more} to {@code parts} when there is
+     * a count.
+     */
+    private static void addPart(List<String> parts, String what, List<String> counts, String more) {
+        if (counts.isEmpty()) {
+            return;
+        }
+        String last = counts.remove(counts.size() - 1);
+        parts.add(what + (counts.isEmpty() ? last : String.join(", ", counts) + " and " + last) + more);
     }
 
     /**
@@ -1271,14 +1398,16 @@ final class WritePlanner {
      * {@link Chromatogram#withTimeUnit} from second, millisecond or hour. Called by {@link #plan} and by a session as
      * each chromatogram is added, before anything of it is written; the caller's chromatogram is never modified.
      *
-     * @throws MzPeakException when its {@link Chromatogram#timeUnit()} is another unit
+     * @throws MzPeakException when its {@link Chromatogram#timeUnit()} is another unit; the message lists the
+     *                         supported ones
      */
     static Chromatogram inMinutes(Chromatogram c) {
         try {
             return c.withTimeUnit(ArrayIndex.MINUTE_UNIT);
         } catch (IllegalArgumentException e) {
             throw new MzPeakException("chromatogram " + c.index() + ": time unit " + c.timeUnit()
-                    + " cannot be converted to minutes", e);
+                    + " cannot be converted to minutes; the supported time units are minute (UO:0000031), second"
+                    + " (UO:0000010), millisecond (UO:0000028) and hour (UO:0000032)", e);
         }
     }
 
@@ -1299,11 +1428,12 @@ final class WritePlanner {
     // (§Validation). A write is refused before anything is written when a CURIE (a value with text before a colon, as
     // KnownCvs.prefix takes it, the values ManifestWriter declares the CVs of) has a prefix metadata.cv_list would not
     // declare, or when an explicit reference names nothing the file metadata declares. A unit is a CURIE only when it
-    // has the CURIE shape PREFIX:local (CURIE); any other unit, such as "seconds" (C6) or "counts: per second", is
-    // written as given; an extra-array key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a stub and a WARNING when the
-    // file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) no reference is checked:
-    // such a write declares no instrument configuration, data processing or source file, and the overloads without
-    // file metadata write the spectra a reader returns this way.
+    // has the CURIE shape PREFIX:local (CURIE); any other param unit, such as "seconds" (C6) or "counts: per second", is
+    // written as given (D13-26), but the intensity unit of a spectrum, its peaks or a chromatogram, which becomes the
+    // unit of an array of the array index, must be a CURIE (array_index.json: unit pattern \S+:\S+); an extra-array
+    // key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a
+    // stub and a WARNING when the file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) nothing is declared, so
+    // every non-null reference is refused.
 
     /**
      * What the entities of a write may name (W12): the CV prefixes {@code metadata.cv_list} declares with the cv list
@@ -1318,16 +1448,13 @@ final class WritePlanner {
         private final List<CvEntry> cvList;
         /** The prefixes found declared so far. */
         private final Set<String> declaredPrefixes = new HashSet<>();
-        /** Whether the write has file metadata, against which the references are checked. */
-        private final boolean checksReferences;
         private final List<Integer> configurations = new ArrayList<>();
         private final List<String> processing = new ArrayList<>();
         private final List<String> sourceFiles = new ArrayList<>();
 
         private Declarations(FileMetadata meta, Options options) {
             this.cvList = options.cvList();
-            this.checksReferences = meta != null && !meta.equals(FileMetadata.EMPTY);
-            if (checksReferences) {
+            if (meta != null) {
                 meta.instrumentConfigurations().forEach(ic -> configurations.add(ic.id()));
                 meta.dataProcessingMethods().forEach(dp -> processing.add(dp.id()));
                 if (meta.fileDescription() != null) {
@@ -1340,14 +1467,15 @@ final class WritePlanner {
          * Throws {@link MzPeakException} when a CURIE of {@code s} has an undeclared prefix: the accession or unit of
          * a param of it, of its scans, or of its precursors' isolation windows, activations and selected ions, or a
          * key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} that is a CURIE, or its intensity or
-         * peak intensity unit; or when its data processing or the instrument configuration of a scan names nothing the
-         * file metadata declares.
+         * peak intensity unit; when its intensity or peak intensity unit is not a CURIE ({@link #requireArrayUnit});
+         * or when its data processing or the instrument configuration of a scan names nothing the file metadata
+         * declares.
          */
         void require(Spectrum s) {
             String owner = "spectrum " + s.index();
             SpectrumDescription d = s.description();
-            requireUnit(owner, "intensity unit", s.intensityUnit());
-            requireUnit(owner, "peak intensity unit", s.peakIntensityUnit());
+            requireArrayUnit(owner, "intensity unit", s.intensityUnit());
+            requireArrayUnit(owner, "peak intensity unit", s.peakIntensityUnit());
             requireParams(owner, d.parameters());
             requireNamed(owner, "data_processing_id", d.dataProcessingRef(), processing, "data processing");
             for (int i = 0; i < d.scans().size(); i++) {
@@ -1365,12 +1493,13 @@ final class WritePlanner {
         /**
          * Throws {@link MzPeakException} when a CURIE of {@code c} has an undeclared prefix: its type, its intensity
          * unit, the accession or unit of a param of it or of its precursors, or a key of its arrays that is a CURIE;
-         * or when its data processing names nothing the file metadata declares.
+         * when its intensity unit is not a CURIE ({@link #requireArrayUnit}); or when its data processing names
+         * nothing the file metadata declares.
          */
         void require(Chromatogram c) {
             String owner = "chromatogram " + c.index();
             requirePrefix(owner, "type", c.typeCurie());
-            requireUnit(owner, "intensity unit", c.intensityUnit());
+            requireArrayUnit(owner, "intensity unit", c.intensityUnit());
             requireParams(owner, c.parameters());
             requireNamed(owner, "data_processing_id", c.dataProcessingRef(), processing, "data processing");
             requirePrecursors(owner, c.precursors());
@@ -1396,11 +1525,11 @@ final class WritePlanner {
 
         /**
          * Throws {@link MzPeakException} when a unit of {@code units}, the spectrum intensity units of {@code owner},
-         * has the CURIE shape and a prefix that is not declared.
+         * is not a CURIE or has a prefix that is not declared ({@link #requireArrayUnit}).
          */
         void requireIntensityUnits(String owner, Collection<String> units) {
             for (String unit : units) {
-                requireUnit(owner, "spectrum intensity unit", unit);
+                requireArrayUnit(owner, "spectrum intensity unit", unit);
             }
         }
 
@@ -1438,6 +1567,21 @@ final class WritePlanner {
         }
 
         /**
+         * The check of {@code unit}, the {@code what} of {@code owner}, which becomes the unit of an array of the array
+         * index: {@code null}, or a CURIE ({@code PREFIX:local}, as array_index.json requires of the unit of an array)
+         * whose prefix is declared. Unlike a param unit (D13-26), a unit that is not a CURIE, such as
+         * {@code percent}, is refused.
+         */
+        private void requireArrayUnit(String owner, String what, String unit) {
+            if (unit != null && !CURIE.matcher(unit).matches()) {
+                throw new MzPeakException(owner + ": " + what + " " + unit + " is not a CURIE (PREFIX:local), which"
+                        + " array_index.json requires of the unit of an array; give a unit term such as MS:1000131"
+                        + " (number of detector counts) or MS:1000132 (percent of base peak), or null");
+            }
+            requireUnit(owner, what, unit);
+        }
+
+        /**
          * Throws {@link MzPeakException} naming {@code owner} and {@code what} (a param, or what of the owner
          * {@code curie} is) when {@code curie} has a prefix ({@link KnownCvs#prefix}) that {@code metadata.cv_list}
          * would not declare.
@@ -1458,14 +1602,20 @@ final class WritePlanner {
         }
 
         /**
-         * Throws {@link MzPeakException} when references are checked and {@code reference}, the {@code what} of
-         * {@code owner}, is not {@code null} and none of {@code declared}, the {@code kind}s the file metadata
-         * declares.
+         * Throws {@link MzPeakException} when {@code reference}, the {@code what} of {@code owner}, is not
+         * {@code null} and none of {@code declared}, the {@code kind}s the file metadata declares (none without file
+         * metadata).
          */
         private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind) {
-            if (checksReferences && reference != null && !declared.contains(reference)) {
+            requireNamed(owner, what, reference, declared, kind, "");
+        }
+
+        /** {@link #requireNamed(String, String, Object, List, String)} with {@code fix}, how to fix it, appended. */
+        private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind,
+                                      String fix) {
+            if (reference != null && !declared.contains(reference)) {
                 throw new MzPeakException(owner + ": " + what + " " + reference + " names no " + kind
-                        + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")");
+                        + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")" + fix);
             }
         }
     }
@@ -1482,7 +1632,7 @@ final class WritePlanner {
      */
     static Declarations declarations(FileMetadata fileMetadata, List<ScanSettings> scanSettings, Options options) {
         Declarations declared = new Declarations(fileMetadata, options);
-        if (declared.checksReferences) {
+        if (fileMetadata != null) {
             requireDeclared(fileMetadata, declared);
         }
         if (scanSettings != null) {
@@ -1501,7 +1651,7 @@ final class WritePlanner {
         return declared;
     }
 
-    /** The checks of {@link #declarations} of {@code meta}, a file metadata that is not empty. */
+    /** The checks of {@link #declarations} of {@code meta}, a file metadata that is not {@code null}. */
     private static void requireDeclared(FileMetadata meta, Declarations declared) {
         List<String> software = new ArrayList<>();
         meta.software().forEach(s -> software.add(s.id()));
@@ -1541,11 +1691,16 @@ final class WritePlanner {
         if (run != null) {
             declared.requireParams(owner + ": run", run.parameters());
             declared.requireNamed(owner + ": run", "default_instrument_configuration_id", run.defaultInstrumentId(),
-                    declared.configurations, "instrument configuration");
+                    declared.configurations, "instrument configuration", "; declare the configuration in"
+                            + " FileMetadata.instrumentConfigurations or set MsRun.defaultInstrumentId to a declared"
+                            + " one");
             declared.requireNamed(owner + ": run", "default_data_processing_id", run.defaultDataProcessingId(),
-                    declared.processing, "data processing");
+                    declared.processing, "data processing", "; declare the data processing in"
+                            + " FileMetadata.dataProcessingMethods or set MsRun.defaultDataProcessingId to a declared"
+                            + " one");
             declared.requireNamed(owner + ": run", "default_source_file_id", run.defaultSourceFileId(),
-                    declared.sourceFiles, "source file");
+                    declared.sourceFiles, "source file", "; declare the source file in FileMetadata.fileDescription"
+                            + " or set MsRun.defaultSourceFileId to a declared one");
         }
     }
 

@@ -456,7 +456,7 @@ class WriterExtraArraysTest {
 
         Spectrum split = withExtras(s2, extras, otherValue);
         Path out = tmp.resolve("split.mzpeak");
-        MzPeakWriter.writeDirectory(out, List.of(split));
+        MzPeakWriter.writeDirectory(out, Fixtures.withoutReferences(List.of(split)));
         Spectrum b = ForwardBackwardCorpusTest.readSource(out).spectra.get(0);
         assertThat(b.mz()).isEqualTo(s2.mz());
         assertThat(b.arrays().get(MY_ARRAY)).isEqualTo(extras.get(MY_ARRAY));

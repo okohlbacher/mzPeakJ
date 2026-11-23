@@ -219,6 +219,13 @@ final class ChunkRowDecoder {
                     + " intensities, but the signal plan names neither " + anAxis + " values nor " + anAxis
                     + " chunk start column");
         }
+        if (!absolute && storedStart == null && (rawAxis.length > 0 || chunkIntensity.length > 0)) {
+            // chunked-layout.md requires chunk_start; deltas decoded from 0 would invent the axis values
+            throw new MzPeakException("chunk row of " + si + " has " + (start == null ? "no " + entity.axisName()
+                    + " chunk start column in its signal plan" : "a null " + entity.axisName() + " chunk start")
+                    + ", which chunked-layout.md requires of a chunk whose values are not absolute; decoding it from"
+                    + " 0 would invent " + entity.axisName() + " values");
+        }
         double[] decoded = ChunkCodecs.decodeAxisValues(rawAxis, axisStart, absolute);
         // A chunk whose intensity list is one longer than its m/z values emits chunk_start as a real point
         // (its intensity is intensity[0]); the delta-decoded values then pair with intensity[1..]. A chunk

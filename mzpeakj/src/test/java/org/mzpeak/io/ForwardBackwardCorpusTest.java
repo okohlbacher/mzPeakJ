@@ -128,15 +128,18 @@ class ForwardBackwardCorpusTest {
         List<String> allValidatorErrors = new ArrayList<>();
 
         // The point layout stores m/z directly in point.mz, which the validator requires to be finite.
-        // Some spectra legitimately carry non-finite m/z (SRM/MRM transitions have no product-ion m/z), and
-        // such data is only representable in the chunk/Numpress layout (as the reference also does). Skip the
-        // point layout for those sources rather than emit a file the validator must reject.
+        // Some spectra legitimately carry non-finite m/z (SRM/MRM transitions have no product-ion m/z), so the
+        // point layout is skipped for those sources. The Numpress layout cannot write a NaN m/z either: since
+        // D13-14 every layout refuses one before anything is written, as parquet-java writes no column index for a
+        // page holding a NaN. Such a refusal is a documented limitation (KNOWN_LIMIT), not a WRITE FAILED.
         boolean sourceHasNonFiniteMz = source.spectra.stream()
                 .anyMatch(s -> { for (double v : s.mz()) if (!Double.isFinite(v)) return true; return false; });
+        boolean sourceHasNaNMz = source.spectra.stream()
+                .anyMatch(s -> { for (double v : s.mz()) if (Double.isNaN(v)) return true; return false; });
 
         for (Layout layout : Layout.values()) {
             if (layout == Layout.POINT && sourceHasNonFiniteMz) {
-                continue; // covered by the Numpress layout below
+                continue; // the validator rejects a non-finite point.mz
             }
             Path out = tmpDir.resolve("output-" + layout.name().toLowerCase(Locale.ROOT) + ".mzpeak");
             boolean writeOk = false;
@@ -155,7 +158,8 @@ class ForwardBackwardCorpusTest {
                 writeOk = true;
             } catch (Exception e) {
                 writeError = e.toString();
-                diffs.add("WRITE FAILED (" + layout + "): " + e);
+                diffs.add((sourceHasNaNMz && isNaNRefusal(e) ? KNOWN_LIMIT + "WRITE REFUSED, NaN m/z (D13-14) ("
+                        : "WRITE FAILED (") + layout + "): " + e);
             }
 
             // ---- VALIDATE --------------------------------------------------------------------
@@ -212,6 +216,12 @@ class ForwardBackwardCorpusTest {
                 .isTrue();
     }
 
+    /** Whether {@code e} is the writer's refusal of a NaN m/z, time, wavelength or intensity (D13-14). */
+    static boolean isNaNRefusal(Exception e) {
+        return e instanceof MzPeakException && e.getMessage() != null
+                && e.getMessage().contains(" is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity");
+    }
+
     // ---- FORWARD read -----------------------------------------------------------------------
 
     /** Snapshot of everything the writer needs, materialised eagerly before the source reader closes. */
@@ -241,6 +251,19 @@ class ForwardBackwardCorpusTest {
             s.scanSettings = new ArrayList<>(r.scanSettings());
             s.fileMetadata = Fixtures.withDeclaredDefaults(r.fileMetadata());
         }
+        return s;
+    }
+
+    /**
+     * {@link #readSource} with its spectra and chromatograms {@link Fixtures#withoutReferences without references}, so
+     * that they can also be written without file metadata, which declares nothing a reference could name (W12).
+     */
+    static Source readSourceWithoutReferences(Path src) {
+        Source s = readSource(src);
+        List<Spectrum> spectra = Fixtures.withoutReferences(s.spectra);
+        s.spectra.clear();
+        s.spectra.addAll(spectra);
+        s.chromatograms = Fixtures.chromatogramsWithoutReferences(s.chromatograms);
         return s;
     }
 

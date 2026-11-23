@@ -994,14 +994,23 @@ class MzMLConversionTest {
      * W3 (D13-1): the converter hands each chromatogram over in its own mzML time unit and the mzPeak writer stores
      * every one in minutes, converting it once: an mzML whose sic is in minutes and whose tic is in seconds writes the
      * tic's seconds divided by 60 and the sic's minutes as read, bit for bit, and no chromatogram times line. Until
-     * W3 the converter converted the sic into the tic's seconds first and counted it (B-15, D-12c).
+     * W3 the converter converted the sic into the tic's seconds first and counted it (B-15, D-12c). The sic's times,
+     * such as 0.015 min, are not all exact after times 60 divided by 60, so a conversion through seconds would show.
      */
     @Test
     void chromatogramsOfDifferentTimeUnitsAreEachStoredInMinutes() throws IOException {
-        Path file = tinyWith(s -> replaceAfter(s, "id=\"sic\"", "unitAccession=\"UO:0000010\" unitName=\"second\"",
-                "unitAccession=\"UO:0000031\" unitName=\"minute\""));
+        double[] minutes = {0.015, 0.03, 0.031, 0.059, 0.06, 0.061, 0.062, 0.118, 0.12, 0.122};
+        Path file = tinyWith(s -> {
+            String inMinutes = replaceAfter(s, "id=\"sic\"", "unitAccession=\"UO:0000010\" unitName=\"second\"",
+                    "unitAccession=\"UO:0000031\" unitName=\"minute\"");
+            String stored = "<binary>" + floats(0, 1, 2, 3, 4, 5, 6, 7, 8, 9) + "</binary>";
+            return replaceAfter(inMinutes, "id=\"sic\"", stored, "<binary>" + floats(minutes) + "</binary>");
+        });
         List<Chromatogram> read = model(file).chromatograms();
         assertThat(read).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000031");
+        assertThat(read.get(1).time()).containsExactly(minutes);
+        assertThat(Arrays.stream(minutes).filter(t -> t * 60 / 60 != t).toArray()).as("times changed by a round"
+                + " trip through seconds").isNotEmpty();
 
         B b = b(file, false);
 

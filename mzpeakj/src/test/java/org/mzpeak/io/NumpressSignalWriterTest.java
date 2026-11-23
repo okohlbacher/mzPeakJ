@@ -37,13 +37,14 @@ class NumpressSignalWriterTest {
     @Test
     void chunksWhoseIntensitiesAreAllZeroAreEncodedWithFixedPointOne(@TempDir Path tmp) {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
-        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        List<Spectrum> spectra = new ArrayList<>(Fixtures.withoutReferences(small.spectra));
         Spectrum original = spectra.get(0);
         double[] zeros = new double[original.mz().length];
         spectra.set(0, new Spectrum(original.description(), original.mz(), zeros, original.peaks()));
 
         Path out = tmp.resolve("out.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(out, spectra, small.chromatograms);
+        MzPeakWriter.writeDirectoryNumpress(out, spectra,
+                Fixtures.chromatogramsWithoutReferences(small.chromatograms));
 
         List<Double> fixedPoints = new ArrayList<>();
         List<Double> otherFixedPoints = new ArrayList<>();
@@ -75,13 +76,14 @@ class NumpressSignalWriterTest {
     @EnumSource(NumpressIntensityEncoding.class)
     void chunkBoundsAreTheValuesDecodedFromTheLinearPayload(NumpressIntensityEncoding encoding, @TempDir Path tmp) {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
-        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        List<Spectrum> spectra = new ArrayList<>(Fixtures.withoutReferences(small.spectra));
         Spectrum original = spectra.get(0);
         double[] mz = {100.123454, 100.123456};
         spectra.set(0, new Spectrum(original.description(), mz, new double[] {3.0, 4.0}, List.of()));
 
         Path out = tmp.resolve("out.mzpeak");
-        MzPeakWriter.writeDirectory(out, spectra, small.chromatograms, List.of(), List.of(), FileMetadata.EMPTY,
+        MzPeakWriter.writeDirectory(out, spectra, Fixtures.chromatogramsWithoutReferences(small.chromatograms),
+                List.of(), List.of(), FileMetadata.EMPTY,
                 Options.defaults().withSignalEncoding(SignalEncoding.NUMPRESS).withNumpressIntensity(encoding));
 
         List<Group> chunks = NumpressConformanceTest.chunksBySpectrum(out.resolve("spectra_data.parquet")).get(0L);

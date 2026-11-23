@@ -161,10 +161,11 @@ class MsnPrecursorChainTest {
                 derived(source.get(2), 2, 3, List.of(FROM_MS2)));
     }
 
-    /** small.unpacked's first three spectra. */
+    /** small.unpacked's first three spectra, without references, written without file metadata (W12). */
     private static List<Spectrum> source() {
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.current("small.unpacked.mzpeak"))) {
-            return List.of(reader.getSpectrumAt(0), reader.getSpectrumAt(1), reader.getSpectrumAt(2));
+            return Fixtures.withoutReferences(List.of(reader.getSpectrumAt(0), reader.getSpectrumAt(1),
+                    reader.getSpectrumAt(2)));
         }
     }
 

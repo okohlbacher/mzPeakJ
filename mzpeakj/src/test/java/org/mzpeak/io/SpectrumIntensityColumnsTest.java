@@ -9,6 +9,7 @@ import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.Session;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
+import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -234,7 +235,7 @@ class SpectrumIntensityColumnsTest {
 
     /**
      * W12: a spectrum's intensity and peak intensity units are CURIEs that metadata.cv_list must declare, as is each
-     * unit a session is opened with; a unit without the CURIE shape is written as given.
+     * unit a session is opened with.
      */
     @Test
     void anIntensityUnitWithAnUndeclaredCvPrefixIsRefused() throws IOException {
@@ -257,26 +258,59 @@ class SpectrumIntensityColumnsTest {
                 .hasMessageStartingWith("spectrumIntensityUnits: spectrum intensity unit uses XYZ:0000001, whose CV"
                         + " prefix XYZ");
         assertThat(tmp.resolve("c.mzpeak")).doesNotExist();
+    }
 
-        Path plain = tmp.resolve("plain.mzpeak");
-        try (Session session = MzPeakWriter.openDirectory(plain, FileMetadata.EMPTY, List.of(), Set.of(),
-                Options.defaults().withSpectrumIntensityUnits("percent"))) {
-            session.addSpectrum(withUnits(zero, "percent", null));
-            session.finish();
-        }
-        try (MzPeakReader reader = MzPeakReader.open(plain)) {
-            assertThat(reader.getSpectrumAt(0).intensityUnit()).isEqualTo("percent");
+    /**
+     * An intensity unit becomes the unit of an array of the array index, which array_index.json requires to be a
+     * CURIE: a spectrum intensity or peak intensity unit, a session's spectrum intensity unit or a chromatogram
+     * intensity unit that is not one, such as {@code percent}, is refused before anything is written, naming the
+     * entity. A param unit that is not a CURIE is still written as given (D13-26).
+     */
+    @Test
+    void anIntensityUnitThatIsNoCurieIsRefused() throws IOException {
+        ForwardBackwardCorpusTest.Source source = twoUnits();
+        Spectrum zero = source.spectra.get(0);
+        Spectrum two = source.spectra.get(2);
+        String noCurie = " is not a CURIE (PREFIX:local), which array_index.json requires of the unit of an array;"
+                + " give a unit term such as MS:1000131 (number of detector counts) or MS:1000132 (percent of base"
+                + " peak), or null";
+
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("a.mzpeak"),
+                List.of(withUnits(zero, "percent", null))))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum 0: intensity unit percent" + noCurie);
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("b.mzpeak"),
+                List.of(withIndex(withUnits(two, null, "counts: per second"), 0))))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum 0: peak intensity unit counts: per second" + noCurie);
+        assertThatThrownBy(() -> MzPeakWriter.openDirectory(tmp.resolve("c.mzpeak"), FileMetadata.EMPTY, List.of(),
+                Set.of(), Options.defaults().withSpectrumIntensityUnits(COUNTS, "percent")))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("spectrumIntensityUnits: spectrum intensity unit percent" + noCurie);
+        Chromatogram tic = source.chromatograms.get(0);
+        Chromatogram percentTic = new Chromatogram(tic.index(), tic.id(), tic.typeCurie(), tic.time(),
+                tic.intensity(), "percent", tic.arrays(), tic.polarity(), tic.dataProcessingRef(), tic.parameters(),
+                tic.precursors(), tic.timeUnit());
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("d.mzpeak"), List.of(),
+                List.of(percentTic)))
+                .isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram 0: intensity unit percent" + noCurie);
+        for (String name : List.of("a.mzpeak", "b.mzpeak", "c.mzpeak", "d.mzpeak")) {
+            assertThat(tmp.resolve(name)).doesNotExist();
         }
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------
 
-    /** The two-unit copy of current small.unpacked (X-29), read. */
+    /**
+     * The two-unit copy of current small.unpacked (X-29), read, its spectra and chromatograms without references, so
+     * that the tests can write them without file metadata (W12).
+     */
     private ForwardBackwardCorpusTest.Source twoUnits() {
         try {
             Path copy = MemberRewrite.copy(Fixtures.current("small.unpacked.mzpeak"), tmp);
             SpectrumIntensityUnitTest.rewritePoint(copy.resolve("spectra_data.parquet"));
-            return ForwardBackwardCorpusTest.readSource(copy);
+            return ForwardBackwardCorpusTest.readSourceWithoutReferences(copy);
         } catch (IOException e) {
             throw new AssertionError(e);
         }

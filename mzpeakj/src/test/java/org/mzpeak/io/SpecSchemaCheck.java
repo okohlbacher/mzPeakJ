@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Checks the file metadata documents mzPeakJ writes (WR-9, D-17) against verbatim copies of the specification's JSON
@@ -23,7 +24,8 @@ import java.util.Set;
  * every node it follows a local {@code $ref} ({@code #/definitions/...}) and a {@code $ref} to another file of the
  * folder (by the last segment of its URI, such as the specification's {@code param.json}), checks the {@code type} (a
  * name or a list of names: {@code integer}, {@code number}, {@code string}, {@code boolean}, {@code null},
- * {@code array}, {@code object}), that the value is one of {@code enum}, that every key of {@code required} is
+ * {@code array}, {@code object}), that the value is one of {@code enum}, that a string value has a match of
+ * {@code pattern} (a search, unanchored, as JSON Schema defines it), that every key of {@code required} is
  * present, every present key of {@code properties} against its schema and every element of an array against
  * {@code items}. The schemas are those of the current dialect: the documents of the packed layout's output, which
  * keeps the pin-era run key {@code default_instrument_id}, are not checked against them.
@@ -234,6 +236,10 @@ final class SpecSchemaCheck {
         JsonNode allowed = schema.get("enum");
         if (allowed != null && !contains(allowed, value)) {
             out.add(path + ": " + value + " is not one of " + allowed);
+        }
+        JsonNode pattern = schema.get("pattern");
+        if (pattern != null && value.isTextual() && !Pattern.compile(pattern.asText()).matcher(value.asText()).find()) {
+            out.add(path + ": " + value + " does not match the pattern " + pattern.asText());
         }
         if (value.isObject()) {
             for (JsonNode required : schema.path("required")) {

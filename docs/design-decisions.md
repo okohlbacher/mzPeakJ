@@ -120,8 +120,8 @@ decisions cause.
 - **No array descriptor API; fixed default units per array key** (`CvTerms.DEFAULT_ARRAY_UNITS`); an array in a unit
   the model cannot carry is converted, dropped or rejected, never relabelled (2026-11-08). *Why:* never write a unit the
   data were not in.
-- **Spectrum intensity arrays outside MS:1000131 are rejected** (2026-11-08). *Why:* the model has no spectrum
-  intensity unit.
+- **Spectrum intensity arrays outside MS:1000131 are rejected** (2026-11-08). *Why:* the model had no spectrum
+  intensity unit. It has since 0.13.0 (`Spectrum.intensityUnit()`, X-29); the converter's half (X-36) is open.
 - **No overwriting**: the converter, the CLI, `MzMLWriter.open` and the public session API refuse an existing target;
   the batch `MzPeakWriter.write*` overloads keep replacing (2026-11-08). *Why:* a conversion must never destroy data;
   the batch overloads keep their published behaviour.
@@ -142,16 +142,25 @@ decisions cause.
   entity (2026-11-23, X-27, D13-6, D13-9, D13-26; replaces "the writer warns" on unknown CURIE prefixes and the stub
   part of D-17). A CURIE (a param accession or unit, an extra-array key that is a CURIE, a chromatogram type or
   intensity unit) needs a prefix `metadata.cv_list` declares: one of `CvEntry.known()` or a caller entry with all four
-  fields. A unit without a colon, such as `seconds`, is written as given. An explicit reference must name an entry of
+  fields. A param unit without a colon, such as `seconds`, is written as given; an intensity unit of a spectrum, its
+  peaks or a chromatogram, and a session's spectrum intensity unit, must be a CURIE, since it becomes the unit of an
+  array of the array index (`array_index.json`, pattern `\S+:\S+`; 2026-11-23, final fix-up of 0.13.0, until then
+  `percent` was written there). An explicit reference must name an entry of
   the file metadata: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
   of an instrument configuration or processing method, a scan setting's source file and the run's non-null defaults.
   A batch write checks before its target exists, a session at open (file metadata, scan settings, spectrum arrays)
   and at each add. A null run default is still filled, with a stub and a WARNING when nothing can be named. Without
-  file metadata (`null` or `FileMetadata.EMPTY`) no reference is checked, since nothing is declared and the overloads
-  without file metadata write the spectra a reader returns. diaPASEF.ref and diaPASEF.grid, whose run names
+  file metadata (`null` or `FileMetadata.EMPTY`) nothing is declared, so every non-null reference is rejected
+  (2026-11-23, final fix-up of 0.13.0; until then no reference was checked there): the spectra a reader returns are
+  written with the file metadata it returns, as `ExtractSpectra` does. diaPASEF.ref and diaPASEF.grid, whose run names
   instrument configuration 1 while only 0 exists, are now written only with that configuration added. *Why:*
   `conformance.md` requires every CV prefix used to be declared (l.24-25) and every non-null foreign key to resolve
   (§Validation); a stub or an undeclared prefix wrote a file that fails both.
+- **Chromatogram times are written in minutes** (2026-11-22, X-20, X-21, D13-1; replaces the writer half of D-12,
+  which wrote the given unit and refused chromatograms of different units). Second, millisecond and hour are
+  converted once; any other unit is refused, and the message lists the supported ones. The reader still returns the
+  stored values with their unit, and the converter no longer converts a chromatogram into the first one's unit, so
+  its B-15 line about chromatogram times is gone. *Why:* `chromatograms.md` (l.21): "the units MUST be minutes".
 - **A NaN m/z, time, wavelength or intensity fails the write, and so the conversion** (2026-11-22, X-18, D13-14;
   until then a NaN m/z in mzML input was warned as B-34). A NaN extra-array cell and a NaN optional metadata double
   are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec
@@ -188,7 +197,7 @@ these ids.
 | D-9 | Packed spectra keep their unconsumed scalar columns as Params (D-9a), and per-row unit columns are resolved for leftover Params and collision energy (D-9b) | the spectrum counterpart of the packed wavelength rule; Rust reads unit columns per row |
 | D-10 | Recover the read-path slowdown by resolving metadata columns once per member; bar 0.90 × base on the metadata path, not lowered | measured on the 295,811-spectrum Astral file: 2674 ms → 2232 ms (0.835 × base) |
 | D-11 | The Numpress encoder rejects non-finite m/z or intensity and negative SLOF/PIC intensities, with the spectrum index, before anything is written | the vendored codec encodes such values as garbage without an error |
-| D-12 | Chromatograms carry their time unit (`Chromatogram.timeUnit()`); the reader returns times as stored, the writer writes the unit, conversion only on request (`withTimeUnit`); the converter keeps the unit (D-12c) | the writer declared minutes for values in the file's unit |
+| D-12 | Chromatograms carry their time unit (`Chromatogram.timeUnit()`); the reader returns times as stored, the writer writes the unit, conversion only on request (`withTimeUnit`); the converter keeps the unit (D-12c). The writer half is replaced by W3 (D13-1, 2026-11-22): the writer stores minutes | the writer declared minutes for values in the file's unit |
 | D-13 | Close every known write loss: ion mobility columns in scans and selected ions, wavelength scans with the full scan schema, chromatogram auxiliary arrays | the values must survive a round trip in the columns readers look at |
 | D-14 | Imaging output keeps following the Rust reference (IMS URI, `opt_` names, no `is_imaging`) | the reference is the only producer; the profile is a draft |
 | D-15 | Duplicate ZIP member names: the last wins, with a warning; archives without spectrum metadata open; a manifest major version above 0 is rejected (`Options.withVersionCheck`) | as the Rust reader; a future major version is a different format |

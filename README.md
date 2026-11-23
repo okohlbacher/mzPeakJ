@@ -335,7 +335,8 @@ Writer notes:
 - ZSTD-compressed Parquet, fully Hadoop-free; writes format version `0.9.0`, the CV list, an array index in
   every signal file and a SHA-512 checksum for every member.
 - Emits the reference metadata schema: derived spectrum columns (observed m/z range, base peak, TIC,
-  spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
+  spectrum type; the base peak intensity and TIC, whose columns are in detector counts, only of a payload in
+  MS:1000131 or without unit), precursor **activation** (dissociation method + collision energy), **scan windows**,
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
 - A CV param that has a standardized column (summary values, spectrum type, representation, dissociation method,
   collision energy, imaging position, and of a wavelength spectrum its type, representation, observed wavelength
@@ -385,9 +386,10 @@ Writer notes:
   in another unit, naming the spectrum and the declared units. The Rust reference reader's range read
   (`extract_signal`) reads only the first intensity column (R-11 in
   [docs/upstream-issues.md](docs/upstream-issues.md)).
-- Chromatogram times are written as given, with their `timeUnit` declared, and read back in that unit.
-  Chromatograms of different time units in one dataset are refused before anything is written; convert them first
-  with `Chromatogram.withTimeUnit`.
+- Chromatogram times are written in minutes (UO:0000031), as `chromatograms.md` requires: times in second,
+  millisecond or hour are converted once, the caller's chromatogram is not modified, and chromatograms of different
+  units may be written together (W3, D13-1). Any other unit is refused before anything is written, with a message
+  that lists the supported ones. They read back in minutes.
 - In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
   one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
   scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), and
@@ -397,11 +399,14 @@ Writer notes:
 - Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written,
   naming the entity: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
   of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
-  name an entry of the file metadata (not checked without file metadata), and the prefix of every CURIE (param
+  name an entry of the file metadata (without file metadata nothing is declared, so any such reference is
+  rejected), and the prefix of every CURIE (param
   accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units) must be
   one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
-  written as given. A null run default gets the first entry of its list, else a stub entity with one WARNING.
+  written as given, except as an intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array
+  unit of the array index and must be a CURIE. A null run default gets the first entry of its list, else a stub
+  entity with one WARNING.
   diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
   read; add configuration 1 to write them.
 - A `SPLIT` write of a legacy (packed) dataset keeps the summary values it stores (observed m/z range, base peak,
@@ -640,9 +645,9 @@ start times converted to minutes or lost array data processing refs, and A-1 …
 content synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
 [losses section of the mzML converter design](docs/mzml-converter.md#losses) lists each loss and which class counts
 it; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
-Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
-A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`, which the library does not
-read). The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
+Two losses the converter does not count are printed as fixed lines without count after the limits of mzPeak → mzML:
+A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`); the library reads the
+auxiliary arrays and the spectrum intensity units, but the converter does not use them yet. The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
 lacks what the rule asks for (it does not invent the data): spectra without exactly one spectrum type and
 representation (`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum
 precursor activations without a dissociation method (`precursor_activation_must`), instrument configurations
@@ -694,7 +699,9 @@ every Parquet codec. Rather than using parquet-java's default Hadoop-based codec
 LZ4, LZ4_RAW and LZO through aircompressor and BROTLI through `org.brotli:dec`, all of them but zstd-jni pure Java;
 it writes ZSTD (and UNCOMPRESSED). No Hadoop FileSystem, Configuration, Hadoop native libraries, or cluster setup is
 ever used. On JDK 24 and later, the first SNAPPY, LZ4, LZ4_RAW or LZO page read makes the JVM print its one-time
-`sun.misc.Unsafe` warning about aircompressor; `--sun-misc-unsafe-memory-access=allow` turns it off. A single self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
+`sun.misc.Unsafe` warning about aircompressor 2.0.3; `--sun-misc-unsafe-memory-access=allow` turns it off.
+aircompressor 3.x, which no longer uses `sun.misc.Unsafe`, needs Java 22, so mzPeakJ (Java 17) stays on 2.x. A single
+self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
 classes statically reference Hadoop types — but it is never actually invoked.
 
 ## Format notes
@@ -793,7 +800,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   reference, wavelength-spectrum Params or chromatogram polarity, data processing reference, Params or precursors
   (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
   `Chromatogram.products()`) or the precursor MS level (`Precursor.msLevel()`), which are read only (D13-21; the
-  Rust reference panics on a chromatogram products member).
+  Rust reference panics on a chromatogram products member), nor yet the auxiliary arrays of spectra, chromatograms
+  and wavelength spectra or the scans of a wavelength spectrum beyond one scan holding its time (the R1 and R8
+  writer units); a write that drops any of these warns once, with the counts.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).

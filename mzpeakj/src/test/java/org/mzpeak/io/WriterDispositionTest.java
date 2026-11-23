@@ -520,8 +520,10 @@ class WriterDispositionTest {
         return peaks;
     }
 
+    /** Spectrum {@code index} of {@code source}, without references, for a write without file metadata (W12). */
     private static Spectrum spectrum(Source source, long index) {
-        return source.spectra.stream().filter(s -> s.index() == index).findFirst().orElseThrow();
+        return Fixtures.withoutReferences(List.of(source.spectra.stream().filter(s -> s.index() == index)
+                .findFirst().orElseThrow())).get(0);
     }
 
     private static Path write(Path tmp, Spectrum spectrum) {

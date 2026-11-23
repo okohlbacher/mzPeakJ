@@ -94,15 +94,17 @@ class ParamValueTypesTest {
     /**
      * A footer software param {@code List.of("a", "b")} is written as the JSON array {@code ["a","b"]} and reads back
      * as {@code "[\"a\",\"b\"]"}; {@code Short}, {@code Byte} and {@code Float} values are JSON numbers and read
-     * back as {@code Long} and {@code Double}. A scan settings param holding a list is a JSON array in the manifest
-     * and reads back as its JSON text.
+     * back as {@code Long} and {@code Double}, a float as its shortest text ({@code 0.1f} as {@code 0.1}, not the
+     * {@code 0.10000000149011612} of its widening to double). A scan settings param holding a list is a JSON array in
+     * the manifest and reads back as its JSON text.
      */
     @Test
     void listValuesAreJsonArraysInTheJsonMetadata(@TempDir Path tmp) throws IOException {
         Source small = ForwardBackwardCorpusTest.readSource(SMALL);
         List<Software> software = new ArrayList<>(small.fileMetadata.software());
         software.add(new Software("w2", "1", List.of(param("w2 list", List.of("a", "b")),
-                param("w2 short", (short) 4), param("w2 byte", (byte) 5), param("w2 float", 1.5f))));
+                param("w2 short", (short) 4), param("w2 byte", (byte) 5), param("w2 float", 1.5f),
+                param("w2 tenth", 0.1f))));
         FileMetadata meta = withSoftware(small.fileMetadata, software);
         List<ScanSettings> scanSettings = List.of(new ScanSettings("w2 settings",
                 List.of(param("w2 array", new String[] {"x", "y"}))));
@@ -111,7 +113,8 @@ class ParamValueTypesTest {
         JsonNode written = MAPPER.readTree(kv.get("software_list"));
         assertThat(written.get(written.size() - 1).path("parameters").toString()).isEqualTo(
                 "[{\"name\":\"w2 list\",\"value\":[\"a\",\"b\"]},{\"name\":\"w2 short\",\"value\":4},"
-                        + "{\"name\":\"w2 byte\",\"value\":5},{\"name\":\"w2 float\",\"value\":1.5}]");
+                        + "{\"name\":\"w2 byte\",\"value\":5},{\"name\":\"w2 float\",\"value\":1.5},"
+                        + "{\"name\":\"w2 tenth\",\"value\":0.1}]");
 
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, small.spectra, small.chromatograms, small.wavelengthSpectra, scanSettings,
@@ -126,7 +129,7 @@ class ParamValueTypesTest {
             List<Software> back = reader.fileMetadata().software();
             assertThat(back.get(back.size() - 1).parameters()).extracting(Param::name, Param::value).containsExactly(
                     tuple("w2 list", "[\"a\",\"b\"]"), tuple("w2 short", 4L), tuple("w2 byte", 5L),
-                    tuple("w2 float", 1.5));
+                    tuple("w2 float", 1.5), tuple("w2 tenth", 0.1));
             assertThat(reader.scanSettings()).singleElement().satisfies(s -> assertThat(s.parameters())
                     .extracting(Param::value).containsExactly("[\"x\",\"y\"]"));
         }

@@ -50,6 +50,9 @@ class FooterMetadataWriterTest {
 
         assertThat(FooterMetadataWriter.serialize(null)).isEmpty();
         assertThat(FooterMetadataWriter.serialize(FileMetadata.EMPTY)).isEmpty();
+        // without file metadata nothing is declared, so the spectra are written without references (W12)
+        small.spectra.replaceAll(s -> Fixtures.withoutReferences(List.of(s)).get(0));
+        small.chromatograms = Fixtures.chromatogramsWithoutReferences(small.chromatograms);
         FileMetadata none = fileMetadata(write(tmp.resolve("none.mzpeak"), small, null));
         FileMetadata empty = fileMetadata(write(tmp.resolve("empty.mzpeak"), small, FileMetadata.EMPTY));
         assertThat(none).isEqualTo(empty);

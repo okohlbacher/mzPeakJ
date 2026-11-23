@@ -30,7 +30,7 @@ import java.util.Locale;
  *   <li>the Numpress SLOF archive ({@link MzPeakWriter#writeArchiveNumpress}) and the Numpress PIC archive (the
  *       {@link Options} form) of current small;
  *   <li>the MS2 subset of current small as the {@link ExtractSpectra} example writes it: its 34 MS2 spectra, numbered
- *       0..33, with the TIC;
+ *       0..33, with the TIC and the file metadata;
  *   <li>the archive of current small with the scans of every spectrum removed, which the writer replaces by one scan
  *       holding the retention time.
  * </ul>
@@ -125,6 +125,7 @@ final class InteropOutputs {
         small.spectra.stream().filter(sp -> sp.description().msLevel() == 2).forEach(ms2.spectra::add);
         ms2.chromatograms = small.chromatograms;
         ms2.wavelengthSpectra = List.of();
+        ms2.fileMetadata = small.fileMetadata;
         Output subset = output(dir, SMALL, Kind.MS2_SUBSET, ms2);
         ExtractSpectra.main(new String[] {SMALL.toString(), subset.path().toString(), "--ms-level", "2"});
         outputs.add(subset);

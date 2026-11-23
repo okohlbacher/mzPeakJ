@@ -41,6 +41,27 @@ class SpecSchemaCheckTest {
                         + " [\"number\",\"integer\",\"string\",\"boolean\",\"null\",\"array\"]");
     }
 
+    /**
+     * A string that has no match of the {@code pattern} of its schema is reported: an array unit that is not a CURIE
+     * (array_index.json) and a param accession that is not one (param.json); a CURIE, a null and a param unit, which
+     * has no pattern (D13-26), are not.
+     */
+    @Test
+    void aStringWithoutAMatchOfItsPatternIsReported() {
+        String entry = "{\"array_name\":\"intensity\",\"buffer_format\":\"point\",\"context\":\"spectrum\","
+                + "\"path\":\"point.intensity\",\"data_type\":\"MS:1000523\",\"array_type\":\"MS:1000515\","
+                + "\"unit\":%s}";
+        String index = "{\"prefix\":\"point\",\"entries\":[" + String.format(entry, "\"percent\"") + ","
+                + String.format(entry, "\"MS:1000132\"") + "," + String.format(entry, "null") + "]}";
+
+        assertThat(SpecSchemaCheck.violations("index", "array_index.json", index)).containsExactly(
+                "index.entries[0].unit: \"percent\" does not match the pattern \\S+:\\S+");
+        Map<String, String> footer = Map.of("software_list", "[{\"id\":\"sw\",\"version\":\"1\",\"parameters\":["
+                + "{\"name\":\"a\",\"accession\":\"nocurie\"},{\"name\":\"b\",\"unit\":\"seconds\"}]}]");
+        assertThat(SpecSchemaCheck.violations(footer)).containsExactly(
+                "software_list[0].parameters[0].accession: \"nocurie\" does not match the pattern \\S+:\\S+");
+    }
+
     @Test
     void theNewlyRequiredSoftwareAndDataProcessingKeysAreReported() {
         Map<String, String> footer = Map.of("software_list", "[{\"version\":\"1\"}]",

@@ -105,7 +105,7 @@ class WriterComponentsCharacterizationTest {
     void theManifestListsOnlyTheMembersWritten(@TempDir Path tmp) throws IOException {
         Source s = ForwardBackwardCorpusTest.readSource(SMALL);
         // The centroid spectra of small.unpacked, each with its peak list only (the reader also fills the arrays).
-        List<Spectrum> peaksOnly = s.spectra.stream()
+        List<Spectrum> peaksOnly = Fixtures.withoutReferences(s.spectra).stream()
                 .filter(x -> x.description().signalContinuity() == SignalContinuity.CENTROID)
                 .map(x -> new Spectrum(x.description(), new double[0], new double[0], x.peaks()))
                 .collect(Collectors.toList());
@@ -384,7 +384,8 @@ class WriterComponentsCharacterizationTest {
         assertThat(memberNames(parent)).as("the archive's directory after the write").containsExactly("out.mzpeak");
 
         // Writing again replaces the archive.
-        MzPeakWriter.writeArchive(archive, s.spectra.subList(0, 3), List.of(), List.of(), List.of(),
+        MzPeakWriter.writeArchive(archive, Fixtures.withoutReferences(s.spectra.subList(0, 3)), List.of(), List.of(),
+                List.of(),
                 FileMetadata.EMPTY, PACKED_NUMPRESS);
         assertThat(WriterSnapshotTest.snapshot(archive, true).zipEntries()).containsExactly(
                 "spectra_data.parquet:STORED",
@@ -422,7 +423,7 @@ class WriterComponentsCharacterizationTest {
         Path archive = Files.createDirectories(parent.resolve("out.mzpeak"));
         Files.writeString(archive.resolve("keep.txt"), "keep");
 
-        assertThatThrownBy(() -> MzPeakWriter.writeArchive(archive, s.spectra, s.chromatograms))
+        assertThatThrownBy(() -> MzPeakWriter.writeArchive(archive, s.spectra, s.chromatograms, s.fileMetadata))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("Failed to write mzPeak archive " + archive)
                 .hasCauseInstanceOf(DirectoryNotEmptyException.class);
@@ -435,11 +436,12 @@ class WriterComponentsCharacterizationTest {
         Source s = ForwardBackwardCorpusTest.readSource(SMALL);
         Path file = Files.writeString(tmp.resolve("occupied.mzpeak"), "x");
 
-        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(file, s.spectra, s.chromatograms))
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(file, s.spectra, s.chromatograms, s.fileMetadata))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("Failed to write mzPeak dataset to " + file)
                 .hasCauseInstanceOf(FileAlreadyExistsException.class);
-        assertThatThrownBy(() -> MzPeakWriter.writeDirectoryNumpress(file, s.spectra, s.chromatograms))
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectoryNumpress(file, s.spectra, s.chromatograms,
+                s.fileMetadata))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("Failed to write Numpress mzPeak dataset to " + file)
                 .hasCauseInstanceOf(FileAlreadyExistsException.class);

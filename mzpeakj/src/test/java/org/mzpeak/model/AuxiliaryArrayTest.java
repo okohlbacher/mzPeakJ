@@ -103,6 +103,37 @@ class AuxiliaryArrayTest {
                 .hasMessageStartingWith("auxiliary array signal to noise array: the zlib data cannot be decompressed:");
     }
 
+    /**
+     * A zlib payload is inflated only as far as the declared size and one byte more: a bomb of 64 MiB of zeros in
+     * 64 KiB declared as one 64-bit float is refused after 9 inflated bytes, naming the declared size, not after
+     * inflating all of it (an OutOfMemoryError for a larger bomb). A payload that inflates to fewer bytes is refused
+     * as before, and a declared size no Java array holds is refused before anything is inflated.
+     */
+    @Test
+    void zlibIsInflatedOnlyAsFarAsTheDeclaredSize() {
+        byte[] bomb = zlib(new byte[64 << 20]);
+        assertThat(bomb.length).as("the compressed bomb").isLessThan(1 << 17);
+        assertThatThrownBy(array(bomb, "MS:1000523", ZLIB, 1)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: more than 8 bytes do not hold 1 values of"
+                        + " MS:1000523 (8 bytes each)");
+        assertThatThrownBy(array(zlib(new byte[8]), "MS:1000523", ZLIB, 2)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: 8 bytes do not hold 2 values of MS:1000523 (8"
+                        + " bytes each)");
+        assertThatThrownBy(array(bomb, "MS:1000521", ZLIB, Integer.MAX_VALUE / 4 + 1)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: 536870912 values of MS:1000521 (4 bytes each)"
+                        + " are more than a Java array holds");
+        assertThatThrownBy(array(bomb, "MS:1000523", ZLIB, 1L << 61)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: 2305843009213693952 values of MS:1000523 (8 bytes"
+                        + " each) are more than a Java array holds");
+        ByteBuffer exact = buffer(2 * Double.BYTES);
+        exact.putDouble(1.0).putDouble(2.0);
+        assertThat(array(zlib(exact.array()), "MS:1000523", ZLIB, 2).doubles()).containsExactly(1.0, 2.0);
+    }
+
     // ---- construction -------------------------------------------------------------------------------------------
 
     @Test

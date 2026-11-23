@@ -832,8 +832,8 @@ public final class MzMLReader {
      * {@code listDefault}) kept when it differs from the spectrumList's; its precursor; its product dropped (B-27); its
      * time as stored with the time array's unit as {@code timeUnit} (D-12c), also when B-9 drops the time array, and
      * its intensity unit as given. A time array without unit is in minutes. A chromatogram without time array or time
-     * unit, which has no times, takes the run's chromatogram time unit, so it cannot conflict with the others in the
-     * writer's same-time-unit check; minute when no chromatogram declares one.
+     * unit, which has no times, takes the run's chromatogram time unit, minute when no chromatogram declares one;
+     * the mzPeak writer converts every chromatogram's times to minutes (W3).
      */
     private Consumer<Visitor> chromatogram(uk.ac.ebi.jmzml.model.mzml.Chromatogram c, String listDefault) {
         List<Param> params = new ArrayList<>(params(c));

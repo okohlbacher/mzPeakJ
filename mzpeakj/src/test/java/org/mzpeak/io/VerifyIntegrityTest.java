@@ -262,7 +262,7 @@ class VerifyIntegrityTest {
             chromatograms = reader.chromatograms();
         }
         Path archive = tmp.resolve("written.mzpeak");
-        MzPeakWriter.writeArchive(archive, spectra, chromatograms);
+        MzPeakWriter.writeArchive(archive, Fixtures.withoutReferences(spectra), Fixtures.chromatogramsWithoutReferences(chromatograms));
 
         IntegrityReport report = MzPeakReader.verifyIntegrity(archive);
 
