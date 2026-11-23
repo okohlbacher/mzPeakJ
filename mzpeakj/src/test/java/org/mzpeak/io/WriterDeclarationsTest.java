@@ -289,15 +289,16 @@ class WriterDeclarationsTest {
     }
 
     /**
-     * D13-26: a param unit that is not a CURIE, such as {@code seconds}, is not prefix-checked and is written as
-     * given; so is a CV prefix the caller's cv list declares with all four fields, which metadata.cv_list then
+     * D13-26: a param unit that is not a CURIE, such as {@code seconds} or {@code counts: per second} (a colon but
+     * not the shape {@code PREFIX:local}), is not prefix-checked and is written as given; so is a CV prefix the caller's cv list declares with all four fields, which metadata.cv_list then
      * declares. A file description without contents (a null list) has no param to check.
      */
     @Test
     void aUnitThatIsNoCurieAndACallerDeclaredPrefixAreWrittenAsGiven(@TempDir Path tmp) throws IOException {
         Param seconds = new Param("time", "MS:1000016", 1.5, "seconds");
+        Param rate = new Param("rate", "MS:1000285", 2.5, "counts: per second");
         CvEntry foo = new CvEntry("FOO", "Foo ontology", "https://example.org/foo/1.0/foo.obo", "1.0");
-        Write w = small().withSpectrum(3, s -> withParam(withParam(s, seconds), FOO))
+        Write w = small().withSpectrum(3, s -> withParam(withParam(withParam(s, seconds), rate), FOO))
                 .withFileMetadata(m -> new FileMetadata(new FileDescription(null,
                         m.fileDescription().sourceFiles()), m.instrumentConfigurations(), m.dataProcessingMethods(),
                         m.samples(), m.software(), m.run()))
@@ -308,10 +309,10 @@ class WriterDeclarationsTest {
                 w.fileMetadata(), w.options());
 
         try (MzPeakReader reader = MzPeakReader.open(out)) {
-            assertThat(reader.getSpectrumAt(3).description().parameters()).contains(seconds, FOO);
+            assertThat(reader.getSpectrumAt(3).description().parameters()).contains(seconds, rate, FOO);
         }
         assertThat(Files.readString(out.resolve(ManifestWriter.INDEX))).contains("\"id\" : \"FOO\"")
-                .doesNotContain("\"id\" : \"seconds\"");
+                .doesNotContain("\"id\" : \"seconds\"").doesNotContain("\"id\" : \"counts\"");
     }
 
     /**

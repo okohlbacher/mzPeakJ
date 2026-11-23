@@ -1222,9 +1222,9 @@ final class WritePlanner {
     // declare every CV prefix it uses in metadata.cv_list (l.24-25), and every non-null foreign key to resolve
     // (§Validation). A write is refused before anything is written when a CURIE (a value with text before a colon, as
     // KnownCvs.prefix takes it, the values ManifestWriter declares the CVs of) has a prefix metadata.cv_list would not
-    // declare, or when an explicit reference names nothing the file metadata declares. A value without a colon, such
-    // as the unit "seconds" (C6), is no CURIE and is written as given; an extra-array key that is not a CURIE is
-    // written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a stub and a WARNING when the
+    // declare, or when an explicit reference names nothing the file metadata declares. A unit is a CURIE only when it
+    // has the CURIE shape PREFIX:local (CURIE); any other unit, such as "seconds" (C6) or "counts: per second", is
+    // written as given; an extra-array key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a stub and a WARNING when the
     // file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) no reference is checked:
     // such a write declares no instrument configuration, data processing or source file, and the overloads without
     // file metadata write the spectra a reader returns this way.
@@ -1291,7 +1291,7 @@ final class WritePlanner {
         void require(Chromatogram c) {
             String owner = "chromatogram " + c.index();
             requirePrefix(owner, "type", c.typeCurie());
-            requirePrefix(owner, "intensity unit", c.intensityUnit());
+            requireUnit(owner, "intensity unit", c.intensityUnit());
             requireParams(owner, c.parameters());
             requireNamed(owner, "data_processing_id", c.dataProcessingRef(), processing, "data processing");
             requirePrecursors(owner, c.precursors());
@@ -1334,7 +1334,17 @@ final class WritePlanner {
         private void requireParams(String owner, List<Param> params) {
             for (Param p : params == null ? List.<Param>of() : params) {
                 requirePrefix(owner, p, p.accession());
-                requirePrefix(owner, p, p.unit());
+                requireUnit(owner, p, p.unit());
+            }
+        }
+
+        /**
+         * The check of {@code unit}, the unit of {@code what} of {@code owner}, when it has the CURIE shape
+         * {@code PREFIX:local}; any other unit, {@code null} included, is written as given.
+         */
+        private void requireUnit(String owner, Object what, String unit) {
+            if (unit != null && CURIE.matcher(unit).matches()) {
+                requirePrefix(owner, what, unit);
             }
         }
 
