@@ -234,13 +234,13 @@ final class ManifestWriter {
      * (UO:0000031), the unit of the chromatograms_data time column; the unit of every intensity column of
      * chromatograms_data, that is every intensity unit of a chromatogram; the array type and unit of every extra
      * column of chromatograms_data, that is every CURIE key of the chromatograms' {@code arrays()}; and the accession
-     * and unit of every param of a wavelength spectrum; and the accession and unit of the name and of every param, the
-     * data type, the compression and the unit of every auxiliary array of a spectrum, chromatogram or wavelength
-     * spectrum. The packed layout writes
+     * and unit of every param of a wavelength spectrum and of each of its scans; and the accession and unit of the
+     * name and of every param, the data type, the compression and the unit of every auxiliary array of a spectrum,
+     * chromatogram or wavelength spectrum. The packed layout writes
      * only a spectrum's first scan and primary precursor and selected ion, and no chromatogram precursor or
-     * chromatogram or wavelength-spectrum param, but the prefixes of the others count too. The other CURIEs the
-     * writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params give
-     * rise to.
+     * chromatogram or wavelength-spectrum param or wavelength scan, but the prefixes of the others count too. The
+     * other CURIEs the writer puts into a member are MS and UO terms, and the IMS position columns, which only a
+     * scan's IMS params give rise to.
      */
     private static Map<String, String> prefixesOf(WritePlan plan) {
         Map<String, String> used = new LinkedHashMap<>();
@@ -278,6 +278,9 @@ final class ManifestWriter {
         }
         for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
             addParamPrefixes(entry.source().parameters(), used);
+            for (ScanEvent scan : entry.source().scans()) {
+                addParamPrefixes(scan.parameters(), used);
+            }
             addAuxiliaryPrefixes(entry.source().auxiliaryArrays(), used);
         }
         return used;

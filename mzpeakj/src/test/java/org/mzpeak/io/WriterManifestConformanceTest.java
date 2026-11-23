@@ -283,20 +283,22 @@ class WriterManifestConformanceTest {
                                     : List.of("name", "path", "accession", "unit"));
                     assertThat(row.path("name").asText()).isEqualTo(column.name());
                     assertThat(row.path("accession").asText()).isEqualTo(column.accession());
-                    // D13-24: the wavelength scan windows stay mapped in m/z, as has_uv maps them, until the
-                    // windows are written (R8 writer); their ColumnTable rows are in nm
-                    boolean mzWindow = facet == Facet.WAVELENGTH_SCAN && path.startsWith("scan_windows.");
                     assertThat(row.get("unit").isNull() ? null : row.get("unit").asText())
-                            .isEqualTo(mzWindow ? "MS:1000040" : column.unit());
+                            .isEqualTo(column.unit());
                     // D13-12: the wavelength representation is opt_spectrum_representation, which the current
                     // manifests map at its first fallback, spectrum_representation
                     boolean renamed = path.equals("opt_spectrum_representation");
+                    // D13-24: the wavelength scan windows are mapped in nm, which has_uv maps in m/z
+                    boolean nmWindow = facet == Facet.WAVELENGTH_SCAN && path.startsWith("scan_windows.");
                     int matched = 0;
                     for (JsonNode current : currentManifests) {
                         JsonNode currentRow = currentRow(current, entry, renamed ? column.fallbacks().get(0) : path);
                         if (currentRow != null) {
-                            assertThat(row).as("%s: %s against a current manifest", name, path).isEqualTo(renamed
-                                    ? ((ObjectNode) currentRow.deepCopy()).put("path", path) : currentRow);
+                            JsonNode expectedRow = renamed
+                                    ? ((ObjectNode) currentRow.deepCopy()).put("path", path) : nmWindow
+                                    ? ((ObjectNode) currentRow.deepCopy()).put("unit", "UO:0000018") : currentRow;
+                            assertThat(row).as("%s: %s against a current manifest", name, path)
+                                    .isEqualTo(expectedRow);
                             matched++;
                         }
                     }

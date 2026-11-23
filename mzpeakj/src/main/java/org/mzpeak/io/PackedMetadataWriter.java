@@ -46,9 +46,9 @@ import static org.mzpeak.io.SplitMetadataWriter.termOf;
  * wavelength_spectra_metadata row per chromatogram and wavelength spectrum. Its members are listed in the pin-era
  * dialect, {@link Dialect#PIN_29E59B2}. The spectrum schema is frozen without a {@code data_processing_id} column,
  * so the data processing references of spectra are not written; the wavelength schema is frozen without a
- * {@code parameters} list, so the Params of wavelength spectra are not written; the chromatogram schema is frozen with
- * its index, id, type and point count only, so the polarity, data processing reference, Params and precursors of
- * chromatograms are not written either. {@link WritePlanner} warns about each.
+ * {@code parameters} list and has no scans member, so the Params and scans of wavelength spectra are not written; the
+ * chromatogram schema is frozen with its index, id, type and point count only, so the polarity, data processing
+ * reference, Params and precursors of chromatograms are not written either. {@link WritePlanner} warns about each.
  */
 final class PackedMetadataWriter implements MetadataTablesWriter {
 

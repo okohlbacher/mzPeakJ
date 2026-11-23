@@ -194,7 +194,10 @@ class WavelengthParamsTest {
                         "number_of_auxiliary_arrays");
     }
 
-    /** The packed schema has no parameters column: one warning with the counts, and the Params read back empty. */
+    /**
+     * The packed schema has no parameters column: one warning with the counts, and the Params read back empty; and
+     * no wavelength scans member: another for the scans (R8).
+     */
     @Test
     void packedWriteWarnsOnceAndReadsBackEmptyParams() {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current(HAS_UV));
@@ -203,7 +206,8 @@ class WavelengthParamsTest {
                 source.chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, PACKED));
         assertThat(warnings).extracting(LogRecord::getMessage).containsExactly(
                 "520 wavelength spectra carry parameters (3640 in all), which the packed metadata layout does not"
-                        + " write");
+                        + " write",
+                "520 wavelength spectra carry scans (520 in all), which the packed metadata layout does not write");
 
         List<WavelengthSpectrum> back = wavelengthSpectra(out);
         assertThat(back).hasSize(520).allSatisfy(w -> assertThat(w.parameters()).isEmpty());

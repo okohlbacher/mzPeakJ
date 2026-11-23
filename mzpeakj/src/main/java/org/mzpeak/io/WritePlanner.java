@@ -65,9 +65,10 @@ import java.util.regex.Pattern;
  * once. A contract violation throws {@link MzPeakException} before any file or temp directory exists. What the packed
  * layout loses gets one warning in the report for each kind: the scans after a spectrum's first, the precursors after
  * its primary one and the selected ions other than the primary precursor's first (one warning), the data processing
- * references of spectra (another), the Params of wavelength spectra (a third), and the polarities, data processing
- * references, Params and precursors of chromatograms (a fourth). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
- * scan settings without an id, which get one. A NaN in an axis (m/z, chromatogram time, wavelength) or an intensity
+ * references of spectra (another), the Params of wavelength spectra (a third), the polarities, data processing
+ * references, Params and precursors of chromatograms (a fourth), and the scans of wavelength spectra (a fifth). Each
+ * re-sorted main axis gets a warning of its own, and so do, in the split layout, the scan settings without an id,
+ * which get one. A NaN in an axis (m/z, chromatogram time, wavelength) or an intensity
  * is refused as a contract violation in every encoding ({@link #requireNoNaN}), and with
  * {@link SignalEncoding#NUMPRESS} so is a value the Numpress codecs cannot encode. So is a CURIE whose CV prefix
  * {@code metadata.cv_list} would not declare, and a reference that names nothing of the file metadata
@@ -336,9 +337,12 @@ final class WritePlanner {
         }
         List<WavelengthSpectrum> wavelengthOrder = inIndexOrder(wavelengthSpectra, WavelengthSpectrum::index);
         List<Entry<WavelengthSpectrum>> wavelengthEntries = new ArrayList<>(wavelengthOrder.size());
-        // The packed wavelength schema is frozen without a parameters list: one warning for the Params it drops.
+        // The packed wavelength schema is frozen without a parameters list and a scans member: one warning for the
+        // Params it drops, another for the scans.
         int withParams = 0;
         int params = 0;
+        int withScans = 0;
+        int scans = 0;
         for (int i = 0; i < wavelengthOrder.size(); i++) {
             WavelengthSpectrum w = wavelengthOrder.get(i);
             wavelengthEntries.add(new Entry<>(w, i,
@@ -347,12 +351,19 @@ final class WritePlanner {
                 withParams++;
                 params += w.parameters().size();
             }
-            countUnwritten(w, unwritten);
+            if (!w.scans().isEmpty()) {
+                withScans++;
+                scans += w.scans().size();
+            }
         }
         warnUnwritten(unwritten, report);
         if (withParams > 0 && options.metadataLayout() == MetadataLayout.PACKED) {
             report.warn(counted(withParams, "wavelength spectrum carries", "wavelength spectra carry")
                     + " parameters (" + params + " in all), which the packed metadata layout does not write");
+        }
+        if (withScans > 0 && options.metadataLayout() == MetadataLayout.PACKED) {
+            report.warn(counted(withScans, "wavelength spectrum carries", "wavelength spectra carry")
+                    + " scans (" + scans + " in all), which the packed metadata layout does not write");
         }
         if (options.metadataLayout() == MetadataLayout.PACKED) {
             warnPackedAuxiliaryArrays(spectra, chromatogramOrder, wavelengthOrder, report);
@@ -538,19 +549,17 @@ final class WritePlanner {
     }
 
     // Components the reader returns that the writer does not write yet: the products and the precursor MS level
-    // (R6, D13-21) and the wavelength scans (R8), which the writer unit X-34 is to write. Until it does, a write that
-    // drops any of them says so in one WARNING with counts, as the packed layout does of what it drops; what is
-    // written does not change. A wavelength spectrum is written with one scan holding its time, so its scans are
-    // dropped unless they are exactly that scan. The auxiliary arrays (R1) are written since X-32; the packed layout
-    // warns of them itself ({@link #warnPackedAuxiliaryArrays}).
+    // (R6, D13-21). A write that drops any of them says so in one WARNING with counts, as the packed layout does of
+    // what it drops; what is written does not change. The auxiliary arrays (R1) are written since X-32 and the
+    // wavelength scans (R8) since X-34; the packed layout warns of them itself ({@link #warnPackedAuxiliaryArrays},
+    // {@link #complete}).
 
     /** The kinds {@link #countUnwritten(Spectrum, int[])} and its siblings count, in the order of the warning. */
     private static final int PRODUCT_SPECTRA = 0;
     private static final int PRODUCT_CHROMATOGRAMS = 1;
     private static final int MS_LEVEL_PRECURSORS = 2;
-    private static final int WAVELENGTH_SCANS = 3;
     /** The length of the counts of what the writer drops. */
-    static final int UNWRITTEN_KINDS = 4;
+    static final int UNWRITTEN_KINDS = 3;
 
     /**
      * Adds to {@code unwritten} what the writer drops of {@code s}: whether it has products, and its precursors that
@@ -574,18 +583,6 @@ final class WritePlanner {
         countMsLevels(c.precursors(), unwritten);
     }
 
-    /**
-     * Adds to {@code unwritten} what the writer drops of {@code w}: whether its scans are other than none or the one
-     * scan holding only its time, which is all the writer writes of them.
-     */
-    private static void countUnwritten(WavelengthSpectrum w, int[] unwritten) {
-        List<ScanEvent> scans = w.scans();
-        if (scans.size() > 1 || scans.size() == 1
-                && !scans.get(0).equals(new ScanEvent(w.time(), null, null, null, null, null, null, null))) {
-            unwritten[WAVELENGTH_SCANS]++;
-        }
-    }
-
     private static void countMsLevels(List<Precursor> precursors, int[] unwritten) {
         for (Precursor p : precursors) {
             if (p.msLevel() != null) {
@@ -597,16 +594,13 @@ final class WritePlanner {
     /**
      * Records in {@code report} the one warning about what the writer drops ({@code unwritten}), if anything, naming
      * each component and entity kind with a count above 0, such as "mzPeakJ reads but does not write yet: the
-     * products of 1 spectrum and 1 chromatogram; the scans of 2 wavelength spectra beyond one scan holding the
-     * spectrum time".
+     * products of 1 spectrum and 1 chromatogram; the MS level of 2 precursors".
      */
     static void warnUnwritten(int[] unwritten, WriteReport report) {
         List<String> parts = new ArrayList<>();
         addPart(parts, "the products of ", counts(unwritten[PRODUCT_SPECTRA], "spectrum", "spectra",
-                unwritten[PRODUCT_CHROMATOGRAMS], "chromatogram", "chromatograms"), "");
-        addPart(parts, "the MS level of ", counts(unwritten[MS_LEVEL_PRECURSORS], "precursor", "precursors"), "");
-        addPart(parts, "the scans of ", counts(unwritten[WAVELENGTH_SCANS], "wavelength spectrum",
-                "wavelength spectra"), " beyond one scan holding the spectrum time");
+                unwritten[PRODUCT_CHROMATOGRAMS], "chromatogram", "chromatograms"));
+        addPart(parts, "the MS level of ", counts(unwritten[MS_LEVEL_PRECURSORS], "precursor", "precursors"));
         if (!parts.isEmpty()) {
             report.warn(UNWRITTEN + String.join("; ", parts));
         }
@@ -630,16 +624,13 @@ final class WritePlanner {
         return out;
     }
 
-    /**
-     * Adds {@code what}, {@code counts} joined as {@code a, b and c}, and {@code more} to {@code parts} when there is
-     * a count.
-     */
-    private static void addPart(List<String> parts, String what, List<String> counts, String more) {
+    /** Adds {@code what} and {@code counts} joined as {@code a, b and c} to {@code parts} when there is a count. */
+    private static void addPart(List<String> parts, String what, List<String> counts) {
         if (counts.isEmpty()) {
             return;
         }
         String last = counts.remove(counts.size() - 1);
-        parts.add(what + (counts.isEmpty() ? last : String.join(", ", counts) + " and " + last) + more);
+        parts.add(what + (counts.isEmpty() ? last : String.join(", ", counts) + " and " + last));
     }
 
     /**
@@ -1329,8 +1320,10 @@ final class WritePlanner {
 
     /**
      * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
-     * unique within each kind, no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the
-     * {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative.
+     * unique within each kind, their Params writable ({@link #requireWritableParams(String, List)}), those of the
+     * wavelength scans included, no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the
+     * {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative and no wavelength scan with
+     * a spectrum reference, which the wavelength scan table has no column for.
      */
     private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                        MetadataLayout layout) {
@@ -1355,6 +1348,15 @@ final class WritePlanner {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
             List<List<Param>> lists = new ArrayList<>(List.of(w.parameters()));
+            for (int i = 0; i < w.scans().size(); i++) {
+                ScanEvent scan = w.scans().get(i);
+                lists.add(scan.parameters());
+                if (layout == MetadataLayout.SPLIT && scan.spectrumReference() != null) {
+                    throw new MzPeakException(owner("wavelength spectrum", w.index(), w.id()) + ": scan " + i
+                            + " has the spectrum reference " + scan.spectrumReference() + ", which mzPeak cannot"
+                            + " write: the wavelength scan table has no spectrum_reference column (D13-12)");
+                }
+            }
             addAuxiliaryParams(w.auxiliaryArrays(), lists);
             requireWritableParams(owner("wavelength spectrum", w.index(), w.id()), lists);
             requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
@@ -1571,13 +1573,20 @@ final class WritePlanner {
         }
 
         /**
-         * Throws {@link MzPeakException} when the accession or unit of a param of {@code w} has an undeclared prefix,
-         * or a CURIE of one of its auxiliary arrays does, or the data processing of one names nothing the file
-         * metadata declares ({@link #requireAuxiliaryArrays}).
+         * Throws {@link MzPeakException} when the accession or unit of a param of {@code w} or of its scans has an
+         * undeclared prefix, or a CURIE of one of its auxiliary arrays does, or the instrument configuration of a
+         * scan or the data processing of an auxiliary array names nothing the file metadata declares
+         * ({@link #requireAuxiliaryArrays}).
          */
         void require(WavelengthSpectrum w) {
             String owner = "wavelength spectrum " + w.index();
             requireParams(owner, w.parameters());
+            for (int i = 0; i < w.scans().size(); i++) {
+                ScanEvent scan = w.scans().get(i);
+                requireParams(owner + ": scan " + i, scan.parameters());
+                requireNamed(owner, "scan " + i + " instrument_configuration_id",
+                        scan.instrumentConfigurationRef(), configurations, "instrument configuration");
+            }
             requireAuxiliaryArrays(owner, w.auxiliaryArrays());
         }
 
