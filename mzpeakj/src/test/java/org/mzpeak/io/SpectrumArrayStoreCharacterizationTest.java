@@ -245,6 +245,46 @@ class SpectrumArrayStoreCharacterizationTest {
                         + " values");
     }
 
+    /**
+     * A chunk row that cannot be decoded fails only its own spectrum: spectra 2, 3 and 4 in one row group, the first
+     * chunk row of spectrum 3 a delta chunk without chunk start and its later rows valid; spectra 2 and 4 read their
+     * points, before and after spectrum 3 is asked for, and spectrum 3 throws the message of its own row (until the
+     * final fix-up of 0.13.0 the row group failed as a whole, so spectra 2 and 4 threw the message of spectrum 3).
+     */
+    @Test
+    void aChunkRowThatCannotBeDecodedFailsOnlyItsSpectrum() {
+        List<Group> rows = new ArrayList<>();
+        for (long index : new long[] {2, 3, 4}) {
+            double[][] p = Peaks.points(index);
+            int n = SPANNING.get(index);
+            for (int i = 0; i < n; i++) {
+                rows.add(chunkPoint(index, p[i][0], (float) p[i][1]));
+            }
+        }
+        Group bad = new SimpleGroupFactory(CHUNK_SCHEMA).newGroup();
+        Group chunk = bad.addGroup("chunk");
+        chunk.add("spectrum_index", 3L);
+        addDoubles(chunk, "mz_chunk_values", new double[] {0.5});
+        chunk.add("chunk_encoding", "MS:1003089");
+        addDoubles(chunk, "intensity", new double[] {1, 2});
+        rows.add(SPANNING.get(2L), bad);
+        Path file = write(CHUNK_SCHEMA, rows, 100, true);
+        assertThat(rowGroups(file)).isEqualTo(1);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertPeaks(store.get(2), 2);
+            assertPeaks(store.get(4), 4);
+            for (int attempt = 0; attempt < 2; attempt++) {
+                assertThatThrownBy(() -> store.get(3))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("chunk row of spectrum_index 3 has a null m/z chunk start, which chunked-layout.md"
+                                + " requires of a chunk whose values are not absolute; decoding it from 0 would invent"
+                                + " m/z values");
+            }
+            assertPeaks(store.get(2), 2);
+            assertPeaks(store.get(4), 4);
+        }
+    }
+
     @Test
     void aDeltaChunkWithMismatchedLengthsFails() {
         Row0 r = Row0.INSTANCE;
