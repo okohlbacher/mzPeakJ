@@ -29,8 +29,9 @@ import java.util.Optional;
  * {@link ChunkRowDecoder} with the wavelength as its main axis, and the chunks of one index are appended in row order;
  * a null-marked wavelength of a chunk reads as NaN, as a null point wavelength does. A data member that cannot be read
  * that way throws an {@link MzPeakException} naming it, instead of giving empty arrays: one without the plan's prefix
- * struct, one whose plan names no wavelength values column or no value-bearing intensity column, and one with a chunk
- * row that {@link ChunkRowDecoder} cannot decode (naming the wavelength spectrum index).
+ * struct, one whose plan names no wavelength values column or neither a value-bearing intensity column nor an
+ * MS-Numpress SLOF or PIC intensity column (which only the chunk layout has; R3), and one with a chunk row that
+ * {@link ChunkRowDecoder} cannot decode (naming the wavelength spectrum index).
  */
 final class WavelengthSpectrumStore {
 
@@ -154,7 +155,10 @@ final class WavelengthSpectrumStore {
         return out;
     }
 
-    /** Throws unless {@code plan} reads the rows of the data member {@code dataName} of schema {@code schema}. */
+    /**
+     * Throws unless {@code plan} reads the rows of the data member {@code dataName} of schema {@code schema}: its
+     * intensity is a value-bearing column or an MS-Numpress SLOF or PIC chunk transform.
+     */
     private static void requireReadable(SignalPlan plan, MessageType schema, String dataName) {
         if (!schema.containsField(plan.prefix()) || schema.getType(plan.prefix()).isPrimitive()) {
             throw new MzPeakException(dataName + " has no '" + plan.prefix() + "' struct, so its wavelength spectra"
@@ -163,7 +167,8 @@ final class WavelengthSpectrumStore {
         if (plan.axis().values() == null) {
             throw new MzPeakException(dataName + ": the signal plan names no wavelength values column");
         }
-        if (plan.plainIntensity().isEmpty()) {
+        // a chunk row decodes an MS-Numpress SLOF or PIC intensity (R3), as ChromatogramDataDecoder accepts it
+        if (plan.plainIntensity().isEmpty() && plan.numpressIntensity().isEmpty()) {
             throw new MzPeakException(dataName + ": the signal plan names no value-bearing intensity column");
         }
     }
