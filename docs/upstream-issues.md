@@ -2,16 +2,18 @@
 
 Found while checking mzPeakJ-written files with the Rust reference reader (`mzpeak_prototyping` of
 [HUPO-PSI/mzPeak](https://github.com/HUPO-PSI/mzPeak) at `2ee2589`, 2026-11-10). The issues are not filed upstream
-(maintainer, 2026-11-11). Each but R-10 to R-14 also shows on the reference's own example files, so none is caused
+(maintainer, 2026-11-11). Each but R-10 to R-17 also shows on the reference's own example files, so none is caused
 by mzPeakJ; R-10, R-11 and the first half of R-12 follow from spec rules mzPeakJ keeps, the second half of R-12 is not
-traced yet, and R-13 and R-14 show only on auxiliary arrays, which no example file holds and which mzPeakJ writes since
-0.13.0 (see below).
+traced yet, R-13, R-14, R-15 and R-17 show only on auxiliary arrays, which no example file holds and which mzPeakJ
+writes since 0.13.0, and R-16 only on a param unit or accession that is not a CURIE, which no example file holds (see
+below).
 
 The reader is checked with [`tools/rdump`](../tools/rdump/README.md), a small dumper on the reference's public API.
 `RustReaderAcceptanceTest` (CI job `rust-reader`) expects R-1, R-2, R-3, R-10, R-11, R-13 and R-14 on the files
 mzPeakJ writes and fails on any other unreadable entity; when one of them no longer occurs, the test fails too, so the
 table is updated.
-R-12 was found with rdump by hand (2026-11-23) and is not asserted by the test yet.
+R-12 and R-15 to R-17 were found with rdump or in the reference's source by hand (2026-11-23) and are not asserted by
+the test yet.
 
 | # | Problem | Where it shows | Effect |
 |---|---|---|---|
@@ -29,6 +31,9 @@ R-12 was found with rdump by hand (2026-11-23) and is not asserted by the test y
 | R-12 | In the Numpress (chunked) layout, (a) the chunk decoder labels the intensity of a spectrum stored in a per-unit transform column, such as `intensity_MS_1000132_numpress_slof_bytes`, as `DetectorCounts` (the values are right), and (b) the range read `extract_signal` panics with "list array" | (a) any Numpress spectra_data with spectra in two intensity units, which mzPeakJ writes since 0.13.0 (R5); (b) mzPeakJ's Numpress output, also with one intensity unit; not the reference's small.numpress | (a) wrong intensity unit; (b) range reads of Numpress data fail |
 | R-13 | A compressed auxiliary array does not decode: `AuxiliaryArrayVisitor` (`src/reader/visitor.rs:1880-1925`) hands the stored bytes to mzdata as the array's data with its compression, and mzdata takes the data of a compressed array for base64 text ("The content was not properly Base64 encoded"); auxiliary-arrays.md stores the compressed bytes themselves ("No base64 encoding is used") | any auxiliary array with a compression other than MS:1000576, such as zlib (MS:1000574) | array unreadable |
 | R-14 | The auxiliary arrays of a chunked spectrum whose chunks span several row groups are dropped: the chunk path of `get_spectrum_arrays` (`src/reader.rs:552-565`) returns before `load_auxiliary_arrays_for_spectrum`, which the single-row-group and point paths call | a spectrum with auxiliary arrays in the chunked (Numpress) layout across a row-group boundary | arrays missing |
+| R-15 | `AuxiliaryArrayVisitor` panics on an auxiliary array whose name has no accession or one mzdata's `ArrayType::from_accession` does not map, or whose data type or compression `BinaryDataArrayType::from_accession` or `BinaryCompressionType::from_accession` does not map (`src/reader/visitor.rs:1896-1897`, `1912`, `1922`, each `.unwrap()`); auxiliary-arrays.md only requires CV terms | an auxiliary array named MS:1002478 (mean charge array), or of another CV data type or compression; mzPeakJ refuses to write such arrays (provisional D13-28) | entity unreadable |
+| R-16 | A param unit or accession that is not an mzdata CURIE (`PREFIX:number`, the number a u32) panics in every `parameters` list: `ParameterVisitor` reads accessions and units through `AnyCURIEArray` and `UnitArray` (`src/reader/visitor/curie_array_visitor.rs:379`, `389`), which call `parse().unwrap()` (`:34`, `:70`, `:257`) | a param with the unit `seconds` (which C6 reads and D13-26 writes as given) or the accession `MS:abc`, seen on spectra, scans and wavelength spectra; chromatogram params go through the same visitor | entity unreadable |
+| R-17 | The auxiliary arrays of a spectrum with 0 data points are dropped: `get_spectrum` reads the arrays, and with them the auxiliary arrays, only when the spectrum's `data_point_counts` entry is above 0 (`src/reader.rs:1796-1831`) | a spectrum without profile points, such as a centroid-only one, that has auxiliary arrays | arrays missing |
 
 How the test sees them on mzPeakJ's own output:
 
@@ -98,6 +103,42 @@ How the test sees them on mzPeakJ's own output:
   the uncompressed array: spectrum 8's chunks span row groups 0 and 1, and rdump reads its m/z and intensity without
   the array, while it reads spectrum 0's (all its chunks in row group 0; parquet-java checks the row-group size
   first after 100 rows, so spectrum 0 cannot span row groups in a write by mzPeakJ). mzPeakJ reads both.
+
+- R-15 has no rdump record: mzPeakJ refuses to write such an array (provisional D13-28), so the evidence is the
+  reference's source at `2ee2589`, `AuxiliaryArrayVisitor` in `src/reader/visitor.rs`:
+
+  ```rust
+  let accession = param.curie().unwrap();                                // 1896
+  let val = ArrayType::from_accession(accession).unwrap();               // 1897
+  da.dtype = BinaryDataArrayType::from_accession(val).unwrap();          // 1912
+  da.compression = BinaryCompressionType::from_accession(val).unwrap();  // 1922
+  ```
+
+- R-16 shows with rdump on current small.unpacked written split with one param added to spectrum 0 (its own
+  params, or those of its first scan) with the unit `seconds`, or with the accession `MS:abc`, and on current has_uv
+  with such a param added to wavelength spectrum 0; only that entity fails, every other one reads:
+
+  ```text
+  {"index":0,"kind":"S","panic":"called `Result::unwrap()` on an `Err` value: MissingNamespaceSeparator"}
+  {"index":0,"kind":"S","panic":"called `Result::unwrap()` on an `Err` value: AccessionParsingError(ParseIntError { kind: InvalidDigit })"}
+  {"index":0,"kind":"W","panic":"called `Result::unwrap()` on an `Err` value: MissingNamespaceSeparator"}
+  ```
+
+  mzPeakJ writes and reads such a param unit as given (D13-26); for the units and param accessions of auxiliary
+  arrays the writer refuses it (D13-28).
+
+- R-17 shows with rdump on current small.unpacked written split with spectrum 0 and spectrum 1 each given the
+  uncompressed float64 array MS:1000517 [1, 2, 3], spectrum 1 without its profile points: rdump reads spectrum 0's
+  `SignalToNoiseArray` (n 3) next to its m/z and intensity, and spectrum 1 with `"arrays":{}`; mzPeakJ reads the
+  array [1, 2, 3] for both.
+
+A known issue of mzdata, the Rust mzML reader the reference uses (and rdump for an `.mzML` input), not of mzPeak:
+it drops the cvParams that jmzML, and so the mzpeakj-mzml converter, writes as start/end element pairs
+(`<cvParam ... name="ms level"></cvParam>`) instead of empty elements. It reads the converter's mzML of current
+small.unpacked with `ms_level` 0, scan start time 0, scan windows 0-0 and every array an error ("The requested data
+type does not match the number of bytes available in the buffer, or the conversion is unsupported"); the same file
+with each `></cvParam>` rewritten to `/>` reads with MS levels 1 and 2 and its arrays. mzML allows both forms. This
+predates 0.13.0 (the converter has always written mzML through jmzML) and was not recorded before.
 
 A latent difference, not seen by the test: the reference's `ScanSettings` struct still uses the pin-era names,
 `source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the

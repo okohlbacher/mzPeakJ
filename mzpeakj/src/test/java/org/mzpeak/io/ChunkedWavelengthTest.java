@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import ms.numpress.MSNumpress;
 import org.apache.parquet.conf.PlainParquetConfiguration;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.SimpleGroup;
@@ -19,6 +20,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -35,7 +37,11 @@ import static org.assertj.core.api.Assertions.within;
  * <ul>
  *   <li>delta encoding (MS:1003089): the chunk start is the first point, the values the differences to the next ones;
  *   <li>basic encoding (MS:1000576): the values are the absolute wavelengths, the chunk start not a separate point;
- *   <li>a chunked member without rows: every spectrum of the metadata reads with empty arrays.
+ *   <li>a chunked member without rows: every spectrum of the metadata reads with empty arrays;
+ *   <li>basic encoding with the intensity only as MS-Numpress SLOF (MS:1002314) or PIC (MS:1002313) bytes,
+ *       {@code intensity_numpress_slof_bytes} or {@code intensity_numpress_pic_bytes} with a {@code chunk_transform}
+ *       entry, and no intensity list (R3): the intensities are those the bytes decode to. The bytes encode the
+ *       absolute intensities times 1000, since SLOF and PIC encode no negative value.
  * </ul>
  */
 class ChunkedWavelengthTest {
@@ -65,6 +71,9 @@ class ChunkedWavelengthTest {
             + entry("chunk.chunk_encoding", "chunk_encoding", "MS:1000617", "1", null) + ", "
             + entry("chunk.intensity", "chunk_secondary", "MS:1000515", "null", "MS:1000131") + "]}";
 
+    private static final String SLOF = "intensity_numpress_slof_bytes";
+    private static final String PIC = "intensity_numpress_pic_bytes";
+
     @TempDir
     Path tmp;
 
@@ -88,6 +97,89 @@ class ChunkedWavelengthTest {
             assertThat(w.wavelength()).as("%s wavelength", w.id()).isEmpty();
             assertThat(w.intensity()).as("%s intensity", w.id()).isEmpty();
         }
+    }
+
+    @Test
+    void slofOnlyIntensityChunksReadTheDecodedIntensities() throws IOException {
+        assertNumpressIntensityReads(SLOF, MSNumpress.ACC_NUMPRESS_SLOF);
+    }
+
+    @Test
+    void picOnlyIntensityChunksReadTheDecodedIntensities() throws IOException {
+        assertNumpressIntensityReads(PIC, MSNumpress.ACC_NUMPRESS_PIC);
+    }
+
+    /**
+     * has_uv rewritten to one basic-encoded chunk row per spectrum whose intensity is only the MS-Numpress column
+     * {@code field} ({@code transform}): every spectrum reads the point member's wavelengths and the intensities its
+     * bytes decode to.
+     */
+    private void assertNumpressIntensityReads(String field, String transform) throws IOException {
+        List<WavelengthSpectrum> points = pointSpectra();
+        MessageType schema = MessageTypeParser.parseMessageType("""
+                message m {
+                  optional group chunk {
+                    optional int64 wavelength_spectrum_index (INTEGER(64,false));
+                    optional double wavelength_chunk_start;
+                    optional double wavelength_chunk_end;
+                    optional group wavelength_chunk_values (LIST) { repeated group list { optional double item; } }
+                    optional binary chunk_encoding (STRING);
+                    optional group %s (LIST) { repeated group list { required int32 item (INTEGER(8,false)); } }
+                  }
+                }""".formatted(field));
+        String plain = entry("chunk.intensity", "chunk_secondary", "MS:1000515", "null", "MS:1000131");
+        String numpress = entry("chunk." + field, "chunk_transform", "MS:1000515", "null", "MS:1000131")
+                .replace("\"transform\": null", "\"transform\": \"" + transform + "\"");
+        String arrayIndex = ARRAY_INDEX.replace(plain, numpress);
+        assertThat(arrayIndex).contains(numpress).doesNotContain(plain);
+        List<Group> rows = new ArrayList<>();
+        List<double[]> expected = new ArrayList<>();
+        for (WavelengthSpectrum w : points) {
+            byte[] bytes = numpress(transform, w.intensity());
+            expected.add(MSNumpress.decode(transform, bytes, bytes.length));
+            Group row = new SimpleGroup(schema);
+            Group chunk = row.addGroup("chunk");
+            chunk.add("wavelength_spectrum_index", w.index());
+            chunk.add("wavelength_chunk_start", w.wavelength()[0]);
+            chunk.add("wavelength_chunk_end", w.wavelength()[w.wavelength().length - 1]);
+            Group values = chunk.addGroup("wavelength_chunk_values");
+            for (double v : w.wavelength()) {
+                values.addGroup("list").add("item", v);
+            }
+            chunk.add("chunk_encoding", BASIC);
+            Group payload = chunk.addGroup(field);
+            for (byte b : bytes) {
+                payload.addGroup("list").add("item", b & 0xff);
+            }
+            rows.add(row);
+        }
+
+        List<WavelengthSpectrum> chunked = read(rows, schema, arrayIndex);
+
+        assertThat(chunked).hasSize(520);
+        for (int s = 0; s < points.size(); s++) {
+            WavelengthSpectrum p = points.get(s);
+            WavelengthSpectrum c = chunked.get(s);
+            assertThat(c.index()).isEqualTo(p.index());
+            assertThat(c.wavelength()).as("%s wavelength", p.id()).containsExactly(p.wavelength());
+            assertThat(c.intensity()).as("%s intensity", p.id()).hasSize(p.wavelength().length)
+                    .containsExactly(expected.get(s));
+        }
+        assertThat(chunked.get(0).intensity()[0]).isCloseTo(109.196, within(0.5));
+    }
+
+    /** The absolute values of {@code intensity}, times 1000, encoded as MS-Numpress {@code transform}. */
+    private static byte[] numpress(String transform, double[] intensity) {
+        double[] values = new double[intensity.length];
+        for (int i = 0; i < values.length; i++) {
+            values[i] = Math.abs(intensity[i]) * 1000;
+        }
+        byte[] buffer = new byte[8 + values.length * 5];
+        int length = transform.equals(MSNumpress.ACC_NUMPRESS_SLOF)
+                ? MSNumpress.encodeSlof(values, values.length, buffer,
+                        MSNumpress.optimalSlofFixedPoint(values, values.length))
+                : MSNumpress.encodePic(values, values.length, buffer);
+        return Arrays.copyOf(buffer, length);
     }
 
     /** has_uv rewritten to one chunk row per spectrum in {@code encoding} reads every array as the point member. */
@@ -160,11 +252,20 @@ class ChunkedWavelengthTest {
 
     /** has_uv with {@code rows} as its chunked wavelength spectrum data member, read through {@link MzPeakReader}. */
     private List<WavelengthSpectrum> read(List<Group> rows) throws IOException {
+        return read(rows, SCHEMA, ARRAY_INDEX);
+    }
+
+    /**
+     * has_uv with {@code rows} of {@code schema} as its chunked wavelength spectrum data member, with the array index
+     * {@code arrayIndex}, read through {@link MzPeakReader}.
+     */
+    private List<WavelengthSpectrum> read(List<Group> rows, MessageType schema, String arrayIndex)
+            throws IOException {
         Path file = tmp.resolve(DATA);
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
-                .withType(SCHEMA)
-                .withExtraMetaData(Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), ARRAY_INDEX))
+                .withType(schema)
+                .withExtraMetaData(Map.of(SignalEntity.WAVELENGTH_SPECTRUM.arrayIndexKey(), arrayIndex))
                 .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)

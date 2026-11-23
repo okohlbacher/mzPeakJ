@@ -221,7 +221,8 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
         MzPeakException error = cacheErrors.get(spectrumIndex);
         if (error != null) {
-            throw new MzPeakException(error.getMessage(), error);
+            // a chunk decode error keeps its cause, as it had when it escaped the decoding of the row groups
+            throw new MzPeakException(error.getMessage(), error.getCause() != null ? error.getCause() : error);
         }
         return cache.get(spectrumIndex);
     }
@@ -258,8 +259,9 @@ final class SpectrumArrayStore implements AutoCloseable {
     }
 
     /**
-     * Decodes the row groups {@code first..last}; a spectrum whose null m/z cannot be filled is put into
-     * {@code errors} instead of the result.
+     * Decodes the row groups {@code first..last}; a spectrum whose null m/z cannot be filled, or one of whose chunk
+     * rows {@link ChunkRowDecoder} cannot decode, is put into {@code errors} instead of the result, so the other
+     * spectra of those row groups still read.
      */
     private Map<Long, Arrays> decodeBlocks(int first, int last, Map<Long, MzPeakException> errors) {
         Map<Long, Arrays> result = new HashMap<>();
@@ -312,7 +314,7 @@ final class SpectrumArrayStore implements AutoCloseable {
     /** Buffers one spectrum's points/chunks and flushes when the sorted {@code spectrum_index} changes. */
     private static final class Accumulator implements Consumer<Group> {
         private final Map<Long, Arrays> result;
-        /** The spectra whose null m/z cannot be filled, each with its error. */
+        /** The spectra whose null m/z cannot be filled, or a chunk row of which cannot be decoded, with the error. */
         private final Map<Long, MzPeakException> errors;
         private final boolean reconstructProfile;
         private final Map<Long, double[]> deltaModels;
@@ -335,6 +337,8 @@ final class SpectrumArrayStore implements AutoCloseable {
         private final Map<String, DoubleUnaryOperator> toMilliseconds;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
+        /** Chunk layout: why a chunk row of the current spectrum cannot be decoded, or null; then its rows are skipped. */
+        private MzPeakException failed;
         /** Point layout: the current spectrum's m/z. */
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
         /** Chunk layout: the current spectrum's m/z, one array per chunk row, filled row by row on flush. */
@@ -396,7 +400,16 @@ final class SpectrumArrayStore implements AutoCloseable {
                 acceptPoint(row, si);
                 return;
             }
-            ChunkRowDecoder.Row decoded = chunks.decode(row, si);
+            if (failed != null) {
+                return;
+            }
+            ChunkRowDecoder.Row decoded;
+            try {
+                decoded = chunks.decode(row, si);
+            } catch (MzPeakException e) {
+                failed = e;
+                return;
+            }
             if (decoded.intensityField() != null) {
                 supplied(intensityByField.get(decoded.intensityField()));
             }
@@ -503,7 +516,8 @@ final class SpectrumArrayStore implements AutoCloseable {
         /**
          * Completes the current spectrum: null-marked m/z filled ({@code reconstructProfile}) per chunk row, or for
          * the point layout per spectrum, else dropped. A spectrum whose null m/z cannot be filled goes to
-         * {@code errors}: it may be one whose rows continue outside the decoded row groups.
+         * {@code errors}: it may be one whose rows continue outside the decoded row groups. So does a spectrum one of
+         * whose chunk rows could not be decoded, with that row's error.
          */
         void flush() {
             List<double[]> rows = chunks == null ? List.of(mz.toArray()) : mzRows;
@@ -511,7 +525,9 @@ final class SpectrumArrayStore implements AutoCloseable {
             Map<String, double[]> extraArrays = extraArrays();
             Arrays arrays = null;
             MzPeakException error = null;
-            if (reconstructProfile) {
+            if (failed != null) {
+                error = failed; // a chunk row could not be decoded: the spectrum reads as that row's error
+            } else if (reconstructProfile) {
                 double[] model = deltaModels == null ? null : deltaModels.get(current);
                 try {
                     arrays = new Arrays(NullFill.fill(rows, chunks != null, model, member,
@@ -538,6 +554,7 @@ final class SpectrumArrayStore implements AutoCloseable {
             extras = newExtras();
             units = new LinkedHashSet<>();
             lastSupplier = null;
+            failed = null;
         }
 
         /**

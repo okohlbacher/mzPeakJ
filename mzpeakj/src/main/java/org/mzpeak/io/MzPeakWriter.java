@@ -50,7 +50,8 @@ import java.util.stream.Stream;
  * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
  * own. The auxiliary arrays of spectra, chromatograms and wavelength spectra ({@link Spectrum#auxiliaryArrays()})
  * are written to the {@code auxiliary_arrays} of their metadata rows with their bytes and compression as given; the
- * packed layout does not write them and logs one WARNING. A read &rarr; write cycle keeps everything
+ * packed layout does not write them and logs one WARNING, but checks them, as it checks the wavelength scans it
+ * drops, and declares their CV prefixes in {@code metadata.cv_list}. A read &rarr; write cycle keeps everything
  * {@link MzPeakReader} exposes, except the intensity unit of a chromatogram without points: the reader takes a
  * chromatogram's unit from the column that holds its values, so such a chromatogram reads back without one. Chromatogram times are written in minutes (UO:0000031), the unit the
  * format requires: times in seconds, milliseconds or hours ({@link Chromatogram#timeUnit()}) are converted once
@@ -204,7 +205,10 @@ public final class MzPeakWriter {
      * the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a spectrum, its
      * peaks or a chromatogram, which must be a CURIE (array_index.json), and as the unit of an auxiliary array, of its
      * name or of one of its params, or the accession of one of its params, which must be null or a CURIE the Rust
-     * reference reader parses, {@code PREFIX:number} with a number that fits u32. Every explicit reference must
+     * reference reader parses, {@code PREFIX:number} with a number that fits u32. The name accession, the data type
+     * and the compression of an auxiliary array must be terms that reader maps. These auxiliary-array rules are the
+     * provisional decision D13-28 (docs/releases/0.13.0.md), which deviates from D13-19 and D13-26 and waits for the
+     * maintainer's approval. Every explicit reference must
      * name an entry of {@code fileMetadata}: a scan's
      * instrument configuration, a spectrum's, chromatogram's or auxiliary array's data processing, the software of an
      * instrument configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
@@ -742,10 +746,12 @@ public final class MzPeakWriter {
      * spectrum. A main axis that is not ascending is written re-sorted, with a WARNING. Chromatograms and wavelength
      * spectra are held until the finish and written then as {@code writeDirectory} writes them: in the order of their
      * indices, which must be unique and non-negative, numbered 0..n-1, each precursor_index of a chromatogram as the
-     * new index of the chromatogram it names, or null; a violation fails the finish. A spectrum, chromatogram or
-     * wavelength spectrum with a CURIE whose CV prefix {@code metadata.cv_list} would not declare, or with a reference
-     * that names nothing of the file metadata (rules of {@code writeDirectory}), is refused when it is added, and
-     * nothing of it is added.
+     * new index of the chromatogram it names, or null; a violation of these index rules fails the finish. A spectrum,
+     * chromatogram or wavelength spectrum with a CURIE whose CV prefix {@code metadata.cv_list} would not declare, or
+     * with a reference that names nothing of the file metadata (rules of {@code writeDirectory}), is refused when it
+     * is added, and nothing of it is added; so is a chromatogram or wavelength spectrum that breaks one of its own
+     * rules of {@code writeDirectory} (its Params, NaN values, a negative precursor_index or a wavelength scan
+     * spectrum reference in the split layout).
      *
      * <p><b>Targets.</b> {@link MzPeakWriter#openDirectory openDirectory} writes the members into the directory as the
      * session goes; the directory must not exist (it is then created) or be empty. {@link MzPeakWriter#openArchive
@@ -765,7 +771,8 @@ public final class MzPeakWriter {
      * throws {@link IllegalStateException}, and closing does nothing. A session is not safe for use by several threads.
      *
      * <p><b>Memory.</b> A session holds about 2 KB per spectrum added (its description with its precursors, five
-     * summary values and its row counts), the chromatograms and wavelength spectra added, and the open row groups of
+     * summary values and its row counts) and its auxiliary arrays, in the packed layout too, which does not write
+     * them, the chromatograms and wavelength spectra added, and the open row groups of
      * spectra_data and spectra_peaks, up to the row-group size each (parquet-java's default of 128 MiB, which
      * {@link Options#withRowGroupSize} lowers); never the signal of a spectrum once {@link #addSpectrum} has returned.
      * Packing an archive needs disk space for about twice its size.
@@ -923,15 +930,19 @@ public final class MzPeakWriter {
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code chromatogram} is {@code null}
          * @throws MzPeakException       if its {@link Chromatogram#timeUnit()} cannot be converted to minutes (it is
-         *                               not minute, second, millisecond or hour), or if a CURIE of it has an undeclared
-         *                               CV prefix or its data processing names nothing (see the class documentation);
-         *                               it is not added
+         *                               not minute, second, millisecond or hour), if a CURIE of it has an undeclared
+         *                               CV prefix or its data processing or that of an auxiliary array names nothing
+         *                               (see the class documentation), if a Param of it, its precursors or its
+         *                               auxiliary arrays has neither name nor accession or a value of a type mzPeak
+         *                               cannot write, if a time or intensity is NaN, or if, in the split layout, a
+         *                               precursor_index is negative; it is not added
          */
         public void addChromatogram(Chromatogram chromatogram) {
             requireOpen();
             Objects.requireNonNull(chromatogram, "chromatogram");
             Chromatogram inMinutes = WritePlanner.inMinutes(chromatogram);
             declarations.require(inMinutes);
+            WritePlanner.requireWritable(inMinutes, options.metadataLayout());
             chromatograms.add(inMinutes);
         }
 
@@ -940,13 +951,18 @@ public final class MzPeakWriter {
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code spectrum} is {@code null}
-         * @throws MzPeakException       if the accession or unit of a param of it, or a CURIE of one of its auxiliary
-         *                               arrays, has an undeclared CV prefix, or the data processing of an auxiliary
-         *                               array names nothing (see the class documentation); it is not added
+         * @throws MzPeakException       if the accession or unit of a param of it or of its scans, or a CURIE of one of
+         *                               its auxiliary arrays, has an undeclared CV prefix, if the instrument
+         *                               configuration of a scan or the data processing of an auxiliary array names
+         *                               nothing (see the class documentation), if a Param of it, its scans or its
+         *                               auxiliary arrays has neither name nor accession or a value of a type mzPeak
+         *                               cannot write, if a wavelength or intensity is NaN, or if, in the split
+         *                               layout, a scan has a spectrum reference (D13-12); it is not added
          */
         public void addWavelengthSpectrum(WavelengthSpectrum spectrum) {
             requireOpen();
             declarations.require(Objects.requireNonNull(spectrum, "spectrum"));
+            WritePlanner.requireWritable(spectrum, options.metadataLayout());
             wavelengthSpectra.add(spectrum);
         }
 

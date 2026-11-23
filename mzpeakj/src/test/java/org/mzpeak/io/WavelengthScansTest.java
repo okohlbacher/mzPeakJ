@@ -12,6 +12,7 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.model.Param;
@@ -28,6 +29,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -95,6 +97,70 @@ class WavelengthScansTest {
         try (MzPeakReader reader = MzPeakReader.open(source)) {
             assertThat(reader.getWavelengthSpectrum(0).orElseThrow().scans()).hasSize(2).last().isEqualTo(SECOND);
         }
+    }
+
+    /**
+     * Windows mapped in micrometers, millimeters or meters read in nanometers (D13-24): the crafted 200-400 window
+     * is taken in the mapped unit and multiplied by {@code factor}.
+     */
+    @ParameterizedTest
+    @CsvSource({"UO:0000017, 1e3", "UO:0000016, 1e6", "UO:0000008, 1e9"})
+    void windowsInALengthUnitReadInNanometers(String unit, double factor) {
+        MzPeakSource source = withSecondScan(windowsIn(unit));
+        assertThat(windowUnits(source)).containsExactly(unit, unit);
+        try (MzPeakReader reader = MzPeakReader.open(source)) {
+            assertThat(reader.getWavelengthSpectrum(0).orElseThrow().scans()).hasSize(2).last()
+                    .extracting(ScanEvent::scanWindows).isEqualTo(List.of(new ScanWindow(200 * factor,
+                            400 * factor)));
+            assertThat(reader.wavelengthSpectra()).hasSize(520);
+        }
+    }
+
+    /** Window mappings without a unit read the stored values as nanometers. */
+    @Test
+    void windowsMappedWithoutAUnitReadAsStored() {
+        MzPeakSource source = withSecondScan(index -> {
+            for (JsonNode mapping : scansEntry(index).path("column_mapping")) {
+                if (mapping.path("path").asText().startsWith("scan_windows.")) {
+                    ((ObjectNode) mapping).remove("unit");
+                }
+            }
+        });
+        assertThat(windowUnits(source)).containsExactly(null, null);
+        try (MzPeakReader reader = MzPeakReader.open(source)) {
+            assertThat(reader.getWavelengthSpectrum(0).orElseThrow().scans()).hasSize(2).last().isEqualTo(SECOND);
+        }
+    }
+
+    /**
+     * A window unit that is no length unit is refused, naming the member and the column: has_uv's own m/z mapping
+     * once a window holds values, and a unit given per row by a unit column.
+     */
+    @Test
+    void aWindowUnitThatIsNoLengthUnitIsRefused() {
+        MzPeakSource mz = withSecondScan(index -> { });
+        assertThat(windowUnits(mz)).containsExactly("MS:1000040", "MS:1000040");
+        assertThatThrownBy(() -> {
+            try (MzPeakReader reader = MzPeakReader.open(mz)) {
+                reader.getWavelengthSpectrum(0);
+            }
+        }).isInstanceOf(MzPeakException.class).hasMessage(SCANS + ": wavelength scan window column"
+                + " scan_windows.scan_window_lower_limit has the unit MS:1000040; supported are nanometer"
+                + " (UO:0000018), micrometer (UO:0000017), millimeter (UO:0000016) and meter (UO:0000008)");
+        MzPeakSource perRow = withSecondScan(index -> {
+            for (JsonNode mapping : scansEntry(index).path("column_mapping")) {
+                if (mapping.path("path").asText().startsWith("scan_windows.")) {
+                    ((ObjectNode) mapping).putArray("unit").add("scan_windows.window_unit");
+                }
+            }
+        });
+        assertThatThrownBy(() -> {
+            try (MzPeakReader reader = MzPeakReader.open(perRow)) {
+                reader.getWavelengthSpectrum(0);
+            }
+        }).isInstanceOf(MzPeakException.class).hasMessage(SCANS + ": wavelength scan window column"
+                + " scan_windows.scan_window_lower_limit takes its unit from the column scan_windows.window_unit,"
+                + " which is not supported");
     }
 
     /** A scans member of only spectrum 0's two scans, with the windows as FLOAT or DOUBLE. */
@@ -245,6 +311,34 @@ class WavelengthScansTest {
     }
 
     /**
+     * A session refuses a wavelength spectrum whose scan has a spectrum reference when it is added, with the message of
+     * the batch write, and does not add it: the session goes on and finishes with the valid wavelength spectrum.
+     */
+    @Test
+    void aSessionRefusesASpectrumReferenceOfAWavelengthScanWhenItIsAdded() {
+        WavelengthSpectrum referenced = wavelength(List.of(new ScanEvent(1.5, null, null, null, null, "scan=7",
+                List.of(), List.of())));
+        WavelengthSpectrum valid = wavelength(List.of(new ScanEvent(1.5, null, null, null, null, null,
+                List.of(new ScanWindow(200, 400)), List.of())));
+        Path out = tmp.resolve("session.mzpeak");
+        try (MzPeakWriter.Session session = MzPeakWriter.openDirectory(out, FileMetadata.EMPTY, List.of(), Set.of(),
+                MzPeakWriter.Options.defaults())) {
+            assertThatThrownBy(() -> session.addWavelengthSpectrum(referenced)).isInstanceOf(MzPeakException.class)
+                    .hasMessage("wavelength spectrum 0 (w0): scan 0 has the spectrum reference scan=7, which mzPeak"
+                            + " cannot write: the wavelength scan table has no spectrum_reference column (D13-12)");
+            session.addWavelengthSpectrum(valid);
+            session.finish();
+        }
+        try (MzPeakReader back = MzPeakReader.open(out)) {
+            assertThat(back.wavelengthSpectra()).hasSize(1);
+            WavelengthSpectrum w = back.getWavelengthSpectrum(0).orElseThrow();
+            assertThat(w.scans()).containsExactly(valid.scans().get(0));
+            assertThat(w.wavelength()).containsExactly(200.0, 400.0);
+            assertThat(w.intensity()).containsExactly(1.0, 2.0);
+        }
+    }
+
+    /**
      * The scans of a wavelength spectrum are checked as those of a spectrum (W12): an undeclared instrument
      * configuration, a param with an undeclared CV prefix and a param value of a type mzPeak cannot write are
      * refused, naming the scan.
@@ -336,11 +430,18 @@ class WavelengthScansTest {
 
     /** Sets the unit of the scans member's window mappings to nanometers. */
     private static void windowsInNanometers(ObjectNode index) {
-        for (JsonNode mapping : scansEntry(index).path("column_mapping")) {
-            if (mapping.path("path").asText().startsWith("scan_windows.")) {
-                ((ObjectNode) mapping).put("unit", NANOMETER);
+        windowsIn(NANOMETER).accept(index);
+    }
+
+    /** Sets the unit of the scans member's window mappings to {@code unit}. */
+    private static Consumer<ObjectNode> windowsIn(String unit) {
+        return index -> {
+            for (JsonNode mapping : scansEntry(index).path("column_mapping")) {
+                if (mapping.path("path").asText().startsWith("scan_windows.")) {
+                    ((ObjectNode) mapping).put("unit", unit);
+                }
             }
-        }
+        };
     }
 
     /** Drops the scans member's window mappings. */

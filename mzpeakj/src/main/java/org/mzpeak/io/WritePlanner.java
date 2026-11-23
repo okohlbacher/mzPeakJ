@@ -36,6 +36,7 @@ import org.mzpeak.model.meta.FileMetadata.Software;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -77,7 +78,9 @@ import java.util.regex.Pattern;
  * <p>A {@link MzPeakWriter.Session} is planned one spectrum at a time ({@link #sessionSignal}) with the same checks,
  * its spectrum signal files get the intensity columns of the units and the extra columns of the keys it is opened
  * with ({@link #spectrumIntensities}, {@link #spectrumExtras}), and its
- * chromatograms and wavelength spectra are planned at its finish ({@link #planFinish}) as here.
+ * chromatograms and wavelength spectra are checked one by one as they are added
+ * ({@link #requireWritable(Chromatogram, MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum,
+ * MetadataLayout)}) and planned at its finish ({@link #planFinish}) as here.
  */
 final class WritePlanner {
 
@@ -89,7 +92,10 @@ final class WritePlanner {
      * The accessions the name of an auxiliary array may have (binary data array types, children of MS:1000513), in
      * the order of their message: the terms the Rust reference reader maps (mzdata's {@code
      * ArrayType::from_accession}), MS:1000786 (non-standard data array) included, whose value is the array's name; it
-     * panics on a name without an accession or with any other (R1).
+     * panics on a name without an accession or with any other (R1, upstream-issues.md R-15). Refusing the others is
+     * the provisional decision D13-28, which deviates from D13-19 (the writer writes an array unchanged) and waits for
+     * the maintainer's approval; so do {@link #AUXILIARY_DATA_TYPES}, {@link #AUXILIARY_COMPRESSIONS} and
+     * {@link #RUST_CURIE}.
      */
     private static final List<String> AUXILIARY_ARRAY_TYPES = List.of("MS:1000514", "MS:1000515", "MS:1000516",
             "MS:1000517", "MS:1000595", "MS:1000617", "MS:1002893", "MS:1002816", "MS:1002477", "MS:1003006",
@@ -114,7 +120,9 @@ final class WritePlanner {
     /**
      * A CURIE as the Rust reference reader parses a unit or param accession of an auxiliary array (mzdata-param 0.68
      * {@code CURIE::from_str}): a prefix, a colon and a number, here with its leading zeros apart; the number must
-     * also fit u32 ({@link #U32_MAX}).
+     * also fit u32 ({@link #U32_MAX}). Required of auxiliary arrays only (provisional D13-28, which deviates from
+     * D13-26 there): a param of an entity, its scans or precursors keeps a unit that is not a CURIE as given (D13-26),
+     * although the Rust reader panics on it as well (upstream-issues.md R-16).
      */
     private static final Pattern RUST_CURIE = Pattern.compile("[^:]+:0*([0-9]{1,10})");
     /** The largest accession number the Rust reference reader parses (u32). */
@@ -218,7 +226,10 @@ final class WritePlanner {
      * The plan of a {@link MzPeakWriter.Session} at its finish (design §7, MZ-11): its {@code spectra}, appended and
      * numbered 0..n-1 as added, with their signal already written and their precursors as given, the
      * {@code spectrumIntensities} and {@code spectrumExtras} of its spectrum signal files, and the chromatograms and
-     * wavelength spectra added to it, which are checked, ordered and numbered as {@link #plan} does it. The plan has
+     * wavelength spectra added to it, which were checked when they were added ({@link #requireWritable(Chromatogram,
+     * MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum, MetadataLayout)}) and are here checked again with
+     * their indices ({@link #validateOthers}), since they hold the caller's arrays and Params, which may have changed
+     * since, and ordered and numbered as {@link #plan} does it. The plan has
      * no spectrum signals. {@code footer} is the session's serialized file metadata, {@code unwritten} what the
      * writer drops of the spectra added ({@link #countUnwritten(Spectrum, int[])}), and {@code report} holds the
      * warnings of the spectra added.
@@ -1319,11 +1330,10 @@ final class WritePlanner {
     }
 
     /**
-     * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra: their indices non-negative and
-     * unique within each kind, their Params writable ({@link #requireWritableParams(String, List)}), those of the
-     * wavelength scans included, no NaN time, wavelength or intensity ({@link #requireNoNaN}), and in the
-     * {@link MetadataLayout#SPLIT} layout every chromatogram precursor_index non-negative and no wavelength scan with
-     * a spectrum reference, which the wavelength scan table has no column for.
+     * The part of {@link #validateAndOrder} for chromatograms and wavelength spectra, entity by entity: their indices
+     * non-negative and unique within each kind, then each entity's own checks
+     * ({@link #requireWritable(Chromatogram, MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum,
+     * MetadataLayout)}).
      */
     private static void validateOthers(List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                        MetadataLayout layout) {
@@ -1331,37 +1341,57 @@ final class WritePlanner {
         for (Chromatogram c : chromatograms) {
             requireNonNegative(c.index(), "chromatogram index");
             requireUnique(seen, c.index(), "chromatogram index");
-            List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
-            addPrecursorParams(c.precursors(), lists);
-            addAuxiliaryParams(c.auxiliaryArrays(), lists);
-            requireWritableParams(owner("chromatogram", c.index(), c.id()), lists);
-            requireNoNaN("chromatogram " + c.index(), "time", c.time());
-            requireNoNaN("chromatogram " + c.index(), "intensity", c.intensity());
-            if (layout == MetadataLayout.SPLIT) {
-                for (Precursor p : c.precursors()) {
-                    requireNonNegativePrecursorIndex(p);
-                }
-            }
+            requireWritable(c, layout);
         }
         seen.clear();
         for (WavelengthSpectrum w : wavelengthSpectra) {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
-            List<List<Param>> lists = new ArrayList<>(List.of(w.parameters()));
-            for (int i = 0; i < w.scans().size(); i++) {
-                ScanEvent scan = w.scans().get(i);
-                lists.add(scan.parameters());
-                if (layout == MetadataLayout.SPLIT && scan.spectrumReference() != null) {
-                    throw new MzPeakException(owner("wavelength spectrum", w.index(), w.id()) + ": scan " + i
-                            + " has the spectrum reference " + scan.spectrumReference() + ", which mzPeak cannot"
-                            + " write: the wavelength scan table has no spectrum_reference column (D13-12)");
-                }
-            }
-            addAuxiliaryParams(w.auxiliaryArrays(), lists);
-            requireWritableParams(owner("wavelength spectrum", w.index(), w.id()), lists);
-            requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
-            requireNoNaN("wavelength spectrum " + w.index(), "intensity", w.intensity());
+            requireWritable(w, layout);
         }
+    }
+
+    /**
+     * The checks of chromatogram {@code c} alone, which a session runs when it is added: its Params writable
+     * ({@link #requireWritableParams(String, List)}), those of its precursors and auxiliary arrays included, no NaN
+     * time or intensity ({@link #requireNoNaN}), and in the {@link MetadataLayout#SPLIT} layout every precursor_index
+     * non-negative.
+     */
+    static void requireWritable(Chromatogram c, MetadataLayout layout) {
+        List<List<Param>> lists = new ArrayList<>(List.of(c.parameters()));
+        addPrecursorParams(c.precursors(), lists);
+        addAuxiliaryParams(c.auxiliaryArrays(), lists);
+        requireWritableParams(owner("chromatogram", c.index(), c.id()), lists);
+        requireNoNaN("chromatogram " + c.index(), "time", c.time());
+        requireNoNaN("chromatogram " + c.index(), "intensity", c.intensity());
+        if (layout == MetadataLayout.SPLIT) {
+            for (Precursor p : c.precursors()) {
+                requireNonNegativePrecursorIndex(p);
+            }
+        }
+    }
+
+    /**
+     * The checks of wavelength spectrum {@code w} alone, which a session runs when it is added: its Params writable
+     * ({@link #requireWritableParams(String, List)}), those of its scans and auxiliary arrays included, no NaN
+     * wavelength or intensity ({@link #requireNoNaN}), and in the {@link MetadataLayout#SPLIT} layout no scan with a
+     * spectrum reference, which the wavelength scan table has no column for.
+     */
+    static void requireWritable(WavelengthSpectrum w, MetadataLayout layout) {
+        List<List<Param>> lists = new ArrayList<>(List.of(w.parameters()));
+        for (int i = 0; i < w.scans().size(); i++) {
+            ScanEvent scan = w.scans().get(i);
+            lists.add(scan.parameters());
+            if (layout == MetadataLayout.SPLIT && scan.spectrumReference() != null) {
+                throw new MzPeakException(owner("wavelength spectrum", w.index(), w.id()) + ": scan " + i
+                        + " has the spectrum reference " + scan.spectrumReference() + ", which mzPeak cannot"
+                        + " write: the wavelength scan table has no spectrum_reference column (D13-12)");
+            }
+        }
+        addAuxiliaryParams(w.auxiliaryArrays(), lists);
+        requireWritableParams(owner("wavelength spectrum", w.index(), w.id()), lists);
+        requireNoNaN("wavelength spectrum " + w.index(), "wavelength", w.wavelength());
+        requireNoNaN("wavelength spectrum " + w.index(), "intensity", w.intensity());
     }
 
     /**
@@ -1594,7 +1624,9 @@ final class WritePlanner {
          * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): the accession of its name
          * one of {@link #AUXILIARY_ARRAY_TYPES}, its data type one of {@link #AUXILIARY_DATA_TYPES} and its
          * compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the Rust reference reader accepts
-         * (auxiliary-arrays.md requires CV terms; that reader panics on others); its unit, the unit of its name and
+         * (auxiliary-arrays.md requires CV terms; that reader panics on others; the provisional decision D13-28, which
+         * deviates from D13-19 and D13-26 and waits for the maintainer's approval); its bytes its items, when it is
+         * uncompressed and of a fixed-width data type ({@link #requireItems}); its unit, the unit of its name and
          * the accession and unit of each of its params null or a CURIE that reader parses ({@link #requireRustCurie});
          * the accession and unit of its name and of its params, and its unit, each with a declared prefix; its data
          * processing, when it names one, declared by the file metadata.
@@ -1610,6 +1642,7 @@ final class WritePlanner {
                         AUXILIARY_DATA_TYPES);
                 requireTerm(array, "compression", a.compression(),
                         "binary data compressions (children of MS:1000572)", AUXILIARY_COMPRESSIONS);
+                requireItems(array, a);
                 requireRustCurie(array, "unit", a.unit());
                 requireRustCurie(array, "name unit", a.name().unit());
                 for (int p = 0; p < a.parameters().size(); p++) {
@@ -1621,6 +1654,31 @@ final class WritePlanner {
                 requireParams(array, a.parameters());
                 requireNamed(owner, "auxiliary array " + i + " data_processing_id", a.dataProcessingId(), processing,
                         "data processing");
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} naming {@code array}, the length of the data of {@code a} and its items times
+         * the width of its data type when {@code a} is uncompressed (MS:1000576) and of a fixed-width data type
+         * (MS:1000521 float32 and MS:1000519 int32 of 4 bytes, MS:1000523 float64 and MS:1000522 int64 of 8 bytes) and
+         * its data is not that long: {@link AuxiliaryArray#doubles()} could not read it back. A compressed array and
+         * one of another data type (MS:1001479, a string) are written as given (D13-19).
+         */
+        private static void requireItems(String array, AuxiliaryArray a) {
+            int width = switch (a.dataType()) {
+                case "MS:1000521", "MS:1000519" -> Integer.BYTES;
+                case "MS:1000523", "MS:1000522" -> Long.BYTES;
+                default -> 0;
+            };
+            if (width == 0 || !"MS:1000576".equals(a.compression())) {
+                return;
+            }
+            int length = a.data().length;
+            if (length % width != 0 || length / width != a.items()) {
+                throw new MzPeakException(array + ": its " + length + " bytes are not the "
+                        + BigInteger.valueOf(a.items()).multiply(BigInteger.valueOf(width)) + " bytes of its "
+                        + a.items() + " items of " + a.dataType() + " (" + width + " bytes each); an uncompressed"
+                        + " (MS:1000576) array holds items times the width of its data type");
             }
         }
 

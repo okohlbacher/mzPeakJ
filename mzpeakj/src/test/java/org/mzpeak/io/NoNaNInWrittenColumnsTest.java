@@ -159,8 +159,8 @@ class NoNaNInWrittenColumnsTest {
     }
 
     /**
-     * A session refuses a spectrum with a NaN intensity when it is added, writes nothing of it and goes on; a NaN
-     * chromatogram time fails the finish, which leaves no archive.
+     * A session refuses a spectrum with a NaN intensity when it is added, writes nothing of it and goes on; it refuses
+     * a chromatogram with a NaN time when it is added too, and the session closed without a finish leaves no archive.
      */
     @Test
     void aSessionRefusesANaNSpectrumAndANaNChromatogram(@TempDir Path tmp) {
@@ -185,9 +185,8 @@ class NoNaNInWrittenColumnsTest {
         try (MzPeakWriter.Session session = MzPeakWriter.openArchive(archive, FileMetadata.EMPTY, List.of(),
                 Set.of(), POINT)) {
             session.addSpectrum(s0);
-            session.addChromatogram(new Chromatogram(0, "TIC", "MS:1000235", new double[] {Double.NaN},
-                    new double[] {1}));
-            assertThatThrownBy(session::finish).isInstanceOf(MzPeakException.class)
+            assertThatThrownBy(() -> session.addChromatogram(new Chromatogram(0, "TIC", "MS:1000235",
+                    new double[] {Double.NaN}, new double[] {1}))).isInstanceOf(MzPeakException.class)
                     .hasMessageStartingWith("chromatogram 0: the time at position 0 " + NAN_MESSAGE);
         }
         assertThat(archive).doesNotExist();
