@@ -224,9 +224,11 @@ final class ManifestWriter {
     /**
      * Every CURIE prefix of the plan's spectra, chromatograms and wavelength spectra, mapped to the first CURIE that
      * uses it: the accession and unit of every param of a spectrum, of each of its scans, and of each precursor's
-     * isolation window, activation and selected ions; the array type and unit of every extra column of the spectrum
-     * signal files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key
-     * that is not a CURIE is written as MS:1000786); the chromatogram types, the accession and unit of every param
+     * isolation window, activation and selected ions; the unit of every intensity column of the spectrum signal
+     * files, that is every intensity unit the spectra write; the array type and unit of every extra column of the
+     * spectrum signal files, that is every CURIE key of the written spectra's {@code arrays()} and
+     * {@code peakArrays()} (a key that is not a CURIE is written as MS:1000786); the chromatogram types, the
+     * accession and unit of every param
      * of a chromatogram, and of each of its precursors' isolation window, activation and selected ions; minute
      * (UO:0000031), the unit of the chromatograms_data time column; the unit of every intensity column of
      * chromatograms_data, that is every intensity unit of a chromatogram; the array type and unit of every extra
@@ -246,6 +248,9 @@ final class ManifestWriter {
                 addParamPrefixes(scan.parameters(), used);
             }
             addPrecursorPrefixes(d.precursors(), used);
+        }
+        for (IntensityColumn intensity : plan.spectrumIntensities()) {
+            addPrefix(intensity.unit(), used);
         }
         for (ExtraColumn extra : plan.spectrumExtras()) {
             addPrefix(extra.arrayType(), used);

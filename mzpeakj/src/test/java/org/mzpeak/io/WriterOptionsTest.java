@@ -360,7 +360,8 @@ class WriterOptionsTest {
         assertThat(Options.defaults()).isSameAs(DEFAULTS);
         assertThat(DEFAULTS.cvList()).isEmpty();
         assertThat(DEFAULTS).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF, "
-                + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[]]");
+                + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
     }
 
     @Test
@@ -373,7 +374,8 @@ class WriterOptionsTest {
         assertThat(packed.rowGroupSize()).isEmpty();
         assertThat(DEFAULTS.metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(packed).isNotEqualTo(DEFAULTS).hasToString("Options[signalEncoding=POINT, "
-                + "numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[]]");
+                + "numpressIntensity=SLOF, rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
         assertThat(packed.withMetadataLayout(MetadataLayout.SPLIT)).isEqualTo(DEFAULTS).hasSameHashCodeAs(DEFAULTS);
         assertThat(NUMPRESS.withMetadataLayout(MetadataLayout.PACKED).withRowGroupSize(4096))
                 .isEqualTo(NUMPRESS.withRowGroupSize(4096).withMetadataLayout(MetadataLayout.PACKED));
@@ -398,7 +400,8 @@ class WriterOptionsTest {
         assertThat(sized.signalEncoding()).isEqualTo(SignalEncoding.NUMPRESS);
         assertThat(sized.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.PIC);
         assertThat(sized).hasToString("Options[signalEncoding=NUMPRESS, numpressIntensity=PIC, "
-                + "rowGroupSize=OptionalLong[32768], metadataLayout=SPLIT, cvList=[]]");
+                + "rowGroupSize=OptionalLong[32768], metadataLayout=SPLIT, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
 
         assertThat(DEFAULTS.signalEncoding()).isEqualTo(SignalEncoding.POINT);
         assertThat(DEFAULTS.numpressIntensity()).isEqualTo(NumpressIntensityEncoding.SLOF);
@@ -458,12 +461,47 @@ class WriterOptionsTest {
         assertThat(withCvs).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF, "
                 + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[CvEntry[id=MS, fullName=PSI-MS, "
                 + "uri=https://example.org/ms.obo, version=4.1.117], CvEntry[id=XYZ, fullName=XYZ ontology, "
-                + "uri=https://example.org/xyz.obo, version=1.2]]]");
+                + "uri=https://example.org/xyz.obo, version=1.2]], spectrumIntensityUnits=[MS:1000131]]");
 
         assertThatThrownBy(() -> DEFAULTS.withCvList(null)).isInstanceOf(NullPointerException.class)
                 .hasMessage("cvList");
         assertThatThrownBy(() -> DEFAULTS.withCvList(Arrays.asList(ms, null)))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    /**
+     * R5 (D13-20): the spectrum intensity units of a session, MS:1000131 by default, kept in their order without
+     * repeats, kept by the other with-methods and compared like the other settings.
+     */
+    @Test
+    void theSpectrumIntensityUnitsAreASettingLikeTheOthers() {
+        assertThat(DEFAULTS.spectrumIntensityUnits()).containsExactly("MS:1000131");
+        Options units = DEFAULTS.withSpectrumIntensityUnits("MS:1000132", "MS:1000131", "MS:1000132");
+
+        assertThat(units.spectrumIntensityUnits()).containsExactly("MS:1000132", "MS:1000131");
+        assertThatThrownBy(() -> units.spectrumIntensityUnits().add("MS:1000814"))
+                .isInstanceOf(UnsupportedOperationException.class);
+        Options all = units.withSignalEncoding(SignalEncoding.NUMPRESS)
+                .withNumpressIntensity(NumpressIntensityEncoding.PIC).withRowGroupSize(4096)
+                .withMetadataLayout(MetadataLayout.PACKED).withCvList(List.of());
+        assertThat(all.spectrumIntensityUnits()).containsExactly("MS:1000132", "MS:1000131");
+        assertThat(all.signalEncoding()).isEqualTo(SignalEncoding.NUMPRESS);
+        assertThat(units).isEqualTo(DEFAULTS.withSpectrumIntensityUnits("MS:1000132", "MS:1000131"))
+                .hasSameHashCodeAs(DEFAULTS.withSpectrumIntensityUnits("MS:1000132", "MS:1000131"))
+                .isNotEqualTo(DEFAULTS.withSpectrumIntensityUnits("MS:1000131", "MS:1000132"))
+                .isNotEqualTo(DEFAULTS)
+                .hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF, "
+                        + "rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[], "
+                        + "spectrumIntensityUnits=[MS:1000132, MS:1000131]]");
+        assertThat(DEFAULTS.withSpectrumIntensityUnits("MS:1000131")).isEqualTo(DEFAULTS)
+                .hasSameHashCodeAs(DEFAULTS);
+
+        assertThatThrownBy(() -> DEFAULTS.withSpectrumIntensityUnits()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("at least one spectrum intensity unit is needed");
+        assertThatThrownBy(() -> DEFAULTS.withSpectrumIntensityUnits((String[]) null))
+                .isInstanceOf(NullPointerException.class).hasMessage("units");
+        assertThatThrownBy(() -> DEFAULTS.withSpectrumIntensityUnits("MS:1000131", null))
+                .isInstanceOf(NullPointerException.class).hasMessage("spectrum intensity unit");
     }
 
     @Test

@@ -16,11 +16,13 @@ cargo build --release --locked --manifest-path tools/rdump/Cargo.toml
 ## Run
 
 ```sh
-tools/rdump/target/release/rdump <dataset> <outPrefix> [indicesFile]
+tools/rdump/target/release/rdump <dataset> <outPrefix> [indicesFile | --signal-range <start> <end>]
 ```
 
 `<dataset>` is an `.mzpeak` archive or directory (or an `.mzML` file, read with mzdata). `indicesFile` limits the
-spectra to the indices it lists, one per line; chromatograms and wavelength spectra are always dumped. rdump exits 0
+spectra to the indices it lists, one per line; chromatograms and wavelength spectra are always dumped.
+`--signal-range` dumps every spectrum and adds the range read `extract_signal(start..end)` of the spectra `start` to
+`end` (`R` records). rdump exits 0
 even when the dataset cannot be opened; the failure is a record of the output.
 
 `<outPrefix>.jsonl` holds one JSON object per line, told apart by `kind`:
@@ -33,6 +35,7 @@ even when the dataset cannot be opened; the failure is a record of the output.
 | `C` | a chromatogram: `id`, `ctype`, `desc`, `arrays`; or `none` / `panic` |
 | `T` | the encoded TIC and BPC (`which`): `arrays`, or `error` / `panic` |
 | `W` | a wavelength spectrum: `id`, `rt`, `desc`, `arrays`; or `none` (with which half failed) / `panic` |
+| `R` | with `--signal-range`, one per spectrum index of the range read's batches: `index`, `columns` (the fields of the batches' struct), `n`, `mz_off` and `int_off` (a null value as NaN), `intensity_non_null`; or one record with `error` / `panic` |
 | `END` | the dump is complete |
 
 `<outPrefix>.bin` holds every dumped array as little-endian float64 values. An array entry `{"n", "off", ...}` points

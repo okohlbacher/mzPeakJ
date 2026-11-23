@@ -1,12 +1,16 @@
 //! rdump: dump an mzPeak dataset with the Rust reference reader (mzpeak_prototyping) as JSONL + LE f64 .bin.
 //! Note: ion mobility of centroid peaks in spectra_peaks is not exposed by the reference API (CentroidPeak; the
 //! IonMobilityAware peak types give PeakDataLevel::Missing), so it is not dumped.
-//! Usage: rdump <dataset> <outPrefix> [indicesFile] (indices: one spectrum index per line; chromatograms etc. always dumped)
-use std::collections::HashMap;
+//! Usage: rdump <dataset> <outPrefix> [indicesFile | --signal-range <start> <end>] (indices: one spectrum index per
+//! line; chromatograms etc. always dumped; --signal-range adds the range read extract_signal(start..end))
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use arrow::array::{Array, ArrayRef, AsArray};
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Float64Type, UInt64Type};
 use mzdata::prelude::*;
 use mzdata::spectrum::{BinaryArrayMap, PeakDataLevel};
 use mzpeak_prototyping::MzPeakReader;
@@ -93,6 +97,59 @@ fn spec_json(bin: &mut Bin, i: usize, spec: &mzdata::spectrum::MultiLayerSpectru
     j
 }
 
+/// The range read `extract_signal(start..end)`: one `R` record per spectrum index of its batches, with the fields of
+/// the batches' struct (`columns`), the m/z and intensity values (`mz_off`, `int_off`; a null as NaN) and the number
+/// of non-null intensities (`intensity_non_null`); or one `R` record with `error` or `panic`.
+fn signal_range_json(reader: &mut MzPeakReader, bin: &mut Bin, start: u64, end: u64) -> Vec<Value> {
+    let read = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<Value>, String> {
+        let (batches, _) = reader.extract_signal(start..end, None, None, None).map_err(|e| format!("{e}"))?;
+        let mut columns: Vec<String> = Vec::new();
+        let mut rows: BTreeMap<u64, (Vec<f64>, Vec<f64>, usize)> = BTreeMap::new();
+        for batch in batches {
+            let batch = batch.map_err(|e| format!("{e}"))?;
+            let root = batch.column(0).as_struct();
+            columns = root.column_names().iter().map(|c| c.to_string()).collect();
+            let column = |name: &str, to: &DataType| -> Result<Option<ArrayRef>, String> {
+                match root.column_by_name(name) {
+                    Some(c) => cast(c, to).map(Some).map_err(|e| format!("{e}")),
+                    None => Ok(None),
+                }
+            };
+            let index = column("spectrum_index", &DataType::UInt64)?.ok_or("no spectrum_index column")?;
+            let index = index.as_primitive::<UInt64Type>();
+            let mz = column("mz", &DataType::Float64)?;
+            let intensity = column("intensity", &DataType::Float64)?;
+            let value = |a: &Option<ArrayRef>, i: usize| -> Option<f64> {
+                a.as_ref().and_then(|a| {
+                    let a = a.as_primitive::<Float64Type>();
+                    if a.is_null(i) { None } else { Some(a.value(i)) }
+                })
+            };
+            for i in 0..index.len() {
+                let entry = rows.entry(index.value(i)).or_default();
+                entry.0.push(value(&mz, i).unwrap_or(f64::NAN));
+                let v = value(&intensity, i);
+                if v.is_some() {
+                    entry.2 += 1;
+                }
+                entry.1.push(v.unwrap_or(f64::NAN));
+            }
+        }
+        Ok(rows
+            .into_iter()
+            .map(|(index, (mz, intensity, non_null))| {
+                json!({"kind": "R", "index": index, "columns": columns, "n": mz.len(), "mz_off": bin.put(&mz),
+                    "int_off": bin.put(&intensity), "intensity_non_null": non_null})
+            })
+            .collect())
+    }));
+    match read {
+        Ok(Ok(records)) => records,
+        Ok(Err(e)) => vec![json!({"kind": "R", "error": e})],
+        Err(p) => vec![json!({"kind": "R", "panic": pmsg(p)})],
+    }
+}
+
 fn dump_mzml(path: &std::path::Path, out: &mut BufWriter<File>, bin: &mut Bin) -> io::Result<()> {
     let mut reader = mzdata::MzMLReader::new_indexed(File::open(path)?);
     let n = reader.len();
@@ -167,9 +224,13 @@ fn main() -> io::Result<()> {
     let (mlo, mhi) = catch_unwind(AssertUnwindSafe(|| reader.observed_mz_range())).unwrap_or((None, None));
     writeln!(out, "{}", json!({"kind": "HEADER", "n_spectra": n, "n_chromatograms": nc, "n_wavelength": nw,
         "obs_t": [tlo, thi], "obs_mz": [mlo, mhi]}))?;
+    let range: Option<(u64, u64)> = match args.get(3).map(|a| a.as_str()) {
+        Some("--signal-range") => Some((args[4].parse().unwrap(), args[5].parse().unwrap())),
+        _ => None,
+    };
     let sel: Vec<usize> = match args.get(3) {
-        Some(f) => std::fs::read_to_string(f)?.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().parse().unwrap()).collect(),
-        None => (0..n).collect(),
+        Some(f) if range.is_none() => std::fs::read_to_string(f)?.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().parse().unwrap()).collect(),
+        _ => (0..n).collect(),
     };
     for i in sel {
         let r = catch_unwind(AssertUnwindSafe(|| -> Value {
@@ -235,6 +296,11 @@ fn main() -> io::Result<()> {
         }));
         let v = r.unwrap_or_else(|p| json!({"kind": "W", "index": i, "panic": pmsg(p)}));
         writeln!(out, "{v}")?;
+    }
+    if let Some((start, end)) = range {
+        for v in signal_range_json(&mut reader, &mut bin, start, end) {
+            writeln!(out, "{v}")?;
+        }
     }
     writeln!(out, "{}", json!({"kind": "END"}))?;
     out.flush()?;

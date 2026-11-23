@@ -25,15 +25,12 @@ import static org.mzpeak.io.ParquetOutput.UINT64;
  * Writes the point layout of {@link MzPeakWriter}: one row per point, carrying the entity index, the axis value
  * and the intensity, for spectra (spectra_data and spectra_peaks, appended one spectrum at a time), chromatograms and
  * wavelength spectra; a spectrum or chromatogram row also carries the plan's extra columns, null where the entity has
- * no such array and where its value is NaN (W10). A chromatogram row holds its intensity in the plan's intensity
- * column of the chromatogram's unit and null in the others. Each file's footer holds the array index of its columns
+ * no such array and where its value is NaN (W10). A spectrum or chromatogram row holds its intensity in the plan's
+ * intensity column of the entity's unit and null in the others. Each file's footer holds the array index of its columns
  * and the counts ({@link ParquetOutput.SignalFile}).
  */
 final class PointSignalWriter {
 
-    /** The intensity column of the spectrum signal files: detector counts. */
-    private static final List<IntensityColumn> SPECTRUM_INTENSITY = List.of(
-            new IntensityColumn(ArrayIndex.COUNTS_UNIT, "intensity"));
     /** The intensity column of wavelength_spectra_data, whose unit is unknown. */
     private static final List<IntensityColumn> WAVELENGTH_INTENSITY = List.of(
             new IntensityColumn(null, "intensity"));
@@ -83,31 +80,34 @@ final class PointSignalWriter {
     }
 
     /**
-     * Opens spectra_data or spectra_peaks in the point layout, with a column for each of {@code extras}, the plan's
-     * extra columns, for {@link #appendSpectrumPoints}.
+     * Opens spectra_data or spectra_peaks in the point layout, with a column for each of {@code intensities} and
+     * {@code extras}, the plan's spectrum intensity and extra columns, for {@link #appendSpectrumPoints}.
      */
-    static SignalFile openSpectrumPoints(Path file, List<ExtraColumn> extras, Options options) throws IOException {
-        return new SignalFile(file, pointSchema("spectrum_index", "mz", SPECTRUM_INTENSITY, extras),
-                pointIndex(SignalEntity.SPECTRUM, "mz", ArrayIndex.MZ_UNIT, SPECTRUM_INTENSITY, extras), options);
+    static SignalFile openSpectrumPoints(Path file, List<IntensityColumn> intensities, List<ExtraColumn> extras,
+                                         Options options) throws IOException {
+        return new SignalFile(file, pointSchema("spectrum_index", "mz", intensities, extras),
+                pointIndex(SignalEntity.SPECTRUM, "mz", ArrayIndex.MZ_UNIT, intensities, extras), options);
     }
 
     /**
-     * Append to {@code file}, opened by {@link #openSpectrumPoints} with {@code extras}, the rows {@code spectrum}
-     * writes to spectra_data ({@code mz()}/{@code intensity()}) or, for {@code peaksFile}, to spectra_peaks
-     * ({@code mz()}/{@code intensity()} or {@code peaks()}, as its entry says), each with the values of the extra
-     * columns ({@link SpectrumSignal#extraValues}), and add them to the file's points. {@code mz()}/{@code intensity()}
-     * are written in the order of the spectrum's {@link WritePlan.SignalArrays}.
+     * Append to {@code file}, opened by {@link #openSpectrumPoints} with {@code intensities} and {@code extras}, the
+     * rows {@code spectrum} writes to spectra_data ({@code mz()}/{@code intensity()}) or, for {@code peaksFile}, to
+     * spectra_peaks ({@code mz()}/{@code intensity()} or {@code peaks()}, as its entry says), the intensity in the
+     * column of its unit ({@link SpectrumSignal#intensityUnit}), each with the values of the extra columns
+     * ({@link SpectrumSignal#extraValues}), and add them to the file's points. {@code mz()}/{@code intensity()} are
+     * written in the order of the spectrum's {@link WritePlan.SignalArrays}.
      */
-    static void appendSpectrumPoints(SignalFile file, SpectrumSignal spectrum, List<ExtraColumn> extras,
-                                     boolean peaksFile) throws IOException {
+    static void appendSpectrumPoints(SignalFile file, SpectrumSignal spectrum, List<IntensityColumn> intensities,
+                                     List<ExtraColumn> extras, boolean peaksFile) throws IOException {
         long index = spectrum.entry().sourceIndex();
+        String intensityColumn = WritePlan.intensityColumn(intensities, spectrum.intensityUnit(peaksFile));
         double[][] extraValues = spectrum.extraValues(extras, peaksFile);
         int points;
         if (peaksFile && !spectrum.entry().peaksFromArrays()) {
             List<CentroidPeak> peaks = spectrum.source().peaks();
             points = peaks.size();
             for (int i = 0; i < points; i++) {
-                writePoint(file, "spectrum_index", index, "mz", peaks.get(i).mz(), "intensity",
+                writePoint(file, "spectrum_index", index, "mz", peaks.get(i).mz(), intensityColumn,
                         peaks.get(i).intensity(), extras, extraValues, i);
             }
         } else {
@@ -115,7 +115,7 @@ final class PointSignalWriter {
             double[] intensity = spectrum.arrays().intensity();
             points = mz.length;
             for (int i = 0; i < points; i++) {
-                writePoint(file, "spectrum_index", index, "mz", mz[i], "intensity", intensity[i], extras,
+                writePoint(file, "spectrum_index", index, "mz", mz[i], intensityColumn, intensity[i], extras,
                         extraValues, i);
             }
         }

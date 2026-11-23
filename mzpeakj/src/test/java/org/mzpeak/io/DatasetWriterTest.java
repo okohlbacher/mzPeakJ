@@ -44,7 +44,8 @@ class DatasetWriterTest {
         assertThat(plan.spectra()).anyMatch(WritePlan.SpectrumEntry::peaks);
         assertThat(plan.writesSpectraData()).isTrue();
         WritePlan withoutData = new WritePlan(plan.options(), plan.spectra(), plan.spectrumSignals(),
-                plan.chromatograms(), plan.wavelengthSpectra(), false, plan.spectrumExtras(),
+                plan.chromatograms(), plan.wavelengthSpectra(), false, plan.spectrumIntensities(),
+                plan.spectrumExtras(),
                 plan.chromatogramIntensities(), plan.chromatogramExtras(),
                 plan.scanSettings(), plan.footer(),
                 plan.report());

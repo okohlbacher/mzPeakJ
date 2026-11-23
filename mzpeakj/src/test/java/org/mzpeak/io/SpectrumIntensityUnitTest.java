@@ -151,7 +151,7 @@ class SpectrumIntensityUnitTest {
      * with an m/z, their intensities 25 and 100 in the percent column only; the odd rows of spectrum 7 that have an
      * intensity have it in the percent column instead. Returns spectrum 1's two m/z.
      */
-    private static double[] rewritePoint(Path file) throws IOException {
+    static double[] rewritePoint(Path file) throws IOException {
         MemberRewrite.Member m = MemberRewrite.read(file);
         GroupType point = m.schema.getType("point").asGroupType();
         List<Type> fields = new ArrayList<>(point.getFields());

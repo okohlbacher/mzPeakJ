@@ -384,6 +384,64 @@ class UpstreamInteropTest {
     }
 
     /**
+     * R5 (D13-20): the two-unit copy of current small.unpacked ({@link SpectrumIntensityUnitTest}) written split as an
+     * archive, its spectra_data with the intensity columns {@code intensity} (MS:1000131, primary) and
+     * {@code intensity_MS_1000132} (secondary): the Python reader reads both entries, spectrum 1 with its intensities
+     * [25, 100] from the percent column, spectra 0 and 7 as mzPeakJ wrote them, and the archive passes
+     * {@code check_archive_integrity()}.
+     */
+    @Test
+    void thePythonReaderReadsBothSpectrumIntensityUnits() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("intensity-units"));
+        Path copy = MemberRewrite.copy(Fixtures.current("small.unpacked.mzpeak"), Files.createDirectories(
+                dir.resolve("source")));
+        double[] mz = SpectrumIntensityUnitTest.rewritePoint(copy.resolve("spectra_data.parquet"));
+        ForwardBackwardCorpusTest.Source source = ForwardBackwardCorpusTest.readSource(copy);
+        Path archive = dir.resolve("intensity-units.mzpeak");
+        MzPeakWriter.writeArchive(archive, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("intensity_units.py"), String.join("\n",
+                "import json",
+                "import sys",
+                "",
+                "import numpy as np",
+                "from mzpeak import MzPeakFile",
+                "",
+                "reader = MzPeakFile(sys.argv[1])",
+                "out = {}",
+                "for i in (0, 1, 7):",
+                "    data = reader.spectrum_data[i]",
+                "    out[str(i)] = {str(k): [float(x) for x in v] for k, v in data.items()",
+                "                   if isinstance(v, np.ndarray)}",
+                "index = reader.spectrum_data.array_index.values()",
+                "out['intensity'] = [[str(e.path), str(e.unit), str(e.buffer_priority)] for e in index",
+                "                    if e.array_type == 'MS:1000515']",
+                "print(json.dumps(out))",
+                ""), StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "intensity-units.json");
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(read.path("intensity").toString()).isEqualTo("[[\"point.intensity\",\"MS:1000131\","
+                + "\"BufferPriority.Primary\"],[\"point.intensity_MS_1000132\",\"MS:1000132\","
+                + "\"BufferPriority.Secondary\"]]");
+        for (int i : new int[] {0, 1, 7}) {
+            Spectrum s = source.spectra.get(i);
+            JsonNode arrays = read.path(String.valueOf(i));
+            assertThat(doubles(arrays.path("m/z array"))).as("spectrum %d", i).isEqualTo(s.mz());
+            assertThat(doubles(arrays.path("intensity array"))).as("spectrum %d", i).isEqualTo(s.intensity());
+        }
+        assertThat(source.spectra.get(1).mz()).isEqualTo(mz);
+        assertThat(source.spectra.get(1).intensity()).containsExactly(25.0, 100.0);
+
+        Result counted = python(probe, archive, "intensity-units-counts.json");
+        assertThat(counted.exit()).as("probe on %s: %s", archive, counted).isZero();
+        JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
+        assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
+        assertThat(counts.path("spectra").asInt()).isEqualTo(48);
+    }
+
+    /**
      * D-13 (V-24): diaPASEF.ref written split as an archive: the Python reader reads the {@code ion_mobility_value}
      * and {@code ion_mobility_type} columns of the scans and selected ions, in row order, with the values of the
      * source's ion mobility Params and MS:1002815, and nothing for spectrum 0's scan, which has none.

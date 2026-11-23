@@ -376,6 +376,15 @@ Writer notes:
   intensities of each chromatogram intensity unit in a column of their own, so the unit is kept (a chromatogram
   without points reads back without one). The default `SPLIT` layout also writes chromatogram polarity, data
   processing reference, Params and precursors, and wavelength-spectrum Params.
+- `spectra_data` and `spectra_peaks` hold the intensities of each spectrum intensity unit (`intensityUnit()`,
+  `peakIntensityUnit()`; MS:1000131 when null) in a column of their own: `intensity` for MS:1000131 (else the first
+  unit), `intensity_MS_1000132` and the like, secondary, for the others; in the Numpress encoding the transform
+  columns `intensity_numpress_slof_bytes`, `intensity_MS_1000132_numpress_slof_bytes` (or `_pic_bytes`). The batch
+  overloads take the units from the spectra. A `Session` declares them when it opens,
+  `Options.withSpectrumIntensityUnits("MS:1000131", "MS:1000132")` (default MS:1000131 only), and refuses a spectrum
+  in another unit, naming the spectrum and the declared units. The Rust reference reader's range read
+  (`extract_signal`) reads only the first intensity column (R-11 in
+  [docs/upstream-issues.md](docs/upstream-issues.md)).
 - Chromatogram times are written as given, with their `timeUnit` declared, and read back in that unit.
   Chromatograms of different time units in one dataset are refused before anything is written; convert them first
   with `Chromatogram.withTimeUnit`.
@@ -389,7 +398,8 @@ Writer notes:
   naming the entity: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
   of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
   name an entry of the file metadata (not checked without file metadata), and the prefix of every CURIE (param
-  accessions and units, extra-array keys, chromatogram types and intensity units) must be one of
+  accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units) must be
+  one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
   written as given. A null run default gets the first entry of its list, else a stub entity with one WARNING.
   diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as

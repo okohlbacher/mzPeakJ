@@ -310,6 +310,58 @@ class RustReaderAcceptanceTest {
     }
 
     /**
+     * R-11 (R5, D13-20): the two-unit copy of current small.unpacked ({@link SpectrumIntensityUnitTest}, spectrum 1
+     * with the intensities [25, 100] in percent of base peak only), written split as an archive, which gives
+     * spectra_data the columns {@code intensity} (MS:1000131) and {@code intensity_MS_1000132}: Rust reads all 48
+     * spectra without a panic, spectrum 1 by index with its two points and intensities in {@code PercentBasePeak}, and
+     * spectrum 0 in {@code DetectorCounts}; its range read over spectra 0-1 ({@code extract_signal}, which projects
+     * only the first intensity column, {@code src/reader/point.rs:528}) returns spectrum 0 whole but spectrum 1's two
+     * points without intensity. The spec requires a column for each unit, so no form both accept.
+     */
+    @Test
+    void rustReadsAPercentSpectrumByIndexButNotInARangeRead() throws Exception {
+        Path copy = MemberRewrite.copy(Fixtures.current("small.unpacked.mzpeak"), Files.createDirectories(
+                tmp.resolve("source")));
+        double[] mz = SpectrumIntensityUnitTest.rewritePoint(copy.resolve("spectra_data.parquet"));
+        Source source = ForwardBackwardCorpusTest.readSource(copy);
+        Path out = tmp.resolve("units.mzpeak");
+        MzPeakWriter.writeArchive(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, SPLIT);
+        Spectrum zero;
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            zero = reader.getSpectrumAt(0);
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo("MS:1000132");
+        }
+
+        Dump dump = rdump(out, "--signal-range", "0", "1");
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(48).allSatisfy(r -> assertThat(r.has("panic") || r.has("none")).as("%s", r)
+                .isFalse());
+        JsonNode intensity0 = records.get(0).path("arrays").path("IntensityArray");
+        assertThat(intensity0.path("unit").asText()).isEqualTo("DetectorCounts");
+        assertValues("spectrum 0 intensity", dump.array(intensity0), zero.intensity(), Match.EXACT);
+        JsonNode arrays1 = records.get(1).path("arrays");
+        assertThat(arrays1.path("IntensityArray").path("unit").asText()).as("%s", arrays1)
+                .isEqualTo("PercentBasePeak");
+        assertThat(dump.array(arrays1.path("IntensityArray"))).containsExactly(25.0, 100.0);
+        assertValues("spectrum 1 m/z", dump.array(arrays1.path("MZArray")), mz, Match.MZ);
+
+        // the range read: spectrum 0 whole, spectrum 1 without intensity (R-11)
+        List<JsonNode> range = dump.records("R");
+        assertThat(range).extracting(r -> r.path("index").asInt()).containsExactly(0, 1);
+        assertThat(range).allSatisfy(r -> assertThat(r.path("columns")).extracting(JsonNode::asText)
+                .containsExactly("spectrum_index", "mz", "intensity"));
+        JsonNode range0 = range.get(0);
+        assertThat(range0.path("intensity_non_null").asInt()).isEqualTo(zero.pointCount());
+        assertValues("range spectrum 0 intensity", dump.array(range0, "int_off"), zero.intensity(), Match.EXACT);
+        JsonNode range1 = range.get(1);
+        assertThat(range1.path("n").asInt()).isEqualTo(2);
+        assertValues("range spectrum 1 m/z", dump.array(range1, "mz_off"), mz, Match.MZ);
+        assertThat(range1.path("intensity_non_null").asInt()).as("R-11: spectrum 1 without intensity").isZero();
+        assertThat(dump.array(range1, "int_off")).containsExactly(Double.NaN, Double.NaN);
+    }
+
+    /**
      * Every output of {@link InteropOutputs#write}, all in the split layout (legacy and current small.unpacked,
      * has_uv, Example_Processed.img and diaPASEF.ref as archive and directory, the Numpress SLOF and PIC archives of
      * current small, its MS2 subset and its archive without scans), and the archive of current small.unpacked with
@@ -581,10 +633,14 @@ class RustReaderAcceptanceTest {
         }
     }
 
-    private Dump rdump(Path dataset) throws IOException, InterruptedException {
+    /** rdump's output for {@code dataset}, run with the further arguments {@code args} (README.md of rdump). */
+    private Dump rdump(Path dataset, String... args) throws IOException, InterruptedException {
         Path prefix = tmp.resolve("dump");
-        Process process = new ProcessBuilder(System.getProperty("mzpeak.rust.rdump"), dataset.toString(),
-                prefix.toString()).redirectErrorStream(true).redirectOutput(tmp.resolve("rdump.log").toFile()).start();
+        List<String> command = new ArrayList<>(List.of(System.getProperty("mzpeak.rust.rdump"), dataset.toString(),
+                prefix.toString()));
+        command.addAll(List.of(args));
+        Process process = new ProcessBuilder(command).redirectErrorStream(true)
+                .redirectOutput(tmp.resolve("rdump.log").toFile()).start();
         assertThat(process.waitFor(10, TimeUnit.MINUTES)).as("rdump finished").isTrue();
         assertThat(process.exitValue()).as("rdump exit, log: %s", Files.readString(tmp.resolve("rdump.log")))
                 .isZero();

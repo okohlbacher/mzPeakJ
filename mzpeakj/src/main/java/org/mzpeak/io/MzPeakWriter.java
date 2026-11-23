@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumSignal;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
@@ -146,6 +147,13 @@ public final class MzPeakWriter {
      * (MS:1000786) with the key as its name. A key MS:1000514 or MS:1000515 is rejected, since a spectrum holds those
      * arrays in {@code mz()} and {@code intensity()}, and so is a peak whose {@code index()} is not a position of its
      * spectrum's peak arrays when those are written.
+     * spectra_data and spectra_peaks have one intensity column for each unit of the intensities the spectra write,
+     * {@link Spectrum#intensityUnit()} for {@code intensity()}, {@link Spectrum#peakIntensityUnit()} for
+     * {@code peaks()}, MS:1000131 (number of detector counts) for a spectrum without one, named and declared as those
+     * of chromatograms_data below ({@code intensity}, {@code intensity_MS_1000132}; in the Numpress encoding the
+     * transform columns {@code intensity_numpress_slof_bytes}, {@code intensity_MS_1000132_numpress_slof_bytes}); a
+     * spectrum's rows hold their intensity in the column of their unit and null in the others. A CENTROID spectrum
+     * whose arrays and peak list differ in intensity unit is no peak copy and writes both files.
      * Every key of the chromatograms' {@link Chromatogram#arrays()} becomes one extra column of chromatograms_data in
      * the same way, a chromatogram without the key writing null cells; a key MS:1000595 or MS:1000515 is rejected,
      * since a chromatogram holds those arrays in {@code time()} and {@code intensity()}. chromatograms_data has one
@@ -185,9 +193,10 @@ public final class MzPeakWriter {
      * Every CURIE written must have a CV prefix that {@code metadata.cv_list} declares, as conformance.md requires:
      * one of {@link CvEntry#known()} or one the {@link Options#withCvList cv list} of {@code options} gives with all
      * four fields. Checked are the accession and unit of every param (of the entities, their scans, precursors and
-     * selected ions, the scan settings and the file metadata), every array key that is a CURIE and the type and
-     * intensity unit of every chromatogram; a value without a colon, such as the unit {@code seconds}, is no CURIE and
-     * is written as given. Every explicit reference must name an entry of {@code fileMetadata}: a scan's
+     * selected ions, the scan settings and the file metadata), every array key that is a CURIE, the intensity and
+     * peak intensity unit of every spectrum and the type and intensity unit of every chromatogram; a value without a
+     * colon, such as the unit {@code seconds}, is no CURIE and is written as given. Every explicit reference must
+     * name an entry of {@code fileMetadata}: a scan's
      * instrument configuration, a spectrum's or chromatogram's data processing, the software of an instrument
      * configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
      * run default is filled with the first entry of its list, else with a stub entry and a WARNING. Without file
@@ -483,26 +492,29 @@ public final class MzPeakWriter {
     public static final class Options {
 
         private static final Options DEFAULTS = new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF,
-                OptionalLong.empty(), MetadataLayout.SPLIT, List.of());
+                OptionalLong.empty(), MetadataLayout.SPLIT, List.of(), List.of(ArrayIndex.COUNTS_UNIT));
 
         private final SignalEncoding signalEncoding;
         private final NumpressIntensityEncoding numpressIntensity;
         private final OptionalLong rowGroupSize;
         private final MetadataLayout metadataLayout;
         private final List<CvEntry> cvList;
+        private final List<String> spectrumIntensityUnits;
 
         private Options(SignalEncoding signalEncoding, NumpressIntensityEncoding numpressIntensity,
-                        OptionalLong rowGroupSize, MetadataLayout metadataLayout, List<CvEntry> cvList) {
+                        OptionalLong rowGroupSize, MetadataLayout metadataLayout, List<CvEntry> cvList,
+                        List<String> spectrumIntensityUnits) {
             this.signalEncoding = signalEncoding;
             this.numpressIntensity = numpressIntensity;
             this.rowGroupSize = rowGroupSize;
             this.metadataLayout = metadataLayout;
             this.cvList = cvList;
+            this.spectrumIntensityUnits = spectrumIntensityUnits;
         }
 
         /**
-         * Point layout, SLOF Numpress intensity, no row-group size, the split metadata layout and no cv list of the
-         * caller's: what the plain overloads write.
+         * Point layout, SLOF Numpress intensity, no row-group size, the split metadata layout, no cv list of the
+         * caller's and the spectrum intensity unit MS:1000131: what the plain overloads write.
          */
         public static Options defaults() {
             return DEFAULTS;
@@ -544,13 +556,21 @@ public final class MzPeakWriter {
         }
 
         /**
+         * The intensity units the spectra of a {@link Session} may have ({@link #withSpectrumIntensityUnits}), in the
+         * order given, without repeats; MS:1000131 by default. Unmodifiable.
+         */
+        List<String> spectrumIntensityUnits() {
+            return spectrumIntensityUnits;
+        }
+
+        /**
          * These options with {@code encoding} for spectra_data and spectra_peaks.
          *
          * @throws NullPointerException if {@code encoding} is {@code null}
          */
         public Options withSignalEncoding(SignalEncoding encoding) {
             return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize,
-                    metadataLayout, cvList);
+                    metadataLayout, cvList, spectrumIntensityUnits);
         }
 
         /**
@@ -561,7 +581,7 @@ public final class MzPeakWriter {
          */
         public Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
             return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize,
-                    metadataLayout, cvList);
+                    metadataLayout, cvList, spectrumIntensityUnits);
         }
 
         /**
@@ -575,7 +595,8 @@ public final class MzPeakWriter {
             if (bytes <= 0) {
                 throw new IllegalArgumentException("row-group size must be positive: " + bytes);
             }
-            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout, cvList);
+            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout, cvList,
+                    spectrumIntensityUnits);
         }
 
         /**
@@ -586,7 +607,7 @@ public final class MzPeakWriter {
          */
         public Options withMetadataLayout(MetadataLayout layout) {
             return new Options(signalEncoding, numpressIntensity, rowGroupSize,
-                    Objects.requireNonNull(layout, "layout"), cvList);
+                    Objects.requireNonNull(layout, "layout"), cvList, spectrumIntensityUnits);
         }
 
         /**
@@ -617,7 +638,37 @@ public final class MzPeakWriter {
         public Options withCvList(List<CvEntry> cvList) {
             List<CvEntry> copy = List.copyOf(Objects.requireNonNull(cvList, "cvList"));
             KnownCvs.requireFixedReleases(copy);
-            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, copy);
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, copy,
+                    spectrumIntensityUnits);
+        }
+
+        /**
+         * These options with {@code units} as the intensity units of the spectra of a {@link Session}, such as
+         * MS:1000131 (number of detector counts, the default) and MS:1000132 (percent of base peak). Parquet needs
+         * every column before the first row is written (signal-data.md), so a session gives spectra_data and
+         * spectra_peaks one intensity column for each of these units when it opens, and refuses a spectrum whose
+         * {@link Spectrum#intensityUnit()} or {@link Spectrum#peakIntensityUnit()} is another unit with an
+         * {@link MzPeakException} naming the spectrum and these units; a spectrum without a unit is written in
+         * MS:1000131. The batch overloads ignore this setting: they give the spectrum signal files one intensity
+         * column for each unit of the spectra written. The column of MS:1000131, else of the first unit, is named
+         * {@code intensity}; every other one {@code intensity_} followed by the unit with each character other than an
+         * ASCII letter or digit as {@code _} ({@code intensity_MS_1000132}), made unique, and its array-index entry
+         * has buffer priority secondary. A repeated unit counts once. A unit with the CURIE shape must have a CV
+         * prefix that {@code metadata.cv_list} declares, which the session checks when it opens.
+         *
+         * @throws NullPointerException     if {@code units} or one of them is {@code null}
+         * @throws IllegalArgumentException if {@code units} is empty
+         */
+        public Options withSpectrumIntensityUnits(String... units) {
+            Set<String> distinct = new LinkedHashSet<>();
+            for (String unit : Objects.requireNonNull(units, "units")) {
+                distinct.add(Objects.requireNonNull(unit, "spectrum intensity unit"));
+            }
+            if (distinct.isEmpty()) {
+                throw new IllegalArgumentException("at least one spectrum intensity unit is needed");
+            }
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList,
+                    List.copyOf(distinct));
         }
 
         @Override
@@ -627,19 +678,21 @@ public final class MzPeakWriter {
             }
             return o instanceof Options other && signalEncoding == other.signalEncoding
                     && numpressIntensity == other.numpressIntensity && rowGroupSize.equals(other.rowGroupSize)
-                    && metadataLayout == other.metadataLayout && cvList.equals(other.cvList);
+                    && metadataLayout == other.metadataLayout && cvList.equals(other.cvList)
+                    && spectrumIntensityUnits.equals(other.spectrumIntensityUnits);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList);
+            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList,
+                    spectrumIntensityUnits);
         }
 
         @Override
         public String toString() {
             return "Options[signalEncoding=" + signalEncoding + ", numpressIntensity=" + numpressIntensity
                     + ", rowGroupSize=" + rowGroupSize + ", metadataLayout=" + metadataLayout + ", cvList=" + cvList
-                    + "]";
+                    + ", spectrumIntensityUnits=" + spectrumIntensityUnits + "]";
         }
     }
 
@@ -667,7 +720,9 @@ public final class MzPeakWriter {
      * after the spectrum that names it). In the split layout, the finish appends the MSn selected-ion chain as
      * {@code writeDirectory} does, from the precursors of every spectrum added. Every key of a spectrum's
      * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} must be one of the spectrum arrays the session was
-     * opened with. The other rules are
+     * opened with, and the unit of every intensity it writes, {@link Spectrum#intensityUnit()} or
+     * {@link Spectrum#peakIntensityUnit()} (MS:1000131 when null), one of the spectrum intensity units of its options
+     * ({@link Options#withSpectrumIntensityUnits}, MS:1000131 by default). The other rules are
      * those of {@link MzPeakWriter#writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory}:
      * each precursor_index the layout writes is non-negative; in the split layout, precursors of a spectrum that share
      * their precursor_index carry no selected ions after the first of them; a peak's index is a position of the peak
@@ -718,6 +773,7 @@ public final class MzPeakWriter {
         private final Path directory;
         private final Options options;
         private final Set<String> spectrumArrays;
+        private final List<IntensityColumn> intensities;
         private final List<ExtraColumn> extras;
         private final List<ScanSettings> scanSettings;
         private final Map<String, String> footer;
@@ -739,8 +795,9 @@ public final class MzPeakWriter {
          * members, creating that directory if need be. A failure there leaves what {@link #close()} leaves.
          */
         private Session(Path target, boolean archive, boolean replace, boolean createdDirectory, Options options,
-                        List<ExtraColumn> extras, boolean writesSpectraData, List<ScanSettings> scanSettings,
-                        Map<String, String> footer, WriteReport report, WritePlanner.Declarations declarations) {
+                        List<IntensityColumn> intensities, List<ExtraColumn> extras, boolean writesSpectraData,
+                        List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report,
+                        WritePlanner.Declarations declarations) {
             this.target = target;
             this.archive = archive;
             this.replace = replace;
@@ -750,13 +807,14 @@ public final class MzPeakWriter {
             for (ExtraColumn extra : extras) {
                 spectrumArrays.add(extra.key());
             }
+            this.intensities = intensities;
             this.extras = extras;
             this.scanSettings = scanSettings;
             this.footer = footer;
             this.report = report;
             this.declarations = declarations;
             this.directory = archive ? ArchivePacker.stagingDirectory(target) : target;
-            this.dataset = new DatasetWriter(directory, options, extras, writesSpectraData);
+            this.dataset = new DatasetWriter(directory, options, intensities, extras, writesSpectraData);
             try (Step step = new Step()) {
                 dataset.open();
                 step.done();
@@ -775,9 +833,11 @@ public final class MzPeakWriter {
                 keys.add(Objects.requireNonNull(key, "spectrumArrays key"));
             }
             Objects.requireNonNull(options, "options");
-            List<ExtraColumn> extras = WritePlanner.spectrumExtras(keys);
+            List<IntensityColumn> intensities = WritePlanner.spectrumIntensities(options.spectrumIntensityUnits());
+            List<ExtraColumn> extras = WritePlanner.spectrumExtras(keys, intensities);
             WritePlanner.Declarations declarations = WritePlanner.declarations(fileMetadata, settings, options);
             declarations.requireArrayKeys("spectrumArrays", keys);
+            declarations.requireIntensityUnits("spectrumIntensityUnits", options.spectrumIntensityUnits());
             boolean exists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
             if (exists && (archive || !isEmptyDirectory(target))) {
                 throw new MzPeakException(archive
@@ -785,9 +845,9 @@ public final class MzPeakWriter {
                         : "mzPeak session target " + target + " exists and is not an empty directory; openDirectory"
                         + " writes only into a new or empty directory");
             }
-            return new Session(target, archive, false, !archive && !exists, options, extras, true, settings,
-                    FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), new WriteReport(),
-                    declarations);
+            return new Session(target, archive, false, !archive && !exists, options, intensities, extras, true,
+                    settings, FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()),
+                    new WriteReport(), declarations);
         }
 
         /**
@@ -796,11 +856,13 @@ public final class MzPeakWriter {
          * files of their names and other files left alone; closing the session without a finish deletes only the temp
          * files of an archive. Its spectrum signal files get the plan's extra columns, the union of the keys of the
          * planned spectra in first-seen order. The plan's spectrum signals are added with {@link #append} and the
-         * session finishes with {@link #finish(WritePlan)}.
+         * session finishes with {@link #finish(WritePlan)}. They get the plan's intensity columns too, one for each
+         * intensity unit of the planned spectra.
          */
         static Session replacing(Path target, boolean archive, WritePlan plan) {
-            return new Session(target, archive, true, false, plan.options(), plan.spectrumExtras(),
-                    plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report(), null);
+            return new Session(target, archive, true, false, plan.options(), plan.spectrumIntensities(),
+                    plan.spectrumExtras(), plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report(),
+                    null);
         }
 
         /** Whether {@code target}, which exists, is a directory without an entry. */
@@ -832,7 +894,7 @@ public final class MzPeakWriter {
             }
             declarations.require(spectrum);
             WriteReport warnings = new WriteReport();
-            append(WritePlanner.sessionSignal(spectrum, spectrumArrays, options, warnings, packedDrops));
+            append(WritePlanner.sessionSignal(spectrum, spectrumArrays, intensities, options, warnings, packedDrops));
             for (String warning : warnings.warnings()) {
                 report.warn(warning);
             }
@@ -882,8 +944,8 @@ public final class MzPeakWriter {
         public void finish() {
             finish(() -> {
                 WritePlanner.warnPackedDrops(packedDrops, report);
-                return WritePlanner.planFinish(options, dataset.entries(), extras, chromatograms, wavelengthSpectra,
-                        scanSettings, footer, report);
+                return WritePlanner.planFinish(options, dataset.entries(), intensities, extras, chromatograms,
+                        wavelengthSpectra, scanSettings, footer, report);
             });
         }
 

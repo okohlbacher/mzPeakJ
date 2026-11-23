@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arrow = "57.0.0"
 mzpeak_prototyping = { git = "https://github.com/HUPO-PSI/mzPeak", rev = "2ee2589facddea6de6c1e7c6cfa77e56895420ec" }
 mzdata = { version = "0.68.0", features = ["serde", "bruker_tdf", "nalgebra", "zstd", "numpress", "imzml", "cv"] }
 mzpeaks = "1.0.9"
