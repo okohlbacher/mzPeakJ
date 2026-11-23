@@ -351,8 +351,10 @@ Writer notes:
   entity's `auxiliaryArrays()` in `auxiliary_arrays`, their bytes and compression as given (compressed bytes stay
   compressed), with `number_of_auxiliary_arrays`, and an `ARROW:schema` footer entry that types them as the
   reference does; the Rust reference reader needs both columns. Their names, units and params pass the CV prefix
-  check below, their data processing must be declared, and their data type and compression must each be a term the
-  Rust reference reader accepts (it panics on any other value), else the write is refused. The Rust reference reader
+  check below, their data processing must be declared, and the accession of their name (a binary data array type,
+  MS:1000786 non-standard data array with the array's name as its value included), their data type and their
+  compression must each be a term the Rust reference reader accepts (it panics on a name without an accession and
+  on any other value), else the write is refused. The Rust reference reader
   cannot decode a zlib-compressed one (R-13) and drops those of a chunked spectrum spanning row groups (R-14); the
   `PACKED` layout writes none and warns.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there

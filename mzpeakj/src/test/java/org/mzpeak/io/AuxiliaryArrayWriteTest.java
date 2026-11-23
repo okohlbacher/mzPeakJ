@@ -201,13 +201,21 @@ class AuxiliaryArrayWriteTest {
     /**
      * W12 applies to the arrays: an undeclared CV prefix in the name, a param or a CURIE-shaped unit, and a data
      * processing the file metadata does not declare, are each refused before anything is written, naming the entity
-     * and the array; so is a data type or compression that is not a binary data type or compression term the Rust
-     * reference reader accepts (it panics on others), CURIE or not; a unit that is no CURIE is written as given.
+     * and the array; so is a name without an accession or with one that is not a binary data array type, and a data
+     * type or compression that is not a binary data type or compression term, the Rust reference reader accepts (it
+     * panics on others), CURIE or not; a unit that is no CURIE is written as given.
      */
     @Test
     void theW12ChecksApplyToTheArrays() {
         assertRefused(array(new Param("foo", "FOO:0001", null, null), FLOAT64, NONE, null, List.of(), null),
                 "spectrum 0: auxiliary array 1 name: ");
+        assertRefused(array(new Param("foo", null, null, null), FLOAT64, NONE, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: name null is not one of the binary data array types (children of"
+                        + " MS:1000513) the Rust reference reader accepts: MS:1000514, MS:1000515, MS:1000516,");
+        assertRefused(array(new Param("mean charge array", "MS:1002478", null, null), FLOAT64, NONE, null, List.of(),
+                null), "spectrum 0: auxiliary array 1: name MS:1002478 is not one of the binary data array types");
+        assertRefused(array(new Param("factor", "EFO:0000001", null, null), FLOAT64, NONE, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: name EFO:0000001 is not one of the binary data array types");
         assertRefused(array(PLAIN.name(), "FOO:0002", NONE, null, List.of(), null),
                 "spectrum 0: auxiliary array 1: data type FOO:0002 is not one of the binary data types (children of"
                         + " MS:1000518) the Rust reference reader accepts: MS:1000521, MS:1000523, MS:1000519,"
@@ -252,6 +260,9 @@ class AuxiliaryArrayWriteTest {
         AuxiliaryArray undeclared = array(PLAIN.name(), FLOAT64, NONE, "FOO:0002", List.of(), null);
         AuxiliaryArray badType = array(PLAIN.name(), "float64", NONE, null, List.of(), null);
         AuxiliaryArray badCompression = array(PLAIN.name(), FLOAT64, "zlib", null, List.of(), null);
+        AuxiliaryArray noAccession = array(new Param("foo", null, null, null), FLOAT64, NONE, null, List.of(), null);
+        AuxiliaryArray unmapped = array(new Param("mean charge array", "MS:1002478", null, null), FLOAT64, NONE, null,
+                List.of(), null);
         AuxiliaryArray nameless = array(new Param(null, null, "v", null), FLOAT64, NONE, null, List.of(), null);
         List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
         chromatograms.set(1, withArrays(chromatograms.get(1), List.of(undeclared)));
@@ -285,10 +296,22 @@ class AuxiliaryArrayWriteTest {
                 source.chromatograms, wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessageStartingWith("wavelength spectrum 2: auxiliary array 0: data type float64 is not one of");
+        chromatograms.set(1, withArrays(chromatograms.get(1), List.of(unmapped)));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("c4.mzpeak"), source.spectra,
+                chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chromatogram 1: auxiliary array 0: name MS:1002478 is not one of");
+        wavelengthSpectra.set(2, withArrays(wavelengthSpectra.get(2), List.of(PLAIN, noAccession)));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("w4.mzpeak"), source.spectra,
+                source.chromatograms, wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("wavelength spectrum 2: auxiliary array 1: name null is not one of");
         assertThat(tmp.resolve("c.mzpeak")).doesNotExist();
         assertThat(tmp.resolve("w.mzpeak")).doesNotExist();
         assertThat(tmp.resolve("c3.mzpeak")).doesNotExist();
         assertThat(tmp.resolve("w3.mzpeak")).doesNotExist();
+        assertThat(tmp.resolve("c4.mzpeak")).doesNotExist();
+        assertThat(tmp.resolve("w4.mzpeak")).doesNotExist();
 
         try (Session session = MzPeakWriter.openDirectory(tmp.resolve("session.mzpeak"), source.fileMetadata,
                 source.scanSettings, new LinkedHashSet<>(), SPLIT)) {
@@ -307,6 +330,15 @@ class AuxiliaryArrayWriteTest {
             assertThatThrownBy(() -> session.addWavelengthSpectrum(withArrays(source.wavelengthSpectra.get(0),
                     List.of(badCompression)))).isInstanceOf(MzPeakException.class)
                     .hasMessageStartingWith("wavelength spectrum 0: auxiliary array 0: compression zlib is not one of");
+            assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0), List.of(noAccession))))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("spectrum 0: auxiliary array 0: name null is not one of");
+            assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0), List.of(PLAIN, unmapped))))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("spectrum 0: auxiliary array 1: name MS:1002478 is not one of");
+            assertThatThrownBy(() -> session.addWavelengthSpectrum(withArrays(source.wavelengthSpectra.get(0),
+                    List.of(unmapped)))).isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("wavelength spectrum 0: auxiliary array 0: name MS:1002478 is not one of");
         }
     }
 

@@ -84,6 +84,17 @@ final class WritePlanner {
     /** An extra key that is a CURIE, {@code PREFIX:local}; any other key names a non-standard data array. */
     private static final Pattern CURIE = Pattern.compile("[A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_]+");
     /**
+     * The accessions the name of an auxiliary array may have (binary data array types, children of MS:1000513), in
+     * the order of their message: the terms the Rust reference reader maps (mzdata's {@code
+     * ArrayType::from_accession}), MS:1000786 (non-standard data array) included, whose value is the array's name; it
+     * panics on a name without an accession or with any other (R1).
+     */
+    private static final List<String> AUXILIARY_ARRAY_TYPES = List.of("MS:1000514", "MS:1000515", "MS:1000516",
+            "MS:1000517", "MS:1000595", "MS:1000617", "MS:1002893", "MS:1002816", "MS:1002477", "MS:1003006",
+            "MS:1003007", "MS:1003153", "MS:1003008", "MS:1003154", "MS:1003156", "MS:1003155", "MS:1002530",
+            "MS:1002529", "MS:1000821", "MS:1000822", "MS:1000820", "MS:1003157", "MS:1003158", "MS:1003870",
+            NON_STANDARD_ARRAY);
+    /**
      * The binary data types (children of MS:1000518) an auxiliary array may have, in the order of their message: the
      * terms the Rust reference reader maps (mzdata's {@code BinaryDataArrayType::from_accession}); it panics on any
      * other value (R1).
@@ -1562,17 +1573,20 @@ final class WritePlanner {
         }
 
         /**
-         * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): its data type one of
-         * {@link #AUXILIARY_DATA_TYPES} and its compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the
-         * Rust reference reader accepts (auxiliary-arrays.md requires CV terms; that reader panics on others); the
-         * accession and unit of its name and of its params, and its unit when it has the CURIE shape, each with a
-         * declared prefix; its data processing, when it names one, declared by the file metadata.
+         * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): the accession of its name
+         * one of {@link #AUXILIARY_ARRAY_TYPES}, its data type one of {@link #AUXILIARY_DATA_TYPES} and its
+         * compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the Rust reference reader accepts
+         * (auxiliary-arrays.md requires CV terms; that reader panics on others); the accession and unit of its name
+         * and of its params, and its unit when it has the CURIE shape, each with a declared prefix; its data
+         * processing, when it names one, declared by the file metadata.
          */
         private void requireAuxiliaryArrays(String owner, List<AuxiliaryArray> arrays) {
             for (int i = 0; i < arrays.size(); i++) {
                 AuxiliaryArray a = arrays.get(i);
                 String array = owner + ": auxiliary array " + i;
                 requireParams(array + " name", List.of(a.name()));
+                requireTerm(array, "name", a.name().accession(), "binary data array types (children of MS:1000513)",
+                        AUXILIARY_ARRAY_TYPES);
                 requireTerm(array, "data type", a.dataType(), "binary data types (children of MS:1000518)",
                         AUXILIARY_DATA_TYPES);
                 requireTerm(array, "compression", a.compression(),
@@ -1586,10 +1600,10 @@ final class WritePlanner {
 
         /**
          * Throws {@link MzPeakException} naming {@code owner}, {@code what} and {@code value} when {@code value} is
-         * not one of {@code terms}, the {@code kind} a file may hold there.
+         * null or not one of {@code terms}, the {@code kind} a file may hold there.
          */
         private static void requireTerm(String owner, String what, String value, String kind, List<String> terms) {
-            if (!terms.contains(value)) {
+            if (value == null || !terms.contains(value)) {
                 throw new MzPeakException(owner + ": " + what + " " + value + " is not one of the " + kind
                         + " the Rust reference reader accepts: " + String.join(", ", terms));
             }
