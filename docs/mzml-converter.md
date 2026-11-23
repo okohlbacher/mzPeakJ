@@ -188,7 +188,7 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 | other params | `parameters` | |
 | `precursor` | `precursors` (one) | A: further precursors dropped (A-11), `precursorIndex` not written (A-19) |
 | `product` | — | lost (B-27) |
-| time array (min, s, ms, h) | `time()` as stored, `timeUnit` | kept in its unit since 0.12.0; B: a chromatogram whose unit differs from the first chromatogram's is converted to that unit (B-15) |
+| time array (min, s, ms, h) | `time()` as stored, `timeUnit` | read in its unit; B: the mzPeak writer stores it in minutes, the mzML written back then has minutes (W3) |
 | intensity array and unit | `intensity()`, `intensityUnit` | the unit is kept as given; lost for a chromatogram without points (B-36) |
 | other arrays | `arrays()` | as for spectra |
 
@@ -324,7 +324,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-12 | `defaultArrayLength`, recomputed on write | silent |
 | B-13 | scanList params other than the combination term, moved to the spectrum | `MzMLReader` |
 | B-14 | lexical forms of values, userParam types, unit names; unitless summary, peak-intensity and collision-energy params given their default unit (warned: type mismatches kept as text, units set) | `MzMLReader` |
-| B-15 | scan start times converted to minutes and drift-time arrays to milliseconds; chromatogram times kept in their unit, except that a chromatogram in another unit than the first chromatogram's is converted to that unit | `MzMLReader`, `MzMLConversion` |
+| B-15 | scan start times converted to minutes and drift-time arrays to milliseconds | `MzMLReader` |
 | B-16 | `scan@sourceFileRef` and `precursor@sourceFileRef` | `MzMLReader` |
 | B-17 | scan windows without both limits in m/z, and scan window params other than the limits | `MzMLReader` |
 | B-18 | withdrawn: a selected ion without m/z is kept with m/z NaN since 0.13.0 | — |
