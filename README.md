@@ -644,9 +644,9 @@ start times converted to minutes or lost array data processing refs, and A-1 …
 content synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
 [losses section of the mzML converter design](docs/mzml-converter.md#losses) lists each loss and which class counts
 it; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
-Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
-A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`, which the library does not
-read). The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
+Two losses the converter does not count are printed as fixed lines without count after the limits of mzPeak → mzML:
+A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`); the library reads the
+auxiliary arrays and the spectrum intensity units, but the converter does not use them yet. The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
 lacks what the rule asks for (it does not invent the data): spectra without exactly one spectrum type and
 representation (`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum
 precursor activations without a dissociation method (`precursor_activation_must`), instrument configurations
