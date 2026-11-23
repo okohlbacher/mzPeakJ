@@ -45,9 +45,10 @@ import java.util.regex.Pattern;
  * Plans a {@link MzPeakWriter} write without any I/O: enforces the reader's index contract, puts every entity in
  * index order and numbers it 0..n-1, maps each precursor_index to the new index of its parent (a spectrum for a
  * spectrum's precursor, a chromatogram for a chromatogram's), refuses in the split layout precursors whose selected
- * ions readers would attach to another precursor, routes each spectrum's payload to spectra_data and spectra_peaks,
- * puts each entity's rows in main-axis order, names the extra columns of the spectrum signal files and the intensity
- * and extra columns of chromatograms_data, decides which members are written and serializes the footer key-values
+ * ions readers would attach to another precursor, appends there the MSn selected-ion chain ({@link #withChain}),
+ * routes each spectrum's payload to spectra_data and spectra_peaks, puts each entity's rows in main-axis order,
+ * names the extra columns of the spectrum signal files and the intensity and extra columns of chromatograms_data,
+ * decides which members are written and serializes the footer key-values
  * once. A contract violation throws {@link MzPeakException} before any file or temp directory exists. What the packed
  * layout loses gets one warning in the report for each kind: the scans after a spectrum's first, the precursors after
  * its primary one and the selected ions other than the primary precursor's first (one warning), the Params of
@@ -120,11 +121,16 @@ final class WritePlanner {
         // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
         // other than the primary precursor's first.
         int[] packedDrops = new int[3];
+        List<List<Precursor>> written = new ArrayList<>(ordered.size());
+        for (Spectrum s : ordered) {
+            written.add(writtenPrecursors(s.description().precursors(), writtenIndex));
+        }
         for (int i = 0; i < ordered.size(); i++) {
             Spectrum s = ordered.get(i);
-            List<Precursor> precursors = writtenPrecursors(s.description().precursors(), writtenIndex);
+            List<Precursor> precursors = written.get(i);
             if (options.metadataLayout() == MetadataLayout.SPLIT) {
                 requireOwnKeys(Owner.SPECTRUM, s.index(), i, s.description().precursors(), precursors);
+                precursors = withChain(precursors, written);
             } else {
                 countPackedDrops(s, precursors, packedDrops);
             }
@@ -153,8 +159,75 @@ final class WritePlanner {
                                 List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                 List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
         validateOthers(chromatograms, wavelengthSpectra, options.metadataLayout());
-        return complete(options, spectra, List.of(), spectrumExtras, chromatograms, wavelengthSpectra, scanSettings,
-                footer, report);
+        return complete(options, options.metadataLayout() == MetadataLayout.SPLIT ? withChains(spectra) : spectra,
+                List.of(), spectrumExtras, chromatograms, wavelengthSpectra, scanSettings, footer, report);
+    }
+
+    // MSn selected-ion chain (design D13-18, W7). Spec spectra.md (spectra_metadata_precursors): for higher MSn the
+    // writer MUST replicate the chain of selected ions from previous MS levels with the same source_index but each
+    // previous level's precursor_index, null when the file does not contain that spectrum, and SHOULD store the
+    // precursors in descending MS level. The split layout appends to a spectrum's own precursors those of each written
+    // parent, breadth first, so recursively, skipping a precursor whose precursor_index (null equal to null) the
+    // spectrum already lists; that also ends a cycle. An appended precursor never shares the key of an earlier one, so
+    // the check of requireOwnKeys holds for the chain. The packed layout writes the primary precursor only, which is
+    // always the spectrum's own, so it gets no chain.
+
+    /**
+     * {@code spectra}, a session's spectra numbered 0..n-1 whose precursor_index each names one of them or is null,
+     * each with its precursors as {@link #withChain} chains them: the caller's list when no spectrum gets a chain,
+     * otherwise a copy with each such entry renumbered with its chain.
+     */
+    private static List<SpectrumEntry> withChains(List<SpectrumEntry> spectra) {
+        List<List<Precursor>> own = new ArrayList<>(spectra.size());
+        for (SpectrumEntry entry : spectra) {
+            own.add(entry.precursors());
+        }
+        List<SpectrumEntry> out = null;
+        for (int i = 0; i < spectra.size(); i++) {
+            SpectrumEntry entry = spectra.get(i);
+            List<Precursor> chained = withChain(entry.precursors(), own);
+            if (chained != entry.precursors()) {
+                if (out == null) {
+                    out = new ArrayList<>(spectra);
+                }
+                out.set(i, entry.renumbered(entry.sourceIndex(), chained));
+            }
+        }
+        return out == null ? spectra : Collections.unmodifiableList(out);
+    }
+
+    /**
+     * {@code precursors}, as written, followed by the chain of selected ions: for each precursor in turn, those it
+     * appends included, the precursors of the parent its precursor_index names, {@code written.get(parent)}, that
+     * have a precursor_index none of the list has yet. {@code written} holds the precursors as written of every
+     * spectrum, by its written index. The list given is returned when nothing is appended.
+     */
+    private static List<Precursor> withChain(List<Precursor> precursors, List<List<Precursor>> written) {
+        List<Precursor> all = precursors;
+        for (int i = 0; i < all.size(); i++) {
+            Long parent = all.get(i).precursorIndex();
+            if (parent == null) {
+                continue;
+            }
+            for (Precursor p : written.get(Math.toIntExact(parent))) {
+                if (firstWithKeyOrSize(all, p.precursorIndex()) == all.size()) {
+                    if (all == precursors) {
+                        all = new ArrayList<>(precursors);
+                    }
+                    all.add(p);
+                }
+            }
+        }
+        return all == precursors ? precursors : Collections.unmodifiableList(all);
+    }
+
+    /** The position of the first of {@code precursors} whose precursor_index equals {@code key}, else their size. */
+    private static int firstWithKeyOrSize(List<Precursor> precursors, Long key) {
+        int i = 0;
+        while (i < precursors.size() && !Objects.equals(precursors.get(i).precursorIndex(), key)) {
+            i++;
+        }
+        return i;
     }
 
     /**

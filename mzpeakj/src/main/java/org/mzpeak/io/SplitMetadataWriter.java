@@ -96,7 +96,8 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * (AP-7).
  *
  * <p>Every precursor is written as the plan gives it ({@link WritePlan.SpectrumEntry#precursors()}): as the caller
- * gave it, with the {@code precursor_index} the planner maps to the new index of its parent, or null (WR-8). The
+ * gave it, with the {@code precursor_index} the planner maps to the new index of its parent, or null (WR-8), followed
+ * by the MSn selected-ion chain the planner appends: the precursors of its written parents (W7). The
  * mzPeakJ reader attaches a selected ion to the first precursor of its spectrum whose key {@code (source_index,
  * precursor_index)} equals the ion's, whatever the row order, so the ions of a precursor that shares its key with an
  * earlier one of the same spectrum would read back on that earlier one; the planner refuses such input before any

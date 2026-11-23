@@ -86,7 +86,7 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
      * derived from its payload. {@code data} sends {@code mz()}/{@code intensity()} to spectra_data; {@code peaks}
      * sends to spectra_peaks either {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}.
      * {@code precursors} are those of the caller's description, in its order, each with the precursor_index it is
-     * written with (WR-8).
+     * written with (WR-8), followed in the split layout by the MSn selected-ion chain the planner appends (W7).
      *
      * @param dataRows the rows this spectrum writes to spectra_data, its number_of_data_points; 0 without
      *                 {@code data}
