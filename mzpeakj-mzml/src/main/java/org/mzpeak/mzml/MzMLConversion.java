@@ -283,9 +283,9 @@ public final class MzMLConversion {
                     List<SelectedIon> ions = new ArrayList<>(f.selectedIons());
                     ions.addAll(p.selectedIons());
                     precursors.set(first, new Precursor(f.precursorIndex(), f.precursorId(), f.isolationWindow(), ions,
-                            f.activation()));
+                            f.activation(), f.msLevel()));
                     precursors.set(i, new Precursor(p.precursorIndex(), p.precursorId(), p.isolationWindow(),
-                            List.of(), p.activation()));
+                            List.of(), p.activation(), p.msLevel()));
                     moved += p.selectedIons().size();
                 }
             }
@@ -295,7 +295,7 @@ public final class MzMLConversion {
             losses.note(B_19, moved);
             SpectrumDescription description = new SpectrumDescription(d.index(), d.id(), d.msLevel(),
                     d.retentionTime(), d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
-                    d.scans(), precursors, d.parameters(), d.dataProcessingRef());
+                    d.scans(), precursors, d.parameters(), d.dataProcessingRef(), d.products());
             return new Spectrum(description, spectrum.mz(), spectrum.intensity(), spectrum.peaks(), spectrum.arrays(),
                     spectrum.peakArrays(), spectrum.intensityUnit(), spectrum.peakIntensityUnit());
         }

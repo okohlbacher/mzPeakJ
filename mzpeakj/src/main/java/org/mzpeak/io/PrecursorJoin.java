@@ -70,7 +70,8 @@ final class PrecursorJoin {
                     precursor.precursorId(),
                     precursor.isolationWindow(),
                     ionsOf.get(i),
-                    precursor.activation()));
+                    precursor.activation(),
+                    precursor.msLevel()));
         }
         return out;
     }

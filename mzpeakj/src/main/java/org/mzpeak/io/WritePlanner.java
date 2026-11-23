@@ -895,7 +895,7 @@ final class WritePlanner {
                     out = new ArrayList<>(precursors);
                 }
                 out.set(i, new Precursor(written, p.precursorId(), p.isolationWindow(), p.selectedIons(),
-                        p.activation()));
+                        p.activation(), p.msLevel()));
             }
         }
         return out == null ? precursors : Collections.unmodifiableList(out);
@@ -918,7 +918,8 @@ final class WritePlanner {
             return c;
         }
         return new Chromatogram(c.index(), c.id(), c.typeCurie(), c.time(), c.intensity(), c.intensityUnit(),
-                c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), precursors, c.timeUnit());
+                c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), precursors, c.timeUnit(),
+                c.products());
     }
 
     // Attribution check (design §11.5, WR-8). The mzPeakJ reader attaches a selected ion to the first precursor of its

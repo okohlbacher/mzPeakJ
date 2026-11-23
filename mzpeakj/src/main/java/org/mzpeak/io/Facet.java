@@ -7,9 +7,10 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * The nine metadata facets of an mzPeak dataset. In the split layout each facet is its own member, found by its
+ * The eleven metadata facets of an mzPeak dataset. In the split layout each facet is its own member, found by its
  * manifest role {@code (entity_type, data_kind)}. In the pin-era packed layout all facets of an entity are top-level
- * structs of the entity's {@code metadata} member, named {@link #packedStruct()}.
+ * structs of the entity's {@code metadata} member, named {@link #packedStruct()}; the products facets came after it
+ * and have no packed struct in any file.
  */
 enum Facet {
 
@@ -18,10 +19,12 @@ enum Facet {
     SPECTRUM_PRECURSOR("spectrum", "precursors", "precursor", "source_index", "precursor_index"),
     SPECTRUM_SELECTED_ION("spectrum", "selected_ions", "selected_ion",
             "source_index", "precursor_index", "selected_ion_index"),
+    SPECTRUM_PRODUCT("spectrum", "products", "product", "source_index", "product_index"),
     CHROMATOGRAM("chromatogram", "metadata", "chromatogram", "index"),
     CHROMATOGRAM_PRECURSOR("chromatogram", "precursors", "precursor", "source_index", "precursor_index"),
     CHROMATOGRAM_SELECTED_ION("chromatogram", "selected_ions", "selected_ion",
             "source_index", "precursor_index", "selected_ion_index"),
+    CHROMATOGRAM_PRODUCT("chromatogram", "products", "product", "source_index", "product_index"),
     WAVELENGTH_SPECTRUM("wavelength_spectrum", "metadata", "spectrum", "index"),
     WAVELENGTH_SCAN("wavelength_spectrum", "scans", "scan", "source_index", "scan_index");
 

@@ -114,8 +114,8 @@ decisions cause.
   (2026-11-08). *Why:* mzML holds one representation per spectrum.
 - **Selected ions of precursors sharing a parent move to the first of them** (B-19) (2026-11-08). *Why:* that is where
   both reference readers attach them.
-- **Chromatogram products are not modelled** (B-27) (2026-11-08). *Why:* no reference writer writes them, the Rust
-  reader panics on them, and spec HEAD redefines them.
+- **Chromatogram products are not converted** (B-27) (2026-11-08; the model reads them since X-26). *Why:* no
+  reference writer writes them, the Rust reader panics on them, and spec HEAD redefines them.
 - **No array descriptor API; fixed default units per array key** (`CvTerms.DEFAULT_ARRAY_UNITS`); an array in a unit
   the model cannot carry is converted, dropped or rejected, never relabelled (2026-11-08). *Why:* never write a unit the
   data were not in.
@@ -131,6 +131,12 @@ decisions cause.
   (else `data_processing_ref`) and written as `data_processing_id` by the split layout, the column only when some
   spectrum has one; the packed layout drops it with a warning (2026-11-23, X-25, D13-21). *Why:* spectra.md
   (l.108-111) names the column; until then the reader skipped it and the converter lost `spectrum@dataProcessingRef`.
+- **Products and the precursor MS level are read, not written**: `SpectrumDescription.products()` and
+  `Chromatogram.products()` (`Product(precursorIndex, productIndex, isolationWindow, parameters)`, in
+  `product_index` order) from the products members, and `Precursor.msLevel()` from the precursor `ms_level`
+  (2026-11-23, X-26, D13-21). *Why:* spectra.md and chromatograms.md define them; writing products would make the
+  Rust reader panic (`src/reader/metadata.rs`, `DataKind::Products => todo!()`), so both stay write losses
+  (WriteLossAuditTest).
 - **A NaN m/z, time, wavelength or intensity fails the write, and so the conversion** (2026-11-22, X-18, D13-14;
   until then a NaN m/z in mzML input was warned as B-34). A NaN extra-array cell and a NaN optional metadata double
   are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec

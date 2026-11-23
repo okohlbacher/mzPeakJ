@@ -776,7 +776,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   compatibility layout writes only the primary scan / precursor / selected ion of a spectrum (with a warning),
   so combineIMS frames lose their secondary mobility-scan metadata there, and no spectrum data processing
   reference, wavelength-spectrum Params or chromatogram polarity, data processing reference, Params or precursors
-  (with a warning each).
+  (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
+  `Chromatogram.products()`) or the precursor MS level (`Precursor.msLevel()`), which are read only (D13-21; the
+  Rust reference panics on a chromatogram products member).
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).

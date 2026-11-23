@@ -8,6 +8,7 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.Product;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
@@ -63,7 +64,8 @@ class ModelAssertRulesTest {
 
         assertThat(problems).as("components without a fitting rule").isEmpty();
         assertThat(records).containsExactlyInAnyOrder(SpectrumDescription.class, ScanEvent.class, ScanWindow.class,
-                Precursor.class, IsolationWindow.class, SelectedIon.class, Activation.class, CentroidPeak.class,
+                Precursor.class, Product.class, IsolationWindow.class, SelectedIon.class, Activation.class,
+                CentroidPeak.class,
                 Chromatogram.class, WavelengthSpectrum.class, FileMetadata.class, FileMetadata.FileDescription.class,
                 FileMetadata.SourceFile.class, FileMetadata.Contact.class, FileMetadata.InstrumentConfiguration.class,
                 FileMetadata.Component.class, FileMetadata.Software.class, FileMetadata.DataProcessing.class,
@@ -72,7 +74,8 @@ class ModelAssertRulesTest {
         assertThat(ModelAssert.RULES.keySet()).as("rules for no reachable component").isEqualTo(keys);
         assertThat(keys).contains("SpectrumDescription.dataProcessingRef", "WavelengthSpectrum.parameters",
                 "Chromatogram.polarity", "Chromatogram.dataProcessingRef", "Chromatogram.parameters",
-                "Chromatogram.precursors",
+                "Chromatogram.precursors", "Chromatogram.products", "SpectrumDescription.products",
+                "Precursor.msLevel", "Product.precursorIndex",
                 "FileMetadata.FileDescription.contacts", "FileMetadata.Contact.name",
                 "FileMetadata.Contact.affiliation", "FileMetadata.Contact.parameters", "ScanSettings.sourceFileRefs",
                 "ScanSettings.targets", "MzPeakManifest.CvEntry.version");

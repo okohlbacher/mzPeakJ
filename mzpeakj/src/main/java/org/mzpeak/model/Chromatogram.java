@@ -7,7 +7,8 @@ import java.util.Map;
 
 /**
  * A chromatogram (e.g. total ion current, base peak, or selected ion) — parallel time + intensity arrays, plus any
- * further per-point arrays the file stores alongside them, and its polarity, data processing, Params and precursors.
+ * further per-point arrays the file stores alongside them, and its polarity, data processing, Params, precursors and
+ * products.
  *
  * <p>Record semantics: {@code equals}, {@code hashCode} and {@code toString} treat the {@code double[]} components,
  * and the arrays held in {@code arrays}, by reference, so two chromatograms with equal values in different arrays
@@ -46,15 +47,18 @@ import java.util.Map;
  *                          never {@code null}, may be empty. Unmodifiable, a copy of the given list. The
  *                          {@link Precursor#precursorIndex()} of a chromatogram precursor names a chromatogram (the
  *                          chromatogram foreign key of the format), its {@link Precursor#precursorId()} may name a
- *                          spectrum. The isolation window of the product ion is not modelled
+ *                          spectrum. The isolation window of a product ion is in {@link #products}
  * @param timeUnit          unit CURIE of {@link #time}; never {@code null}: {@code UO:0000031} minute, the unit of
  *                          {@link CvTerms#DEFAULT_ARRAY_UNITS}, when a {@code null} is passed. On read it is the unit
  *                          the file declares for the time column, minute when it declares none
+ * @param products          the product ion selections, as in selected reaction monitoring, in
+ *                          {@link Product#productIndex()} order; never {@code null}, may be empty. Unmodifiable, a
+ *                          copy of the given list. Read from the products facet; mzPeakJ does not write them
  */
 public record Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
                            String intensityUnit, Map<String, double[]> arrays, Polarity polarity,
                            String dataProcessingRef, List<Param> parameters, List<Precursor> precursors,
-                           String timeUnit) {
+                           String timeUnit, List<Product> products) {
 
     /** UO:0000031 minute, the default {@link #timeUnit}. */
     private static final String MINUTE = "UO:0000031";
@@ -73,7 +77,8 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
      * @throws IllegalArgumentException when {@code time} and {@code intensity} differ in length, or when
      *                                  {@code arrays} has a null key, a null value or a value whose length differs
      *                                  from {@code time}'s
-     * @throws NullPointerException     when {@code parameters} or {@code precursors} holds a {@code null} element
+     * @throws NullPointerException     when {@code parameters}, {@code precursors} or {@code products} holds a
+     *                                  {@code null} element
      */
     public Chromatogram {
         time = time == null ? new double[0] : time;
@@ -87,6 +92,16 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
         precursors = precursors == null ? List.of() : List.copyOf(precursors);
         timeUnit = timeUnit == null ? MINUTE : timeUnit;
+        products = products == null ? List.of() : List.copyOf(products);
+    }
+
+    /** A chromatogram without products. */
+    public Chromatogram(long index, String id, String typeCurie, double[] time, double[] intensity,
+                        String intensityUnit, Map<String, double[]> arrays, Polarity polarity,
+                        String dataProcessingRef, List<Param> parameters, List<Precursor> precursors,
+                        String timeUnit) {
+        this(index, id, typeCurie, time, intensity, intensityUnit, arrays, polarity, dataProcessingRef, parameters,
+                precursors, timeUnit, List.of());
     }
 
     /** A chromatogram whose times are in minutes (UO:0000031). */
@@ -141,7 +156,7 @@ public record Chromatogram(long index, String id, String typeCurie, double[] tim
             converted[i] = from > to ? time[i] * (double) (from / to) : time[i] / (double) (to / from);
         }
         return new Chromatogram(index, id, typeCurie, converted, intensity, intensityUnit, arrays, polarity,
-                dataProcessingRef, parameters, precursors, unit);
+                dataProcessingRef, parameters, precursors, unit, products);
     }
 
     private static Map<String, double[]> copyArrays(Map<String, double[]> arrays, int length) {

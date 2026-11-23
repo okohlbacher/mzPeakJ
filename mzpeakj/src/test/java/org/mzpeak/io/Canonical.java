@@ -5,6 +5,7 @@ import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.Product;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
@@ -32,8 +33,10 @@ import java.util.function.Function;
  *       {@code [ ]} with its elements in list order, separated by {@code ;}. An absent string component (an id, a
  *       filter string, a spectrum reference, a CURIE or a name) reads {@link #ABSENT} (U+2400), so that it differs
  *       from the string {@code "null"}; any other absent value reads {@code null}. The last component, the data
- *       processing reference (R6), is written only when present, as {@code |dp=<ref>}, so that the lines of
- *       spectra without one, and the digests pinned before R6, stay as they were.
+ *       processing reference (R6), is written only when present, as {@code |dp=<ref>}, and so are the products
+ *       (R6), as {@code |products=[...]}, and a precursor's MS level, as {@code |ms=<level>} before its closing
+ *       parenthesis, so that the lines of spectra without them, and the digests pinned before R6, stay as they
+ *       were.
  *   <li>A {@link Param} reads {@code (name|accession|Class:value|unit)}, where {@code Class} is the simple name
  *       of the value's runtime class, so a value that changes type (Long to Integer, say) changes the line.
  *   <li>A {@link Chromatogram} header reads {@code index|id|typeCurie|time.length}, a {@link WavelengthSpectrum}
@@ -57,7 +60,8 @@ final class Canonical {
                 + "|" + list(d.scans(), Canonical::scan)
                 + "|" + list(d.precursors(), Canonical::precursor)
                 + "|" + list(d.parameters(), Canonical::param)
-                + (d.dataProcessingRef() == null ? "" : "|dp=" + d.dataProcessingRef());
+                + (d.dataProcessingRef() == null ? "" : "|dp=" + d.dataProcessingRef())
+                + (d.products().isEmpty() ? "" : "|products=" + list(d.products(), Canonical::product));
     }
 
     static String describe(Chromatogram c) {
@@ -85,7 +89,13 @@ final class Canonical {
         return "(" + p.precursorIndex() + "|" + str(p.precursorId())
                 + "|" + isolationWindow(p.isolationWindow())
                 + "|" + list(p.selectedIons(), Canonical::selectedIon)
-                + "|" + activation(p.activation()) + ")";
+                + "|" + activation(p.activation())
+                + (p.msLevel() == null ? "" : "|ms=" + p.msLevel()) + ")";
+    }
+
+    static String product(Product p) {
+        return "(" + p.precursorIndex() + "|" + p.productIndex() + "|" + isolationWindow(p.isolationWindow())
+                + "|" + list(p.parameters(), Canonical::param) + ")";
     }
 
     static String isolationWindow(IsolationWindow w) {
