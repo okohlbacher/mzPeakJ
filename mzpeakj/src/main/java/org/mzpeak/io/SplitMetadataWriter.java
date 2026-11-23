@@ -59,7 +59,8 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  * <ul>
  *   <li>spectra_metadata: one row per spectrum with its typed columns (index, id, ms level, time, polarity,
  *       representation, spectrum type, the five summary values, the point counts of the files written), its
- *       {@code parameters} and an empty {@code auxiliary_arrays} list with {@code number_of_auxiliary_arrays} 0;
+ *       {@code data_processing_id} (the column is there only when some spectrum has one), its {@code parameters}
+ *       and an empty {@code auxiliary_arrays} list with {@code number_of_auxiliary_arrays} 0;
  *   <li>spectra_metadata_scans: one row per scan of every spectrum, keyed by {@code source_index} with a global
  *       {@code scan_index}, with its typed columns, {@code parameters}, {@code scan_windows} and, when some scan has
  *       one, the imaging positions. A spectrum without scans gets one row all the same, as in the packed layout: its
@@ -426,9 +427,25 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
 
     // ---- spectra_metadata ---------------------------------------------------------------------------------------
 
+    /**
+     * Writes one row per spectrum, in {@link #SPECTRUM_SCHEMA} with a {@code data_processing_id} column before the
+     * {@code parameters} list, in the order of spectra.md, only when some spectrum has a data processing reference, so
+     * that a write without one keeps the schema it had before the model had references.
+     */
     private static void writeSpectra(Path file, WritePlan plan, Map<String, String> footer) throws IOException {
-        SimpleGroupFactory factory = new SimpleGroupFactory(SPECTRUM_SCHEMA);
-        try (ParquetWriter<Group> writer = openWriter(file, SPECTRUM_SCHEMA, withSchemaHint(footer, SPECTRUM_SCHEMA),
+        boolean dataProcessingRefs = false;
+        for (SpectrumEntry entry : plan.spectra()) {
+            dataProcessingRefs |= entry.description().dataProcessingRef() != null;
+        }
+        MessageType schema = SPECTRUM_SCHEMA;
+        if (dataProcessingRefs) {
+            List<Type> fields = new ArrayList<>(schema.getFields());
+            fields.add(schema.getFieldIndex(PARAMETERS), Types.optional(PrimitiveTypeName.BINARY)
+                    .as(LogicalTypeAnnotation.stringType()).named(DATA_PROCESSING_ID));
+            schema = new MessageType(schema.getName(), fields);
+        }
+        SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+        try (ParquetWriter<Group> writer = openWriter(file, schema, withSchemaHint(footer, schema),
                 plan.options())) {
             for (SpectrumEntry entry : plan.spectra()) {
                 SpectrumDescription d = entry.description();
@@ -466,6 +483,9 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 }
                 if (entry.peaks()) {
                     row.add(field(N_PEAKS), (long) entry.peakRows());
+                }
+                if (d.dataProcessingRef() != null) {
+                    row.add(DATA_PROCESSING_ID, d.dataProcessingRef());
                 }
                 params(row, params.rest());
                 noAuxiliaryArrays(row);

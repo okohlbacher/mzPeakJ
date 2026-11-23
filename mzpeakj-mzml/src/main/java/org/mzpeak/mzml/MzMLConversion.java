@@ -295,7 +295,7 @@ public final class MzMLConversion {
             losses.note(B_19, moved);
             SpectrumDescription description = new SpectrumDescription(d.index(), d.id(), d.msLevel(),
                     d.retentionTime(), d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
-                    d.scans(), precursors, d.parameters());
+                    d.scans(), precursors, d.parameters(), d.dataProcessingRef());
             return new Spectrum(description, spectrum.mz(), spectrum.intensity(), spectrum.peaks(), spectrum.arrays(),
                     spectrum.peakArrays(), spectrum.intensityUnit(), spectrum.peakIntensityUnit());
         }

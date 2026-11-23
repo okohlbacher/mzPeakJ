@@ -542,6 +542,39 @@ class MzMLWriterSpectraTest {
         }
     }
 
+    /**
+     * X-25 (R6): a spectrum's data processing is written as its dataProcessingRef where it differs from the
+     * spectrumList's default and reads back; one equal to the default is not written; one that names no data
+     * processing of the file metadata is dropped (A-18).
+     */
+    @Test
+    void aSpectrumKeepsItsDataProcessingWhereItDiffersFromTheListDefault() {
+        FileMetadata base = metadata();
+        List<DataProcessing> processing = new ArrayList<>(base.dataProcessingMethods());
+        processing.add(new DataProcessing("dp2", base.dataProcessingMethods().get(0).methods()));
+        FileMetadata m = new FileMetadata(base.fileDescription(), base.instrumentConfigurations(), processing,
+                base.samples(), base.software(), base.run());
+        List<String> refs = Arrays.asList("dp2", "dp", null, "gone");
+        List<String> ids = List.of("scan=1", "scan=2", "scan=3", "scan=4");
+        Contents contents = new Contents(m, List.of(), List.of(), ids, List.of(), List.of());
+
+        for (Written w : write("data-processing", contents, writer -> {
+            for (int i = 0; i < ids.size(); i++) {
+                SpectrumDescription d = description(ids.get(i), 1, List.of(scan(1.0 + i)), List.of(), List.of());
+                writer.write(spectrum(new SpectrumDescription(i, d.id(), d.msLevel(), d.retentionTime(),
+                        d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                        d.precursors(), d.parameters(), refs.get(i))));
+            }
+        })) {
+            assertThat(jmzmlSpectra(w.file())).extracting(uk.ac.ebi.jmzml.model.mzml.Spectrum::getDataProcessingRef)
+                    .containsExactly("dp2", null, null, null);
+            assertThat(read(w.file()).spectra()).extracting(s -> s.description().dataProcessingRef())
+                    .containsExactly("dp2", null, null, null);
+            assertThat(w.warnings()).contains(String.format(MzMLWriter.A_18, "spectrum dataProcessingRef dropped")
+                    + " (1)");
+        }
+    }
+
     // ---- (g) arrays ---------------------------------------------------------------------------------------------
 
     @Test
@@ -957,7 +990,7 @@ class MzMLWriterSpectraTest {
     private static SpectrumDescription withTime(SpectrumDescription d, double retentionTime) {
         return new SpectrumDescription(d.index(), d.id(), d.msLevel(), retentionTime, d.polarity(),
                 d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(), d.precursors(),
-                d.parameters());
+                d.parameters(), d.dataProcessingRef());
     }
 
     /** A description of unknown polarity and representation without params, with one scan. */

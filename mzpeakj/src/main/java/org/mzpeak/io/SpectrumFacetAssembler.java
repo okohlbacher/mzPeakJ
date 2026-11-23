@@ -63,7 +63,7 @@ final class SpectrumFacetAssembler {
             out.add(new SpectrumDescription(
                     b.index, b.id, b.msLevel, retentionTime(b.time, scans), b.polarity, b.continuity,
                     b.numberOfDataPoints, b.numberOfPeaks, scans, precursors,
-                    b.spectrumParams));
+                    b.spectrumParams, b.dataProcessingRef));
         }
         out.sort((a, b) -> Long.compare(a.index(), b.index()));
         return new Decoded(out, deltaModels);

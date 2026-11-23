@@ -220,6 +220,7 @@ public final class ModelAssert {
             entry("SpectrumDescription.scans", Rule.list(Rule.RECORD)),
             entry("SpectrumDescription.precursors", Rule.list(Rule.RECORD)),
             entry("SpectrumDescription.parameters", Rule.PARAMS),
+            entry("SpectrumDescription.dataProcessingRef", Rule.EXACT),
 
             entry("ScanEvent.startTime", Rule.DOUBLE),
             entry("ScanEvent.injectionTime", Rule.DOUBLE),

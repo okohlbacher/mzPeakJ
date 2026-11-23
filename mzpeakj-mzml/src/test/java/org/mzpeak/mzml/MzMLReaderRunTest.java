@@ -1866,18 +1866,46 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void spectrumAttributesAndScanListParamsTheModelLacksAreNoted(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
-                        SCAN_19 + " defaultArrayLength=\"15\" dataProcessingRef=\"pwiz_processing\""), SCAN_19,
-                "<scan instrumentConfigurationRef", "<userParam name=\"averaged\" value=\"no\"/>\n"
-                        + "<scan instrumentConfigurationRef"));
+    void scanListParamsTheModelLacksAreNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<scan instrumentConfigurationRef",
+                "<userParam name=\"averaged\" value=\"no\"/>\n<scan instrumentConfigurationRef"));
 
         Run run = read(file);
 
         assertThat(run.spectra.get(0).description().parameters()).endsWith(
                 new Param("no combination", "MS:1000795", null, null), new Param("averaged", null, "no", null));
-        assertThat(run.reader.warnings()).contains("B-10 spectrum@dataProcessingRef lost (1)",
+        assertThat(run.reader.warnings()).contains(
                 "B-13 scanList params other than the combination term moved to the spectrum (1)");
+    }
+
+    /**
+     * X-25 (R6): an MS spectrum's dataProcessingRef is kept where it differs from the spectrumList's default; one
+     * equal to that default reads as null, like a spectrum without one. Neither is noted as lost.
+     */
+    @Test
+    void anMsSpectrumKeepsADataProcessingOtherThanTheSpectrumListDefault(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
+                        SCAN_19 + " defaultArrayLength=\"15\" dataProcessingRef=\"CompassXtract_x0020_processing\""),
+                SCAN_20 + " defaultArrayLength=\"10\"",
+                SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"pwiz_processing\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).extracting(s -> s.description().dataProcessingRef())
+                .containsExactly("CompassXtract_x0020_processing", null, null, null);
+        assertThat(run.reader.warnings()).noneMatch(w -> w.contains("dataProcessingRef lost") && w.startsWith("B-10"));
+    }
+
+    /** A wavelength spectrum, whose model has no data processing reference, loses its dataProcessingRef (B-10). */
+    @Test
+    void aWavelengthSpectrumLosesItsDataProcessingRef(@TempDir Path dir) throws IOException {
+        Path file = tofWith(dir, s -> replaceOnce(s, UV_0 + " defaultArrayLength=\"96\"",
+                UV_0 + " defaultArrayLength=\"96\" dataProcessingRef=\"pwiz_Reader_Agilent_conversion\""));
+
+        Run run = read(file);
+
+        assertThat(run.wavelengthSpectra).hasSize(520);
+        assertThat(run.reader.warnings()).contains("B-10 spectrum@dataProcessingRef lost (1)");
     }
 
     @Test

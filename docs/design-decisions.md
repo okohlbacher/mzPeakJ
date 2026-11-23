@@ -127,6 +127,10 @@ decisions cause.
 - **The chromatogram data-processing column is written `data_processing_id`**, read as that or the
   `data_processing_ref` 0.12.0 wrote (2026-11-08, name changed 2026-11-22, X-13). *Why:* the spec spelling
   (`chromatograms.md`, l.53); 0.12.0 had taken `data_processing_ref` for it.
+- **The spectrum data processing is kept** as `SpectrumDescription.dataProcessingRef`, read from `data_processing_id`
+  (else `data_processing_ref`) and written as `data_processing_id` by the split layout, the column only when some
+  spectrum has one; the packed layout drops it with a warning (2026-11-23, X-25, D13-21). *Why:* spectra.md
+  (l.108-111) names the column; until then the reader skipped it and the converter lost `spectrum@dataProcessingRef`.
 - **A NaN m/z, time, wavelength or intensity fails the write, and so the conversion** (2026-11-22, X-18, D13-14;
   until then a NaN m/z in mzML input was warned as B-34). A NaN extra-array cell and a NaN optional metadata double
   are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec

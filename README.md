@@ -313,8 +313,9 @@ Without a row-group size, the `mzpeak.writer.rowGroupSize` system property appli
   manifest uses the current dialect, with column mappings. The HEAD reference Python reader and the Rust
   reference reader read this output; both are checked (the Rust reader in CI, see the writer notes).
 - **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
-  and only the first scan and the primary precursor of a spectrum; no wavelength-spectrum Params, and no
-  chromatogram polarity, data processing reference, Params or precursors (one WARNING for each kind dropped).
+  and only the first scan and the primary precursor of a spectrum; no spectrum data processing reference, no
+  wavelength-spectrum Params, and no chromatogram polarity, data processing reference, Params or precursors (one
+  WARNING for each kind dropped).
   Since 0.12.0 a spectrum type or summary term it writes as a column no longer stays in the `parameters` list as
   well. Use it only for readers of that era; the current Python and Rust readers reject it.
 
@@ -773,8 +774,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 - **Writing**: the delta-`chunk` layout (the m/z + intensity payload is preserved in full). The `PACKED`
   compatibility layout writes only the primary scan / precursor / selected ion of a spectrum (with a warning),
-  so combineIMS frames lose their secondary mobility-scan metadata there, and no wavelength-spectrum Params or
-  chromatogram polarity, data processing reference, Params or precursors (with a warning each).
+  so combineIMS frames lose their secondary mobility-scan metadata there, and no spectrum data processing
+  reference, wavelength-spectrum Params or chromatogram polarity, data processing reference, Params or precursors
+  (with a warning each).
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
