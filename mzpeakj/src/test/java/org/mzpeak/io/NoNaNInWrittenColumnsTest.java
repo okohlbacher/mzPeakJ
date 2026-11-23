@@ -196,9 +196,10 @@ class NoNaNInWrittenColumnsTest {
     /**
      * NaN optional metadata doubles, written in both metadata layouts, are written as null and every column keeps its
      * column index: a scan's injection time and scan window lower limit, a Param's value, an isolation window target,
-     * a selected ion's intensity and another's m/z, the total ion current of intensities
+     * a selected ion's m/z and another's intensity, the total ion current of intensities
      * {@code [+Infinity, -Infinity]}, and a wavelength spectrum's lambda max. Each reads back absent; the ion without
-     * m/z reads back with m/z NaN (D13-22) in the split layout (the packed layout writes the primary ion only).
+     * m/z, the first, so that the packed layout, which writes the primary ion only, writes it too, reads back with
+     * m/z NaN (D13-22).
      */
     @ParameterizedTest
     @MethodSource("layouts")
@@ -206,8 +207,8 @@ class NoNaNInWrittenColumnsTest {
         ScanEvent scan = new ScanEvent(1.0, Double.NaN, null, null, null, null,
                 List.of(new ScanWindow(Double.NaN, 2000)), List.of(new Param("nan param", null, Double.NaN, null)));
         Precursor precursor = new Precursor(null, null, new IsolationWindow(Double.NaN, 1.0, 1.0),
-                List.of(new SelectedIon(500.0, 2, Double.NaN, List.of()),
-                        new SelectedIon(Double.NaN, 3, 7.0, List.of())), Activation.EMPTY);
+                List.of(new SelectedIon(Double.NaN, 3, 7.0, List.of()),
+                        new SelectedIon(500.0, 2, Double.NaN, List.of())), Activation.EMPTY);
         SpectrumDescription d = new SpectrumDescription(0, "nan=0", 2, 1.0, null, SignalContinuity.PROFILE, 0, 0,
                 List.of(scan), List.of(precursor), List.of());
         Spectrum s = new Spectrum(d, new double[] {100, 200}, new double[] {Double.POSITIVE_INFINITY,
@@ -231,14 +232,14 @@ class NoNaNInWrittenColumnsTest {
             assertThat(backPrecursor.isolationWindow().lowerOffset()).isEqualTo(1.0);
             assertThat(backPrecursor.selectedIons()).hasSize(layout == MetadataLayout.SPLIT ? 2 : 1);
             assertThat(backPrecursor.selectedIons().get(0)).satisfies(ion -> {
-                assertThat(ion.mz()).isEqualTo(500.0);
-                assertThat(ion.intensity()).isNull();
+                assertThat(ion.mz()).isNaN();
+                assertThat(ion.charge()).isEqualTo(3);
+                assertThat(ion.intensity()).isEqualTo(7.0);
             });
             if (layout == MetadataLayout.SPLIT) {
                 assertThat(backPrecursor.selectedIons().get(1)).satisfies(ion -> {
-                    assertThat(ion.mz()).isNaN();
-                    assertThat(ion.charge()).isEqualTo(3);
-                    assertThat(ion.intensity()).isEqualTo(7.0);
+                    assertThat(ion.mz()).isEqualTo(500.0);
+                    assertThat(ion.intensity()).isNull();
                 });
             }
             assertThat(back.parameters()).noneMatch(p -> "MS:1000285".equals(p.accession()));
