@@ -151,7 +151,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * without zlib; an empty array is never compressed (jmzML's encoder does not return on one). A key of
  * {@link CvTerms#ARRAY_TYPES} is written as that array type, every other key as MS:1000786 'non-standard data array'
  * with the key as its value; each with its unit from {@link CvTerms#DEFAULT_ARRAY_UNITS}, a chromatogram's time
- * as stored with its {@code timeUnit} (D-12c) and its intensity with its {@code intensityUnit}.
+ * as stored with its {@code timeUnit} (D-12c) and its intensity with its {@code intensityUnit}, an MS spectrum's
+ * intensity with its {@code intensityUnit}, MS:1000131 when it has none (R5).
  *
  * <p><b>Spectra</b> (design 5.4-5.7) are written with their m/z, intensity and extra arrays, the length of the m/z
  * array as their default array length, and their cvParams in a fixed order: the spectrum types, else MS1 or MSn
@@ -165,9 +166,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * injection time, filter string, preset scan configuration, the ion mobility terms and then its other params, its
  * instrument configuration and its windows. A precursor holds its isolation window (omitted when it holds nothing), its
  * selected ions (the list omitted when empty) and its activation (always). <b>Wavelength spectra</b> (design 5.9) come
- * after all MS spectra, each with one scan holding its time, its wavelength and intensity arrays, and its cvParams in
- * the order spectrum types, representation, MS:1000619, MS:1000618, MS:1000505, MS:1000285, lambda max (MS:1003812 in
- * nanometers), the others.
+ * after all MS spectra, each with its scans as MS spectra have them but with their windows in nanometers (R8), else one
+ * scan holding its time (A-8), a time that is not the first scan's start time lost (A-9); its wavelength and intensity
+ * arrays, and its cvParams in the order spectrum types, representation, MS:1000619, MS:1000618, MS:1000505, MS:1000285,
+ * lambda max (MS:1003812 in nanometers), the others.
  *
  * <p><b>Chromatograms</b> (design 5.8) carry one chromatogram type, their {@code typeCurie}, else the first type among
  * their params; a further type param is dropped, counted when it names another type (A-31). They keep their first
@@ -198,12 +200,13 @@ public final class MzMLWriter implements AutoCloseable {
 
     /**
      * The loss of design 6.2 the converter does not count, noted as a fixed line after {@link #LIMITS}: A-13, the
-     * units and data types of arrays as stored in mzPeak. The library reads the spectrum intensity units (R5); the
-     * converter does not use them yet. A-14 is withdrawn: auxiliary arrays are written (R1).
+     * data types of arrays as stored in mzPeak and the units of arrays other than a spectrum's intensity, which is
+     * written in its intensity unit (R5). A-14 is withdrawn: auxiliary arrays are written (R1).
      */
     static final List<String> NOT_VISIBLE = List.of(
             "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every array"
-                    + " is written as 64-bit floats in the default unit of its key, or without unit");
+                    + " is written as 64-bit floats in the default unit of its key, or without unit, a spectrum's"
+                    + " intensity in its intensity unit");
 
     // The losses of design 6.2 this writer counts, one line each in warnings().
     static final String A_1 = "A-1 peak lists that are not a row copy of the spectrum's arrays dropped";
@@ -448,7 +451,7 @@ public final class MzMLWriter implements AutoCloseable {
             note(A_32, minutes != null && start.value() instanceof Number n
                     && minutes.applyAsDouble(n.doubleValue()) == time ? 0 : 1);
         }
-        x.setScanList(scanList(scans, rest));
+        x.setScanList(scanList(scans, rest, MZ));
         params(x, rest);
         spectrumMust(x);
         if (!d.precursors().isEmpty()) {
@@ -458,7 +461,8 @@ public final class MzMLWriter implements AutoCloseable {
             x.setPrecursorList(precursors);
         }
         note(A_1, spectrum.peaks().isEmpty() || rowCopy(spectrum) ? 0 : 1);
-        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(), COUNTS, spectrum.arrays(),
+        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(),
+                Objects.requireNonNullElse(spectrum.intensityUnit(), COUNTS), spectrum.arrays(),
                 spectrum.auxiliaryArrays()));
         add(list, x);
     }
@@ -487,15 +491,22 @@ public final class MzMLWriter implements AutoCloseable {
                     + "' after the " + wavelengthIds.size() + " wavelength spectra announced");
         }
         next(contents.wavelengthSpectrumIds().get(k), spectrum.id(), "wavelength spectrum #" + k);
-        declared("wavelength spectrum #" + k + " (" + spectrum.id() + ")", spectrum.parameters());
+        String name = "wavelength spectrum #" + k + " (" + spectrum.id() + ")";
+        declared(name, spectrum.parameters());
+        spectrum.scans().forEach(scan -> declared(name, scan.parameters()));
 
         uk.ac.ebi.jmzml.model.mzml.Spectrum x = spectrum(i, wavelengthIds.get(k), spectrum.wavelength().length);
         List<Param> rest = new ArrayList<>(spectrum.parameters());
         params(x, take(rest, SPECTRUM_TYPE));
         params(x, take(rest, WAVELENGTH_ORDER));
         scalar(x, "MS:1003812", spectrum.lambdaMax(), NANOMETER);
-        x.setScanList(scanList(List.of(new ScanEvent(spectrum.time(), null, null, null, null, null, null, null)),
-                rest));
+        List<ScanEvent> scans = spectrum.scans();
+        if (scans.isEmpty()) {
+            scans = List.of(new ScanEvent(spectrum.time(), null, null, null, null, null, null, null));
+            note(String.format(A_8, "scan holding the time of a wavelength spectrum without scans"));
+        }
+        note(A_9, Double.compare(scans.get(0).startTime(), spectrum.time()) == 0 ? 0 : 1);
+        x.setScanList(scanList(scans, rest, NANOMETER));
         params(x, rest);
         spectrumMust(x);
         x.setBinaryDataArrayList(arrays(WAVELENGTH_ARRAY, NANOMETER, spectrum.wavelength(), spectrum.intensity(),
@@ -1160,8 +1171,9 @@ public final class MzMLWriter implements AutoCloseable {
     /**
      * The scanList of {@code scans}, none for none: the combination terms taken from {@code params}, else
      * MS:1000795 'no combination' for exactly one scan (A-7); two or more scans without one get none (design 6.4).
+     * The scan windows are in {@code windowUnit}.
      */
-    private ScanList scanList(List<ScanEvent> scans, List<Param> params) {
+    private ScanList scanList(List<ScanEvent> scans, List<Param> params, String windowUnit) {
         if (scans.isEmpty()) {
             return null;
         }
@@ -1173,7 +1185,7 @@ public final class MzMLWriter implements AutoCloseable {
         }
         params(list, combination);
         note(SCAN_MUST, combination.size() == 1 ? 0 : 1);
-        scans.forEach(scan -> list.getScan().add(scan(scan)));
+        scans.forEach(scan -> list.getScan().add(scan(scan, windowUnit)));
         list.setCount(scans.size());
         return list;
     }
@@ -1181,9 +1193,9 @@ public final class MzMLWriter implements AutoCloseable {
     /**
      * A scan: its instrument configuration (dropped when it names none, A-18) and spectrum reference; its start time
      * (none for NaN), injection time, filter string and preset scan configuration; its ion mobility terms, then its
-     * other params; its windows, each with its two limits.
+     * other params; its windows, each with its two limits in {@code windowUnit}.
      */
-    private Scan scan(ScanEvent e) {
+    private Scan scan(ScanEvent e, String windowUnit) {
         Scan x = new Scan();
         x.setInstrumentConfigurationRef(text(ref(instrumentIds, e.instrumentConfigurationRef(),
                 "scan instrumentConfigurationRef dropped")));
@@ -1198,8 +1210,8 @@ public final class MzMLWriter implements AutoCloseable {
             ScanWindowList windows = new ScanWindowList();
             for (ScanWindow w : e.scanWindows()) {
                 ParamGroup window = new ParamGroup();
-                scalar(window, "MS:1000501", w.lowerLimit(), MZ);
-                scalar(window, "MS:1000500", w.upperLimit(), MZ);
+                scalar(window, "MS:1000501", w.lowerLimit(), windowUnit);
+                scalar(window, "MS:1000500", w.upperLimit(), windowUnit);
                 windows.getScanWindow().add(window);
             }
             windows.setCount(e.scanWindows().size());

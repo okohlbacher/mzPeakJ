@@ -40,15 +40,17 @@ import java.util.function.Supplier;
  *
  * <p>{@link #toMzPeak} reads the mzML through {@link MzMLReader}: its header and survey first, so that what the model
  * cannot carry is rejected before the target is created, then every spectrum, wavelength spectrum and chromatogram
- * into a {@link MzPeakWriter.Session} opened with the header's file metadata, scan settings and cv list and the
- * survey's extra array keys. Before a spectrum is added, the selected ions of each of its precursors that shares its
- * precursor index (its parent) with an earlier precursor of the spectrum are moved to the first of them, which keeps
- * its own first; every isolation window and activation stays (design 5.6, B-19). Each chromatogram is added in its own
+ * into a {@link MzPeakWriter.Session} opened with the header's file metadata, scan settings and cv list, the survey's
+ * extra array keys and, as its spectrum intensity units, the intensity units of the MS spectra the survey found (R5).
+ * Before a spectrum is added, the selected ions of each of its precursors that shares its precursor index (its parent)
+ * with an earlier precursor of the spectrum are moved to the first of them, which keeps its own first; every isolation
+ * window and activation stays (design 5.6, B-19). Each chromatogram is added in its own
  * time unit, which the mzPeak writer converts to minutes (W3); the reader refuses a time unit that
  * {@link Chromatogram#withTimeUnit} cannot convert, so every chromatogram converts. It counts what the mzPeak read
  * changes (design 6.1): extra arrays of spectra and chromatograms without a value other than NaN, empty ones included,
  * which it drops (B-26); non-finite values of file-level params, which come back as the Strings {@code Infinity},
- * {@code -Infinity} or {@code NaN} (B-35); chromatograms without points, whose intensity unit it drops (B-36); and what
+ * {@code -Infinity} or {@code NaN} (B-35); chromatograms without points, whose intensity unit it drops, and spectra
+ * without points in an intensity unit other than MS:1000131, whose unit it drops too (B-36); and what
  * the mzPeak writer adds (B-24): a spectrum type to spectra without one, the five summary params to spectra with
  * points and none of them, a scan to spectra without scans, and a run default source file when the run names none. A
  * NaN m/z, time, wavelength or intensity fails the conversion with the writer's message, which names the spectrum,
@@ -87,7 +89,11 @@ public final class MzMLConversion {
     static final String B_35 = "B-35 non-finite file-level param values, which the mzPeak read gives as the Strings"
             + " Infinity, -Infinity or NaN";
     static final String B_36 = "B-36 chromatograms without points, whose intensity unit the mzPeak read drops";
+    static final String B_36_SPECTRUM = "B-36 spectra without points in an intensity unit other than MS:1000131,"
+            + " whose intensity unit the mzPeak read drops";
 
+    /** Number of detector counts, the intensity unit the mzML written back gives a spectrum without one. */
+    private static final String COUNTS = "MS:1000131";
     /** The source file the mzPeak writer adds when the run and the file description name none (design 5.10). */
     private static final SourceFile SOURCE_STUB = new SourceFile("mzpeakj_source", "unknown", "file:///unknown",
             List.of());
@@ -122,7 +128,9 @@ public final class MzMLConversion {
      * {@code directory}, else a ZIP archive, written with {@code options} and the mzML's cv list: the cv list of
      * {@code options} ({@link MzPeakWriter.Options#cvList()}) is replaced by the entries of the mzML's {@code cvList}
      * that {@link MzPeakWriter.Options#withCvList} accepts; an entry it rejects is left out, with a warning, if no
-     * written CURIE uses its prefix (W8, D13-15).
+     * written CURIE uses its prefix (W8, D13-15). For an mzML with MS spectra, the spectrum intensity units of
+     * {@code options} are replaced by those of its spectra, first seen first
+     * ({@link MzPeakWriter.Options#withSpectrumIntensityUnits}, R5).
      *
      * @throws MzPeakException      if the mzML cannot be read or holds what the model cannot carry (as
      *                              {@link MzMLReader} states), before the target is created; if {@code target} exists
@@ -147,7 +155,9 @@ public final class MzMLConversion {
         Losses losses = new Losses();
         losses.note(B_35, nonFinite(headerParams));
         losses.note(B_24_SOURCE, header.fileMetadata().run().defaultSourceFileId() == null ? 1 : 0);
-        MzPeakWriter.Options withCvList = options.withCvList(cvs.kept);
+        Set<String> intensityUnits = reader.spectrumIntensityUnits();
+        MzPeakWriter.Options withCvList = intensityUnits.isEmpty() ? options.withCvList(cvs.kept)
+                : options.withCvList(cvs.kept).withSpectrumIntensityUnits(intensityUnits.toArray(String[]::new));
         Adding adding;
         try (MzPeakWriter.Session session = directory
                 ? MzPeakWriter.openDirectory(target, header.fileMetadata(), header.scanSettings(),
@@ -244,14 +254,16 @@ public final class MzMLConversion {
             losses.note(B_24_TYPE, has(d.parameters(), MzMLTerms.SPECTRUM_TYPES.keySet()) ? 0 : 1);
             losses.note(B_24_SUMMARY, spectrum.mz().length == 0 || has(d.parameters(), SUMMARIES) ? 0 : 1);
             losses.note(B_24_SCAN, d.scans().isEmpty() ? 1 : 0);
+            losses.note(B_36_SPECTRUM, spectrum.mz().length == 0 && !COUNTS.equals(spectrum.intensityUnit()) ? 1 : 0);
             session.addSpectrum(sharedParentsMoved(spectrum));
             spectra++;
         }
 
         @Override
         public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
-            cvs.check("wavelength spectrum " + spectrum.id(), List.of(spectrum.parameters()),
-                    auxiliaryCuries(spectrum.auxiliaryArrays()));
+            List<List<Param>> params = new ArrayList<>(List.of(spectrum.parameters()));
+            spectrum.scans().forEach(scan -> params.add(scan.parameters()));
+            cvs.check("wavelength spectrum " + spectrum.id(), params, auxiliaryCuries(spectrum.auxiliaryArrays()));
             session.addWavelengthSpectrum(spectrum);
             wavelengthSpectra++;
         }
@@ -452,14 +464,17 @@ public final class MzMLConversion {
 
     /**
      * The CV prefixes the params of {@code spectra} (with their scans, isolation windows, selected ions and
-     * activations) and of {@code wavelengthSpectra} use, as accession or unit, in the order first used (design 5.11,
-     * 8.1).
+     * activations) and of {@code wavelengthSpectra} (with their scans) use, as accession or unit, in the order first
+     * used (design 5.11, 8.1).
      */
     private static Set<String> spectrumPrefixes(List<SpectrumDescription> spectra,
                                                 List<WavelengthSpectrum> wavelengthSpectra) {
         List<List<Param>> lists = new ArrayList<>();
         spectra.forEach(d -> lists.addAll(descriptionParams(d)));
-        wavelengthSpectra.forEach(w -> lists.add(w.parameters()));
+        for (WavelengthSpectrum w : wavelengthSpectra) {
+            lists.add(w.parameters());
+            w.scans().forEach(scan -> lists.add(scan.parameters()));
+        }
         Set<String> used = new LinkedHashSet<>();
         for (List<Param> params : lists) {
             for (Param p : params) {

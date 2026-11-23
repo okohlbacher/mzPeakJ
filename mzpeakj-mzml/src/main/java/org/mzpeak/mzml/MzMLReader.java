@@ -118,7 +118,8 @@ import java.util.function.Function;
  * float, zstd, none), unless a term jmzML knows is present too: then jmzML decodes by that term, and the other is
  * neither checked nor warned about (a second data type term counts as a lost array param, B-21); in the first usable
  * (typed, not ASCII) array of each main key of a spectrum or chromatogram, the only one whose unit is checked, an m/z
- * array in a unit other than MS:1000040, an intensity array of a spectrum in a unit other than MS:1000131, a
+ * array in a unit other than MS:1000040, an intensity array of an MS spectrum in a unit other than MS:1000131,
+ * MS:1000132 and MS:1000814 (R5), an intensity array of a wavelength spectrum in a unit other than MS:1000131, a
  * wavelength array in a unit other than UO:0000018 and a time array in a unit other than minute, second, millisecond
  * or hour; a scan start time in a unit other than those four; and m/z and intensity arrays (wavelength or time and
  * intensity arrays) of different declared lengths. A further array of a main key is dropped (B-29) without a unit
@@ -182,7 +183,8 @@ public final class MzMLReader {
             "B-14 units of unitless summary, peak-intensity and collision-energy params set to the default";
     static final String B_15 = "B-15 times converted to minutes and drift times to milliseconds";
     static final String B_16 = "B-16 sourceFileRef of scans and precursors lost";
-    static final String B_17_WINDOW = "B-17 scan windows without both limits in m/z dropped";
+    static final String B_17_WINDOW = "B-17 scan windows without both limits in m/z (in nm for wavelength spectra)"
+            + " dropped";
     static final String B_17_PARAMS = "B-17 scan window params other than the limits lost";
     static final String B_20 = "B-20 spectrum productList lost";
     static final String B_21_PROCESSING = "B-21 lost array dataProcessingRef";
@@ -191,7 +193,7 @@ public final class MzMLReader {
     static final String B_21_UNIT_DROP = "B-21 dropped array in a unit other than its default";
     static final String B_21_ASCII = "B-21 dropped null-terminated ASCII array";
     static final String B_21_UNTYPED = "B-21 dropped array without array type";
-    static final String B_23 = "B-23 wavelength spectrum content other than the first scan's start time lost";
+    static final String B_23 = "B-23 precursors and scan spectrum references of wavelength spectra lost";
     static final String B_27 = "B-27 chromatogram products dropped";
     static final String B_28 = "B-28 extra arrays of wavelength spectra dropped";
     static final String B_29 = "B-29 second arrays of a type already present dropped";
@@ -242,6 +244,11 @@ public final class MzMLReader {
     private static final String MINUTE = "UO:0000031";
     private static final String MILLISECOND = "UO:0000028";
     private static final String COUNTS = "MS:1000131";
+    /**
+     * The units an intensity array of an MS spectrum may have (R5, D13-20): number of detector counts, percent of base
+     * peak and counts per second; the reader keeps the unit as given.
+     */
+    private static final List<String> SPECTRUM_INTENSITY_UNITS = List.of(COUNTS, "MS:1000132", "MS:1000814");
     private static final String ELECTRONVOLT = "UO:0000266";
     /**
      * The summary params of an MS spectrum with the unit the mzPeak writer's summary columns take (design 5.5): m/z
@@ -282,6 +289,8 @@ public final class MzMLReader {
     private Map<String, Long> msOrdinals = Collections.emptyMap();
     /** The ids of the wavelength spectra; filled by {@link #survey()}. */
     private Set<String> wavelengthIds = Collections.emptySet();
+    /** The intensity units of the MS spectra, first seen first; filled by {@link #survey()}. */
+    private Set<String> spectrumIntensityUnits = Collections.emptySet();
     /** True while {@link #survey()} runs the mapping: arrays are not decoded. */
     private boolean surveying;
     /**
@@ -346,10 +355,23 @@ public final class MzMLReader {
             }
             msOrdinals = ordinals;
             wavelengthIds = new HashSet<>(collector.wavelengthIds);
+            spectrumIntensityUnits = Collections.unmodifiableSet(collector.intensityUnits);
             survey = new Survey(List.copyOf(collector.spectrumIds), List.copyOf(collector.wavelengthIds),
                     Collections.unmodifiableSet(collector.arrays), collector.chromatograms);
         }
         return survey;
+    }
+
+    /**
+     * The intensity units of the MS spectra, first seen first: the {@link Spectrum#intensityUnit()} of every spectrum
+     * {@link #read(Visitor)} gives (R5, D13-20), found by {@link #survey()}, which runs first if it has not; empty for
+     * a run without MS spectra. {@link MzMLConversion} declares them to the mzPeak session. Unmodifiable.
+     *
+     * @throws MzPeakException as {@link #survey()} does
+     */
+    Set<String> spectrumIntensityUnits() {
+        survey();
+        return spectrumIntensityUnits;
     }
 
     /**
@@ -762,16 +784,14 @@ public final class MzMLReader {
         List<Param> listParams = params(scanList);
         note(B_13, listParams.stream().filter(p -> !MzMLTerms.SPECTRA_COMBINATION.containsKey(p.accession())).count());
         params.addAll(listParams);
+        boolean wavelength = wavelength(s, params);
         List<ScanEvent> scans = new ArrayList<>();
         if (scanList != null) {
             for (Scan scan : scanList.getScan()) {
-                scans.add(scan(scan));
+                scans.add(scan(scan, wavelength ? NANOMETER : MZ));
             }
         }
         List<Array> arrays = arrays(s.getBinaryDataArrayList(), s.getDefaultArrayLength());
-        boolean wavelength = arrays.isEmpty()
-                ? params.stream().anyMatch(p -> WAVELENGTH_TYPES.contains(p.accession()))
-                : first(arrays, Kind.WAVELENGTH.axis) != null && first(arrays, MZ_ARRAY) == null;
         note(B_11_INDEX, Objects.equals(s.getIndex(), (int) (wavelength ? wavelengthIndex : msIndex)) ? 0 : 1);
         if (wavelength) {
             note(String.format(B_10, "dataProcessingRef"), s.getDataProcessingRef() == null ? 0 : 1);
@@ -784,11 +804,34 @@ public final class MzMLReader {
     }
 
     /**
+     * Whether the spectrum {@code s} with the params {@code params} is a wavelength spectrum (design 5.4), decided
+     * before its scans are mapped, so that their windows are read in the unit of its kind: its arrays are read here
+     * without noting what they lose, and read again after the scans, which keeps the order in which losses are noted
+     * and errors thrown. An array that fails here fails there again, after the scans; until then the spectrum counts
+     * as an MS spectrum.
+     */
+    private boolean wavelength(uk.ac.ebi.jmzml.model.mzml.Spectrum s, List<Param> params) {
+        Losses losses = noted;
+        noted = new Losses();
+        try {
+            List<Array> arrays = arrays(s.getBinaryDataArrayList(), s.getDefaultArrayLength());
+            return arrays.isEmpty()
+                    ? params.stream().anyMatch(p -> WAVELENGTH_TYPES.contains(p.accession()))
+                    : first(arrays, Kind.WAVELENGTH.axis) != null && first(arrays, MZ_ARRAY) == null;
+        } catch (RuntimeException e) {
+            return false;
+        } finally {
+            noted = losses;
+        }
+    }
+
+    /**
      * An MS spectrum: ms level, polarity and representation promoted; its data processing kept when it differs from
      * the spectrumList's; no peak list; its array length counts as {@code numberOfPeaks} for a centroid spectrum, else
      * as {@code numberOfDataPoints}. A numeric summary param is typed as a Double and, without unit, given its default
      * unit ({@link #SUMMARY_UNITS}, B-14), so that the mzPeak writer moves it to its summary column (pwiz writes the
-     * total ion current without unit).
+     * total ion current without unit). Its intensity unit is that of its intensity array (R5): MS:1000131, MS:1000132
+     * or MS:1000814, MS:1000131 for an array without unit and for a spectrum whose arrays are dropped or missing.
      */
     private Spectrum msSpectrum(uk.ac.ebi.jmzml.model.mzml.Spectrum s, List<Param> params, List<ScanEvent> scans,
                                 List<Array> arrays) {
@@ -819,26 +862,30 @@ public final class MzMLReader {
                 scans.isEmpty() ? Double.NaN : scans.get(0).startTime(), polarity, continuity, centroid ? 0 : n,
                 centroid ? n : 0, scans, precursors, params,
                 Objects.equals(s.getDataProcessingRef(), spectrumListDefault) ? null : s.getDataProcessingRef());
-        return new Spectrum(description, mz, values(signal.intensity()), null, values(signal.extras()), null, null,
-                null, auxiliary(signal.auxiliary()));
+        String intensityUnit = signal.intensity() == null ? null : signal.intensity().array().unit();
+        return new Spectrum(description, mz, values(signal.intensity()), null, values(signal.extras()), null,
+                Objects.requireNonNullElse(intensityUnit, COUNTS), null, auxiliary(signal.auxiliary()));
     }
 
     /**
-     * A wavelength spectrum (design 5.9): the first scan's start time; MS:1003812 promoted as lambda max in nm. Other
-     * scan content, further scans and precursors are lost (B-23).
+     * A wavelength spectrum (design 5.9): the first scan's start time as its time; MS:1003812 promoted as lambda max in
+     * nm; its scans, with their windows in nm (R8, D13-24), without their spectrum references, which the mzPeak
+     * wavelength scan table has no column for, and without its precursors (B-23).
      */
     private WavelengthSpectrum wavelengthSpectrum(uk.ac.ebi.jmzml.model.mzml.Spectrum s, List<Param> params,
                                                   List<ScanEvent> scans, List<Array> arrays) {
         Double lambdaMax = doubleParam(params, "MS:1003812", NANOMETER);
         double time = scans.isEmpty() ? Double.NaN : scans.get(0).startTime();
-        if (scans.size() > 1 || !scans.isEmpty()
-                && !scans.get(0).equals(new ScanEvent(time, null, null, null, null, null, null, null))
-                || s.getPrecursorList() != null) {
-            note(B_23);
+        List<ScanEvent> kept = new ArrayList<>();
+        for (ScanEvent e : scans) {
+            note(B_23, e.spectrumReference() == null ? 0 : 1);
+            kept.add(new ScanEvent(e.startTime(), e.injectionTime(), e.filterString(), e.presetScanConfiguration(),
+                    e.instrumentConfigurationRef(), null, e.scanWindows(), e.parameters()));
         }
+        note(B_23, s.getPrecursorList() == null ? 0 : 1);
         Signal signal = classify(Kind.WAVELENGTH, arrays);
         return new WavelengthSpectrum(wavelengthIndex++, s.getId(), time, lambdaMax, values(signal.axis()),
-                values(signal.intensity()), params, auxiliary(signal.auxiliary()));
+                values(signal.intensity()), params, kept, auxiliary(signal.auxiliary()));
     }
 
     /**
@@ -886,9 +933,10 @@ public final class MzMLReader {
     /**
      * A scan (design 5.5): its start time in minutes (NaN if absent); injection time in ms, filter string (verbatim),
      * preset scan configuration and instrument configuration (rule IC; a ref naming none is null, B-39) promoted; its
-     * windows with both limits in m/z.
+     * windows with both limits in {@code windowUnit} or without unit: m/z for an MS spectrum, nm for a wavelength
+     * spectrum (R8).
      */
-    private ScanEvent scan(Scan scan) {
+    private ScanEvent scan(Scan scan, String windowUnit) {
         List<Param> params = new ArrayList<>(params(scan));
         Param start = Param.find(params, "MS:1000016").filter(p -> p.value() instanceof Number).orElse(null);
         double startTime = Double.NaN;
@@ -912,8 +960,8 @@ public final class MzMLReader {
         if (windowList != null) {
             for (ParamGroup window : windowList.getScanWindow()) {
                 List<Param> limits = new ArrayList<>(params(window));
-                Double lower = doubleParam(limits, "MS:1000501", MZ);
-                Double upper = doubleParam(limits, "MS:1000500", MZ);
+                Double lower = doubleParam(limits, "MS:1000501", windowUnit);
+                Double upper = doubleParam(limits, "MS:1000500", windowUnit);
                 note(B_17_PARAMS, limits.size());
                 if (lower == null || upper == null) {
                     note(B_17_WINDOW);
@@ -1086,17 +1134,18 @@ public final class MzMLReader {
     }
 
     /**
-     * The one classification of an entity's arrays, which {@link #survey()} and {@link #read(Visitor)} share
-     * (design 8.1): from attributes and terms only, it keeps the first axis and intensity array (in the model's unit,
-     * else rejected; a chromatogram's time as stored in a unit the model converts, its intensity in any unit) and the
-     * extra arrays it can carry, keeps every other array whose declared length differs from the axis array's as an
-     * auxiliary array, as stored and in its declared unit (R1), unless an auxiliary array cannot have its type (B-43),
-     * and drops the rest: arrays without type (B-21), ASCII arrays (B-21), all arrays when the axis or intensity array
-     * is missing (B-9), a second array of a key, whatever its length (B-29), extras of wavelength spectra (B-28) and
-     * extras in a unit that is not their key's default and cannot be converted to it (B-21). An extra whose key has no
-     * default unit is kept without its unit (B-21). The first axis and intensity array are checked for their unit
-     * before B-9 drops them: design 6.3 rejects them in a unit the model cannot carry whether or not the other one is
-     * present, so an intensity-only spectrum with its intensity in MS:1000132 is rejected, not dropped as B-9.
+     * The one classification of an entity's arrays, which {@link #survey()} and {@link #read(Visitor)} share (design
+     * 8.1): from attributes and terms only, it keeps the first axis and intensity array (in the model's unit, else
+     * rejected; a chromatogram's time as stored in a unit the model converts, its intensity in any unit, an MS
+     * spectrum's intensity in one of its three units) and the extra arrays it can carry, keeps every other array whose
+     * declared length differs from the axis array's as an auxiliary array, as stored and in its declared unit (R1),
+     * unless an auxiliary array cannot have its type (B-43), and drops the rest: arrays without type (B-21), ASCII
+     * arrays (B-21), all arrays when the axis or intensity array is missing (B-9), a second array of a key, whatever
+     * its length (B-29), extras of wavelength spectra (B-28) and extras in a unit that is not their key's default and
+     * cannot be converted to it (B-21). An extra whose key has no default unit is kept without its unit (B-21). The
+     * first axis and intensity array are checked for their unit before B-9 drops them: design 6.3 rejects them in a
+     * unit the model cannot carry whether or not the other one is present, so an intensity-only spectrum with its
+     * intensity in UO:0000187 is rejected, not dropped as B-9.
      *
      * @throws MzPeakException for axis and intensity arrays of different declared lengths, or a main array in a unit
      *                         the model cannot carry (design 6.3), with or without the other main array
@@ -1117,7 +1166,7 @@ public final class MzMLReader {
         DoubleUnaryOperator axisConversion = axis == null ? null : mainConversion(axis);
         String axisUnit = axis == null ? null : axis.unit();
         DoubleUnaryOperator intensityConversion = intensity == null || kind == Kind.CHROMATOGRAM ? AS_IS
-                : mainConversion(intensity);
+                : kind == Kind.MS ? spectrumIntensity(intensity) : mainConversion(intensity);
         Map<String, Kept> extras = new LinkedHashMap<>();
         if (axis == null || intensity == null) {
             note(B_9, usable.isEmpty() ? 0 : 1);
@@ -1183,6 +1232,18 @@ public final class MzMLReader {
             throw error("its " + a.key() + " array in unit " + a.unit() + " cannot be converted to " + target);
         }
         return conversion;
+    }
+
+    /**
+     * How the values of the intensity array {@code a} of an MS spectrum are kept: as they are, in its unit, which must
+     * be one of {@link #SPECTRUM_INTENSITY_UNITS} or none (R5); another unit is rejected (design 6.3).
+     */
+    private DoubleUnaryOperator spectrumIntensity(Array a) {
+        if (a.unit() != null && !SPECTRUM_INTENSITY_UNITS.contains(a.unit())) {
+            throw error("its " + a.key() + " array in unit " + a.unit() + " is none of the spectrum intensity units "
+                    + String.join(", ", SPECTRUM_INTENSITY_UNITS));
+        }
+        return AS_IS;
     }
 
     /** {@code a} kept, its params other than type, data type and compression and its dataProcessingRef lost. */
@@ -1295,12 +1356,14 @@ public final class MzMLReader {
         final List<String> spectrumIds = new ArrayList<>();
         final List<String> wavelengthIds = new ArrayList<>();
         final Set<String> arrays = new LinkedHashSet<>();
+        final Set<String> intensityUnits = new LinkedHashSet<>();
         int chromatograms;
 
         @Override
         public void spectrum(Spectrum spectrum) {
             spectrumIds.add(spectrum.description().id());
             arrays.addAll(spectrum.arrays().keySet());
+            intensityUnits.add(spectrum.intensityUnit());
         }
 
         @Override

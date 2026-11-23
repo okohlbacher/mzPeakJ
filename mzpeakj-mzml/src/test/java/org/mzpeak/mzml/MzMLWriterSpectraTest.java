@@ -90,7 +90,8 @@ class MzMLWriterSpectraTest {
             || line.contains("scan holding");
     /** The writer's line for each exclusion whose differences it counts itself. */
     private static final Map<Exclusion, String> COUNTED = Map.of(ModelAssert.A_1, MzMLWriter.A_1, ModelAssert.A_7,
-            MzMLWriter.A_7, ModelAssert.A_9, MzMLWriter.A_9, ModelAssert.A_16, MzMLWriter.A_16);
+            MzMLWriter.A_7, ModelAssert.A_9, MzMLWriter.A_9, ModelAssert.A_16, MzMLWriter.A_16, ModelAssert.R_8,
+            String.format(MzMLWriter.A_8, "scan holding the time of a wavelength spectrum without scans"));
 
     @TempDir
     Path dir;
@@ -109,7 +110,7 @@ class MzMLWriterSpectraTest {
                 fixture("current", "small.chunked.mzpeak", counts(ModelAssert.A_1, 14, ModelAssert.A_7, 48)),
                 fixture("current", "small.numpress.mzpeak", counts(ModelAssert.A_7, 48)),
                 fixture("current", "small.unpacked.mzpeak", counts(ModelAssert.A_7, 48)),
-                fixture("current", "has_uv.mzpeak", counts(ModelAssert.A_7, 212 + 520, ModelAssert.R_8, 520)),
+                fixture("current", "has_uv.mzpeak", counts(ModelAssert.A_7, 212 + 520)),
                 fixture("current", "diaPASEF.ref.mzpeak", dia),
                 fixture("current", "diaPASEF.grid.mzpeak", dia),
                 fixture("current", "Example_Processed.img.mzpeak", counts(ModelAssert.A_7, 9, ModelAssert.A_17, 1)),
@@ -118,7 +119,7 @@ class MzMLWriterSpectraTest {
                 fixture("legacy", "small.numpress.mzpeak", legacySmall),
                 fixture("legacy", "small.unpacked.mzpeak", legacySmall),
                 fixture("legacy", "has_uv.mzpeak", counts(ModelAssert.A_7, 212 + 520, ModelAssert.A_9, 211,
-                        ModelAssert.A_17, 1)));
+                        ModelAssert.A_17, 1, ModelAssert.R_8, 520)));
     }
 
     @ParameterizedTest(name = "{0}")

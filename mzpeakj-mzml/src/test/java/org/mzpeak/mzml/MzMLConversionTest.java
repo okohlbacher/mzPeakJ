@@ -20,6 +20,7 @@ import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -88,6 +89,17 @@ class MzMLConversionTest {
     private static final String MZ_TYPE = cv("MS:1000514", "m/z array", "", "MS:1000040");
     private static final String INTENSITY_TYPE = cv("MS:1000515", "intensity array", "", "MS:1000131");
     private static final String SN = "MS:1000517";
+    private static final String COUNTS = "MS:1000131";
+    private static final String PERCENT = "MS:1000132";
+    private static final String NANOMETER = "UO:0000018";
+    private static final String TINY_COUNTS = "accession=\"MS:1000515\" name=\"intensity array\" value=\"\""
+            + " unitCvRef=\"MS\" unitAccession=\"MS:1000131\" unitName=\"number of counts\"";
+    private static final String TINY_PERCENT = "accession=\"MS:1000515\" name=\"intensity array\" value=\"\""
+            + " unitCvRef=\"MS\" unitAccession=\"MS:1000132\" unitName=\"percent of base peak\"";
+    private static final String TINY_MZ_UNIT = "accession=\"MS:1000514\" name=\"m/z array\" value=\"\""
+            + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"";
+    private static final String TINY_WAVELENGTH_UNIT = "accession=\"MS:1000617\" name=\"wavelength array\""
+            + " value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000018\" unitName=\"nanometer\"";
     private static final String SN_TYPE = cv(SN, "signal to noise array", "", null);
     /** The loss lines of tiny's read() as JZ-4 pinned them (MzMLReaderRunTest.tinyIsReadInFull). */
     private static final List<String> TINY_LOSSES = List.of(
@@ -511,6 +523,164 @@ class MzMLConversionTest {
                 .extracting(uk.ac.ebi.jmzml.model.mzml.CVParam::getUnitAccession).containsExactly("UO:0000186");
         assertThat(model(b.mzml).spectrumList().get(0).auxiliaryArrays()).singleElement()
                 .satisfies(a -> assertThat(a.doubles()).containsExactly(7.5, 8.25));
+    }
+
+    /**
+     * R5 (D13-20): tiny with the intensity arrays of all four spectra in percent of base peak (MS:1000132) converts
+     * with that unit, which the session declares as its only spectrum intensity unit, and comes back with it, except
+     * on scan=21, which has no points (B-36); the chromatograms keep theirs.
+     */
+    @Test
+    void aPercentOfBasePeakIntensityArrayKeepsItsUnitBothWays() throws IOException {
+        Path file = tinyWith(s -> {
+            int chromatograms = s.indexOf("<chromatogramList");
+            return s.substring(0, chromatograms).replace(TINY_COUNTS, TINY_PERCENT) + s.substring(chromatograms);
+        });
+        Model m1 = model(file);
+        assertThat(m1.spectrumList()).extracting(Spectrum::intensityUnit).containsOnly(PERCENT);
+
+        B b = b(file, false);
+
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            Spectrum spectrum = reader.getSpectrumAt(0);
+            assertThat(spectrum.intensityUnit()).isEqualTo(PERCENT);
+            assertThat(spectrum.intensity()).containsExactly(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo(PERCENT);
+            assertThat(reader.getSpectrumAt(2).intensityUnit()).isNull();
+        }
+        // scan=21 has no points, so no intensity column holds its unit: it comes back in detector counts (B-36)
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_36_SPECTRUM + " (1)");
+        assertThat(intensityUnits(b.mzml)).containsExactly(PERCENT, PERCENT, COUNTS, PERCENT);
+        assertThat(ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3, ModelAssert.W_8)
+                .paths()).containsExactly("spectrum[2].intensityUnit");
+    }
+
+    /**
+     * R5: tiny with scan=19's intensity array in percent of base peak and the others' in detector counts converts
+     * without a refusal: the survey declares both units to the session (counts first, as the column
+     * {@code intensity}), each spectrum reads its own and the mzML written back has both.
+     */
+    @Test
+    void twoIntensityUnitsAcrossSpectraConvertWithBothDeclared() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_COUNTS, TINY_PERCENT));
+        assertThat(model(file).spectrumList()).extracting(Spectrum::intensityUnit)
+                .containsExactly(PERCENT, COUNTS, COUNTS, COUNTS);
+
+        B b = b(file, true);
+
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.getSpectrumAt(0).intensityUnit()).isEqualTo(PERCENT);
+            assertThat(reader.getSpectrumAt(0).intensity()).hasSize(15).startsWith(15, 14);
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo(COUNTS);
+            assertThat(reader.getSpectrumAt(1).intensity()).hasSize(10);
+        }
+        assertThat(Files.readString(b.mzpeak.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .contains("intensity_MS_1000132");
+        assertThat(intensityUnits(b.mzml)).containsExactly(PERCENT, COUNTS, COUNTS, COUNTS);
+    }
+
+    /**
+     * R5: the intensity units the survey finds replace those of the caller's options, so tiny converts with options
+     * that declare only counts per second (MS:1000814); a run without MS spectra keeps the options' units, which the
+     * array index of its empty spectra_data names.
+     */
+    @Test
+    void theSurveyedIntensityUnitsReplaceThoseOfTheOptions() throws IOException {
+        MzPeakWriter.Options perSecond = MzPeakWriter.Options.defaults().withSpectrumIntensityUnits("MS:1000814");
+        Path tiny = MzMLFixtures.extract(MzMLFixtures.TINY, dir);
+        Path all = dir.resolve("all.mzpeak");
+
+        assertThat(MzMLConversion.toMzPeak(tiny, all, true, perSecond).spectra()).isEqualTo(4);
+        try (MzPeakReader reader = MzPeakReader.open(all)) {
+            assertThat(reader.getSpectrumAt(0).intensityUnit()).isEqualTo(COUNTS);
+        }
+        assertThat(Files.readString(all.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .doesNotContain("MS:1000814");
+
+        Path withoutSpectra = tinyWith(s -> cut(s, "<spectrumList", "</spectrumList>"));
+        Path none = dir.resolve("none.mzpeak");
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(withoutSpectra, none, true, perSecond);
+        assertThat(List.of(result.spectra(), result.chromatograms())).containsExactly(0L, 2L);
+        assertThat(Files.readString(none.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .contains("MS:1000814");
+    }
+
+    /**
+     * R8 (D13-24): tiny's scan=21 made an electromagnetic radiation spectrum whose scan has a start time, an
+     * instrument configuration and a 200-400 nm scan window: the wavelength spectrum gets that scan with the window
+     * in nm, the mzPeak dataset stores it (float32, unit UO:0000018) and reads it back, and the mzML written back
+     * has the scan with the window limits in UO:0000018.
+     */
+    @Test
+    void anEmrSpectrumsScanWindowInNanometersGoesBothWays() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(replaceAfter(s, SCAN_21, TINY_MZ_UNIT, TINY_WAVELENGTH_UNIT), SCAN_21,
+                "<scan>\n            </scan>", "<scan instrumentConfigurationRef=\"LCQ_x0020_Deca\">\n"
+                        + cv("MS:1000016", "scan start time", "6.5", "UO:0000031") + "\n<scanWindowList count=\"1\">"
+                        + "\n<scanWindow>\n" + cv("MS:1000501", "scan window lower limit", "200", NANOMETER) + "\n"
+                        + cv("MS:1000500", "scan window upper limit", "400", NANOMETER)
+                        + "\n</scanWindow>\n</scanWindowList>\n</scan>"));
+        ScanEvent scan = new ScanEvent(6.5, null, null, null, 0, null, List.of(new ScanWindow(200, 400)), List.of());
+        Model m1 = model(file);
+        assertThat(m1.wavelengthSpectra()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo("scan=21");
+            assertThat(w.time()).isEqualTo(6.5);
+            assertThat(w.scans()).containsExactly(scan);
+        });
+
+        B b = b(file, true);
+
+        assertThat(b.toMzPeak.wavelengthSpectra()).isEqualTo(1);
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.wavelengthSpectra()).singleElement()
+                    .satisfies(w -> assertThat(w.scans()).containsExactly(scan));
+        }
+        Scan written = jmzmlSpectra(b.mzml).get(3).getScanList().getScan().get(0);
+        assertThat(written.getScanWindowList().getScanWindow().get(0).getCvParam())
+                .extracting(p -> p.getAccession() + "=" + p.getValue() + " " + p.getUnitAccession())
+                .containsExactly("MS:1000501=200.0 " + NANOMETER, "MS:1000500=400.0 " + NANOMETER);
+        assertThat(model(b.mzml).wavelengthSpectra()).singleElement()
+                .satisfies(w -> assertThat(w.scans()).containsExactly(scan));
+    }
+
+    /**
+     * R8: an mzPeak wavelength spectrum with two scans goes to mzML with both, their windows in nm; its time, which
+     * is not the first scan's start time, is lost (A-9). The one without scans has the one holding its time that the
+     * mzPeak writer wrote, so the mzML writer adds none (A-8).
+     */
+    @Test
+    void theScansOfAnMzPeakWavelengthSpectrumGoToMzML() throws IOException {
+        Path input = dir.resolve("in.mzpeak");
+        List<ScanEvent> scans = List.of(
+                new ScanEvent(2.0, null, null, null, null, null, List.of(new ScanWindow(200, 400)), List.of()),
+                new ScanEvent(2.5, 5.0, null, null, null, null, List.of(), List.of()));
+        WavelengthSpectrum uv = new WavelengthSpectrum(0, "uv=1", 1.5, null, new double[] {200, 210},
+                new double[] {0.5, 0.25}, List.of(new Param("absorption spectrum", "MS:1000806", null, null)), scans,
+                List.of());
+        WavelengthSpectrum bare = new WavelengthSpectrum(1, "uv=2", 3.0, null, new double[] {200},
+                new double[] {0.75}, List.of(new Param("absorption spectrum", "MS:1000806", null, null)));
+        MzPeakWriter.writeDirectory(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of())), List.of(),
+                List.of(uv, bare), List.of(), FileMetadata.EMPTY, MzPeakWriter.Options.defaults());
+
+        Path mzml = dir.resolve("out.mzML");
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, false);
+
+        MzMLAssert.valid(mzml);
+        assertThat(toMzML.warnings()).contains(MzMLWriter.A_9 + " (1)")
+                .noneMatch(w -> w.contains("scan holding the time of a wavelength spectrum"));
+        List<WavelengthSpectrum> read = model(mzml).wavelengthSpectra();
+        assertThat(read.get(0).time()).isEqualTo(2.0);
+        assertThat(read.get(0).scans()).containsExactlyElementsOf(scans);
+        assertThat(read.get(1).scans()).containsExactly(
+                new ScanEvent(3.0, null, null, null, null, null, List.of(), List.of()));
+        assertThat(jmzmlSpectra(mzml).get(1).getScanList().getScan().get(0).getScanWindowList().getScanWindow()
+                .get(0).getCvParam()).extracting(p -> p.getUnitAccession()).containsExactly(NANOMETER, NANOMETER);
+    }
+
+    /** The unit accession of the intensity array of each spectrum of {@code file}, as jmzML reads it. */
+    private static List<String> intensityUnits(Path file) {
+        return jmzmlSpectra(file).stream().map(s -> s.getBinaryDataArrayList().getBinaryDataArray().stream()
+                .flatMap(a -> a.getCvParam().stream()).filter(p -> "MS:1000515".equals(p.getAccession()))
+                .findFirst().orElseThrow().getUnitAccession()).toList();
     }
 
     /**
@@ -954,6 +1124,9 @@ class MzMLConversionTest {
                                 + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"",
                         "accession=\"MS:1000617\" name=\"wavelength array\" value=\"\" unitCvRef=\"UO\""
                                 + " unitAccession=\"UO:0000018\" unitName=\"nanometer\""))),
+                // R8: a param of a wavelength spectrum's scan
+                arguments("wavelength spectrum scan=21", "XYZ:0000023", edit(s -> replaceAfter(withParam(s, SCAN_21,
+                        "<scan>", xyz("XYZ:0000023")), SCAN_21, TINY_MZ_UNIT, TINY_WAVELENGTH_UNIT))),
                 // R1: the unit of an array of another length, kept as an auxiliary array
                 arguments("spectrum scan=19", "XYZ:0000020", edit(s -> withArray(s, SCAN_19,
                         sized(2, cv(SN, "signal to noise array", "", "XYZ:0000020"), 1, 2)))),

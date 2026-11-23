@@ -823,31 +823,32 @@ class ModelAssertTest {
     }
 
     /**
-     * R_8: has_uv's wavelength spectrum 0 with its scan in expected and in actual none or the one scan with its time
-     * that the mzPeak writer writes; not when actual has another scan, so not the other way round either.
+     * R_8: has_uv's wavelength spectrum 0 without scans in expected and with the one scan with its time that the
+     * writers write in actual; not when actual has another scan or none, nor when expected has a scan.
      */
     @Test
-    void r8HidesWavelengthScansTheConverterDoesNotMapYet() {
+    void r8HidesTheScanWrittenForAWavelengthSpectrumWithoutScans() {
         double time = hasUv.wavelengthSpectra().get(0).time();
         ScanEvent written = new ScanEvent(time, null, null, null, null, null, List.of(), List.of());
         Model none = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
                 w -> with(w, "scans", List.of())));
         Model timeOnly = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
                 w -> with(w, "scans", List.of(written))));
-        assertThat(ModelAssert.assertEqual("R_8 none", hasUv, none, STRICT, ModelAssert.R_8).hidden())
+        assertThat(ModelAssert.assertEqual("R_8 written", none, timeOnly, STRICT, ModelAssert.R_8).hidden())
                 .containsExactly(Map.entry("R_8", 1));
-        assertThat(ModelAssert.assertEqual("R_8 written", hasUv, timeOnly, STRICT, ModelAssert.R_8).hidden())
-                .containsExactly(Map.entry("R_8", 2));
 
         Model other = with(hasUv, "wavelengthSpectra", replace(hasUv.wavelengthSpectra(), 0,
                 w -> with(w, "scans", List.of(new ScanEvent(time, null, null, null, 1, null, List.of(), List.of())))));
-        Result kept = ModelAssert.compare(hasUv, other, STRICT, ModelAssert.R_8);
-        assertThat(kept.paths()).containsExactly("wavelengthSpectrum[0].scans[0].injectionTime",
-                "wavelengthSpectrum[0].scans[0].instrumentConfigurationRef");
+        Result kept = ModelAssert.compare(none, other, STRICT, ModelAssert.R_8);
+        assertThat(kept.paths()).containsExactly("wavelengthSpectrum[0].scans.size");
         assertThat(kept.stale()).containsExactly("R_8");
-        assertThat(ModelAssert.compare(timeOnly, hasUv, STRICT, ModelAssert.R_8).paths()).containsExactly(
+        assertThat(ModelAssert.compare(hasUv, none, STRICT, ModelAssert.R_8).paths())
+                .containsExactly("wavelengthSpectrum[0].scans.size");
+        assertThat(ModelAssert.compare(hasUv, timeOnly, STRICT, ModelAssert.R_8).paths()).containsExactly(
                 "wavelengthSpectrum[0].scans[0].injectionTime",
                 "wavelengthSpectrum[0].scans[0].instrumentConfigurationRef");
+        assertThat(ModelAssert.compare(timeOnly, none, STRICT, ModelAssert.R_8).paths())
+                .containsExactly("wavelengthSpectrum[0].scans.size");
     }
 
     /**
@@ -1083,27 +1084,33 @@ class ModelAssertTest {
 
     @Test
     void mixedModeLeavesOutDeclaredCountsAndRowCopyPeaks() {
-        // as MzMLReader reads them: no peak list and no intensity unit
+        // as MzMLReader reads them: no peak list, so no peak intensity unit
         Model mzml = withSpectra(small, s -> s.description().signalContinuity() == SignalContinuity.CENTROID
-                ? new Spectrum(with(s.description(), "numberOfPeaks", 0L), s.mz(), s.intensity(), List.of())
+                ? new Spectrum(with(s.description(), "numberOfPeaks", 0L), s.mz(), s.intensity(), List.of(),
+                Map.of(), Map.of(), s.intensityUnit(), null)
                 : s);
 
         assertThat(ModelAssert.assertEqual("mixed", mzml, small, MZML_VS_MZPEAK).differences()).isEmpty();
         assertThat(ModelAssert.assertEqual("mixed", small, mzml, MZPEAK_VS_MZML).differences()).isEmpty();
         Result strict = ModelAssert.compare(mzml, small, STRICT);
-        assertThat(kinds(strict)).containsExactly(Map.entry("spectrum[].intensityUnit", 34),
-                Map.entry("spectrum[].numberOfPeaks", 34), Map.entry("spectrum[].peakIntensityUnit", 34),
-                Map.entry("spectrum[].peaks.size", 34));
+        assertThat(kinds(strict)).containsExactly(Map.entry("spectrum[].numberOfPeaks", 34),
+                Map.entry("spectrum[].peakIntensityUnit", 34), Map.entry("spectrum[].peaks.size", 34));
 
         Model points = withSpectrum(mzml, 0, s -> withDescription(s, d -> with(d, "numberOfDataPoints", 1L)));
         assertThat(ModelAssert.compare(points, small, MZML_VS_MZPEAK).equal()).isTrue();
         assertThat(ModelAssert.compare(points, mzml, STRICT).paths())
                 .containsExactly("spectrum[0].numberOfDataPoints");
+        // the intensity unit is compared in mixed mode too (R5)
+        Model percent = withSpectrum(mzml, 0, s -> new Spectrum(s.description(), s.mz(), s.intensity(), s.peaks(),
+                s.arrays(), s.peakArrays(), "MS:1000132", s.peakIntensityUnit()));
+        assertThat(ModelAssert.compare(percent, small, MZML_VS_MZPEAK).paths())
+                .containsExactly("spectrum[0].intensityUnit");
     }
 
     @Test
     void mixedModeReportsPeaksOnTheMzMLSideWhenTheMzPeakSideHasNone() {
-        Model mzpeak = withSpectra(small, s -> new Spectrum(s.description(), s.mz(), s.intensity(), List.of()));
+        Model mzpeak = withSpectra(small, s -> new Spectrum(s.description(), s.mz(), s.intensity(), List.of(),
+                Map.of(), Map.of(), s.intensityUnit(), s.peakIntensityUnit()));
 
         Result mzmlWithPeaks = ModelAssert.compare(small, mzpeak, MZML_VS_MZPEAK);
 

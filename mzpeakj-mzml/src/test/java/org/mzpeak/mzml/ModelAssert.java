@@ -124,8 +124,8 @@ public final class ModelAssert {
      *
      * <p>In the two mixed modes (one model from {@code MzMLReader}, the other from {@link MzPeakReader}), which
      * differ only in which side is the mzPeak one: {@code numberOfDataPoints} and {@code numberOfPeaks} are not
-     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12), nor are a spectrum's
-     * {@code intensityUnit} and {@code peakIntensityUnit} ({@code MzMLReader} reads no spectrum intensity unit). The
+     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12), nor is a spectrum's
+     * {@code peakIntensityUnit} ({@code MzMLReader} builds no peak list); its {@code intensityUnit} is (R5). The
      * peak lists ({@code peaks} and {@code peakArrays}): a non-empty {@code peaks()} or {@code peakArrays()} on the
      * mzML side, which {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
      * {@code spectrum[i].peakArrays} that {@link ModelAssert#A_1} does not hide, whatever the mzPeak side has (MJ-4);
@@ -363,8 +363,8 @@ public final class ModelAssert {
     private static final Set<String> MIXED_UNCOMPARED =
             Set.of("SpectrumDescription.numberOfDataPoints", "SpectrumDescription.numberOfPeaks");
 
-    /** The {@link #SPECTRUM_COMPONENTS} mixed mode does not compare: MzMLReader reads no spectrum intensity unit. */
-    private static final Set<String> MIXED_UNCOMPARED_SPECTRUM = Set.of("intensityUnit", "peakIntensityUnit");
+    /** The {@link #SPECTRUM_COMPONENTS} mixed mode does not compare: MzMLReader builds no peak list. */
+    private static final Set<String> MIXED_UNCOMPARED_SPECTRUM = Set.of("peakIntensityUnit");
 
     /** The rule key of a record class: its simple name, under its enclosing classes ({@code FileMetadata.Contact}). */
     static String key(Class<?> type) {
@@ -1046,15 +1046,14 @@ public final class ModelAssert {
             d -> MZ.matcher(d.path()).matches() && d.expected() instanceof double[] e
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
-    /** R-8: the scans of a wavelength spectrum, which the converter does not map yet. */
+    /** R-8: the one scan with its time a writer adds to a wavelength spectrum without scans. */
     public static final Exclusion R_8 = new Exclusion("R_8",
-            "R-8: the scans of a wavelength spectrum (R8, D13-24) whose actual spectrum has none or only the one scan"
-                    + " with the spectrum time that the mzPeak writer writes for a wavelength spectrum without scans,"
-                    + " since the converter does not map wavelength scans yet (X-36): current has_uv 520 spectra"
-                    + " (in A two differences each, its injection time and instrument configuration, read back as"
-                    + " null), legacy has_uv 520 (in A, no scans read from the packed layout, one read back)",
-            d -> WAVELENGTH_SCANS.matcher(d.path()).matches() && d.expectedRoot() instanceof WavelengthSpectrum
-                    && d.actualRoot() instanceof WavelengthSpectrum a && writtenScans(a));
+            "R-8: the scan count of a wavelength spectrum without scans in expected whose actual spectrum has only"
+                    + " the one scan with the spectrum time that the mzPeak writer (R8, D13-24) and the mzML writer"
+                    + " (A-8) write for a wavelength spectrum without scans: legacy has_uv 520 (its packed layout"
+                    + " keeps its scans in a member that is not read), in A and in the mzML leg",
+            d -> WAVELENGTH_SCANS.matcher(d.path()).matches() && d.expectedRoot() instanceof WavelengthSpectrum e
+                    && e.scans().isEmpty() && d.actualRoot() instanceof WavelengthSpectrum a && writtenScan(a));
 
     /** W-3: chromatogram times the mzPeak writer stores in minutes. */
     public static final Exclusion W_3 = new Exclusion("W_3",
@@ -1081,10 +1080,9 @@ public final class ModelAssert {
     public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, A_26, B_22,
             B_34, R_8, W_3, W_8);
 
-    /** Whether {@code w} has no scans or only the one scan with its time that the mzPeak writer writes (R_8). */
-    private static boolean writtenScans(WavelengthSpectrum w) {
-        return w.scans().isEmpty() || w.scans().equals(List.of(new ScanEvent(w.time(), null, null, null, null, null,
-                List.of(), List.of())));
+    /** Whether {@code w} has only the one scan with its time that the writers write for none (R_8). */
+    private static boolean writtenScan(WavelengthSpectrum w) {
+        return w.scans().equals(List.of(new ScanEvent(w.time(), null, null, null, null, null, List.of(), List.of())));
     }
 
     /**
