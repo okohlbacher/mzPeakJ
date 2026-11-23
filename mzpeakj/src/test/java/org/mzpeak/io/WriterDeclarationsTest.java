@@ -55,6 +55,13 @@ class WriterDeclarationsTest {
             + " mzPeakJ nor the cv list of the options knows it; conformance.md requires every CV prefix a file uses"
             + " to be declared, so give its CV with id, full name, URI and version to MzPeakWriter.Options.withCvList";
     private static final Param FOO = new Param("odd", "FOO:0000001", null, null);
+    /** How to fix an undeclared run default, as the rejection of each says. */
+    private static final String RUN_INSTRUMENT_FIX = "; declare the configuration in"
+            + " FileMetadata.instrumentConfigurations or set MsRun.defaultInstrumentId to a declared one";
+    private static final String RUN_PROCESSING_FIX = "; declare the data processing in"
+            + " FileMetadata.dataProcessingMethods or set MsRun.defaultDataProcessingId to a declared one";
+    private static final String RUN_SOURCE_FIX = "; declare the source file in FileMetadata.fileDescription or set"
+            + " MsRun.defaultSourceFileId to a declared one";
 
     /** What a write gets: a fixture's entities and metadata, changed by a case. */
     record Write(List<Spectrum> spectra, List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
@@ -170,17 +177,18 @@ class WriterDeclarationsTest {
                                 + sourceFileIds(small) + ")"),
                 new Rejected("runrefs instrument", small.withFileMetadata(m -> withRun(m, 7, null, null)), At.OPEN,
                         "file metadata: run: default_instrument_configuration_id 7 names no instrument configuration"
-                                + " (declared: 0, 1)"),
+                                + " (declared: 0, 1)" + RUN_INSTRUMENT_FIX),
                 new Rejected("runrefs data processing", small.withFileMetadata(m -> withRun(m, null, "dpX", null)),
                         At.OPEN, "file metadata: run: default_data_processing_id dpX names no data processing"
-                        + " (declared: " + processingIds(small) + ")"),
+                        + " (declared: " + processingIds(small) + ")" + RUN_PROCESSING_FIX),
                 new Rejected("runrefs source file", small.withFileMetadata(m -> withRun(m, null, null, "sfX")),
                         At.OPEN, "file metadata: run: default_source_file_id sfX names no source file (declared: "
-                        + sourceFileIds(small) + ")"),
+                        + sourceFileIds(small) + ")" + RUN_SOURCE_FIX),
                 new Rejected("runrefs without file description", small.withFileMetadata(m -> withRun(
                         new FileMetadata(null, m.instrumentConfigurations(), m.dataProcessingMethods(), m.samples(),
                                 m.software(), m.run()), null, null, "sfX")), At.OPEN,
-                        "file metadata: run: default_source_file_id sfX names no source file (declared: none)"),
+                        "file metadata: run: default_source_file_id sfX names no source file (declared: none)"
+                                + RUN_SOURCE_FIX),
                 new Rejected("icsw", small.withFileMetadata(m -> withConfigurationSoftware(m, "swX")), At.OPEN,
                         "file metadata: instrument configuration 0: software_reference swX names no software"
                                 + " (declared: " + softwareIds(small) + ")"),
@@ -375,7 +383,8 @@ class WriterDeclarationsTest {
         assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, w.spectra(), w.chromatograms(),
                 w.wavelengthSpectra(), w.scanSettings(), read, w.options()))
                 .isInstanceOf(MzPeakException.class).hasMessage("file metadata: run:"
-                        + " default_instrument_configuration_id 1 names no instrument configuration (declared: 0)");
+                        + " default_instrument_configuration_id 1 names no instrument configuration (declared: 0)"
+                        + RUN_INSTRUMENT_FIX);
         assertThat(out).doesNotExist();
 
         FileMetadata declared = Fixtures.withDeclaredDefaults(read);

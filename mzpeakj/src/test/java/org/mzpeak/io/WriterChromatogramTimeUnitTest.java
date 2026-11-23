@@ -45,7 +45,9 @@ class WriterChromatogramTimeUnitTest {
     private static final String MILLISECOND = "UO:0000028";
     private static final String HOUR = "UO:0000032";
     private static final String UNKNOWN = "UO:0000099";
-    private static final String REFUSED = "chromatogram 3: time unit UO:0000099 cannot be converted to minutes";
+    private static final String REFUSED = "chromatogram 3: time unit UO:0000099 cannot be converted to minutes;"
+            + " the supported time units are minute (UO:0000031), second (UO:0000010), millisecond (UO:0000028) and"
+            + " hour (UO:0000032)";
 
     @TempDir
     Path tmp;

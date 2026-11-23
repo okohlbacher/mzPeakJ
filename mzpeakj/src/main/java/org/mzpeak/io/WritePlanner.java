@@ -1398,14 +1398,16 @@ final class WritePlanner {
      * {@link Chromatogram#withTimeUnit} from second, millisecond or hour. Called by {@link #plan} and by a session as
      * each chromatogram is added, before anything of it is written; the caller's chromatogram is never modified.
      *
-     * @throws MzPeakException when its {@link Chromatogram#timeUnit()} is another unit
+     * @throws MzPeakException when its {@link Chromatogram#timeUnit()} is another unit; the message lists the
+     *                         supported ones
      */
     static Chromatogram inMinutes(Chromatogram c) {
         try {
             return c.withTimeUnit(ArrayIndex.MINUTE_UNIT);
         } catch (IllegalArgumentException e) {
             throw new MzPeakException("chromatogram " + c.index() + ": time unit " + c.timeUnit()
-                    + " cannot be converted to minutes", e);
+                    + " cannot be converted to minutes; the supported time units are minute (UO:0000031), second"
+                    + " (UO:0000010), millisecond (UO:0000028) and hour (UO:0000032)", e);
         }
     }
 
@@ -1605,9 +1607,15 @@ final class WritePlanner {
          * metadata).
          */
         private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind) {
+            requireNamed(owner, what, reference, declared, kind, "");
+        }
+
+        /** {@link #requireNamed(String, String, Object, List, String)} with {@code fix}, how to fix it, appended. */
+        private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind,
+                                      String fix) {
             if (reference != null && !declared.contains(reference)) {
                 throw new MzPeakException(owner + ": " + what + " " + reference + " names no " + kind
-                        + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")");
+                        + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")" + fix);
             }
         }
     }
@@ -1683,11 +1691,16 @@ final class WritePlanner {
         if (run != null) {
             declared.requireParams(owner + ": run", run.parameters());
             declared.requireNamed(owner + ": run", "default_instrument_configuration_id", run.defaultInstrumentId(),
-                    declared.configurations, "instrument configuration");
+                    declared.configurations, "instrument configuration", "; declare the configuration in"
+                            + " FileMetadata.instrumentConfigurations or set MsRun.defaultInstrumentId to a declared"
+                            + " one");
             declared.requireNamed(owner + ": run", "default_data_processing_id", run.defaultDataProcessingId(),
-                    declared.processing, "data processing");
+                    declared.processing, "data processing", "; declare the data processing in"
+                            + " FileMetadata.dataProcessingMethods or set MsRun.defaultDataProcessingId to a declared"
+                            + " one");
             declared.requireNamed(owner + ": run", "default_source_file_id", run.defaultSourceFileId(),
-                    declared.sourceFiles, "source file");
+                    declared.sourceFiles, "source file", "; declare the source file in FileMetadata.fileDescription"
+                            + " or set MsRun.defaultSourceFileId to a declared one");
         }
     }
 
