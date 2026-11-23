@@ -1008,7 +1008,8 @@ public final class ModelAssert {
             "W-3: the time array and time unit of a chromatogram whose time unit is not minute (UO:0000031) in"
                     + " expected and is minute in actual, the times of actual bit-equal to those of expected converted"
                     + " by Chromatogram.withTimeUnit, as the mzPeak writer stores them (W3, D13-1): tiny's two"
-                    + " chromatograms and diaPASEF.mzML's two in B, seconds -> minutes",
+                    + " chromatograms and diaPASEF.mzML's two in B, and the corpus timsTOF mzML's nine, seconds ->"
+                    + " minutes",
             d -> CHROMATOGRAM_TIME.matcher(d.path()).matches() && d.expectedRoot() instanceof Chromatogram e
                     && d.actualRoot() instanceof Chromatogram a && inMinutes(e, a));
 
