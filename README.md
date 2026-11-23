@@ -25,6 +25,12 @@ output; it currently fails, because mzpeak-validate 0.9.25 predates the array-in
 (HUPO-PSI/mzPeak `0220201`), and whether the CV list of `PACKED` output must declare IMS is undecided, so the
 output is not claimed to validate. See [Scope & limitations](#scope--limitations) for what's deferred.
 
+mzPeakJ 0.13.0 was checked against the HUPO-PSI mzPeak specification at commit
+`963d64a04244ebc543532b5141c6e6103aa1f05a` ([HUPO-PSI/mzPeak-specification](https://github.com/HUPO-PSI/mzPeak-specification),
+2026-11-21, "revise signing process"), and its written files against the Rust reference reader of mzPeak-reference
+`2ee2589` (`mzpeak_prototyping` from HUPO-PSI/mzPeak at `2ee2589facddea6de6c1e7c6cfa77e56895420ec`, see
+[`tools/rdump`](tools/rdump/README.md)); see the [0.13.0 release notes](docs/releases/0.13.0.md).
+
 ## About the mzPeak format
 
 mzPeak ([paper DOI 10.1021/acs.jproteome.5c00435](https://doi.org/10.1021/acs.jproteome.5c00435)) stores
