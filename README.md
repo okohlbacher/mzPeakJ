@@ -163,7 +163,9 @@ old constructors still compile (and give minute), but a Java 21 record pattern w
 (`case Chromatogram(var index, …, var precursors)`) needs a 12th one. The drift-time ion mobility arrays among the
 extra arrays of spectra and chromatograms (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156)
 are in milliseconds, converted from the unit the file's array index declares. Up to mzPeakJ 0.10.3 these values came
-in the file's unit.
+in the file's unit. The scan windows of wavelength spectra are in nanometers, converted from the unit the column
+mapping gives (micrometer, millimeter or meter); any other unit, m/z included, is refused naming the member and the
+column.
 
 #### Options, range queries and the other reader features
 
