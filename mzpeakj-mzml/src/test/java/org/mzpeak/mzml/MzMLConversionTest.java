@@ -56,6 +56,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
 
@@ -783,37 +784,53 @@ class MzMLConversionTest {
     }
 
     /**
-     * D-12c: the converter converts the times of every chromatogram whose unit differs from the first chromatogram's
-     * into that unit and counts them (B-15), as when the mzPeak writer refused chromatograms of different time units
-     * (D-12b): an mzML whose sic is in minutes and whose tic is in seconds converts the sic's times to seconds, and the
-     * mzPeak writer then stores both in minutes (W3), the seconds divided by 60.
+     * W3 (D13-1): the converter hands each chromatogram over in its own mzML time unit and the mzPeak writer stores
+     * every one in minutes, converting it once: an mzML whose sic is in minutes and whose tic is in seconds writes the
+     * tic's seconds divided by 60 and the sic's minutes as read, bit for bit, and no chromatogram times line. Until
+     * W3 the converter converted the sic into the tic's seconds first and counted it (B-15, D-12c).
      */
     @Test
-    void chromatogramsOfDifferentTimeUnitsAreConvertedToTheFirstChromatogramsUnit() throws IOException {
+    void chromatogramsOfDifferentTimeUnitsAreEachStoredInMinutes() throws IOException {
         Path file = tinyWith(s -> replaceAfter(s, "id=\"sic\"", "unitAccession=\"UO:0000010\" unitName=\"second\"",
                 "unitAccession=\"UO:0000031\" unitName=\"minute\""));
         List<Chromatogram> read = model(file).chromatograms();
         assertThat(read).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000031");
-        double[] sicInSeconds = Arrays.stream(read.get(1).time()).map(t -> t * 60.0).toArray();
 
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_15_CHROMATOGRAM_TIMES + " (1)");
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("chromatogram times"));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Chromatogram> written = reader.chromatograms();
             assertThat(written).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
             assertThat(written.get(0).time())
                     .containsExactly(Arrays.stream(read.get(0).time()).map(t -> t / 60).toArray());
-            assertThat(written.get(1).time()).containsExactly(Arrays.stream(sicInSeconds).map(t -> t / 60).toArray());
+            assertThat(Arrays.stream(written.get(1).time()).mapToLong(Double::doubleToRawLongBits).toArray())
+                    .containsExactly(Arrays.stream(read.get(1).time()).mapToLong(Double::doubleToRawLongBits)
+                            .toArray());
         }
     }
 
-    /** D-12c: chromatograms of one time unit are not converted, and the B-15 line of the converter is absent. */
+    /**
+     * W3 (D13-1): diaPASEF.mzML's chromatograms, whose time arrays are in seconds, are written in minutes: the TIC's
+     * last time, about 3866.7 s, is stored as about 64.4 min, and the converter adds no chromatogram times line.
+     */
     @Test
-    void chromatogramsOfOneTimeUnitAreNotConverted() throws IOException {
-        B b = b(MzMLFixtures.extract(MzMLFixtures.TINY, dir), false);
+    void diaPasefsChromatogramsInSecondsAreWrittenInMinutes() throws IOException {
+        Path file = MzMLFixtures.extract(MzMLFixtures.DIAPASEF, dir);
+        List<Chromatogram> read = model(file).chromatograms();
+        assertThat(read).extracting(Chromatogram::timeUnit).containsOnly("UO:0000010");
+        double[] seconds = read.get(0).time();
+        assertThat(Arrays.stream(seconds).max().orElseThrow()).isCloseTo(3866.7, within(0.1));
 
-        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_15_CHROMATOGRAM_TIMES));
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("chromatogram times"));
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            List<Chromatogram> written = reader.chromatograms();
+            assertThat(written).extracting(Chromatogram::timeUnit).containsOnly("UO:0000031");
+            assertThat(written.get(0).time()).containsExactly(Arrays.stream(seconds).map(t -> t / 60).toArray());
+            assertThat(Arrays.stream(written.get(0).time()).max().orElseThrow()).isCloseTo(64.4, within(0.1));
+        }
     }
 
     /**
@@ -853,7 +870,7 @@ class MzMLConversionTest {
                 .containsExactly("UO:0000010", "UO:0000010");
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_15_CHROMATOGRAM_TIMES));
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("chromatogram times"));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(15, 0);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)

@@ -504,9 +504,9 @@ java -jar "$jar" mzpeakj-mzml/src/test/resources/mzml/tiny.pwiz.1.1.mzML /tmp/ti
 java -Xmx2g -jar "$jar" mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/small.mzML
 ```
 
-The jar bundles only the 81 classes of fastutil that jmzML uses. Chromatogram times keep their unit in both
-directions; when an mzML holds chromatograms of different time units, the later ones are converted to the unit of the
-first (loss B-15). The [mzML converter page](docs/mzml-converter.md) gives the full mapping.
+The jar bundles only the 81 classes of fastutil that jmzML uses. Chromatogram times are written to mzPeak in minutes,
+whatever the unit of each chromatogram in the mzML (W3). The [mzML converter page](docs/mzml-converter.md) gives the
+full mapping.
 
 The direction comes from the names, case-insensitive:
 
