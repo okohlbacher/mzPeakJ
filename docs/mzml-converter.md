@@ -224,7 +224,8 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 | MS-Numpress MS:1002312, 1002313, 1002314 (alone or with zlib as two terms) | — | decoded by jmzML; PIC counts of 2^31 and above rejected (guard 3); never written |
 | MS:1002746, 1002747, 1002748 (Numpress and zlib in one term) | — | rejected (guard 2) |
 | any other compression (pwiz truncation, zstd, grid) | — | rejected when it is the only compression term; next to a known one jmzML decodes by that one |
-| `@arrayLength`, `@encodedLength` | — | declared lengths classify extra arrays and must agree between the main arrays; decoded lengths are not checked (L-6) |
+| an array whose declared length differs from the axis array's | `auxiliaryArrays()` | B (R1): kept as an auxiliary array of 64-bit floats without compression, named by its array type (MS:1000786 with its name as value), its declared unit kept and its values not converted; checked before B-28, B-29 and the unit rules; an array type the Rust reference reader does not map (MS:1002478, 1002742 … 1002745, 1003143) is dropped (B-43). A: every auxiliary array is written after the other arrays with its decoded values and `arrayLength`; its params, data processing and a unit of a CV the cv list lacks are not written (A-34); one whose compression or data type cannot be decoded is dropped (A-35) |
+| `@arrayLength`, `@encodedLength` | — | declared lengths tell auxiliary from extra arrays and must agree between the main arrays; decoded lengths are not checked (L-6). A: written for auxiliary arrays only |
 | array params other than type, data type and compression; `@dataProcessingRef` | — | lost (B-21) |
 
 The model has no array units; the unit of each key is fixed by `CvTerms.DEFAULT_ARRAY_UNITS`:
@@ -336,7 +337,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-18 | withdrawn: a selected ion without m/z is kept with m/z NaN since 0.13.0 | — |
 | B-19 | selected ions of later precursors with the same parent, moved to the first precursor | `MzMLConversion` |
 | B-20 | the spectrum `productList` | `MzMLReader` |
-| B-21 | array data type and compression (silent); warned: other array params, array `dataProcessingRef`, declared units of arrays without default unit, arrays in a unit other than their default, arrays of another declared length, ASCII arrays, arrays without array type | `MzMLReader` |
+| B-21 | array data type and compression (silent); warned: other array params, array `dataProcessingRef`, declared units of arrays without default unit, arrays in a unit other than their default, ASCII arrays, arrays without array type | `MzMLReader` |
 | B-22 | m/z, time or wavelength arrays that are not ascending, written sorted | library warning |
 | B-23 | wavelength spectrum content other than the first scan's start time | `MzMLReader` |
 | B-24 | additions of the mzPeak writer: spectrum types, the five summary params, a scan for spectra without one, the run's default source file | `MzMLConversion` |
@@ -358,6 +359,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-40 | `run`, `spectrumList` and `chromatogramList` attribute values with `&` kept as written, or with bytes >= 0x80 read as U+FFFD | `MzMLReader` |
 | B-41 | an `externalSpectrumID` next to a `spectrumRef`; the model holds one reference | `MzMLReader` |
 | B-42 | a `spectrumRef` that names no spectrum of the file, kept without index; it comes back as `externalSpectrumID` | `MzMLReader` |
+| B-43 | arrays of another declared length than their axis array whose array type no auxiliary array may have (the Rust reference reader does not map it) | `MzMLReader` |
 
 ### Direction A (mzPeak → mzML → mzPeak)
 
@@ -376,7 +378,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | A-11 | chromatogram precursors after the first | `MzMLWriter` |
 | A-12 | instrument components of type UNKNOWN, and component lists without a source, analyzer or detector | `MzMLWriter` |
 | A-13 | array units and data types as stored in mzPeak, which the converter does not use yet (the library reads the spectrum intensity units since 0.13.0): arrays are written as 64-bit floats in the default unit of their key (a chromatogram's time in its `timeUnit`), or without unit | `MzMLWriter`, fixed line |
-| A-14 | `auxiliary_arrays` of the mzPeak input, which the converter does not use yet (the library reads them since 0.13.0) | `MzMLWriter`, fixed line |
+| A-14 | withdrawn (auxiliary arrays are written since 0.13.0; what they lose is A-34 and A-35) | — |
 | A-15 | withdrawn (no mzML output option changes values) | — |
 | A-16 | spectrum types derived from the MS level of spectra without one | `MzMLWriter` |
 | A-17 | CVs in use but not in the cv list, declared | `MzMLWriter` |
@@ -396,6 +398,8 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | A-31 | chromatogram type params other than the chromatogram type | `MzMLWriter` |
 | A-32 | spectrum-level scan start times that differ from the first scan's | `MzMLWriter` |
 | A-33 | non-standard data arrays without a name, given the name 'non-standard data array' | `MzMLWriter` |
+| A-34 | auxiliary arrays written without their params, their data processing or a unit whose CV prefix the cv list lacks | `MzMLWriter` |
+| A-35 | auxiliary arrays whose compression or data type `AuxiliaryArray.doubles()` cannot decode, dropped | `MzMLWriter` |
 
 Besides the numbered losses, the reader warns about spectra and chromatograms with both polarities, spectra with both
 representations and ion injection times not in milliseconds; the writer about cv list entries without id, CVs

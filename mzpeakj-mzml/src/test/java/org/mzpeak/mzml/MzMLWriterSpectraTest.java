@@ -11,6 +11,7 @@ import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.io.MzPeakWriter;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
@@ -45,6 +46,8 @@ import uk.ac.ebi.jmzml.xml.io.MzMLObjectIterator;
 import uk.ac.ebi.jmzml.xml.io.MzMLUnmarshaller;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -58,6 +61,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
+import java.util.zip.Deflater;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -642,6 +646,74 @@ class MzMLWriterSpectraTest {
         }
     }
 
+    /**
+     * R1: each auxiliary array of a spectrum, chromatogram and wavelength spectrum is written after the other arrays
+     * as a binaryDataArray of its decoded values ({@code doubles()}, here also zlib-compressed 32-bit integers) with
+     * {@code arrayLength} its number of values: a typed one under its type in its unit; MS:1000786 under its name; a
+     * nameless one under the generated name (A-33); a name without accession as the name of a non-standard data
+     * array. Params, data processing and a unit of an undeclared CV are not written (A-34); an array whose compression
+     * {@code doubles()} cannot decode is dropped (A-35). The mzML read gives every array of another length back as an
+     * auxiliary array.
+     */
+    @Test
+    void auxiliaryArraysAreWrittenWithTheirLength() throws IOException {
+        Param sn = new Param("signal to noise array", "MS:1000517", null, null);
+        Param named = new Param("non-standard data array", "MS:1000786", "my array", null);
+        Param nameless = new Param("non-standard data array", "MS:1000786", null, null);
+        Param userNamed = new Param("my name", null, null, null);
+        ByteBuffer ints = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putInt(3).putInt(-4);
+        Deflater deflater = new Deflater();
+        deflater.setInput(ints.array());
+        deflater.finish();
+        byte[] zlib = new byte[64];
+        zlib = Arrays.copyOf(zlib, deflater.deflate(zlib));
+        deflater.end();
+        List<AuxiliaryArray> auxiliary = List.of(
+                aux(sn, null, List.of(), null, 1, 2),
+                new AuxiliaryArray(named, zlib, "MS:1000519", "MS:1000574", 2, "UO:0000186", List.of(), null),
+                aux(nameless, null, List.of(), null, 5),
+                aux(userNamed, null, List.of(), null, 6),
+                aux(sn, null, List.of(new Param("p", "MS:1000799", "x", null)), null, 7),
+                aux(sn, null, List.of(), "dp", 8),
+                aux(sn, "XX:0000001", List.of(), null, 9),
+                new AuxiliaryArray(sn, new byte[]{1}, "MS:1000523", "MS:1002312", 1, null, List.of(), null));
+        Spectrum spectrum = new Spectrum(description("scan=1", 1, List.of(scan(1.0)), List.of(), List.of()),
+                new double[]{100, 200, 300}, new double[]{1, 2, 3}, null, Map.of(), Map.of(), null, null, auxiliary);
+        WavelengthSpectrum uv = new WavelengthSpectrum(0, "uv=1", 0.5, null, new double[]{200}, new double[]{1},
+                List.of(), List.of(aux(sn, null, List.of(), null, 10, 11)));
+        Chromatogram chromatogram = new Chromatogram(0, "tic", "MS:1000235", new double[]{1}, new double[]{2}, null,
+                Map.of(), Polarity.UNKNOWN, null, List.of(), List.of(), "UO:0000031", List.of(),
+                List.of(aux(sn, null, List.of(), null, 12, 13)));
+        Contents contents = new Contents(metadata(), List.of(), List.of(), List.of("scan=1"), List.of("uv=1"),
+                List.of(chromatogram));
+
+        for (Written w : write("auxiliary", contents, writer -> {
+            writer.write(spectrum);
+            writer.write(uv);
+        })) {
+            assertThat(jmzmlSpectra(w.file()).get(0).getBinaryDataArrayList().getBinaryDataArray())
+                    .extracting(a -> a.getArrayLength()).containsExactly(3, 3, 2, 2, 1, 1, 1, 1, 1);
+            assertThat(w.warnings()).contains(MzMLWriter.A_33 + " (1)", MzMLWriter.A_34 + " (3)",
+                    MzMLWriter.A_35 + " (1)");
+            ReadBack back = read(w.file());
+            assertThat(back.spectra().get(0).arrays()).isEmpty();
+            assertThat(back.spectra().get(0).auxiliaryArrays()).extracting(a -> a.name().accession(),
+                    a -> a.name().value(), AuxiliaryArray::unit, a -> Arrays.stream(a.doubles()).boxed().toList())
+                    .containsExactly(
+                            tuple("MS:1000517", null, null, List.of(1.0, 2.0)),
+                            tuple("MS:1000786", "my array", "UO:0000186", List.of(3.0, -4.0)),
+                            tuple("MS:1000786", "non-standard data array", null, List.of(5.0)),
+                            tuple("MS:1000786", "my name", null, List.of(6.0)),
+                            tuple("MS:1000517", null, null, List.of(7.0)),
+                            tuple("MS:1000517", null, null, List.of(8.0)),
+                            tuple("MS:1000517", null, null, List.of(9.0)));
+            assertThat(back.wavelengthSpectra().get(0).auxiliaryArrays()).singleElement()
+                    .satisfies(a -> assertThat(a.doubles()).containsExactly(10, 11));
+            assertThat(back.chromatograms().get(0).auxiliaryArrays()).singleElement()
+                    .satisfies(a -> assertThat(a.doubles()).containsExactly(12, 13));
+        }
+    }
+
     @Test
     void anEmptySpectrumIsWrittenWithoutCompression() throws IOException {
         Spectrum empty = new Spectrum(description("scan=1", 1, List.of(scan(1.0)), List.of(), List.of()),
@@ -797,8 +869,7 @@ class MzMLWriterSpectraTest {
             writer.write(s);
             writer.finish();
             assertThat(writer.warnings()).startsWith(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
-                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.NOT_VISIBLE.get(1),
-                    MzMLWriter.A_17 + " (5)", MzMLWriter.CV_COMPLETED + " (1)");
+                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.A_17 + " (5)", MzMLWriter.CV_COMPLETED + " (1)");
         }
         MzMLAssert.valid(target);
         ReadBack back = read(target);
@@ -997,6 +1068,17 @@ class MzMLWriterSpectraTest {
     private static SpectrumDescription bare(String id, int msLevel) {
         return new SpectrumDescription(0, id, msLevel, 1.0, Polarity.UNKNOWN, SignalContinuity.UNKNOWN, 1, 0,
                 List.of(scan(1.0)), List.of(), List.of());
+    }
+
+    /** An auxiliary array of {@code values} as 64-bit floats without compression. */
+    private static AuxiliaryArray aux(Param name, String unit, List<Param> params, String processing,
+                                      double... values) {
+        ByteBuffer data = ByteBuffer.allocate(8 * values.length).order(ByteOrder.LITTLE_ENDIAN);
+        for (double v : values) {
+            data.putDouble(v);
+        }
+        return new AuxiliaryArray(name, data.array(), "MS:1000523", "MS:1000576", values.length, unit, params,
+                processing);
     }
 
     /** A spectrum of one point. */

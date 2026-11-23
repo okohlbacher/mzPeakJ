@@ -2,6 +2,7 @@ package org.mzpeak.mzml;
 
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
@@ -100,8 +101,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * announce them, and {@link #finish()} adds the chromatograms and marshals the whole tree with jmzML's
  * {@code MzMLMarshaller} to a temp file next to the target, which it then moves to the target without replacing
  * anything there. Nothing is written before {@code finish()}; the whole document is held in memory until then. Every
- * writer notes the limit lines {@link #LIMITS} (design 6.0) and the fixed lines {@link #NOT_VISIBLE} of the losses it
- * does not count (A-13, A-14), and what the mzML cannot carry as it is is counted in
+ * writer notes the limit lines {@link #LIMITS} (design 6.0) and the fixed line {@link #NOT_VISIBLE} of the loss it
+ * does not count (A-13), and what the mzML cannot carry as it is is counted in
  * {@link #warnings()} (design 6.2), as is every PSI mapping-rule violation it passes through (design 6.4: spectra
  * without exactly one spectrum type and representation, scanLists without exactly one combination term, spectrum
  * precursor activations without dissociation method, instrument configurations synthesized or without exactly one
@@ -196,15 +197,13 @@ public final class MzMLWriter implements AutoCloseable {
                     + " near -Xmx)");
 
     /**
-     * The losses of design 6.2 the converter does not count, noted as fixed lines after {@link #LIMITS}: A-13, the
-     * units and data types of arrays as stored in mzPeak; A-14, auxiliary arrays. The library reads the auxiliary
-     * arrays (R1) and the spectrum intensity units (R5); the converter does not use them yet.
+     * The loss of design 6.2 the converter does not count, noted as a fixed line after {@link #LIMITS}: A-13, the
+     * units and data types of arrays as stored in mzPeak. The library reads the spectrum intensity units (R5); the
+     * converter does not use them yet. A-14 is withdrawn: auxiliary arrays are written (R1).
      */
     static final List<String> NOT_VISIBLE = List.of(
             "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every array"
-                    + " is written as 64-bit floats in the default unit of its key, or without unit",
-            "A-14 auxiliary_arrays of the mzPeak input, which the converter does not use yet: they are not"
-                    + " written");
+                    + " is written as 64-bit floats in the default unit of its key, or without unit");
 
     // The losses of design 6.2 this writer counts, one line each in warnings().
     static final String A_1 = "A-1 peak lists that are not a row copy of the spectrum's arrays dropped";
@@ -238,6 +237,10 @@ public final class MzMLWriter implements AutoCloseable {
     static final String A_32 = "A-32 spectrum-level scan start times that differ from the first scan's dropped";
     static final String A_33 = "A-33 non-standard data arrays without a name given the name 'non-standard data"
             + " array'";
+    static final String A_34 = "A-34 auxiliary arrays written without their params, data processing or a unit whose CV"
+            + " prefix the cv list lacks";
+    static final String A_35 = "A-35 auxiliary arrays whose compression or data type the converter cannot decode"
+            + " dropped";
     // Warned by design 5.2 and 5.3, without a loss number.
     static final String CV_WITHOUT_ID = "cv list entries without id dropped";
     static final String CV_COMPLETED = "CVs without fullName or URI completed from the known CVs, else with the prefix"
@@ -455,7 +458,8 @@ public final class MzMLWriter implements AutoCloseable {
             x.setPrecursorList(precursors);
         }
         note(A_1, spectrum.peaks().isEmpty() || rowCopy(spectrum) ? 0 : 1);
-        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(), COUNTS, spectrum.arrays()));
+        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(), COUNTS, spectrum.arrays(),
+                spectrum.auxiliaryArrays()));
         add(list, x);
     }
 
@@ -495,7 +499,7 @@ public final class MzMLWriter implements AutoCloseable {
         params(x, rest);
         spectrumMust(x);
         x.setBinaryDataArrayList(arrays(WAVELENGTH_ARRAY, NANOMETER, spectrum.wavelength(), spectrum.intensity(),
-                COUNTS, Map.of()));
+                COUNTS, Map.of(), spectrum.auxiliaryArrays()));
         add(list, x);
     }
 
@@ -1098,7 +1102,7 @@ public final class MzMLWriter implements AutoCloseable {
             x.setPrecursor(precursor);
         }
         x.setBinaryDataArrayList(arrays(TIME_ARRAY, c.timeUnit(), c.time(), c.intensity(), c.intensityUnit(),
-                c.arrays()));
+                c.arrays(), c.auxiliaryArrays()));
         return x;
     }
 
@@ -1362,17 +1366,46 @@ public final class MzMLWriter implements AutoCloseable {
 
     /**
      * The arrays of a spectrum or chromatogram: its axis array {@code axis} in {@code axisUnit}, its intensity in
-     * {@code intensityUnit}, then the extras in map order, each in its default unit if it has one.
+     * {@code intensityUnit}, then the extras in map order, each in its default unit if it has one, then the
+     * {@code auxiliary} arrays in their order ({@link #auxiliary}).
      */
     private BinaryDataArrayList arrays(String axis, String axisUnit, double[] axisValues, double[] intensity,
-                                       String intensityUnit, Map<String, double[]> extras) {
+                                       String intensityUnit, Map<String, double[]> extras,
+                                       List<AuxiliaryArray> auxiliary) {
         BinaryDataArrayList list = new BinaryDataArrayList();
         list.getBinaryDataArray().add(array(axis, axisValues, axisUnit));
         list.getBinaryDataArray().add(array(INTENSITY_ARRAY, intensity, intensityUnit));
         extras.forEach((key, values) -> list.getBinaryDataArray()
                 .add(array(key, values, CvTerms.DEFAULT_ARRAY_UNITS.get(key))));
+        auxiliary.forEach(a -> auxiliary(list, a));
         list.setCount(list.getBinaryDataArray().size());
         return list;
+    }
+
+    /**
+     * Adds the auxiliary array {@code a} to {@code list} (R1, D13-19): its values ({@link AuxiliaryArray#doubles()})
+     * as {@link #array} writes an array, keyed by the accession of its name, for MS:1000786 by its name's String value
+     * and for a name without accession by its name, in its unit, with {@code arrayLength} its number of values, since
+     * it may differ from the owner's {@code defaultArrayLength}. Its params, its data processing and a unit whose CV
+     * prefix the cv list lacks are not written (A-34); an array whose compression or data type {@code doubles()}
+     * cannot decode is dropped (A-35).
+     */
+    private void auxiliary(BinaryDataArrayList list, AuxiliaryArray a) {
+        double[] values;
+        try {
+            values = a.doubles();
+        } catch (UnsupportedOperationException e) {
+            note(A_35);
+            return;
+        }
+        Param name = a.name();
+        String key = NON_STANDARD_ARRAY.equals(name.accession()) && name.value() instanceof String s ? s
+                : name.accession() == null ? Objects.requireNonNullElse(name.name(), "") : name.accession();
+        String unit = cvs.containsKey(prefix(a.unit())) ? a.unit() : null;
+        note(A_34, a.parameters().isEmpty() && a.dataProcessingId() == null && Objects.equals(unit, a.unit()) ? 0 : 1);
+        BinaryDataArray array = array(key, values, unit);
+        array.setArrayLength(values.length);
+        list.getBinaryDataArray().add(array);
     }
 
     /**
@@ -1380,7 +1413,8 @@ public final class MzMLWriter implements AutoCloseable {
      * returns on an empty array with zlib); then its type, or MS:1000786 named {@code key}, with {@code unit}. A
      * nameless non-standard array (the key MS:1000786, which the library gives one, or an empty key) is named
      * 'non-standard data array', which the mzML read takes as its key (A-33); without a name it would be dropped.
-     * {@code arrayLength} is never written; {@code encodedLength} is the Base64 length of the encoded bytes.
+     * {@code arrayLength} is not written here ({@link #auxiliary} writes it); {@code encodedLength} is the Base64
+     * length of the encoded bytes.
      */
     private BinaryDataArray array(String key, double[] values, String unit) {
         BinaryDataArray a = new BinaryDataArray();

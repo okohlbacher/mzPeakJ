@@ -3,6 +3,7 @@ package org.mzpeak.mzml;
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
@@ -56,6 +57,8 @@ import uk.ac.ebi.jmzml.model.mzml.UserParam;
 import uk.ac.ebi.jmzml.xml.io.MzMLObjectIterator;
 import uk.ac.ebi.jmzml.xml.io.MzMLUnmarshaller;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -186,7 +189,6 @@ public final class MzMLReader {
     static final String B_21_PARAMS = "B-21 lost array params other than array type, data type and compression";
     static final String B_21_UNIT = "B-21 lost declared unit of an array without default unit";
     static final String B_21_UNIT_DROP = "B-21 dropped array in a unit other than its default";
-    static final String B_21_LENGTH = "B-21 dropped array whose declared length differs from its axis array's";
     static final String B_21_ASCII = "B-21 dropped null-terminated ASCII array";
     static final String B_21_UNTYPED = "B-21 dropped array without array type";
     static final String B_23 = "B-23 wavelength spectrum content other than the first scan's start time lost";
@@ -205,6 +207,8 @@ public final class MzMLReader {
     static final String B_41 = "B-41 externalSpectrumIDs next to a spectrumRef lost";
     static final String B_42 = "B-42 spectrumRefs that name no spectrum of the file, which come back as"
             + " externalSpectrumIDs";
+    static final String B_43 = "B-43 arrays whose declared length differs from their axis array's dropped: their"
+            + " array type is none an auxiliary array may have";
     // Warned by design 5.4 and 5.5, without a loss number.
     static final String BOTH_POLARITIES = "spectra and chromatograms with both scan polarities read as polarity"
             + " unknown, the terms kept as params";
@@ -224,6 +228,15 @@ public final class MzMLReader {
     private static final String PIC = "MS:1002313";
     /** The terms for MS-Numpress followed by zlib in one term, which jmzML cannot decode (guard 2). */
     private static final Set<String> NUMPRESS_ZLIB = Set.of("MS:1002746", "MS:1002747", "MS:1002748");
+    /**
+     * The array types the mzPeak writer refuses for an auxiliary array, since the Rust reference reader does not map
+     * them (R1): every other array type, and every non-standard data array, may name one.
+     */
+    private static final Set<String> NO_AUXILIARY_TYPES = Set.of("MS:1002478", "MS:1002742", "MS:1002743",
+            "MS:1002744", "MS:1002745", "MS:1003143");
+    /** 64-bit float and no compression, the data type and compression of the auxiliary arrays read (R1). */
+    private static final String FLOAT64 = "MS:1000523";
+    private static final String NO_COMPRESSION = "MS:1000576";
     private static final String MZ = "MS:1000040";
     private static final String NANOMETER = "UO:0000018";
     private static final String MINUTE = "UO:0000031";
@@ -806,7 +819,8 @@ public final class MzMLReader {
                 scans.isEmpty() ? Double.NaN : scans.get(0).startTime(), polarity, continuity, centroid ? 0 : n,
                 centroid ? n : 0, scans, precursors, params,
                 Objects.equals(s.getDataProcessingRef(), spectrumListDefault) ? null : s.getDataProcessingRef());
-        return new Spectrum(description, mz, values(signal.intensity()), null, values(signal.extras()), null);
+        return new Spectrum(description, mz, values(signal.intensity()), null, values(signal.extras()), null, null,
+                null, auxiliary(signal.auxiliary()));
     }
 
     /**
@@ -824,7 +838,7 @@ public final class MzMLReader {
         }
         Signal signal = classify(Kind.WAVELENGTH, arrays);
         return new WavelengthSpectrum(wavelengthIndex++, s.getId(), time, lambdaMax, values(signal.axis()),
-                values(signal.intensity()), params);
+                values(signal.intensity()), params, auxiliary(signal.auxiliary()));
     }
 
     /**
@@ -860,7 +874,7 @@ public final class MzMLReader {
                 type == null ? null : type.accession(), values(signal.axis()), values(signal.intensity()),
                 signal.intensity() == null ? null : signal.intensity().array().unit(), values(signal.extras()),
                 polarity, Objects.equals(processing, spectrumListDefault) ? null : processing, params, precursors,
-                Objects.requireNonNullElse(timeUnit, MINUTE));
+                Objects.requireNonNullElse(timeUnit, MINUTE), List.of(), auxiliary(signal.auxiliary()));
         return v -> v.chromatogram(chromatogram);
     }
 
@@ -1012,10 +1026,12 @@ public final class MzMLReader {
     }
 
     /**
-     * The arrays kept of a spectrum or chromatogram: axis and intensity (both or neither) and the extras by key; and
-     * the unit of the first axis array, null for none or no unit, also when B-9 drops it.
+     * The arrays kept of a spectrum or chromatogram: axis and intensity (both or neither), the extras by key and the
+     * arrays of another declared length, kept as auxiliary arrays; and the unit of the first axis array, null for none
+     * or no unit, also when B-9 drops it.
      */
-    private record Signal(Kept axis, Kept intensity, Map<String, Kept> extras, String axisUnit) {
+    private record Signal(Kept axis, Kept intensity, Map<String, Kept> extras, List<Kept> auxiliary,
+                          String axisUnit) {
     }
 
     /**
@@ -1073,14 +1089,14 @@ public final class MzMLReader {
      * The one classification of an entity's arrays, which {@link #survey()} and {@link #read(Visitor)} share
      * (design 8.1): from attributes and terms only, it keeps the first axis and intensity array (in the model's unit,
      * else rejected; a chromatogram's time as stored in a unit the model converts, its intensity in any unit) and the
-     * extra arrays it can carry, and drops the rest:
-     * arrays without type (B-21), ASCII arrays (B-21), all arrays when the axis or intensity array is missing (B-9),
-     * a second array of a key (B-29), extras of wavelength spectra (B-28), extras in a unit that is not their key's
-     * default and cannot be converted to it (B-21) and extras whose declared length differs from the axis array's
-     * (B-21). An extra whose key has no default unit is kept without its unit (B-21). The first axis and intensity
-     * array are checked for their unit before B-9 drops them: design 6.3 rejects them in a unit the model cannot carry
-     * whether or not the other one is present, so an intensity-only spectrum with its intensity in MS:1000132 is
-     * rejected, not dropped as B-9.
+     * extra arrays it can carry, keeps every other array whose declared length differs from the axis array's as an
+     * auxiliary array, as stored and in its declared unit (R1), unless an auxiliary array cannot have its type (B-43),
+     * and drops the rest: arrays without type (B-21), ASCII arrays (B-21), all arrays when the axis or intensity array
+     * is missing (B-9), a second array of a key (B-29), extras of wavelength spectra (B-28) and extras in a unit that
+     * is not their key's default and cannot be converted to it (B-21). An extra whose key has no default unit is kept
+     * without its unit (B-21). The first axis and intensity array are checked for their unit before B-9 drops them:
+     * design 6.3 rejects them in a unit the model cannot carry whether or not the other one is present, so an
+     * intensity-only spectrum with its intensity in MS:1000132 is rejected, not dropped as B-9.
      *
      * @throws MzPeakException for axis and intensity arrays of different declared lengths, or a main array in a unit
      *                         the model cannot carry (design 6.3), with or without the other main array
@@ -1105,7 +1121,7 @@ public final class MzMLReader {
         Map<String, Kept> extras = new LinkedHashMap<>();
         if (axis == null || intensity == null) {
             note(B_9, usable.isEmpty() ? 0 : 1);
-            return new Signal(null, null, extras, axisUnit);
+            return new Signal(null, null, extras, List.of(), axisUnit);
         }
         if (axis.length() != intensity.length()) {
             throw error("its " + axis.key() + " and " + INTENSITY_ARRAY + " arrays declare different lengths, "
@@ -1114,26 +1130,31 @@ public final class MzMLReader {
         // D-12c: a chromatogram's time array is checked for its unit above but kept as stored, in that unit
         Kept axisKept = kept(axis, kind == Kind.CHROMATOGRAM ? AS_IS : axisConversion);
         Kept intensityKept = kept(intensity, intensityConversion);
+        List<Kept> auxiliary = new ArrayList<>();
         for (Array a : usable) {
             if (a == axis || a == intensity) {
                 continue;
             }
             String target = CvTerms.DEFAULT_ARRAY_UNITS.get(a.key());
             DoubleUnaryOperator conversion = target == null ? AS_IS : conversion(a.unit(), target);
-            if (a.key().equals(kind.axis) || a.key().equals(INTENSITY_ARRAY) || extras.containsKey(a.key())) {
+            if (a.length() != axis.length()) {
+                if (NO_AUXILIARY_TYPES.contains(a.key())) {
+                    note(B_43);
+                } else {
+                    auxiliary.add(kept(a, AS_IS));
+                }
+            } else if (a.key().equals(kind.axis) || a.key().equals(INTENSITY_ARRAY) || extras.containsKey(a.key())) {
                 note(B_29);
             } else if (kind == Kind.WAVELENGTH) {
                 note(B_28);
             } else if (conversion == null) {
                 note(B_21_UNIT_DROP);
-            } else if (a.length() != axis.length()) {
-                note(B_21_LENGTH);
             } else {
                 note(B_21_UNIT, target == null && a.unit() != null ? 1 : 0);
                 extras.put(a.key(), kept(a, conversion));
             }
         }
-        return new Signal(axisKept, intensityKept, extras, axisUnit);
+        return new Signal(axisKept, intensityKept, extras, auxiliary, axisUnit);
     }
 
     /** The first of {@code arrays} with {@code key}, else null. */
@@ -1223,6 +1244,29 @@ public final class MzMLReader {
         Map<String, double[]> values = new LinkedHashMap<>();
         extras.forEach((key, kept) -> values.put(key, values(kept)));
         return values;
+    }
+
+    /**
+     * The auxiliary arrays of {@code kept} (R1, D13-19): each array's values as {@link #values(Kept)} gives them,
+     * stored as little-endian 64-bit floats without compression, named by its array type term (a non-standard data
+     * array by MS:1000786 with its name as value) and with its declared unit; its params other than type, data type
+     * and compression and its dataProcessingRef are lost (B-21), as for every array kept.
+     */
+    private List<AuxiliaryArray> auxiliary(List<Kept> kept) {
+        List<AuxiliaryArray> arrays = new ArrayList<>();
+        for (Kept k : kept) {
+            double[] values = values(k);
+            ByteBuffer data = ByteBuffer.allocate(Double.BYTES * values.length).order(ByteOrder.LITTLE_ENDIAN);
+            for (double v : values) {
+                data.putDouble(v);
+            }
+            String key = k.array().key();
+            Param name = CvTerms.ARRAY_TYPES.containsKey(key) ? new Param(CvTerms.ARRAY_TYPES.get(key), key, null, null)
+                    : new Param(CvTerms.ARRAY_TYPES.get(NON_STANDARD_ARRAY), NON_STANDARD_ARRAY, key, null);
+            arrays.add(new AuxiliaryArray(name, data.array(), FLOAT64, NO_COMPRESSION, values.length,
+                    k.array().unit(), List.of(), null));
+        }
+        return arrays;
     }
 
     /** jmzML's failure to read or decode the array {@code a} with key {@code key}, naming the array and its terms. */
