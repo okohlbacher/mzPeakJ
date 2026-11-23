@@ -164,8 +164,8 @@ old constructors still compile (and give minute), but a Java 21 record pattern w
 extra arrays of spectra and chromatograms (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156)
 are in milliseconds, converted from the unit the file's array index declares. Up to mzPeakJ 0.10.3 these values came
 in the file's unit. The scan windows of wavelength spectra are in nanometers, converted from the unit the column
-mapping gives (micrometer, millimeter or meter); any other unit, m/z included, is refused naming the member and the
-column.
+mapping gives (micrometer, millimeter or meter); any other unit, m/z included, is refused once a window holds a
+value, naming the member and the column.
 
 #### Options, range queries and the other reader features
 
@@ -317,7 +317,7 @@ Without a row-group size, the `mzpeak.writer.rowGroupSize` system property appli
 - **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
   and only the first scan and the primary precursor of a spectrum; no spectrum data processing reference, no
   wavelength-spectrum Params, no chromatogram polarity, data processing reference, Params or precursors, and no
-  auxiliary arrays (one WARNING for each kind dropped).
+  auxiliary arrays or wavelength scans (one WARNING for each kind dropped).
   Since 0.12.0 a spectrum type or summary term it writes as a column no longer stays in the `parameters` list as
   well. Use it only for readers of that era; the current Python and Rust readers reject it.
 
@@ -421,6 +421,10 @@ Writer notes:
   intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array unit of the array index and
   must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else
   a stub entity with one WARNING.
+- The `SPLIT` layout declares the fields the spec requires as required (W14): the item, `value` and `name` of every
+  `parameters` list of a metadata table, and the `name`, `name.name`, `data_type`, `compression` and `items` of each
+  auxiliary array; the `parameters` list inside an auxiliary array keeps optional item fields, as
+  auxiliary-arrays.md gives it (metadata-tables.md disagrees). The `PACKED` layout keeps them all optional.
 - In the `SPLIT` layout the accession and unit of every param of a spectrum, its scans and precursors (isolation
   window, activation, selected ions), a chromatogram and its precursors, a wavelength spectrum and its scans must be
   null or a CURIE the Rust reference reader parses, `PREFIX:number` with a number up to 4294967295 (it panics on
@@ -621,8 +625,12 @@ it; arrays compressed with the combined MS-Numpress-and-zlib terms MS:1002746, M
 MS-Numpress PIC counts of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an
 empty SLOF payload; arrays without a binary data type term (jmzML: "Required precision CV parameter not found");
 m/z, intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
-wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type
-terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the
+wavelength or time and intensity arrays) of different declared lengths. The mzPeak writer's checks fail a
+conversion too ([converter limits](docs/mzml-converter.md#limits)): a NaN in an axis or intensity array, a CURIE of
+a CV the `cvList` does not declare, a reference that names nothing of the header and, in the default `split`
+layout, a cvParam accession or unit that is not `PREFIX:number` (such as an NCIT term; `--layout packed` writes it).
+Lenient: of two compression or two data type terms on one array, jmzML decodes by the one it knows, and the other
+is not checked. Counted under B-40: the
 attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads
 them, so a character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80
 becomes U+FFFD (a default ref with such a byte then names nothing, while the header lists keep the character).
@@ -782,8 +790,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
   Numpress encoding is lossy; total ion current is preserved to <1%.
 - Spectra (MS1 + MSn): metadata in the split and the legacy packed layout + precursor/selected-ion/activation
   params (facet join by `source_index`), `double[]` m/z + intensity, centroid peaks, extra arrays such as
-  per-peak ion mobility, and profile reconstruction of null-marked points using the stored m/z delta-model
-  polynomial (linear interpolation fallback when no model is stored).
+  per-peak ion mobility, auxiliary arrays, intensity units, and profile reconstruction of null-marked points by
+  the spec's null-pair rule (per chunk row; the stored m/z delta model next to a single stored value).
 - Chromatograms (TIC, DAD/absorption, …) — point and chunk time-axis layouts both decoded, with their time and
   intensity units and per-point extra arrays (`Chromatogram.arrays()`, such as the TIC's `ms level`).
 - Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type.
@@ -828,11 +836,11 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - **Writing**: the delta-`chunk` layout (the m/z + intensity payload is preserved in full). The `PACKED`
   compatibility layout writes only the primary scan / precursor / selected ion of a spectrum (with a warning),
   so combineIMS frames lose their secondary mobility-scan metadata there, and no spectrum data processing
-  reference, wavelength-spectrum Params, chromatogram polarity, data processing reference, Params or precursors, or
-  auxiliary arrays (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
+  reference, wavelength-spectrum Params, chromatogram polarity, data processing reference, Params or precursors,
+  auxiliary arrays or wavelength scans (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
   `Chromatogram.products()`) or the precursor MS level (`Precursor.msLevel()`), which are read only (D13-21; the
-  Rust reference panics on a chromatogram products member), nor yet the scans of a wavelength spectrum beyond one
-  scan holding its time (the R8 writer unit); a write that drops any of these warns once, with the counts.
+  Rust reference panics on a chromatogram products member); a write that drops any of these warns once, with the
+  counts.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).

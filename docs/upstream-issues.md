@@ -22,7 +22,7 @@ the test yet.
 | R-3 | Wavelength spectrum retention time reads as 0.0 | the reference's own has_uv.mzpeak (all 520) | wrong time |
 | R-4 | A missing collision energy or selected-ion intensity reads as 0.0 instead of absent | several fixtures | absent value reported as 0 |
 | R-5 | Names of non-standard data arrays are lost | converted mzML with named arrays | array identity lost |
-| R-6 | Null m/z values filled less precisely than mzPeakJ: median error against the mzML 9.8e-8 (Rust) vs 3.9e-9 (mzPeakJ) on small; up to 1.7e-5 differences | small.mzpeak, Example_Processed.img | m/z precision |
+| R-6 | Null-marked m/z are filled other than by the spec's rule (signal-data.md, Decoding null pairs), which mzPeakJ (since 0.13.0, D13-13) and the HEAD Python reader follow: by up to 6.1e-5 at 10 to 26 points per spectrum. Up to 0.12.0 the entry compared Rust's fill with mzPeakJ's own rule (Q-U4); on small, where the two reference readers agree, mzPeakJ now fills as both do | Example_Processed.img | m/z of filled points |
 | R-7 | Ion mobility of centroid peaks not exposed, even with the ion-mobility-aware peak types | diaPASEF | data not reachable |
 | R-8 | `AuxiliaryArrayVisitor` requires 64-bit Arrow list/string types (`as_list::<i64>`), panicking on Parquet files without an `ARROW:schema` footer (as written by non-Arrow writers) | any file whose metadata carries `auxiliary_arrays` without an Arrow hint | wavelength spectra unreadable (mzPeakJ now writes the hint) |
 | R-9 | The packed (legacy) layout no longer opens (`metadata.rs:334`) | the 5 legacy upstream fixtures themselves | legacy files unreadable |
@@ -150,3 +150,22 @@ A latent difference, not seen by the test: the reference's `ScanSettings` struct
 `source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the
 references `source_file_references` and makes each target an object with its `parameters`, which mzPeakJ's split
 layout writes. The Rust and Python readers do not parse `scan_settings_list`, so nothing breaks today.
+
+## Inconsistencies in the specification
+
+Found while checking mzPeakJ against the specification at `963d64a` (the 0.13.0 conformance audit, 2026-11-22), not
+filed upstream either. mzPeakJ's choice is given where one was needed.
+
+- The `parameters` list inside an auxiliary array: auxiliary-arrays.md (l.16-58) gives its item fields as optional,
+  while metadata-tables.md, §The parameters list (l.96-117), requires the item, its `value` and its `name` in every
+  `parameters` list. mzPeakJ follows auxiliary-arrays.md there and metadata-tables.md everywhere else (W14, D13-27).
+- The auxiliary array's `items`: auxiliary-arrays.md shows `int64` without a logical type; mzPeakJ writes UINT64, as
+  the reference writer does (the physical type is the same).
+- The `opt_` prefix of non-standard column names is a MUST in metadata-tables.md (l.33) and a SHOULD in
+  archive/index-file.md (l.579).
+- The steps of the signing procedure are misnumbered.
+- conformance.md is inconsistent in its wording about sorting rank 0 (l.66-67).
+- The `contact_must` mapping rule contradicts `file_description.json`.
+- MS:1003870, the array type of the entity index, is not in the PSI-MS release 4.1.249 that `cv_list` declares.
+- `table_rules.json` requires MS:1000570 (spectra combination), which spectra.md makes optional (l.153: assumed to
+  be MS:1000795, no combination, when absent).

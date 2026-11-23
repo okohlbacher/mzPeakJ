@@ -118,7 +118,7 @@ Any other value, including `other` and an absent one, parses to `OTHER`, which n
 | spectrum / products, chromatogram / products | `spectra_metadata_products.parquet`, `chromatograms_metadata_products.parquet` | `ProductRowDecoder`, through `SplitMetadataReader` and `ChromatogramMetadataDecoder` (read only) |
 | chromatogram / data_arrays | `chromatograms_data.parquet` | `ChromatogramDataDecoder` (§3.5) |
 | wavelength_spectrum / metadata | `wavelength_spectra_metadata.parquet` | `WavelengthMetadataDecoder` (§2.5) |
-| wavelength_spectrum / scans | `wavelength_spectra_metadata_scans.parquet` | not decoded (§10) |
+| wavelength_spectrum / scans | `wavelength_spectra_metadata_scans.parquet` | `WavelengthMetadataDecoder` through `ScanRowDecoder` (§2.5) |
 | wavelength_spectrum / data_arrays | `wavelength_spectra_data.parquet` | `WavelengthSpectrumStore` (§3.5) |
 
 Members of other roles (provenance, signature, proprietary, other) are ignored. Checksums are not
@@ -323,8 +323,13 @@ Both read either layout through `MetadataTable`, columns by accession:
 - `WavelengthMetadataDecoder`: `index`, `id`, `time`, MS:1003812 lambda max and the Params (MZ-4): the
   `parameters` list, then, in the split layout, each leftover column whose accession is not already there.
 
-A repeated index keeps its first position and the values of its last row. The wavelength scans facet is not
-decoded (§10).
+A repeated index keeps its first position and the values of its last row. The scans of wavelength spectra (R8) are
+read from the split scans member as spectrum scans are (`ScanRowDecoder`), each spectrum's in file order, their scan
+windows in nanometers: the unit comes from the column mapping, nanometer when none is mapped; micrometer, millimeter
+and meter are converted, and any other unit, or a unit column, throws once a window holds a value (the m/z that the
+reference writer maps on has_uv, whose windows are empty, included). A wavelength spectrum without scan rows has no
+scans, and so has every wavelength spectrum of the legacy packed layout, whose `scan` struct is not decoded
+(D13-24).
 
 ---
 
@@ -600,31 +605,34 @@ unmapped `coordinate_spacing_model` column, which the Python reader never reads.
 
 ### 4.2 Fill
 
-With `reconstructProfile=true` (the default), each null-marked m/z is filled one `predict(mz)` step from a
-stored neighbour, flank-aware. Null marking replaces the zero-intensity points on both sides of each stored
-cluster, so an interior run of two nulls is the right flank of one cluster followed by the left flank of the
-next. The first null steps forwards from the left anchor (`m[left] + predict(m[left])`), the last steps
-backwards from the right anchor (`m[right] - predict(m[right])`). A leading run steps backwards from the
-first stored value; a trailing run, an interior single null and the middle of a longer run step forwards. The
-stored polynomial is used for both flanks as is, without re-fitting. Filled points get intensity 0; the point
-count matches the declared `number_of_data_points` (13,589 for spectrum 0) and the axis is monotonic.
+With `reconstructProfile=true` (the default), the null-marked m/z are filled by the spec's rule (signal-data.md,
+Decoding null pairs; R2, D13-13), in `NullFill`, per chunk row in the chunked and Numpress layouts and per spectrum in
+the point layout; the rows are concatenated after the fill. The null times of a chunked chromatogram are filled the
+same way. Null marking stores the zero-intensity points on both sides of each stored segment as nulls, so the nulls of
+an array come in pairs (the right flank of one segment and the left flank of the next), apart from its first and last
+null. A flank steps from its segment's stored end value by the segment's spacing: the second median of the
+differences of its stored values (the median of the differences at or below their median) when the segment has two
+or more, else the delta model (§4.1) at the single value; without a model, the second median of all differences
+between adjacent stored values of the spectrum (mzPeakJ's fallback, which the spec does not give), and without those
+either the read throws. A null alone between stored values throws, naming the member, the spectrum, the chunk row and
+the position; a NaN m/z that mzPeakJ 0.12.0 wrote between stored values reads so, and the writer now refuses it
+(W10). A run of three or more nulls between stored values, which null marking does not produce, is filled at its
+ends as a pair and linearly between them, and a run of two or more at an end of the array steps on outwards; such
+runs are logged once per spectrum at DEBUG. Filled points get intensity 0; the point count matches the declared
+`number_of_data_points` (13,589 for spectrum 0) and the axis is monotonic.
 
-Without a stored model, nulls are filled by linear interpolation between stored anchors. With
-`reconstructProfile=false` only the stored points are returned (11,213 for spectrum 0).
+With `reconstructProfile=false` only the stored points are returned (11,213 for spectrum 0).
 
 ### 4.3 Comparison with the reference readers
 
-Both reference readers — Rust `fill_nulls_for` (`filter.rs`) and the HEAD Python reader (`filters.py`) — are
-flank-aware too, and agree with each other on a different rule: they use the polynomial only for a
-single-point cluster and the cluster's local median spacing otherwise. mzPeakJ keeps the stored polynomial for
-every cluster.
-
-The only ground truth is small.numpress, which stores the same 14 profile spectra without null marking.
-Against it, every point mzPeakJ fills lands within 1e-6 Da, in both fixture sets
-(`ProfileReconstructionGroundTruthTest`); the reference rule is up to 1.8e-5 Da off on spectrum 0. Between
-the two rules, filled m/z differ by up to about 4.3e-5 Da on the current examples (Example_Processed.img), so
-the golden comparison allows 5e-5 Da for filled points (§9.2). Porting the reference rule stays deferred
-(§10).
+Up to 0.12.0 mzPeakJ stepped every flank by the stored delta model (Q-U4), which put the filled m/z of small within
+1e-6 Da of the ground truth, small.numpress, which stores the same 14 profile spectra without null marking. The
+spec's rule is less exact there: `ProfileReconstructionGroundTruthTest` pins a median deviation of the filled m/z of
+at most 1.5e-7 Da and a maximum of at most 2e-5 Da, in both fixture sets. In exchange mzPeakJ fills as the spec says
+and as the HEAD Python reader does: `NullFillSpecTest` compares spectra 0 and 41 of small.chunked with the spec's
+Python `fill_nulls` and with the Python reader's golden spectra, both within 1e-9. The Rust reader fills as both on
+small but differs on Example_Processed.img by up to 6.1e-5 at 10 to 26 points per spectrum (upstream issue R-6). The
+golden tolerance for filled m/z stays 5e-5 Da (§9.2).
 
 ---
 
@@ -839,7 +847,10 @@ and the memory rule are in [docs/mzml-converter.md](docs/mzml-converter.md).
 `MzPeakWriter`'s public overloads delegate to one pipeline, whose settings are `MzPeakWriter.Options` (signal
 encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` validates the input before any
 I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
-precursor; chromatogram times in a unit it converts to minutes; for Numpress, values the codecs can encode),
+precursor; chromatogram times in a unit it converts to minutes; for Numpress, values the codecs can encode; no NaN
+axis value or intensity, W10; declared CV prefixes and resolving references, W12; param value types, W2; and the
+values the Rust reference reader panics on, D13-28: in every layout the auxiliary arrays' terms and CURIEs, in the
+split layout every param accession and unit that is neither null nor `PREFIX:number` with a u32 number),
 numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
 (CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
 re-sorts a main axis that is not ascending (by `Double.compare`, so rows with a NaN move to the end) and decides
@@ -872,17 +883,22 @@ zone too.
   unique, with a WARNING, since the Rust reader needs it). Every scan, precursor and selected ion is written, and
   a Param moves to its standardized column only where the reader rebuilds it unchanged. Since 0.12.0 (D-13) the
   scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (§5); `wavelength_spectra_metadata_scans`
-  has the spectrum-scan schema and its six mappings, as the reference writes it (the spectrum's time as
-  `scan_start_time`, the other typed columns null, empty `parameters` and `scan_windows`); and
-  `chromatograms_metadata` carries empty `auxiliary_arrays` with `number_of_auxiliary_arrays` 0 and the
-  `ARROW:schema` hint, as `spectra_metadata` and `wavelength_spectra_metadata` do. `WriteLossAuditTest` checks that
-  every column of the reference fixtures' metadata members exists in the written ones, apart from a listed few with
-  their reasons.
+  has the spec's wavelength scan table, the spectrum-scan schema without `ion_mobility_value`, `ion_mobility_type`
+  and `spectrum_reference` (D13-12), and holds each wavelength spectrum's scans as given, their scan windows FLOAT
+  (float32) mapped in nanometers (R8, D13-24), and one scan holding the spectrum's time for one without scans; and
+  `spectra_metadata`, `chromatograms_metadata` and `wavelength_spectra_metadata` carry each entity's auxiliary arrays
+  (R1), their bytes and compression as given, in `auxiliary_arrays` with `number_of_auxiliary_arrays` and the
+  `ARROW:schema` hint. Since 0.13.0 (W14, D13-27) the item, `value` group and `name` of every `parameters` list, and
+  the `name`, `name.name`, `data_type`, `compression` and `items` of each auxiliary array, are required fields; the
+  `parameters` list inside an auxiliary array keeps optional item fields, as auxiliary-arrays.md gives it.
+  `WriteLossAuditTest` checks that every column of the reference fixtures' metadata members exists in the written
+  ones, apart from a listed few with their reasons.
 - `PACKED`: the pin-era dialect that mzPeakJ 0.10.3 and earlier wrote and read, written by
   `PackedMetadataWriter`: packed metadata structs (§2.4), the role spellings `data arrays` and
   `wavelength spectrum`, empty column mappings, only the first scan and the primary precursor of a spectrum,
-  no wavelength-spectrum Params (one WARNING; the pin-era wavelength schema has no `parameters` list), and no
-  chromatogram polarity, data processing reference, Params or precursors (one WARNING).
+  no wavelength-spectrum Params (one WARNING; the pin-era wavelength schema has no `parameters` list), no
+  chromatogram polarity, data processing reference, Params or precursors (one WARNING), and no auxiliary arrays and
+  wavelength scans (one WARNING each, after the same checks as the split layout's).
   Isolation-window Params go to the pin-era `isolation_window.parameters` list. Since V-17 (0.12.0) a spectrum
   type or summary term written as a column no longer stays in the `parameters` list as well (§2.4); otherwise the
   layout is frozen. The HEAD Python reader rejects it ("Old concatenated storage layout not supported"), and so
@@ -934,10 +950,10 @@ ion mobility columns, is opened by Rust: the counts equal the written ones (for 
 chromatograms Rust reports 2, the TIC and BPC it derives from the spectra), MS levels and scan start times equal
 those written, and every main signal array (m/z, intensity, time, wavelength) and every centroid peak equals
 mzPeakJ's read (times, wavelengths, plain, Numpress linear and PIC values bit for bit; m/z within 1e-4, since Rust
-fills null-marked m/z less precisely; SLOF intensities within 2 ulp of `j + 1`, because Java's `Math.exp` and the
-platform libm may differ by one ulp; peak intensities as the float32 nearest to mzPeakJ's value, the type of
-`mzpeaks::CentroidPeak`). Extra arrays are not compared; per-peak ion mobility could not be, since Rust does not
-expose it (R-7). The TIC and BPC records Rust derives are checked only for being retrieved without error or panic.
+fills null-marked m/z otherwise on Example_Processed.img, R-6; SLOF intensities within 2 ulp of `j + 1`, because
+Java's `Math.exp` and the platform libm may differ by one ulp; peak intensities as the float32 nearest to mzPeakJ's
+value, the type of `mzpeaks::CentroidPeak`). Extra arrays are not compared; per-peak ion mobility could not be,
+since Rust does not expose it (R-7). The TIC and BPC records Rust derives are checked only for being retrieved without error or panic.
 The only failures allowed are the known
 issues R-1 to R-3 of the Rust reader ([docs/upstream-issues.md](docs/upstream-issues.md)), each expected exactly
 where it applies and required to occur, so that a fixed one is noticed. The `PACKED` output is not read by the
@@ -955,11 +971,12 @@ cannot open a dataset with 0 spectra, such as one written for a chromatogram-onl
 arrays are written). The extra signal arrays of spectra and chromatograms (spectrum ion mobility, the TIC's
 `ms level`, the intensities of each chromatogram intensity unit in a column of their own), the chromatogram
 intensity and time units are written, and so are, in `SPLIT`, chromatogram polarity, data processing reference,
-Params and precursors, wavelength-spectrum Params, the ion mobility columns of scans and selected ions, the full
-wavelength scan schema and the chromatogram auxiliary arrays (D-13). A `PACKED` write logs
+Params and precursors, wavelength-spectrum Params, the ion mobility columns of scans and selected ions, the
+wavelength scans and the auxiliary arrays of every entity (D-13, R1, R8). A `PACKED` write logs
 one WARNING for each kind of content it drops: scans, precursors and selected ions beyond the first of a
-spectrum, wavelength-spectrum Params, and chromatogram polarity, data processing reference, Params and
-precursors.
+spectrum, wavelength-spectrum Params, chromatogram polarity, data processing reference, Params and
+precursors, auxiliary arrays and wavelength scans. No layout writes the products or the precursor `ms_level`
+(D13-21); a write that drops them logs one WARNING with the counts.
 
 ### 8.2 Reader API
 
@@ -1268,20 +1285,20 @@ check.
   in spectrum signal members only; a chromatogram chunk is read as deltas whatever its encoding (§3.5).
 - **Writer** (§8.1). Not written: the delta-`chunk` layout, chunked chromatograms and null-marked profiles
   (the reconstructed arrays are written). The `PACKED` layout writes only the first scan and the primary
-  precursor of a spectrum, with a WARNING when it drops more, and no wavelength-spectrum Params and no
-  chromatogram polarity, data processing reference, Params or precursors, with a WARNING each.
+  precursor of a spectrum, with a WARNING when it drops more, and no wavelength-spectrum Params, no
+  chromatogram polarity, data processing reference, Params or precursors, and no auxiliary arrays or wavelength
+  scans, with a WARNING each.
   The Rust reference reads the split output (checked in CI, §8.1) but not the `PACKED` one (R-9).
 - **Integrity.** Manifest checksums are verified only on request (`verifyIntegrity()`), never on `open` (§8.2).
 - **Byte determinism.** The Parquet members, and with them their checksums and CRCs, can differ between JVM runs
   in the order of a column chunk's encodings in the footer, which parquet-java takes from a `HashSet` (§8.1);
   their content does not.
 - **Metadata not written:** the products facets and the precursor `ms_level` are read only (D13-21).
-- **Metadata not decoded:** the wavelength scans facet; precursor-scope leftovers;
+- **Metadata not decoded:** the `scan` struct of legacy packed wavelength spectra (D13-24); precursor-scope leftovers;
   leftover Params of the legacy packed scan, precursor and selected-ion structs (those of the `spectrum` struct are
   read, §2.4); a scan start time whose unit is given by a unit column (it throws).
 - **Precursor join.** The reference-identical join (precursors in reverse, last precursor for unmatched ions,
   orphan ions dropped, null-m/z ions kept) is not ported (§2.3).
-- **Null fill.** The reference readers' local-median rule is not ported (§4.3).
 - **Provenance and signature** members are ignored, and the items of the draft imaging profile (such as a
   pixel-grid API) are not implemented.
 - **Extra arrays** of wavelength spectra are not read; no example has one.
