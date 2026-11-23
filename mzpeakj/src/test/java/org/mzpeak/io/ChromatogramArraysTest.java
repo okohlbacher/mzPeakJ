@@ -292,7 +292,8 @@ class ChromatogramArraysTest {
         }
         assertThat(chromatograms.get(0).arrays()).containsOnlyKeys("ms level");
         Path archive = tmp.resolve("written.mzpeak");
-        MzPeakWriter.writeArchive(archive, spectra, chromatograms, wavelength, List.of(), FileMetadata.EMPTY);
+        MzPeakWriter.writeArchive(archive, Fixtures.withoutReferences(spectra),
+                Fixtures.chromatogramsWithoutReferences(chromatograms), wavelength, List.of(), FileMetadata.EMPTY);
 
         try (MzPeakSource source = MzPeakSource.open(archive)) {
             assertThat(ChromatogramStore.load(source, MzPeakManifest.fromSource(source)).plan().source())

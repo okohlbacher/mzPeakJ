@@ -475,7 +475,7 @@ class ChromatogramPrecursorTest {
 
     /** Writes {@code chromatograms} with the first spectrum of current small, an MS1 spectrum, to {@code out}. */
     private static void writeSmall(Path out, List<Chromatogram> chromatograms, Options options) {
-        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.mzpeak"));
+        Source source = ForwardBackwardCorpusTest.readSourceWithoutReferences(Fixtures.current("small.mzpeak"));
         MzPeakWriter.writeDirectory(out, source.spectra.subList(0, 1), chromatograms, List.of(), List.of(),
                 FileMetadata.EMPTY, options);
     }

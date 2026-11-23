@@ -42,7 +42,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>Outputs are compared with {@link WriterSnapshotTest#snapshot}, member digests plus the ZIP entry order of an
  * archive, on the legacy {@code has_uv} fixture (spectra, chromatograms, wavelength spectra and file metadata) read
- * with {@link ForwardBackwardCorpusTest#readSource}. {@code has_uv} has no scan settings, so the overload comparison
+ * with {@link ForwardBackwardCorpusTest#readSourceWithoutReferences}, so that the overloads without file metadata write
+ * it too. {@code has_uv} has no scan settings, so the overload comparison
  * and the scan-settings round trip add the imaging scan settings of the current {@code Example_Processed.img}
  * fixture. The Numpress archive and the Numpress row-group cases use the legacy {@code small.unpacked} fixture.
  */
@@ -531,7 +532,7 @@ class WriterOptionsTest {
     }
 
     private static Source source(Path fixture) {
-        return SOURCES.computeIfAbsent(fixture, ForwardBackwardCorpusTest::readSource);
+        return SOURCES.computeIfAbsent(fixture, ForwardBackwardCorpusTest::readSourceWithoutReferences);
     }
 
     /** {@code has_uv}, which has no scan settings, with those of {@code Example_Processed.img}. */

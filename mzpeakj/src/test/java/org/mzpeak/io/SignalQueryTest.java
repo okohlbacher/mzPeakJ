@@ -355,7 +355,7 @@ class SignalQueryTest {
         String previous = System.getProperty(ROW_GROUP_SIZE);
         System.setProperty(ROW_GROUP_SIZE, "32768");
         try {
-            MzPeakWriter.writeDirectory(out, spectra, chromatograms);
+            MzPeakWriter.writeDirectory(out, Fixtures.withoutReferences(spectra), Fixtures.chromatogramsWithoutReferences(chromatograms));
         } finally {
             StreamingReaderTest.restoreProperty(ROW_GROUP_SIZE, previous);
         }

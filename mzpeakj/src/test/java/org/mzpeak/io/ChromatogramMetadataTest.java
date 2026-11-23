@@ -596,11 +596,19 @@ class ChromatogramMetadataTest {
         }
     }
 
+    /**
+     * File metadata that declares nothing but the data processings {@code dp}, {@code dp1} and
+     * {@link #DATA_PROCESSING}, which the chromatograms of these tests name (W12).
+     */
+    private static final FileMetadata DECLARING = new FileMetadata(null, List.of(), List.of(
+            new FileMetadata.DataProcessing("dp", List.of()), new FileMetadata.DataProcessing("dp1", List.of()),
+            new FileMetadata.DataProcessing(DATA_PROCESSING, List.of())), List.of(), List.of(), null);
+
     /** Writes {@code chromatograms} with one MS1 spectrum of current small to {@code out}. */
     private static void writeChromatograms(Path out, List<Chromatogram> chromatograms, Options options) {
-        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.mzpeak"));
+        Source source = ForwardBackwardCorpusTest.readSourceWithoutReferences(Fixtures.current("small.mzpeak"));
         MzPeakWriter.writeDirectory(out, source.spectra.subList(0, 1), chromatograms, List.of(), List.of(),
-                FileMetadata.EMPTY, options);
+                DECLARING, options);
     }
 
     /** The WARNING messages about chromatograms that {@link MzPeakWriter} logs while {@code write} runs. */
@@ -612,7 +620,7 @@ class ChromatogramMetadataTest {
 
     /** The planner's warnings about chromatograms for a write of {@code chromatograms} alone. */
     private static List<String> planWarnings(List<Chromatogram> chromatograms, Options options) {
-        return WritePlanner.plan(List.of(), chromatograms, List.of(), List.of(), FileMetadata.EMPTY, options)
+        return WritePlanner.plan(List.of(), chromatograms, List.of(), List.of(), DECLARING, options)
                 .report().warnings().stream()
                 .filter(m -> m.contains(PACKED_WARNING) || m.contains(PRECURSOR_WARNING)).toList();
     }

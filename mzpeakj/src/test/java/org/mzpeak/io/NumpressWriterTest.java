@@ -30,7 +30,8 @@ class NumpressWriterTest {
         }
 
         Path out = tmp.resolve("numpress.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(out, spectra, chromatograms);
+        MzPeakWriter.writeDirectoryNumpress(out, Fixtures.withoutReferences(spectra),
+                Fixtures.chromatogramsWithoutReferences(chromatograms));
 
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.size()).isEqualTo(48);
@@ -63,7 +64,7 @@ class NumpressWriterTest {
         }
 
         Path archive = tmp.resolve("numpress.mzpeak");
-        MzPeakWriter.writeArchiveNumpress(archive, spectra, List.of());
+        MzPeakWriter.writeArchiveNumpress(archive, Fixtures.withoutReferences(spectra), List.of());
 
         try (MzPeakReader r = MzPeakReader.open(archive)) {
             assertThat(r.size()).isEqualTo(48);
@@ -82,7 +83,7 @@ class NumpressWriterTest {
             spectra.add(r.getSpectrum(5).orElseThrow()); // centroid, 650 peaks
         }
 
-        MzPeakWriter.writeDirectoryNumpress(tmp.resolve("n.mzpeak"), spectra, List.of());
+        MzPeakWriter.writeDirectoryNumpress(tmp.resolve("n.mzpeak"), Fixtures.withoutReferences(spectra), List.of());
 
         try (MzPeakReader orig = MzPeakReader.open(FIXTURE);
              MzPeakReader enc  = MzPeakReader.open(tmp.resolve("n.mzpeak"))) {

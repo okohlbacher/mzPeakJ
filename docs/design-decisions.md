@@ -147,8 +147,9 @@ decisions cause.
   of an instrument configuration or processing method, a scan setting's source file and the run's non-null defaults.
   A batch write checks before its target exists, a session at open (file metadata, scan settings, spectrum arrays)
   and at each add. A null run default is still filled, with a stub and a WARNING when nothing can be named. Without
-  file metadata (`null` or `FileMetadata.EMPTY`) no reference is checked, since nothing is declared and the overloads
-  without file metadata write the spectra a reader returns. diaPASEF.ref and diaPASEF.grid, whose run names
+  file metadata (`null` or `FileMetadata.EMPTY`) nothing is declared, so every non-null reference is rejected
+  (2026-11-23, final fix-up of 0.13.0; until then no reference was checked there): the spectra a reader returns are
+  written with the file metadata it returns, as `ExtractSpectra` does. diaPASEF.ref and diaPASEF.grid, whose run names
   instrument configuration 1 while only 0 exists, are now written only with that configuration added. *Why:*
   `conformance.md` requires every CV prefix used to be declared (l.24-25) and every non-null foreign key to resolve
   (§Validation); a stub or an undeclared prefix wrote a file that fails both.

@@ -125,8 +125,11 @@ class SpectrumSignalPlanTest {
                 List.of()));
         Path point = tmp.resolve("point.mzpeak");
         Path numpress = tmp.resolve("numpress.mzpeak");
-        MzPeakWriter.writeDirectory(point, spectra, chromatograms, wavelength, List.of(), FileMetadata.EMPTY);
-        MzPeakWriter.writeDirectoryNumpress(numpress, spectra, chromatograms, wavelength, List.of(),
+        List<Spectrum> unreferenced = Fixtures.withoutReferences(spectra);
+        List<Chromatogram> unreferencedChromatograms = Fixtures.chromatogramsWithoutReferences(chromatograms);
+        MzPeakWriter.writeDirectory(point, unreferenced, unreferencedChromatograms, wavelength, List.of(),
+                FileMetadata.EMPTY);
+        MzPeakWriter.writeDirectoryNumpress(numpress, unreferenced, unreferencedChromatograms, wavelength, List.of(),
                 FileMetadata.EMPTY, MzPeakWriter.NumpressIntensityEncoding.SLOF);
 
         assertFooter(point, Layout.POINT, "point");

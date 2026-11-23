@@ -416,11 +416,6 @@ class RunReferenceConformanceTest {
             Map<String, Map<String, String>> places = SpecSchemaCheck.documents(output.path());
             // The schemas are those of the current dialect; the packed layout keeps the pin-era one (D13-11).
             boolean packed = output.kind() == InteropOutputs.Kind.PACKED_ARCHIVE;
-            if (output.kind() == InteropOutputs.Kind.MS2_SUBSET) {
-                // ExtractSpectra writes no file metadata.
-                assertThat(places).as(output.name()).isEmpty();
-                continue;
-            }
             assertThat(places.keySet()).as(output.name())
                     .containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(output.path()));
             places.forEach((place, documents) -> {

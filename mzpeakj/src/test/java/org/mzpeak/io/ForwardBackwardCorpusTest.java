@@ -244,6 +244,19 @@ class ForwardBackwardCorpusTest {
         return s;
     }
 
+    /**
+     * {@link #readSource} with its spectra and chromatograms {@link Fixtures#withoutReferences without references}, so
+     * that they can also be written without file metadata, which declares nothing a reference could name (W12).
+     */
+    static Source readSourceWithoutReferences(Path src) {
+        Source s = readSource(src);
+        List<Spectrum> spectra = Fixtures.withoutReferences(s.spectra);
+        s.spectra.clear();
+        s.spectra.addAll(spectra);
+        s.chromatograms = Fixtures.chromatogramsWithoutReferences(s.chromatograms);
+        return s;
+    }
+
     // ---- BACKWARD compare -------------------------------------------------------------------
 
     static void compareRoundTrip(Path src, Source source, Path out, Layout layout, List<String> diffs) {

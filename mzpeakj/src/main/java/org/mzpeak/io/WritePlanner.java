@@ -1301,9 +1301,8 @@ final class WritePlanner {
     // declare, or when an explicit reference names nothing the file metadata declares. A unit is a CURIE only when it
     // has the CURIE shape PREFIX:local (CURIE); any other unit, such as "seconds" (C6) or "counts: per second", is
     // written as given; an extra-array key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a stub and a WARNING when the
-    // file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) no reference is checked:
-    // such a write declares no instrument configuration, data processing or source file, and the overloads without
-    // file metadata write the spectra a reader returns this way.
+    // file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) nothing is declared, so
+    // every non-null reference is refused.
 
     /**
      * What the entities of a write may name (W12): the CV prefixes {@code metadata.cv_list} declares with the cv list
@@ -1318,16 +1317,13 @@ final class WritePlanner {
         private final List<CvEntry> cvList;
         /** The prefixes found declared so far. */
         private final Set<String> declaredPrefixes = new HashSet<>();
-        /** Whether the write has file metadata, against which the references are checked. */
-        private final boolean checksReferences;
         private final List<Integer> configurations = new ArrayList<>();
         private final List<String> processing = new ArrayList<>();
         private final List<String> sourceFiles = new ArrayList<>();
 
         private Declarations(FileMetadata meta, Options options) {
             this.cvList = options.cvList();
-            this.checksReferences = meta != null && !meta.equals(FileMetadata.EMPTY);
-            if (checksReferences) {
+            if (meta != null) {
                 meta.instrumentConfigurations().forEach(ic -> configurations.add(ic.id()));
                 meta.dataProcessingMethods().forEach(dp -> processing.add(dp.id()));
                 if (meta.fileDescription() != null) {
@@ -1458,12 +1454,12 @@ final class WritePlanner {
         }
 
         /**
-         * Throws {@link MzPeakException} when references are checked and {@code reference}, the {@code what} of
-         * {@code owner}, is not {@code null} and none of {@code declared}, the {@code kind}s the file metadata
-         * declares.
+         * Throws {@link MzPeakException} when {@code reference}, the {@code what} of {@code owner}, is not
+         * {@code null} and none of {@code declared}, the {@code kind}s the file metadata declares (none without file
+         * metadata).
          */
         private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind) {
-            if (checksReferences && reference != null && !declared.contains(reference)) {
+            if (reference != null && !declared.contains(reference)) {
                 throw new MzPeakException(owner + ": " + what + " " + reference + " names no " + kind
                         + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")");
             }
@@ -1482,7 +1478,7 @@ final class WritePlanner {
      */
     static Declarations declarations(FileMetadata fileMetadata, List<ScanSettings> scanSettings, Options options) {
         Declarations declared = new Declarations(fileMetadata, options);
-        if (declared.checksReferences) {
+        if (fileMetadata != null) {
             requireDeclared(fileMetadata, declared);
         }
         if (scanSettings != null) {
@@ -1501,7 +1497,7 @@ final class WritePlanner {
         return declared;
     }
 
-    /** The checks of {@link #declarations} of {@code meta}, a file metadata that is not empty. */
+    /** The checks of {@link #declarations} of {@code meta}, a file metadata that is not {@code null}. */
     private static void requireDeclared(FileMetadata meta, Declarations declared) {
         List<String> software = new ArrayList<>();
         meta.software().forEach(s -> software.add(s.id()));

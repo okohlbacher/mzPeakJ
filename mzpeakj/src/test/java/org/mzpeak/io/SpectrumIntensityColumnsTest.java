@@ -271,12 +271,15 @@ class SpectrumIntensityColumnsTest {
 
     // ---- helpers ------------------------------------------------------------------------------------------------
 
-    /** The two-unit copy of current small.unpacked (X-29), read. */
+    /**
+     * The two-unit copy of current small.unpacked (X-29), read, its spectra and chromatograms without references, so
+     * that the tests can write them without file metadata (W12).
+     */
     private ForwardBackwardCorpusTest.Source twoUnits() {
         try {
             Path copy = MemberRewrite.copy(Fixtures.current("small.unpacked.mzpeak"), tmp);
             SpectrumIntensityUnitTest.rewritePoint(copy.resolve("spectra_data.parquet"));
-            return ForwardBackwardCorpusTest.readSource(copy);
+            return ForwardBackwardCorpusTest.readSourceWithoutReferences(copy);
         } catch (IOException e) {
             throw new AssertionError(e);
         }

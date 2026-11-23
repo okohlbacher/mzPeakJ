@@ -222,7 +222,7 @@ class SplitWriterSpectraTest {
      * A scan's spectrum_reference and instrument configuration survive a round trip in both metadata layouts: of two
      * constructed spectra, the scan of spectrum 1 has both, and the raw cells of the scan row with its source_index
      * hold them (spectra_metadata_scans in the split layout, the scan struct of spectra_metadata in the packed one),
-     * while the scan of spectrum 0 has neither.
+     * while the scan of spectrum 0 has neither. The file metadata declares instrument configuration 3 (W12).
      */
     @ParameterizedTest
     @EnumSource(MetadataLayout.class)
@@ -231,7 +231,9 @@ class SplitWriterSpectraTest {
         ScanEvent referenced = new ScanEvent(1.0, 20.0, null, null, 3, "index=0", List.of(), List.of());
         List<Spectrum> spectra = List.of(profile(0, 0.5, List.of(plain)), profile(1, 1.0, List.of(referenced)));
         Path out = tmp.resolve(layout + ".mzpeak");
-        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+        FileMetadata declaring = new FileMetadata(null, List.of(new FileMetadata.InstrumentConfiguration(3,
+                List.of(), null, List.of())), List.of(), List.of(), List.of(), null);
+        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), declaring,
                 Options.defaults().withMetadataLayout(layout));
 
         Source back = ForwardBackwardCorpusTest.readSource(out);

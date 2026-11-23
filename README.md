@@ -397,7 +397,8 @@ Writer notes:
 - Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written,
   naming the entity: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
   of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
-  name an entry of the file metadata (not checked without file metadata), and the prefix of every CURIE (param
+  name an entry of the file metadata (without file metadata nothing is declared, so any such reference is
+  rejected), and the prefix of every CURIE (param
   accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units) must be
   one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is

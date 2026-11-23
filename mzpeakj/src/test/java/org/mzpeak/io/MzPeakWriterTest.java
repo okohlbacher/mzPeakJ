@@ -26,7 +26,9 @@ class MzPeakWriterTest {
             for (Spectrum s : reader) {
                 spectra.add(s);
             }
-            return new Loaded(spectra, new ArrayList<>(reader.chromatograms()));
+            // written without file metadata, which declares nothing a reference could name (W12)
+            return new Loaded(Fixtures.withoutReferences(spectra),
+                    Fixtures.chromatogramsWithoutReferences(reader.chromatograms()));
         }
     }
 

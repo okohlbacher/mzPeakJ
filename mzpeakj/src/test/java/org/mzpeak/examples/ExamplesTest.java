@@ -30,9 +30,15 @@ class ExamplesTest {
         Path out = tmp.resolve("ms2.mzpeak");
         int written = ExtractSpectra.run(FIXTURE, out, filter("--ms-level", "2"));
         assertThat(written).isEqualTo(34);
-        try (MzPeakReader reader = MzPeakReader.open(out)) {
+        try (MzPeakReader reader = MzPeakReader.open(out);
+             MzPeakReader input = MzPeakReader.open(FIXTURE)) {
             assertThat(reader.size()).isEqualTo(34);
             assertThat(reader.metadata()).allMatch(d -> d.msLevel() == 2);
+            // the input's file metadata is written, which declares what the spectra name (W12)
+            assertThat(reader.fileMetadata().instrumentConfigurations())
+                    .isEqualTo(input.fileMetadata().instrumentConfigurations());
+            assertThat(reader.metadata()).flatExtracting(d -> d.scans())
+                    .extracting(s -> s.instrumentConfigurationRef()).contains(1);
         }
     }
 

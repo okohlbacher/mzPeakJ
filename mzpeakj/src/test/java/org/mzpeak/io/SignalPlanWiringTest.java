@@ -213,8 +213,8 @@ class SignalPlanWiringTest {
         try (MzPeakReader reader = MzPeakReader.open(Fixtures.legacy("has_uv.mzpeak"))) {
             List<Spectrum> spectra = new ArrayList<>();
             reader.iterator().forEachRemaining(spectra::add);
-            MzPeakWriter.writeDirectory(written, spectra, reader.chromatograms(), reader.wavelengthSpectra(),
-                    List.of(), FileMetadata.EMPTY);
+            MzPeakWriter.writeDirectory(written, Fixtures.withoutReferences(spectra), Fixtures.chromatogramsWithoutReferences(reader.chromatograms()),
+                    reader.wavelengthSpectra(), List.of(), FileMetadata.EMPTY);
         }
         try (MzPeakSource source = MzPeakSource.open(written)) {
             MzPeakManifest manifest = MzPeakManifest.fromSource(source);
@@ -460,7 +460,8 @@ class SignalPlanWiringTest {
             wavelength = reader.wavelengthSpectra();
         }
         Path written = tmp.resolve("written.mzpeak");
-        MzPeakWriter.writeDirectory(written, spectra, chromatograms, wavelength, List.of(), FileMetadata.EMPTY);
+        MzPeakWriter.writeDirectory(written, Fixtures.withoutReferences(spectra), Fixtures.chromatogramsWithoutReferences(chromatograms), wavelength,
+                List.of(), FileMetadata.EMPTY);
 
         try (MzPeakReader reader = MzPeakReader.open(written)) {
             List<Chromatogram> readBack = reader.chromatograms();

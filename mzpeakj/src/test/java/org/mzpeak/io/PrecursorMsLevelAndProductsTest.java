@@ -197,7 +197,7 @@ class PrecursorMsLevelAndProductsTest {
         assertThat(written.products()).containsExactlyElementsOf(PRODUCTS);
 
         // spectrum 5, renumbered 3 without spectra 0 and 1, keeps its precursor's MS level, renumbered with it
-        List<Spectrum> later = source.spectra.subList(2, source.spectra.size());
+        List<Spectrum> later = Fixtures.withoutReferences(source.spectra.subList(2, source.spectra.size()));
         WritePlan plan = WritePlanner.plan(later, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
                 Options.defaults().withMetadataLayout(MetadataLayout.SPLIT));
         WritePlan.SpectrumEntry five = plan.spectra().get((int) SPECTRUM - 2);

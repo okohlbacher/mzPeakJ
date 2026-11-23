@@ -4,6 +4,7 @@ import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.io.MzPeakWriter;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.meta.FileMetadata;
 
 import java.io.PrintStream;
 import java.nio.file.Path;
@@ -17,7 +18,9 @@ import java.util.List;
  *   ExtractSpectra <in.mzpeak> <out.mzpeak> [--ms-level 2] [--rt-min 5] [--rt-max 30]
  * }</pre>
  *
- * If {@code <out>} ends in {@code .mzpeak} a single-file ZIP is written, otherwise an unpacked directory.
+ * If {@code <out>} ends in {@code .mzpeak} a single-file ZIP is written, otherwise an unpacked directory. The input's
+ * file metadata is written with them, which declares the instrument configurations and data processings the spectra
+ * name (W12).
  */
 public final class ExtractSpectra {
 
@@ -28,6 +31,7 @@ public final class ExtractSpectra {
     public static int run(Path input, Path output, SpectrumFilter filter) {
         List<Spectrum> kept = new ArrayList<>();
         List<Chromatogram> chromatograms;
+        FileMetadata fileMetadata;
         try (MzPeakReader reader = MzPeakReader.open(input)) {
             for (Spectrum s : reader) {
                 if (filter.accept(s.description())) {
@@ -35,11 +39,12 @@ public final class ExtractSpectra {
                 }
             }
             chromatograms = new ArrayList<>(reader.chromatograms());
+            fileMetadata = reader.fileMetadata();
         }
         if (output.getFileName().toString().endsWith(".mzpeak")) {
-            MzPeakWriter.writeArchive(output, kept, chromatograms);
+            MzPeakWriter.writeArchive(output, kept, chromatograms, fileMetadata);
         } else {
-            MzPeakWriter.writeDirectory(output, kept, chromatograms);
+            MzPeakWriter.writeDirectory(output, kept, chromatograms, fileMetadata);
         }
         return kept.size();
     }

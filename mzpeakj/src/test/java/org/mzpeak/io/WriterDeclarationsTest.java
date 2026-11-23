@@ -316,23 +316,45 @@ class WriterDeclarationsTest {
     }
 
     /**
-     * Without file metadata ({@link FileMetadata#EMPTY}) the writer declares no instrument configuration, data
-     * processing or source file, and checks no reference: the overloads without file metadata write a scan's
-     * instrument configuration 42 as given. A CV prefix is checked all the same.
+     * W12: without file metadata ({@link FileMetadata#EMPTY} or {@code null}) the writer declares no instrument
+     * configuration, data processing or source file, so every reference names nothing and is refused: by the
+     * overloads without file metadata before their target exists, and by a session when the entity is added, which
+     * leaves no target. Small without any reference is written; a CV prefix is checked all the same.
      */
     @Test
-    void withoutFileMetadataNoReferenceIsChecked(@TempDir Path tmp) {
-        Write w = small().withSpectrum(3, s -> withDataProcessing(withScan(s, 42, List.of()), "dpX"));
+    void withoutFileMetadataEveryReferenceIsRefused(@TempDir Path tmp) throws IOException {
+        Write small = small();
+        Write bare = new Write(Fixtures.withoutReferences(small.spectra()),
+                Fixtures.chromatogramsWithoutReferences(small.chromatograms()), small.wavelengthSpectra(),
+                small.scanSettings(), small.fileMetadata(), small.options());
+        Write ic42 = bare.withSpectrum(3, s -> withScan(s, 42, List.of()));
+        String ic42Message = "spectrum 3: scan 0 instrument_configuration_id 42 names no instrument configuration"
+                + " (declared: none)";
         Path out = tmp.resolve("out.mzpeak");
 
-        MzPeakWriter.writeDirectory(out, w.spectra(), w.chromatograms());
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, ic42.spectra(), ic42.chromatograms()))
+                .isInstanceOf(MzPeakException.class).hasMessage(ic42Message);
+        assertThatThrownBy(() -> MzPeakWriter.writeArchive(out, ic42.spectra(), ic42.chromatograms()))
+                .isInstanceOf(MzPeakException.class).hasMessage(ic42Message);
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, ic42.spectra(), ic42.chromatograms(), List.of(),
+                List.of(), null, MzPeakWriter.Options.defaults()))
+                .isInstanceOf(MzPeakException.class).hasMessage(ic42Message);
+        assertThat(entries(tmp)).isEmpty();
 
-        try (MzPeakReader reader = MzPeakReader.open(out)) {
-            SpectrumDescription d = reader.getSpectrumAt(3).description();
-            assertThat(d.scans().get(0).instrumentConfigurationRef()).isEqualTo(42);
-            assertThat(d.dataProcessingRef()).isEqualTo("dpX");
+        Write dpX = bare.withSpectrum(3, s -> withDataProcessing(s, "dpX"));
+        try (MzPeakWriter.Session session = MzPeakWriter.openDirectory(out, FileMetadata.EMPTY, List.of(),
+                dpX.spectrumArrays(), dpX.options())) {
+            assertThatThrownBy(() -> dpX.spectra().forEach(session::addSpectrum))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectrum 3: data_processing_id dpX names no data processing (declared: none)");
         }
-        Write foo = small().withSpectrum(3, s -> withParam(s, FOO));
+        assertThat(entries(tmp)).isEmpty();
+
+        MzPeakWriter.writeDirectory(out, bare.spectra(), bare.chromatograms());
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.size()).isEqualTo(bare.spectra().size());
+        }
+        Write foo = bare.withSpectrum(3, s -> withParam(s, FOO));
         assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("foo.mzpeak"), foo.spectra(),
                 foo.chromatograms())).isInstanceOf(MzPeakException.class)
                 .hasMessage("spectrum 3: " + FOO + " uses FOO:0000001" + UNDECLARED);
