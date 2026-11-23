@@ -706,7 +706,9 @@ class MzMLConversionTest {
         Path file = tinyWith(s -> {
             String precursor = region(s, "<precursor spectrumRef=\"scan=19\">", "</precursor>");
             String second = precursor.replace("value=\"445.33999999999997\"", "value=\"446.5\"");
-            return replaceOnce(replaceOnce(s, "<precursorList count=\"1\">", "<precursorList count=\"2\">"),
+            String moved = replaceOnce(s, SCAN_20 + " defaultArrayLength=\"10\"",
+                    SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"CompassXtract_x0020_processing\"");
+            return replaceOnce(replaceOnce(moved, "<precursorList count=\"1\">", "<precursorList count=\"2\">"),
                     precursor, precursor + "\n" + second);
         });
         List<Precursor> given = model(file).spectrumList().get(1).description().precursors();
@@ -725,7 +727,10 @@ class MzMLConversionTest {
             assertThat(precursors).extracting(p -> p.isolationWindow().targetMz()).containsExactly(445.3, 445.3);
             assertThat(precursors).allSatisfy(p -> assertThat(p.activation().parameters()).extracting(Param::accession)
                     .contains("MS:1000133", "MS:1000045"));
+            assertThat(reader.metadataAt(1).dataProcessingRef()).isEqualTo("CompassXtract_x0020_processing");
         }
+        assertThat(model(b.mzml).spectrumList().get(1).description().dataProcessingRef())
+                .isEqualTo("CompassXtract_x0020_processing");
     }
 
     /**
