@@ -41,7 +41,8 @@ import java.util.stream.Stream;
  *
  * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
  * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
- * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
+ * base peak, total ion current, spectrum type; the base peak intensity and total ion current, whose columns are in
+ * MS:1000131, only of a payload in MS:1000131 or without intensity unit), scan windows, precursor activation, typed ion-mobility and
  * imaging-position columns, scan settings, and wavelength facets. The extra signal arrays of spectra,
  * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} (such as the ion mobility of a diaPASEF spectrum), are
  * written as extra columns of spectra_data and spectra_peaks, in both signal encodings, and those of chromatograms,

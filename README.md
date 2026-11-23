@@ -335,7 +335,8 @@ Writer notes:
 - ZSTD-compressed Parquet, fully Hadoop-free; writes format version `0.9.0`, the CV list, an array index in
   every signal file and a SHA-512 checksum for every member.
 - Emits the reference metadata schema: derived spectrum columns (observed m/z range, base peak, TIC,
-  spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
+  spectrum type; the base peak intensity and TIC, whose columns are in detector counts, only of a payload in
+  MS:1000131 or without unit), precursor **activation** (dissociation method + collision energy), **scan windows**,
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
 - A CV param that has a standardized column (summary values, spectrum type, representation, dissociation method,
   collision energy, imaging position, and of a wavelength spectrum its type, representation, observed wavelength
