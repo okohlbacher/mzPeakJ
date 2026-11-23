@@ -165,6 +165,11 @@ public final class MzPeakWriter {
      * its key, whatever the row order. The typical violation is a spectrum with several precursors written without
      * its parent spectra; writing the parents as well avoids it. The selected ions of a spectrum are written in the
      * order of their precursor's precursor_index, null first, which the Rust reference reader also needs.
+     * The split layout also replicates the MSn selected-ion chain the spec requires: a spectrum whose precursor names a
+     * written spectrum with precursors of its own is written with those precursors (its precursor_index, isolation
+     * window, selected ions and activation) after its own, recursively, except one whose precursor_index the spectrum
+     * already lists; an MS3 spectrum from an MS2 spectrum from an MS1 spectrum is written with its own precursor and
+     * then the MS2 spectrum's.
      * No m/z, chromatogram time, wavelength or intensity (of arrays and peak lists) may be NaN, in any encoding:
      * parquet-java writes no column index for a page holding a NaN, and the spec requires a page index for every
      * column. A NaN in an extra array, and a NaN optional metadata double (an injection time, a scan window limit, an
@@ -633,8 +638,10 @@ public final class MzPeakWriter {
      * {@link Spectrum#index()} is not the number of spectra added so far is refused. Each spectrum is written as given,
      * with its index and every precursor_index, which must name a spectrum of the dataset: when the session finishes,
      * each precursor_index the metadata layout writes must be less than the number of spectra (the parent may come
-     * after the spectrum that names it). Every key of a spectrum's {@link Spectrum#arrays()} and
-     * {@link Spectrum#peakArrays()} must be one of the spectrum arrays the session was opened with. The other rules are
+     * after the spectrum that names it). In the split layout, the finish appends the MSn selected-ion chain as
+     * {@code writeDirectory} does, from the precursors of every spectrum added. Every key of a spectrum's
+     * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} must be one of the spectrum arrays the session was
+     * opened with. The other rules are
      * those of {@link MzPeakWriter#writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory}:
      * each precursor_index the layout writes is non-negative; in the split layout, precursors of a spectrum that share
      * their precursor_index carry no selected ions after the first of them; a peak's index is a position of the peak
