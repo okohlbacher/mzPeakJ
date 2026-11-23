@@ -132,6 +132,14 @@ How the test sees them on mzPeakJ's own output:
   `SignalToNoiseArray` (n 3) next to its m/z and intensity, and spectrum 1 with `"arrays":{}`; mzPeakJ reads the
   array [1, 2, 3] for both.
 
+A known issue of mzdata, the Rust mzML reader the reference uses (and rdump for an `.mzML` input), not of mzPeak:
+it drops the cvParams that jmzML, and so the mzpeakj-mzml converter, writes as start/end element pairs
+(`<cvParam ... name="ms level"></cvParam>`) instead of empty elements. It reads the converter's mzML of current
+small.unpacked with `ms_level` 0, scan start time 0, scan windows 0-0 and every array an error ("The requested data
+type does not match the number of bytes available in the buffer, or the conversion is unsupported"); the same file
+with each `></cvParam>` rewritten to `/>` reads with MS levels 1 and 2 and its arrays. mzML allows both forms. This
+predates 0.13.0 (the converter has always written mzML through jmzML) and was not recorded before.
+
 A latent difference, not seen by the test: the reference's `ScanSettings` struct still uses the pin-era names,
 `source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the
 references `source_file_references` and makes each target an object with its `parameters`, which mzPeakJ's split

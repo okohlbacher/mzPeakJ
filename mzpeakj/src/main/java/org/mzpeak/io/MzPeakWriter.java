@@ -50,7 +50,8 @@ import java.util.stream.Stream;
  * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
  * own. The auxiliary arrays of spectra, chromatograms and wavelength spectra ({@link Spectrum#auxiliaryArrays()})
  * are written to the {@code auxiliary_arrays} of their metadata rows with their bytes and compression as given; the
- * packed layout does not write them and logs one WARNING. A read &rarr; write cycle keeps everything
+ * packed layout does not write them and logs one WARNING, but checks them, as it checks the wavelength scans it
+ * drops, and declares their CV prefixes in {@code metadata.cv_list}. A read &rarr; write cycle keeps everything
  * {@link MzPeakReader} exposes, except the intensity unit of a chromatogram without points: the reader takes a
  * chromatogram's unit from the column that holds its values, so such a chromatogram reads back without one. Chromatogram times are written in minutes (UO:0000031), the unit the
  * format requires: times in seconds, milliseconds or hours ({@link Chromatogram#timeUnit()}) are converted once
