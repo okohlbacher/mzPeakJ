@@ -1049,8 +1049,8 @@ public final class ModelAssert {
     /** R-8: the scans of a wavelength spectrum, which the converter does not map yet. */
     public static final Exclusion R_8 = new Exclusion("R_8",
             "R-8: the scans of a wavelength spectrum (R8, D13-24) whose actual spectrum has none or only the one scan"
-                    + " with the spectrum time that the mzPeak writer writes, since the converter does not map"
-                    + " wavelength scans yet (X-36) and the writer writes no other (X-34): current has_uv 520 spectra"
+                    + " with the spectrum time that the mzPeak writer writes for a wavelength spectrum without scans,"
+                    + " since the converter does not map wavelength scans yet (X-36): current has_uv 520 spectra"
                     + " (in A two differences each, its injection time and instrument configuration, read back as"
                     + " null), legacy has_uv 520 (in A, no scans read from the packed layout, one read back)",
             d -> WAVELENGTH_SCANS.matcher(d.path()).matches() && d.expectedRoot() instanceof WavelengthSpectrum

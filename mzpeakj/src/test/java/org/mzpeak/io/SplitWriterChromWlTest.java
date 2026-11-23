@@ -4,9 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.parquet.example.data.Group;
+import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +22,7 @@ import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Chromatogram;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
@@ -34,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * WR-6: the chromatogram and wavelength-spectrum metadata of the split layout written by {@link SplitMetadataWriter}
@@ -41,8 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * empty auxiliary arrays, and chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the
  * spectrum facets' fields and no rows; wavelength_spectra_metadata has one row per wavelength spectrum, and
  * wavelength_spectra_metadata_scans, with the spectrum-scan schema since V-25 (without the ion mobility and spectrum
- * reference columns since W11), one scan per wavelength spectrum whose start time is the spectrum's time. Each member is written only when the plan has
- * entities of its kind, and is read back by role, its layout detected from its schema.
+ * reference columns since W11, the scan windows FLOAT in nm since X-34), the scans of each wavelength spectrum as
+ * read (R8), or one whose start time is the spectrum's time for one without scans. Each member is written only when
+ * the plan has entities of its kind, and is read back by role, its layout detected from its schema.
  *
  * <p>Oracles: has_uv, the only fixture with wavelength spectra, in both sets (2 chromatograms, TIC and 'DAD1 A', and
  * 520 wavelength spectra), the manifest of current has_uv for the mapping rows, and constructed entities for the
@@ -106,6 +111,10 @@ class SplitWriterChromWlTest {
             assertWavelengthSpectrumEqual(new WavelengthSpectrum(a.index(), a.id(), a.time(), a.lambdaMax(),
                     a.wavelength(), a.intensity(), WavelengthColumnsTest.readBack(a.parameters())),
                     back.wavelengthSpectra.get(i));
+            // R8: the scans as read (current has_uv: one each), or the one scan holding the time (legacy has_uv: none)
+            assertThat(back.wavelengthSpectra.get(i).scans()).as("wavelength spectrum %d scans", i).isEqualTo(
+                    a.scans().isEmpty() ? List.of(new ScanEvent(a.time(), null, null, null, null, null, List.of(),
+                            List.of())) : a.scans());
         }
     }
 
@@ -133,11 +142,19 @@ class SplitWriterChromWlTest {
                 "total_ion_current optional DOUBLE -", "parameters optional group list",
                 "auxiliary_arrays optional group list", "number_of_auxiliary_arrays optional INT32 uint32");
         // V-25: the wavelength scans have the spectrum-scan schema, but for the ion mobility and spectrum
-        // reference columns, which the wavelength scan table does not have (D13-12).
+        // reference columns, which the wavelength scan table does not have (D13-12), and the scan window limits,
+        // FLOAT in nm (D13-24).
         List<Type> spectrumScanFields = new ArrayList<>(schema(out, "spectra_metadata_scans.parquet").getFields());
-        spectrumScanFields.removeIf(t -> List.of("ion_mobility_value", "ion_mobility_type", "spectrum_reference")
-                .contains(t.getName()));
-        assertThat(schema(out, WAVELENGTH_SCANS).getFields()).isEqualTo(spectrumScanFields);
+        spectrumScanFields.removeIf(t -> List.of("ion_mobility_value", "ion_mobility_type", "spectrum_reference",
+                "scan_windows").contains(t.getName()));
+        List<Type> wavelengthScanFields = new ArrayList<>(schema(out, WAVELENGTH_SCANS).getFields());
+        Type windows = wavelengthScanFields.remove(wavelengthScanFields.size() - 1);
+        assertThat(wavelengthScanFields).isEqualTo(spectrumScanFields);
+        assertThat(windows.getName()).isEqualTo("scan_windows");
+        GroupType window = windows.asGroupType().getType("list").asGroupType().getType("item").asGroupType();
+        assertThat(window.getFields()).extracting(Type::getName, t -> t.asPrimitiveType().getPrimitiveTypeName())
+                .containsExactly(tuple("scan_window_lower_limit", PrimitiveTypeName.FLOAT),
+                        tuple("scan_window_upper_limit", PrimitiveTypeName.FLOAT));
         assertThat(columns(schema(out, WAVELENGTH_SCANS))).containsExactly(
                 "source_index required INT64 uint64", "scan_index required INT64 uint64",
                 "scan_start_time optional DOUBLE -", "preset_scan_configuration optional INT32 -",
@@ -277,9 +294,16 @@ class SplitWriterChromWlTest {
             List<JsonNode> currentRows = list(entry(current, member).path("column_mapping"));
             List<JsonNode> writtenRows = new ArrayList<>();
             for (JsonNode row : list(entry(written, member).path("column_mapping"))) {
-                // D13-12: has_uv maps the representation at the name without opt_
-                writtenRows.add(row.path("path").asText().equals("opt_spectrum_representation")
-                        ? ((ObjectNode) row.deepCopy()).put("path", "spectrum_representation") : row);
+                // D13-12: has_uv maps the representation at the name without opt_; D13-24: it maps the wavelength
+                // scan windows in m/z, which are written in nm
+                String path = row.path("path").asText();
+                if (path.startsWith("scan_windows.")) {
+                    assertThat(row.path("unit").asText()).as("unit of %s", path).isEqualTo("UO:0000018");
+                }
+                writtenRows.add(path.equals("opt_spectrum_representation")
+                        ? ((ObjectNode) row.deepCopy()).put("path", "spectrum_representation")
+                        : path.startsWith("scan_windows.") ? ((ObjectNode) row.deepCopy()).put("unit", "MS:1000040")
+                        : row);
             }
             assertThat(writtenRows).as("column_mapping of %s", member).isSubsetOf(currentRows);
         }

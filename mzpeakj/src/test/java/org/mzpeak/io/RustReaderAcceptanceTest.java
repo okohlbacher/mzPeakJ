@@ -22,6 +22,8 @@ import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -112,6 +114,36 @@ class RustReaderAcceptanceTest {
             }
             assertThat(accessions).as("param accessions of %d", i).containsOnlyOnce(1000804, 1000619, 1000618);
         }
+    }
+
+    /**
+     * R8 writer: current has_uv with a second scan of wavelength spectrum 0 (instrument configuration 1, one window
+     * 200-400 nm), written split with the scans and their FLOAT windows: Rust reads all 520 wavelength spectra without
+     * a panic, the first with its ids and arrays; it does not read the wavelength scans (R-3).
+     */
+    @Test
+    void rustReadsWrittenWavelengthScansWithAWindow() throws Exception {
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
+        List<WavelengthSpectrum> waves = new ArrayList<>(source.wavelengthSpectra);
+        WavelengthSpectrum w = waves.get(0);
+        List<ScanEvent> scans = new ArrayList<>(w.scans());
+        scans.add(new ScanEvent(w.time(), null, null, null, 1, null, List.of(new ScanWindow(200, 400)), List.of()));
+        waves.set(0, new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(), w.wavelength(),
+                w.intensity(), w.parameters(), scans, w.auxiliaryArrays()));
+        Path out = tmp.resolve("scans.mzpeak");
+        MzPeakWriter.writeArchive(out, source.spectra, source.chromatograms, waves, source.scanSettings,
+                WavelengthScansTest.withConfiguration(source.fileMetadata, 1), SPLIT);
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.getWavelengthSpectrum(0).orElseThrow().scans()).isEqualTo(scans);
+        }
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("W");
+        assertThat(records).hasSize(520).allSatisfy(r -> assertThat(r.has("panic") || r.has("none"))
+                .as("%s", r).isFalse());
+        assertThat(records.get(0).path("id").asText()).isEqualTo(w.id());
+        assertThat(dump.array(records.get(0).path("arrays").path("WavelengthArray"))).isEqualTo(w.wavelength());
+        assertThat(dump.array(records.get(0).path("arrays").path("IntensityArray"))).isEqualTo(w.intensity());
     }
 
     /** An integer collision energy without unit, as mzML writers give it, reaches Rust as 35 eV, not 0. */

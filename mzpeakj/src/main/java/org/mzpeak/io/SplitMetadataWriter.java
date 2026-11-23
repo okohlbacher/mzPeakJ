@@ -129,11 +129,12 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *       the list, so the Rust reader, which reads both, gives them twice for its has_uv, once for this output. The
  *       reader appends the columns to the Params in column order, after the list, the type and representation
  *       without a name, so a read of the reference's has_uv, a write and a read gives its Params in another order,
- *       the type nameless; a further write and read keeps them as they are; wavelength_spectra_metadata_scans: one
- *       row per wavelength spectrum, with the schema and column mapping of spectra_metadata_scans without imaging
- *       positions, ion mobility and spectrum reference, which the wavelength scan table does not have (D13-12):
- *       keyed by {@code source_index} with a global {@code scan_index}, whose {@code scan_start_time} is the
- *       spectrum's time, the other typed columns null and empty {@code parameters} and {@code scan_windows} lists.
+ *       the type nameless; a further write and read keeps them as they are; wavelength_spectra_metadata_scans: the
+ *       scans of each wavelength spectrum as given (R8), or one row with its time for one without scans, with the
+ *       schema and column mapping of spectra_metadata_scans without imaging positions, ion mobility and spectrum
+ *       reference, which the wavelength scan table does not have (D13-12), and with the scan windows FLOAT in
+ *       nanometers (D13-24), keyed by {@code source_index} with a global {@code scan_index}
+ *       ({@link #writeWavelengthScans}).
  * </ul>
  * As in the reference's output, the chromatogram members carry {@code chromatogram_count} as their only footer
  * key-value besides the Arrow hint, and the wavelength members the plan's file metadata and
@@ -246,7 +247,6 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column WAVELENGTH_TIC = column(Facet.WAVELENGTH_SPECTRUM, "MS:1000285");
     /** The two representation terms the reader rebuilds from a representation marker cell. */
     private static final Set<String> REPRESENTATIONS = Set.of("MS:1000127", "MS:1000128");
-    private static final Column WAVELENGTH_SCAN_START_TIME = column(Facet.WAVELENGTH_SCAN, "MS:1000016");
 
     private static final MessageType SPECTRUM_SCHEMA = Types.buildMessage()
             .required(PrimitiveTypeName.INT64).as(UINT64).named(INDEX)
@@ -344,11 +344,12 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             Set.of(WAVELENGTH_TYPE, WAVELENGTH_REPRESENTATION, LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH,
                     WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC));
     /**
-     * The wavelength scans map the CV-mapped columns of the spectrum scans, as the reference does (V-25): the scan
-     * windows in m/z, as has_uv maps them, not in the nanometers of {@link Facet#WAVELENGTH_SCAN}'s rows, until the
-     * windows are written (R8 writer). The written windows are always empty.
+     * The wavelength scans map the CV-mapped columns of the spectrum scans, as the reference does (V-25), with the
+     * rows of {@link Facet#WAVELENGTH_SCAN}: the scan windows in nanometers (UO:0000018, D13-24), where has_uv maps
+     * them in m/z.
      */
-    private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.SPECTRUM_SCAN, SCAN_COLUMNS);
+    private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
+            sameColumns(Facet.WAVELENGTH_SCAN, SCAN_COLUMNS));
 
     /** See {@link #termNames()}. */
     private static final Map<String, String> TERM_NAMES = termNames();
@@ -549,19 +550,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     Group row = factory.newGroup();
                     row.add(SOURCE_INDEX, entry.sourceIndex());
                     row.add(SCAN_INDEX, scanIndex++);
-                    if (Double.isFinite(scan.startTime())) {
-                        row.add(field(SCAN_START_TIME), scan.startTime());
-                    }
-                    if (scan.presetScanConfiguration() != null) {
-                        row.add(field(PRESET_SCAN_CONFIGURATION), scan.presetScanConfiguration());
-                    }
-                    if (scan.filterString() != null) {
-                        row.add(field(FILTER_STRING), scan.filterString());
-                    }
-                    addIfPresent(row, field(ION_INJECTION_TIME), scan.injectionTime());
-                    if (scan.instrumentConfigurationRef() != null) {
-                        row.add(INSTRUMENT_CONFIGURATION_ID, scan.instrumentConfigurationRef());
-                    }
+                    addScanColumns(row, scan);
                     if (scan.spectrumReference() != null) {
                         row.add(SPECTRUM_REFERENCE, scan.spectrumReference());
                     }
@@ -587,11 +576,33 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     }
 
     /**
+     * Adds the typed columns spectrum and wavelength-spectrum scans share to {@code row}: the start time (when
+     * finite), preset scan configuration, filter string, ion injection time and instrument configuration of
+     * {@code scan}, each when it has one.
+     */
+    private static void addScanColumns(Group row, ScanEvent scan) {
+        if (Double.isFinite(scan.startTime())) {
+            row.add(field(SCAN_START_TIME), scan.startTime());
+        }
+        if (scan.presetScanConfiguration() != null) {
+            row.add(field(PRESET_SCAN_CONFIGURATION), scan.presetScanConfiguration());
+        }
+        if (scan.filterString() != null) {
+            row.add(field(FILTER_STRING), scan.filterString());
+        }
+        addIfPresent(row, field(ION_INJECTION_TIME), scan.injectionTime());
+        if (scan.instrumentConfigurationRef() != null) {
+            row.add(INSTRUMENT_CONFIGURATION_ID, scan.instrumentConfigurationRef());
+        }
+    }
+
+    /**
      * The scan schema named {@code name}: the typed columns, {@code parameters} and {@code scan_windows}, then the
      * {@code positions} columns. Spectrum and wavelength-spectrum scans share it, as in the reference, but for the
      * {@code ion_mobility_value}, {@code ion_mobility_type} and {@code spectrum_reference} columns, which only
      * spectrum scans ({@code massSpectrum}) have: the wavelength scan table of wavelength-spectra.md has none of them
-     * (D13-12).
+     * (D13-12); and for the scan window limits, DOUBLE in m/z for spectrum scans and FLOAT (float32) in nanometers
+     * for wavelength-spectrum scans, as wavelength-spectra.md gives them (D13-24).
      */
     private static MessageType scanSchema(String name, boolean massSpectrum, List<Column> positions) {
         Types.GroupBuilder<MessageType> builder = Types.buildMessage()
@@ -614,7 +625,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
         builder = builder
                 .addField(paramListField())
-                .addField(scanWindowListField());
+                .addField(scanWindowListField(massSpectrum ? PrimitiveTypeName.DOUBLE : PrimitiveTypeName.FLOAT));
         for (Column position : positions) {
             builder = builder.optional(PrimitiveTypeName.INT32).named(field(position));
         }
@@ -806,11 +817,15 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     }
 
     /**
-     * Writes one scan per wavelength spectrum, with the spectrum-scan schema ({@link #scanSchema}, without imaging
-     * positions, ion mobility and spectrum reference): its time as the {@code scan_start_time}, a global
-     * {@code scan_index}, the other typed columns null and empty {@code parameters} and {@code scan_windows} lists.
-     * The empty {@code parameters} list is there for the HEAD Python reader, which reads it from every scan of a
-     * spectrum it returns.
+     * Writes the scans of each wavelength spectrum as given, with the spectrum-scan schema ({@link #scanSchema},
+     * without imaging positions, ion mobility and spectrum reference, the windows FLOAT), keyed by its
+     * {@code source_index} with a global {@code scan_index}: the typed columns of each scan, its {@code parameters}
+     * as they are (no column takes any of them) and its scan windows, each limit rounded to the nearest float32 and
+     * a NaN one written as null. A wavelength spectrum without scans gets one row anyway, its time as the
+     * {@code scan_start_time}, the other typed columns null and empty {@code parameters} and {@code scan_windows}
+     * lists, which reads back as that one scan. The empty {@code parameters} list is there for the HEAD Python
+     * reader, which reads it from every scan of a spectrum it returns. The planner refuses a scan with a spectrum
+     * reference, which the wavelength scan table has no column for.
      */
     private static void writeWavelengthScans(Path file, WritePlan plan, Map<String, String> footer)
             throws IOException {
@@ -819,27 +834,38 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         long scanIndex = 0;
         try (ParquetWriter<Group> writer = openWriter(file, schema, footer, plan.options())) {
             for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
-                double time = entry.source().time();
-                Group row = factory.newGroup();
-                row.add(SOURCE_INDEX, entry.sourceIndex());
-                row.add(SCAN_INDEX, scanIndex++);
-                if (Double.isFinite(time)) {
-                    row.add(field(WAVELENGTH_SCAN_START_TIME), time);
+                WavelengthSpectrum w = entry.source();
+                List<ScanEvent> scans = w.scans().isEmpty()
+                        ? List.of(new ScanEvent(w.time(), null, null, null, null, null, List.of(), List.of()))
+                        : w.scans();
+                for (ScanEvent scan : scans) {
+                    Group row = factory.newGroup();
+                    row.add(SOURCE_INDEX, entry.sourceIndex());
+                    row.add(SCAN_INDEX, scanIndex++);
+                    addScanColumns(row, scan);
+                    params(row, scan.parameters());
+                    Group windows = row.addGroup(SCAN_WINDOWS);
+                    for (ScanWindow window : scan.scanWindows()) {
+                        Group item = windows.addGroup("list").addGroup("item");
+                        addFloatIfPresent(item, field(WINDOW_LOWER), window.lowerLimit());
+                        addFloatIfPresent(item, field(WINDOW_UPPER), window.upperLimit());
+                    }
+                    writer.write(row);
                 }
-                params(row, List.of());
-                row.addGroup(SCAN_WINDOWS);
-                writer.write(row);
             }
         }
     }
 
-    /** {@code scan_windows: list<item: struct<scan_window_lower_limit, scan_window_upper_limit>>}. */
-    private static Type scanWindowListField() {
+    /**
+     * {@code scan_windows: list<item: struct<scan_window_lower_limit, scan_window_upper_limit>>}, the limits of
+     * {@code limitType}.
+     */
+    private static Type scanWindowListField(PrimitiveTypeName limitType) {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
                 .addField(Types.repeatedGroup()
                         .addField(Types.optionalGroup()
-                                .optional(PrimitiveTypeName.DOUBLE).named(field(WINDOW_LOWER))
-                                .optional(PrimitiveTypeName.DOUBLE).named(field(WINDOW_UPPER))
+                                .optional(limitType).named(field(WINDOW_LOWER))
+                                .optional(limitType).named(field(WINDOW_UPPER))
                                 .named("item"))
                         .named("list"))
                 .named(SCAN_WINDOWS);
@@ -1112,6 +1138,13 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static void addIfPresent(Group group, String field, Double value) {
         if (value != null && !value.isNaN()) {
             group.add(field, value);
+        }
+    }
+
+    /** Sets the FLOAT {@code field} of {@code group} to {@code value} as a float32 unless it is NaN. */
+    private static void addFloatIfPresent(Group group, String field, double value) {
+        if (!Double.isNaN(value)) {
+            group.add(field, (float) value);
         }
     }
 

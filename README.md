@@ -402,8 +402,9 @@ Writer notes:
   that lists the supported ones. They read back in minutes.
 - In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
   one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
-  scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), and
-  `chromatograms_metadata` carries `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
+  scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), their
+  scan windows FLOAT in nanometers, each wavelength spectrum's scans as given (one holding its time if it has none),
+  and `chromatograms_metadata` carries `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
   them. The wavelength representation column is `opt_spectrum_representation` (the spec's wavelength table does not
   name it); the reader also reads the reference's `spectrum_representation`.
 - Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written,
