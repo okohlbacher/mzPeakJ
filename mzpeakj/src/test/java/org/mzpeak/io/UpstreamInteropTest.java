@@ -19,6 +19,7 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
@@ -28,6 +29,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -334,6 +336,51 @@ class UpstreamInteropTest {
         JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
         assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
         assertThat(counts.path("chromatograms").asInt()).isEqualTo(1);
+    }
+
+    /**
+     * X-25 (R6): small.unpacked written split as an archive with the data processing reference
+     * {@code mzpeak_conversion1} on spectrum 3: the Python reader opens it, with all 48 spectra, and its spectra table
+     * holds the reference in the {@code data_processing_id} column for spectrum 3 only.
+     */
+    @Test
+    void thePythonReaderReadsASpectrumDataProcessingReference() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("data-processing"));
+        ForwardBackwardCorpusTest.Source small = ForwardBackwardCorpusTest.readSource(
+                Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        Spectrum s = spectra.get(3);
+        SpectrumDescription d = s.description();
+        spectra.set(3, new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                d.precursors(), d.parameters(), "mzpeak_conversion1"), s.mz(), s.intensity(), s.peaks(), s.arrays(),
+                s.peakArrays()));
+        Path archive = dir.resolve("data-processing.mzpeak");
+        MzPeakWriter.writeArchive(archive, spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("data_processing.py"), String.join("\n",
+                "import json",
+                "import sys",
+                "",
+                "import pandas as pd",
+                "from mzpeak import MzPeakFile",
+                "",
+                "reader = MzPeakFile(sys.argv[1])",
+                "column = reader.spectra['data_processing_id']",
+                "print(json.dumps({",
+                "    \"spectra\": len(reader),",
+                "    \"data_processing_id\": [None if pd.isna(v) else str(v) for v in column],",
+                "}))",
+                ""), StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "data-processing.json");
+
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(read.path("spectra").asInt()).isEqualTo(48);
+        List<String> expected = new ArrayList<>(Collections.nCopies(48, null));
+        expected.set(3, "mzpeak_conversion1");
+        assertThat(nullableStrings(read.path("data_processing_id"))).isEqualTo(expected);
     }
 
     /**

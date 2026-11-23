@@ -708,8 +708,11 @@ public final class MzPeakWriter {
         private final DatasetWriter dataset;
         private final List<Chromatogram> chromatograms = new ArrayList<>();
         private final List<WavelengthSpectrum> wavelengthSpectra = new ArrayList<>();
-        /** What the packed layout does not write of the spectra added: later scans, precursors, selected ions. */
-        private final int[] packedDrops = new int[3];
+        /**
+         * What the packed layout does not write of the spectra added: later scans, precursors, selected ions, data
+         * processing references.
+         */
+        private final int[] packedDrops = new int[4];
         private State state = State.OPEN;
 
         /**

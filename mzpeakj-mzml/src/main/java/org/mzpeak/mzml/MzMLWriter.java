@@ -392,8 +392,9 @@ public final class MzMLWriter implements AutoCloseable {
     }
 
     /**
-     * Adds the next MS spectrum to the document (design 5.4-5.7), with its id from the registry and its position as
-     * its index.
+     * Adds the next MS spectrum to the document (design 5.4-5.7), with its id from the registry, its position as its
+     * index and its data processing where it differs from the spectrumList's; a reference that names no data
+     * processing of the file metadata is dropped (A-18).
      *
      * @throws IllegalStateException if its id is not the next of {@link Contents#spectrumIds()}, all of which were
      *                               written already, or the writer is finished or closed
@@ -416,6 +417,10 @@ public final class MzMLWriter implements AutoCloseable {
         d.precursors().forEach(p -> precursorParams(p, params -> declared(name, params)));
 
         uk.ac.ebi.jmzml.model.mzml.Spectrum x = spectrum(i, spectrumIds.get(i), spectrum.mz().length);
+        String processing = ref(dataProcessingIds, d.dataProcessingRef(), "spectrum dataProcessingRef dropped");
+        if (processing != null && !processing.equals(spectrumListDefault)) {
+            x.setDataProcessingRef(text(processing));
+        }
         List<Param> rest = new ArrayList<>(d.parameters());
         List<Param> types = take(rest, SPECTRUM_TYPE);
         if (types.isEmpty() && d.msLevel() >= 1) {

@@ -31,7 +31,9 @@ import java.util.function.Function;
  *       components are separated by {@code |}, a nested record is wrapped in {@code ( )}, a list in
  *       {@code [ ]} with its elements in list order, separated by {@code ;}. An absent string component (an id, a
  *       filter string, a spectrum reference, a CURIE or a name) reads {@link #ABSENT} (U+2400), so that it differs
- *       from the string {@code "null"}; any other absent value reads {@code null}.
+ *       from the string {@code "null"}; any other absent value reads {@code null}. The last component, the data
+ *       processing reference (R6), is written only when present, as {@code |dp=<ref>}, so that the lines of
+ *       spectra without one, and the digests pinned before R6, stay as they were.
  *   <li>A {@link Param} reads {@code (name|accession|Class:value|unit)}, where {@code Class} is the simple name
  *       of the value's runtime class, so a value that changes type (Long to Integer, say) changes the line.
  *   <li>A {@link Chromatogram} header reads {@code index|id|typeCurie|time.length}, a {@link WavelengthSpectrum}
@@ -54,7 +56,8 @@ final class Canonical {
                 + "|" + d.numberOfDataPoints() + "|" + d.numberOfPeaks()
                 + "|" + list(d.scans(), Canonical::scan)
                 + "|" + list(d.precursors(), Canonical::precursor)
-                + "|" + list(d.parameters(), Canonical::param);
+                + "|" + list(d.parameters(), Canonical::param)
+                + (d.dataProcessingRef() == null ? "" : "|dp=" + d.dataProcessingRef());
     }
 
     static String describe(Chromatogram c) {

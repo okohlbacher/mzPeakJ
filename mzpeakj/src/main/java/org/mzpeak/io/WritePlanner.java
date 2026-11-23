@@ -51,9 +51,9 @@ import java.util.regex.Pattern;
  * decides which members are written and serializes the footer key-values
  * once. A contract violation throws {@link MzPeakException} before any file or temp directory exists. What the packed
  * layout loses gets one warning in the report for each kind: the scans after a spectrum's first, the precursors after
- * its primary one and the selected ions other than the primary precursor's first (one warning), the Params of
- * wavelength spectra (another), and the polarities, data processing references, Params and precursors of
- * chromatograms (a third). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
+ * its primary one and the selected ions other than the primary precursor's first (one warning), the data processing
+ * references of spectra (another), the Params of wavelength spectra (a third), and the polarities, data processing
+ * references, Params and precursors of chromatograms (a fourth). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
  * scan settings without an id, which get one. A NaN in an axis (m/z, chromatogram time, wavelength) or an intensity
  * is refused as a contract violation in every encoding ({@link #requireNoNaN}), and with
  * {@link SignalEncoding#NUMPRESS} so is a value the Numpress codecs cannot encode.
@@ -118,9 +118,9 @@ final class WritePlanner {
         List<SpectrumSignal> spectrumSignals = new ArrayList<>(ordered.size());
         Map<String, ExtraColumn> extras = new LinkedHashMap<>();
         Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
-        // What the packed layout drops: scans after the first, precursors after the primary one, and selected ions
-        // other than the primary precursor's first.
-        int[] packedDrops = new int[3];
+        // What the packed layout drops: scans after the first, precursors after the primary one, selected ions other
+        // than the primary precursor's first, and data processing references.
+        int[] packedDrops = new int[4];
         List<List<Precursor>> written = new ArrayList<>(ordered.size());
         for (Spectrum s : ordered) {
             written.add(writtenPrecursors(s.description().precursors(), writtenIndex));
@@ -441,7 +441,8 @@ final class WritePlanner {
     /**
      * Adds to {@code drops} what the packed layout does not write of {@code s}, whose precursors as written are
      * {@code precursors}: its scans after the first ({@code drops[0]}), its precursors after the primary one
-     * ({@code drops[1]}) and its selected ions other than the primary precursor's first ({@code drops[2]}).
+     * ({@code drops[1]}), its selected ions other than the primary precursor's first ({@code drops[2]}) and whether it
+     * has a data processing reference ({@code drops[3]}), for which the frozen packed schema has no column.
      */
     private static void countPackedDrops(Spectrum s, List<Precursor> precursors, int[] drops) {
         drops[0] += Math.max(0, s.description().scans().size() - 1);
@@ -451,11 +452,15 @@ final class WritePlanner {
             ions += p.selectedIons().size();
         }
         drops[2] += precursors.isEmpty() || precursors.get(0).selectedIons().isEmpty() ? ions : ions - 1;
+        if (s.description().dataProcessingRef() != null) {
+            drops[3]++;
+        }
     }
 
     /**
-     * Records in {@code report} the one warning about what the packed layout does not write of the spectra counted in
-     * {@code drops} ({@link #countPackedDrops}), if anything.
+     * Records in {@code report} the one warning about the scans, precursors and selected ions the packed layout does
+     * not write of the spectra counted in {@code drops} ({@link #countPackedDrops}), if any, and another about their
+     * data processing references, if any.
      */
     static void warnPackedDrops(int[] drops, WriteReport report) {
         if (drops[0] + drops[1] + drops[2] > 0) {
@@ -463,6 +468,10 @@ final class WritePlanner {
                     + " selected ion of a spectrum: " + counted(drops[0], "later scan", "later scans") + ", "
                     + counted(drops[1], "later precursor", "later precursors") + " and "
                     + counted(drops[2], "other selected ion", "other selected ions") + " are not written");
+        }
+        if (drops[3] > 0) {
+            report.warn("the packed metadata layout writes no data processing reference of a spectrum: "
+                    + counted(drops[3], "spectrum loses its reference", "spectra lose their references"));
         }
     }
 

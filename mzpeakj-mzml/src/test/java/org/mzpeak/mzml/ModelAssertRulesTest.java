@@ -70,8 +70,9 @@ class ModelAssertRulesTest {
                 FileMetadata.ProcessingMethod.class, FileMetadata.Sample.class, FileMetadata.MsRun.class,
                 ScanSettings.class, MzPeakManifest.CvEntry.class);
         assertThat(ModelAssert.RULES.keySet()).as("rules for no reachable component").isEqualTo(keys);
-        assertThat(keys).contains("WavelengthSpectrum.parameters", "Chromatogram.polarity",
-                "Chromatogram.dataProcessingRef", "Chromatogram.parameters", "Chromatogram.precursors",
+        assertThat(keys).contains("SpectrumDescription.dataProcessingRef", "WavelengthSpectrum.parameters",
+                "Chromatogram.polarity", "Chromatogram.dataProcessingRef", "Chromatogram.parameters",
+                "Chromatogram.precursors",
                 "FileMetadata.FileDescription.contacts", "FileMetadata.Contact.name",
                 "FileMetadata.Contact.affiliation", "FileMetadata.Contact.parameters", "ScanSettings.sourceFileRefs",
                 "ScanSettings.targets", "MzPeakManifest.CvEntry.version");

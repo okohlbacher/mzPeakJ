@@ -139,7 +139,8 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 | `spectrum@index` | — | B: MS spectra and wavelength spectra are numbered in their own index spaces (B-11). A: MS spectra first, then wavelength spectra |
 | `spectrum@id` | `SpectrumDescription.id` | A: an id that is null, empty, malformed or taken is written `index=<i>` (A-3) |
 | `@defaultArrayLength` | `numberOfDataPoints` or `numberOfPeaks` | recomputed on write (B-12) |
-| `@spotID`, `@sourceFileRef`, `@dataProcessingRef` | — | lost (B-10) |
+| `@spotID`, `@sourceFileRef` | — | lost (B-10) |
+| `@dataProcessingRef` | `SpectrumDescription.dataProcessingRef` where it differs from the spectrumList default | written where it differs from that default; lost for a wavelength spectrum (B-10). A: a ref naming no data processing is dropped (A-18) |
 | MS:1000511 ms level | `msLevel` | A: written when above 0 |
 | MS:1000130 / MS:1000129 | `polarity` | both present: unknown, the terms kept as params (warned) |
 | MS:1000127 / MS:1000128 | `signalContinuity` | both present: unknown, the terms kept as params (warned) |
@@ -319,7 +320,7 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-7 | `run@sampleRef` | `MzMLReader` |
 | B-8 | `chromatogramList@defaultDataProcessingRef` written as list default or per chromatogram (equivalent) | silent |
 | B-9 | the arrays of a spectrum, wavelength spectrum or chromatogram without its axis or intensity array | `MzMLReader` |
-| B-10 | `spectrum@spotID`, `@sourceFileRef` and `@dataProcessingRef` | `MzMLReader` |
+| B-10 | `spectrum@spotID` and `@sourceFileRef`; `@dataProcessingRef` of a wavelength spectrum | `MzMLReader` |
 | B-11 | the interleaving of MS and wavelength spectra; spectra whose index is not their position renumbered | `MzMLReader` |
 | B-12 | `defaultArrayLength`, recomputed on write | silent |
 | B-13 | scanList params other than the combination term, moved to the spectrum | `MzMLReader` |

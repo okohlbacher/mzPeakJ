@@ -706,7 +706,9 @@ class MzMLConversionTest {
         Path file = tinyWith(s -> {
             String precursor = region(s, "<precursor spectrumRef=\"scan=19\">", "</precursor>");
             String second = precursor.replace("value=\"445.33999999999997\"", "value=\"446.5\"");
-            return replaceOnce(replaceOnce(s, "<precursorList count=\"1\">", "<precursorList count=\"2\">"),
+            String moved = replaceOnce(s, SCAN_20 + " defaultArrayLength=\"10\"",
+                    SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"CompassXtract_x0020_processing\"");
+            return replaceOnce(replaceOnce(moved, "<precursorList count=\"1\">", "<precursorList count=\"2\">"),
                     precursor, precursor + "\n" + second);
         });
         List<Precursor> given = model(file).spectrumList().get(1).description().precursors();
@@ -725,7 +727,10 @@ class MzMLConversionTest {
             assertThat(precursors).extracting(p -> p.isolationWindow().targetMz()).containsExactly(445.3, 445.3);
             assertThat(precursors).allSatisfy(p -> assertThat(p.activation().parameters()).extracting(Param::accession)
                     .contains("MS:1000133", "MS:1000045"));
+            assertThat(reader.metadataAt(1).dataProcessingRef()).isEqualTo("CompassXtract_x0020_processing");
         }
+        assertThat(model(b.mzml).spectrumList().get(1).description().dataProcessingRef())
+                .isEqualTo("CompassXtract_x0020_processing");
     }
 
     /**
@@ -754,6 +759,33 @@ class MzMLConversionTest {
         assertThat(back.charge()).isEqualTo(2);
         assertThat(back.intensity()).isEqualTo(120053.0);
         assertThat(back.parameters()).extracting(Param::accession).doesNotContain("MS:1000744");
+    }
+
+    /**
+     * X-25 (R6): scan=19's dataProcessingRef, which differs from the spectrumList's default, goes to mzPeak as the
+     * spectrum's {@code data_processing_id} and comes back to mzML as its dataProcessingRef; scan=20's, equal to the
+     * default, is null in mzPeak and absent from the mzML written. Nothing is counted for either.
+     */
+    @Test
+    void aSpectrumDataProcessingGoesBothWays() throws IOException {
+        Path file = tinyWith(s -> replaceOnce(replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
+                        SCAN_19 + " defaultArrayLength=\"15\" dataProcessingRef=\"CompassXtract_x0020_processing\""),
+                SCAN_20 + " defaultArrayLength=\"10\"",
+                SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"pwiz_processing\""));
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES));
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadata()).extracting(SpectrumDescription::dataProcessingRef)
+                    .containsExactly("CompassXtract_x0020_processing", null, null, null);
+        }
+        Model back = model(b.mzml);
+        assertThat(back.spectrumList()).extracting(s -> s.description().dataProcessingRef())
+                .containsExactly("CompassXtract_x0020_processing", null, null, null);
+        assertThat(ModelAssert.assertEqual("tiny with a spectrum data processing", model(file), back, STRICT,
+                ModelAssert.A_26, ModelAssert.W_3, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4), Map.entry("W_8", 5));
     }
 
     /** Precursors with other parents, and a later one with the same parent but without ions, move nothing. */

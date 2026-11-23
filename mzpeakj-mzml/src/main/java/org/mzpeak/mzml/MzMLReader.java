@@ -239,8 +239,11 @@ public final class MzMLReader {
     /** The spectrum types that make a spectrum without arrays a wavelength spectrum (design 5.4); null-tolerant. */
     private static final Set<String> WAVELENGTH_TYPES =
             Collections.unmodifiableSet(new HashSet<>(List.of("MS:1000804", "MS:1000805", "MS:1000806")));
-    /** The spectrum attributes the model has no field for (B-10), in the order they are noted. */
-    private static final List<String> SPECTRUM_LOST = List.of("spotID", "sourceFileRef", "dataProcessingRef");
+    /**
+     * The spectrum attributes the model has no field for (B-10), in the order they are noted; a wavelength spectrum
+     * also loses its dataProcessingRef, which only {@link SpectrumDescription} has a field for.
+     */
+    private static final List<String> SPECTRUM_LOST = List.of("spotID", "sourceFileRef");
     /** A conversion that leaves the values as they are. */
     private static final DoubleUnaryOperator AS_IS = v -> v;
     /**
@@ -736,7 +739,7 @@ public final class MzMLReader {
      * becomes its position among the MS or the wavelength spectra; another {@code @index} is counted (B-11).
      */
     private Consumer<Visitor> spectrum(uk.ac.ebi.jmzml.model.mzml.Spectrum s) {
-        List<String> lost = Arrays.asList(s.getSpotID(), s.getSourceFileRef(), s.getDataProcessingRef());
+        List<String> lost = Arrays.asList(s.getSpotID(), s.getSourceFileRef());
         for (int i = 0; i < SPECTRUM_LOST.size(); i++) {
             note(String.format(B_10, SPECTRUM_LOST.get(i)), lost.get(i) == null ? 0 : 1);
         }
@@ -758,6 +761,7 @@ public final class MzMLReader {
                 : first(arrays, Kind.WAVELENGTH.axis) != null && first(arrays, MZ_ARRAY) == null;
         note(B_11_INDEX, Objects.equals(s.getIndex(), (int) (wavelength ? wavelengthIndex : msIndex)) ? 0 : 1);
         if (wavelength) {
+            note(String.format(B_10, "dataProcessingRef"), s.getDataProcessingRef() == null ? 0 : 1);
             WavelengthSpectrum spectrum = wavelengthSpectrum(s, params, scans, arrays);
             return v -> v.wavelengthSpectrum(spectrum);
         }
@@ -767,10 +771,11 @@ public final class MzMLReader {
     }
 
     /**
-     * An MS spectrum: ms level, polarity and representation promoted; no peak list; its array length counts as
-     * {@code numberOfPeaks} for a centroid spectrum, else as {@code numberOfDataPoints}. A numeric summary param is
-     * typed as a Double and, without unit, given its default unit ({@link #SUMMARY_UNITS}, B-14), so that the mzPeak
-     * writer moves it to its summary column (pwiz writes the total ion current without unit).
+     * An MS spectrum: ms level, polarity and representation promoted; its data processing kept when it differs from
+     * the spectrumList's; no peak list; its array length counts as {@code numberOfPeaks} for a centroid spectrum, else
+     * as {@code numberOfDataPoints}. A numeric summary param is typed as a Double and, without unit, given its default
+     * unit ({@link #SUMMARY_UNITS}, B-14), so that the mzPeak writer moves it to its summary column (pwiz writes the
+     * total ion current without unit).
      */
     private Spectrum msSpectrum(uk.ac.ebi.jmzml.model.mzml.Spectrum s, List<Param> params, List<ScanEvent> scans,
                                 List<Array> arrays) {
@@ -799,7 +804,8 @@ public final class MzMLReader {
         boolean centroid = continuity == SignalContinuity.CENTROID;
         SpectrumDescription description = new SpectrumDescription(msIndex++, s.getId(), msLevel == null ? 0 : msLevel,
                 scans.isEmpty() ? Double.NaN : scans.get(0).startTime(), polarity, continuity, centroid ? 0 : n,
-                centroid ? n : 0, scans, precursors, params);
+                centroid ? n : 0, scans, precursors, params,
+                Objects.equals(s.getDataProcessingRef(), spectrumListDefault) ? null : s.getDataProcessingRef());
         return new Spectrum(description, mz, values(signal.intensity()), null, values(signal.extras()), null);
     }
 

@@ -130,6 +130,16 @@ class LegacyMetadataSnapshotTest {
         }
     }
 
+    /** R6: a data processing reference is appended, so lines without one read as before. */
+    @Test
+    void aDataProcessingReferenceIsAppended() {
+        SpectrumDescription plain = new SpectrumDescription(0, "s", 1, 1.0, null, null, 0, 0, null, null, null);
+        SpectrumDescription withRef = new SpectrumDescription(0, "s", 1, 1.0, null, null, 0, 0, null, null, null,
+                "dp1");
+        assertThat(Canonical.describe(plain)).isEqualTo("0|s|1|1.0|null|null|0|0|[]|[]|[]");
+        assertThat(Canonical.describe(withRef)).isEqualTo("0|s|1|1.0|null|null|0|0|[]|[]|[]|dp=dp1");
+    }
+
     @Test
     void paramLineCarriesTheValueClass() {
         assertThat(Canonical.param(new Param("n", "MS:1", 5L, null))).isEqualTo("(n|MS:1|Long:5|␀)");
@@ -171,7 +181,7 @@ class LegacyMetadataSnapshotTest {
     void canonicalFormCoversEveryRecordComponent() {
         assertThat(components(SpectrumDescription.class)).containsExactly("index", "id", "msLevel", "retentionTime",
                 "polarity", "signalContinuity", "numberOfDataPoints", "numberOfPeaks", "scans", "precursors",
-                "parameters");
+                "parameters", "dataProcessingRef");
         assertThat(components(ScanEvent.class)).containsExactly("startTime", "injectionTime", "filterString",
                 "presetScanConfiguration", "instrumentConfigurationRef", "spectrumReference", "scanWindows",
                 "parameters");

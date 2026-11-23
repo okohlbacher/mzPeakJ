@@ -144,6 +144,41 @@ class RustReaderAcceptanceTest {
     }
 
     /**
+     * X-25 (R6): small.unpacked written split as an archive with a data processing reference on spectrum 3, so that
+     * spectra_metadata has a {@code data_processing_id} column: Rust, which skips the column, reads all 48 spectra
+     * without a panic, spectrum 3, a centroid spectrum, with its id and the peak m/z mzPeakJ reads.
+     */
+    @Test
+    void rustReadsSpectraWithADataProcessingReference() throws Exception {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        Spectrum s = spectra.get(3);
+        SpectrumDescription d = s.description();
+        spectra.set(3, new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                d.precursors(), d.parameters(), "mzpeak_conversion1"), s.mz(), s.intensity(), s.peaks(), s.arrays(),
+                s.peakArrays()));
+        Path out = tmp.resolve("data-processing.mzpeak");
+        MzPeakWriter.writeArchive(out, spectra, small.chromatograms, small.wavelengthSpectra, small.scanSettings,
+                small.fileMetadata, SPLIT);
+        double[] mz;
+        try (MzPeakReader reader = MzPeakReader.open(out,
+                MzPeakReader.Options.defaults().withSignalMode(SignalMode.CENTROID))) {
+            assertThat(reader.metadataAt(3).dataProcessingRef()).isEqualTo("mzpeak_conversion1");
+            mz = reader.getSpectrumAt(3).mz();
+        }
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(48).allSatisfy(r -> assertThat(r.has("panic") || r.has("none")).as("%s", r)
+                .isFalse());
+        JsonNode record = records.get(3);
+        assertThat(record.path("id").asText()).isEqualTo(d.id());
+        assertThat(mz).isNotEmpty();
+        assertValues("spectrum 3 peak m/z", dump.array(record.path("peaks"), "mz_off"), mz, Match.MZ);
+    }
+
+    /**
      * D-13 (V-24): diaPASEF.ref written split as an archive, its ion mobility in the {@code ion_mobility_value} and
      * {@code ion_mobility_type} columns of the scans and selected ions: Rust reads each spectrum's scan and selected
      * ion ion mobility with the source's value, and none for spectrum 0's scan.

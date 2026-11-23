@@ -346,6 +346,10 @@ class ModelAssertTest {
                 "chromatogram[0].precursors[0].precursorId",
                 "chromatogram[0].precursors[0].precursorId: expected \"scan=19\", got \"scan=20\"");
 
+        // X-25 (R6): SpectrumDescription.dataProcessingRef
+        assertOnly(small, withSpectrum(small, 3, s -> withDescription(s, d -> with(d, "dataProcessingRef", "dp2"))),
+                "spectrum[3].dataProcessingRef", "spectrum[3].dataProcessingRef: expected null, got \"dp2\"");
+
         // MZ-7: FileDescription.contacts, Contact.name, affiliation, parameters
         FileMetadata.Contact contact = new FileMetadata.Contact("Bob", "Higglesworth University",
                 List.of(new Param("contact email", "MS:1000589", "bob@example.org", null)));
