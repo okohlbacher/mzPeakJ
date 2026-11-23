@@ -58,7 +58,7 @@ import java.util.regex.Pattern;
  * spectrum's precursor, a chromatogram for a chromatogram's), refuses in the split layout precursors whose selected
  * ions readers would attach to another precursor, appends there the MSn selected-ion chain ({@link #withChain}),
  * routes each spectrum's payload to spectra_data and spectra_peaks, puts each entity's rows in main-axis order,
- * names the extra columns of the spectrum signal files and the intensity and extra columns of chromatograms_data,
+ * names the intensity and extra columns of the spectrum signal files and of chromatograms_data,
  * decides which members are written and serializes the footer key-values
  * once. A contract violation throws {@link MzPeakException} before any file or temp directory exists. What the packed
  * layout loses gets one warning in the report for each kind: the scans after a spectrum's first, the precursors after
@@ -72,7 +72,8 @@ import java.util.regex.Pattern;
  * ({@link Declarations}, W12).
  *
  * <p>A {@link MzPeakWriter.Session} is planned one spectrum at a time ({@link #sessionSignal}) with the same checks,
- * its spectrum signal files get the extra columns of the keys it is opened with ({@link #spectrumExtras}), and its
+ * its spectrum signal files get the intensity columns of the units and the extra columns of the keys it is opened
+ * with ({@link #spectrumIntensities}, {@link #spectrumExtras}), and its
  * chromatograms and wavelength spectra are planned at its finish ({@link #planFinish}) as here.
  */
 final class WritePlanner {
@@ -133,8 +134,8 @@ final class WritePlanner {
         WriteReport report = new WriteReport();
         List<SpectrumEntry> spectrumEntries = new ArrayList<>(ordered.size());
         List<SpectrumSignal> spectrumSignals = new ArrayList<>(ordered.size());
-        Map<String, ExtraColumn> extras = new LinkedHashMap<>();
-        Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
+        Set<String> extraKeys = new LinkedHashSet<>();
+        Set<String> units = new LinkedHashSet<>();
         // What the packed layout drops: scans after the first, precursors after the primary one, selected ions other
         // than the primary precursor's first, and data processing references.
         int[] packedDrops = new int[4];
@@ -151,15 +152,25 @@ final class WritePlanner {
             } else {
                 countPackedDrops(s, precursors, packedDrops);
             }
-            addExtraColumns(s, extras, columns);
+            addExtraKeys(s, extraKeys);
             // mz()/intensity() go to exactly one of the two files whenever they are not empty.
             SpectrumSignal signal = signal(s, disposition(s).renumbered(i, precursors), options, report);
+            units.addAll(signal.intensityUnits());
             spectrumEntries.add(signal.entry());
             spectrumSignals.add(signal);
         }
         warnPackedDrops(packedDrops, report);
+        // every column is named before the first row is written (signal-data.md l.138): the intensity columns of the
+        // units the spectra write, then the extra columns, which take none of their names
+        Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
+        List<IntensityColumn> intensities = spectrumIntensities(units.isEmpty() ? Set.of(ArrayIndex.COUNTS_UNIT)
+                : units, columns);
+        List<ExtraColumn> extras = new ArrayList<>(extraKeys.size());
+        for (String key : extraKeys) {
+            extras.add(extraColumn(key, columns));
+        }
         return complete(options, Collections.unmodifiableList(spectrumEntries),
-                Collections.unmodifiableList(spectrumSignals), List.copyOf(extras.values()), inMinutes,
+                Collections.unmodifiableList(spectrumSignals), intensities, List.copyOf(extras), inMinutes,
                 wavelengthSpectra, scanSettings,
                 FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), report);
     }
@@ -167,17 +178,19 @@ final class WritePlanner {
     /**
      * The plan of a {@link MzPeakWriter.Session} at its finish (design §7, MZ-11): its {@code spectra}, appended and
      * numbered 0..n-1 as added, with their signal already written and their precursors as given, the
-     * {@code spectrumExtras} of its spectrum signal files, and the chromatograms and wavelength spectra added to it,
-     * which are checked, ordered and numbered as {@link #plan} does it. The plan has no spectrum signals.
-     * {@code footer} is the session's serialized file metadata, and {@code report} holds the warnings of the
-     * spectra added.
+     * {@code spectrumIntensities} and {@code spectrumExtras} of its spectrum signal files, and the chromatograms and
+     * wavelength spectra added to it, which are checked, ordered and numbered as {@link #plan} does it. The plan has
+     * no spectrum signals. {@code footer} is the session's serialized file metadata, and {@code report} holds the
+     * warnings of the spectra added.
      */
-    static WritePlan planFinish(Options options, List<SpectrumEntry> spectra, List<ExtraColumn> spectrumExtras,
+    static WritePlan planFinish(Options options, List<SpectrumEntry> spectra,
+                                List<IntensityColumn> spectrumIntensities, List<ExtraColumn> spectrumExtras,
                                 List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                 List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
         validateOthers(chromatograms, wavelengthSpectra, options.metadataLayout());
         return complete(options, options.metadataLayout() == MetadataLayout.SPLIT ? withChains(spectra) : spectra,
-                List.of(), spectrumExtras, chromatograms, wavelengthSpectra, scanSettings, footer, report);
+                List.of(), spectrumIntensities, spectrumExtras, chromatograms, wavelengthSpectra, scanSettings, footer,
+                report);
     }
 
     // MSn selected-ion chain (design D13-18, W7). Spec spectra.md (spectra_metadata_precursors): for higher MSn the
@@ -253,7 +266,8 @@ final class WritePlanner {
      * which the split layout gives ids.
      */
     private static WritePlan complete(Options options, List<SpectrumEntry> spectra, List<SpectrumSignal> signals,
-                                      List<ExtraColumn> spectrumExtras, List<Chromatogram> chromatograms,
+                                      List<IntensityColumn> spectrumIntensities, List<ExtraColumn> spectrumExtras,
+                                      List<Chromatogram> chromatograms,
                                       List<WavelengthSpectrum> wavelengthSpectra, List<ScanSettings> scanSettings,
                                       Map<String, String> footer, WriteReport report) {
         List<Chromatogram> chromatogramOrder = inIndexOrder(chromatograms, Chromatogram::index);
@@ -300,27 +314,38 @@ final class WritePlanner {
         // reference readers open it unconditionally (load_indices_from begins with spectrum_data()?).
         boolean writesSpectraData = true;
         return new WritePlan(options, spectra, signals, Collections.unmodifiableList(chromatogramEntries),
-                Collections.unmodifiableList(wavelengthEntries), writesSpectraData, spectrumExtras,
-                chromatogramIntensities, List.copyOf(chromatogramExtras.values()),
+                Collections.unmodifiableList(wavelengthEntries), writesSpectraData, spectrumIntensities,
+                spectrumExtras, chromatogramIntensities, List.copyOf(chromatogramExtras.values()),
                 options.metadataLayout() == MetadataLayout.SPLIT ? withIds(scanSettings, report) : scanSettings,
                 Collections.unmodifiableMap(footer), report);
     }
 
     // Session spectra (design §7, MZ-11). A session writes each spectrum as it is added, so the spectra come in
-    // index order numbered 0..n-1, each written with its own index and its precursors as given, and the extra columns
-    // of the spectrum signal files are declared when the session opens. A spectrum is checked as the batch plan
-    // checks it, before anything of it is written; whether each precursor_index names a spectrum of the dataset is
-    // known only at the finish.
+    // index order numbered 0..n-1, each written with its own index and its precursors as given, and the intensity and
+    // extra columns of the spectrum signal files are declared when the session opens (signal-data.md l.138). A
+    // spectrum is checked as the batch plan checks it, before anything of it is written; whether each precursor_index
+    // names a spectrum of the dataset is known only at the finish.
 
     /**
-     * The extra columns of the spectrum signal files of a session opened with the spectrum array {@code keys}: one
-     * for each key, in their order, named as {@link #plan} names the keys it meets in that order.
+     * The intensity columns of the spectrum signal files of a session opened with the spectrum intensity
+     * {@code units} ({@link Options#spectrumIntensityUnits()}), named as {@link #plan} names the units of the spectra
+     * it writes in that order.
+     */
+    static List<IntensityColumn> spectrumIntensities(Collection<String> units) {
+        return spectrumIntensities(units, new HashSet<>(SPECTRUM_SIGNAL_COLUMNS));
+    }
+
+    /**
+     * The extra columns of the spectrum signal files of a session opened with the spectrum array {@code keys} and
+     * the {@code intensities} columns: one for each key, in their order, named as {@link #plan} names the keys it
+     * meets in that order.
      *
      * @throws MzPeakException when a key is MS:1000514 or MS:1000515, which a spectrum holds in {@code mz()} and
      *                         {@code intensity()}
      */
-    static List<ExtraColumn> spectrumExtras(Collection<String> keys) {
+    static List<ExtraColumn> spectrumExtras(Collection<String> keys, List<IntensityColumn> intensities) {
         Set<String> columns = new HashSet<>(SPECTRUM_SIGNAL_COLUMNS);
+        spectrumIntensities(intensities.stream().map(IntensityColumn::unit).toList(), columns);
         List<ExtraColumn> out = new ArrayList<>(keys.size());
         for (String key : keys) {
             requireExtraSpectrumKey("spectrumArrays", key);
@@ -331,18 +356,20 @@ final class WritePlanner {
 
     /**
      * The signal of {@code s}, the next spectrum of a session whose spectrum signal files have a column for each of
-     * the {@code declared} spectrum arrays, written with its own index and its precursors as given. Its warnings go to
+     * the {@code declared} spectrum arrays and the {@code intensities} columns, written with its own index and its
+     * precursors as given. Its warnings go to
      * {@code report}; in the packed layout, what that layout does not write of it is added to {@code packedDrops}
      * ({@link #countPackedDrops}) once every check has passed.
      *
      * @throws MzPeakException when a key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} is not
-     *                         declared, when a precursor_index that the layout writes is negative, or when it breaks
-     *                         another rule of {@link #plan}: in the split layout, precursors that share a
+     *                         declared, when the unit of an intensity it writes ({@link SpectrumSignal#intensityUnit})
+     *                         has no column, when a precursor_index that the layout writes is negative, or when it
+     *                         breaks another rule of {@link #plan}: in the split layout, precursors that share a
      *                         precursor_index while a later one carries selected ions; peak indices that are no
      *                         position of its peak arrays; a NaN m/z or intensity; a value Numpress cannot encode
      */
-    static SpectrumSignal sessionSignal(Spectrum s, Set<String> declared, Options options, WriteReport report,
-                                        int[] packedDrops) {
+    static SpectrumSignal sessionSignal(Spectrum s, Set<String> declared, List<IntensityColumn> intensities,
+                                        Options options, WriteReport report, int[] packedDrops) {
         for (Map<String, double[]> arrays : List.of(s.arrays(), s.peakArrays())) {
             for (String key : arrays.keySet()) {
                 if (!declared.contains(key)) {
@@ -363,6 +390,14 @@ final class WritePlanner {
             requireNonNegativePrecursorIndex(s.description().primaryPrecursor());
         }
         SpectrumSignal signal = signal(s, disposition(s), options, report);
+        List<String> units = intensities.stream().map(IntensityColumn::unit).toList();
+        for (String unit : signal.intensityUnits()) {
+            if (!units.contains(unit)) {
+                throw new MzPeakException("spectrum " + s.index() + ": its intensity unit " + unit + " is not one of"
+                        + " the spectrum intensity units the session was opened with " + units + "; declare it with"
+                        + " MzPeakWriter.Options.withSpectrumIntensityUnits");
+            }
+        }
         if (!split) {
             countPackedDrops(s, precursors, packedDrops);
         }
@@ -566,12 +601,14 @@ final class WritePlanner {
      * {@link Spectrum} drops from {@code peaks()}). The match goes through {@code index()} because {@code peaks()} is
      * sorted by m/z. Extra values match when {@code arrays()} and {@code peakArrays()} have the same keys and, for
      * each key, the peak array's value at the peak's {@code index()} equals the array's value at that row, so a peak
-     * copy loses no peak array when only its arrays are written. {@link #disposition} still writes a peak copy with
-     * such a row to both files.
+     * copy loses no peak array when only its arrays are written. The intensity units match too, null as MS:1000131
+     * ({@link SpectrumSignal#intensityUnit}), so that the peak list keeps its unit. {@link #disposition} still writes
+     * a peak copy with such a row to both files.
      */
     static boolean isPeakCopy(Spectrum s) {
         if (s.description().signalContinuity() != SignalContinuity.CENTROID
-                || !s.arrays().keySet().equals(s.peakArrays().keySet())) {
+                || !s.arrays().keySet().equals(s.peakArrays().keySet())
+                || !orCounts(s.intensityUnit()).equals(orCounts(s.peakIntensityUnit()))) {
             return false;
         }
         double[] mz = s.mz();
@@ -591,6 +628,11 @@ final class WritePlanner {
             }
         }
         return true;
+    }
+
+    /** {@code unit}, or MS:1000131 for null. */
+    private static String orCounts(String unit) {
+        return unit == null ? ArrayIndex.COUNTS_UNIT : unit;
     }
 
     /**
@@ -613,19 +655,19 @@ final class WritePlanner {
     // null where the spectrum has no such array; the reader reads a null cell as NaN and drops an all-NaN array.
 
     /**
-     * Adds to {@code extras} a column for every key of {@code s}'s arrays, then of its peak arrays, that it does not
-     * hold yet, named so that it takes none of {@code columns}, to which the name is added.
+     * Adds to {@code keys} every key of {@code s}'s arrays, then of its peak arrays, that it does not hold yet; each
+     * gets an extra column once the intensity columns are named.
      *
      * @throws MzPeakException when a key is MS:1000514 or MS:1000515: a spectrum holds those arrays in
      *                         {@code mz()} and {@code intensity()}, and a reader would take such a column for the
      *                         main axis or the intensity
      */
-    private static void addExtraColumns(Spectrum s, Map<String, ExtraColumn> extras, Set<String> columns) {
+    private static void addExtraKeys(Spectrum s, Set<String> keys) {
         for (Map<String, double[]> arrays : List.of(s.arrays(), s.peakArrays())) {
             for (String key : arrays.keySet()) {
-                if (!extras.containsKey(key)) {
+                if (!keys.contains(key)) {
                     requireExtraSpectrumKey("spectrum " + s.index(), key);
-                    extras.put(key, extraColumn(key, columns));
+                    keys.add(key);
                 }
             }
         }
@@ -697,11 +739,8 @@ final class WritePlanner {
 
     /**
      * The intensity columns of {@code chromatograms}, which are in index order: one for each distinct
-     * {@link Chromatogram#intensityUnit()}, null included. The column of MS:1000131, else of the first chromatogram's
-     * unit, is {@code intensity} and primary, and comes first; the others follow in the order their units first occur.
-     * Each of them is named {@code intensity_} and its unit with every character other than an ASCII letter or digit
-     * as {@code _} (of a CURIE, the colon), or {@code intensity_unitless} for null, made unique among {@code columns}.
-     * Every name is added to {@code columns}.
+     * {@link Chromatogram#intensityUnit()}, null included, in the order their units first occur
+     * ({@link #intensityColumns(Collection, Set)}).
      */
     private static List<IntensityColumn> intensityColumns(List<Chromatogram> chromatograms, Set<String> columns) {
         Set<String> units = new LinkedHashSet<>();
@@ -711,6 +750,38 @@ final class WritePlanner {
         if (units.isEmpty()) {
             return List.of();
         }
+        return intensityColumns(units, columns);
+    }
+
+    // Spectrum intensity columns (design D13-20, R5; spec signal-data.md l.136-176). spectra_data and spectra_peaks
+    // get one intensity column for each unit, named as those of chromatograms_data, so that a spectrum reads back the
+    // unit of the column its values come from (SpectrumArrayStore). A spectrum's rows hold their intensity in the
+    // column of its unit and null in the others; a spectrum without a unit is written in MS:1000131, as before.
+    // In the Numpress chunk layout each is the transform column <column>_numpress_slof_bytes or _pic_bytes
+    // (chunked-layout.md: <array_name>_<transform_name>_bytes).
+
+    /**
+     * The intensity columns of the spectrum signal files for the distinct, non-null {@code units}, in their order
+     * ({@link #intensityColumns(Collection, Set)}); the names of the Numpress transform columns of each are added to
+     * {@code columns} as well.
+     */
+    private static List<IntensityColumn> spectrumIntensities(Collection<String> units, Set<String> columns) {
+        List<IntensityColumn> out = intensityColumns(units, columns);
+        for (IntensityColumn intensity : out) {
+            columns.add(NumpressSignalWriter.slofColumn(intensity));
+            columns.add(NumpressSignalWriter.picColumn(intensity));
+        }
+        return out;
+    }
+
+    /**
+     * The intensity columns for the distinct {@code units}, null among them, which are not empty. The column of
+     * MS:1000131, else of the first unit, is {@code intensity} and primary, and comes first; the others follow in the
+     * order of {@code units}. Each of them is named {@code intensity_} and its unit with every character other than an
+     * ASCII letter or digit as {@code _} (of a CURIE, the colon), or {@code intensity_unitless} for null, made unique
+     * among {@code columns}. Every name is added to {@code columns}.
+     */
+    private static List<IntensityColumn> intensityColumns(Collection<String> units, Set<String> columns) {
         String primary = units.contains(ArrayIndex.COUNTS_UNIT) ? ArrayIndex.COUNTS_UNIT : units.iterator().next();
         List<IntensityColumn> out = new ArrayList<>(units.size());
         columns.add(INTENSITY_COLUMN);
@@ -1268,12 +1339,15 @@ final class WritePlanner {
         /**
          * Throws {@link MzPeakException} when a CURIE of {@code s} has an undeclared prefix: the accession or unit of
          * a param of it, of its scans, or of its precursors' isolation windows, activations and selected ions, or a
-         * key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} that is a CURIE; or when its data
-         * processing or the instrument configuration of a scan names nothing the file metadata declares.
+         * key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} that is a CURIE, or its intensity or
+         * peak intensity unit; or when its data processing or the instrument configuration of a scan names nothing the
+         * file metadata declares.
          */
         void require(Spectrum s) {
             String owner = "spectrum " + s.index();
             SpectrumDescription d = s.description();
+            requireUnit(owner, "intensity unit", s.intensityUnit());
+            requireUnit(owner, "peak intensity unit", s.peakIntensityUnit());
             requireParams(owner, d.parameters());
             requireNamed(owner, "data_processing_id", d.dataProcessingRef(), processing, "data processing");
             for (int i = 0; i < d.scans().size(); i++) {
@@ -1317,6 +1391,16 @@ final class WritePlanner {
                 if (CURIE.matcher(key).matches()) {
                     requirePrefix(owner, "array", key);
                 }
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} when a unit of {@code units}, the spectrum intensity units of {@code owner},
+         * has the CURIE shape and a prefix that is not declared.
+         */
+        void requireIntensityUnits(String owner, Collection<String> units) {
+            for (String unit : units) {
+                requireUnit(owner, "spectrum intensity unit", unit);
             }
         }
 

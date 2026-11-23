@@ -7,6 +7,7 @@ import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.MzPeakWriter.SignalEncoding;
 import org.mzpeak.io.ParquetOutput.SignalFile;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
 import org.mzpeak.io.WritePlan.SpectrumSignal;
 
@@ -46,6 +47,7 @@ final class DatasetWriter {
 
     private final Path directory;
     private final Options options;
+    private final List<IntensityColumn> intensities;
     private final List<ExtraColumn> extras;
     private final boolean writesSpectraData;
     /** spectra_data and spectra_peaks as they open, which the manifest lists after the spectrum metadata. */
@@ -57,12 +59,15 @@ final class DatasetWriter {
     private SpectrumSignals signals;
 
     /**
-     * A writer of {@code directory} whose spectrum signal files have the {@code extras} columns, written with
-     * {@code options}; spectra_data is written when {@code writesSpectraData} says so ({@link WritePlan}).
+     * A writer of {@code directory} whose spectrum signal files have the {@code intensities} and {@code extras}
+     * columns, written with {@code options}; spectra_data is written when {@code writesSpectraData} says so
+     * ({@link WritePlan}).
      */
-    DatasetWriter(Path directory, Options options, List<ExtraColumn> extras, boolean writesSpectraData) {
+    DatasetWriter(Path directory, Options options, List<IntensityColumn> intensities, List<ExtraColumn> extras,
+                  boolean writesSpectraData) {
         this.directory = directory;
         this.options = options;
+        this.intensities = intensities;
         this.extras = extras;
         this.writesSpectraData = writesSpectraData;
     }
@@ -71,7 +76,7 @@ final class DatasetWriter {
     void open() {
         io(() -> {
             Files.createDirectories(directory);
-            signals = new SpectrumSignals(directory, signalMembers, extras, options, writesSpectraData);
+            signals = new SpectrumSignals(directory, signalMembers, intensities, extras, options, writesSpectraData);
         });
     }
 
@@ -187,6 +192,7 @@ final class DatasetWriter {
 
         private final Path directory;
         private final List<WrittenMember> members;
+        private final List<IntensityColumn> intensities;
         private final List<ExtraColumn> extras;
         private final Options options;
         private final boolean numpress;
@@ -195,13 +201,14 @@ final class DatasetWriter {
         private long spectra;
 
         /**
-         * Opens spectra_data in {@code directory}, with the {@code extras} columns and written with {@code options},
-         * when {@code writesSpectraData}.
+         * Opens spectra_data in {@code directory}, with the {@code intensities} and {@code extras} columns and written
+         * with {@code options}, when {@code writesSpectraData}.
          */
-        SpectrumSignals(Path directory, List<WrittenMember> members, List<ExtraColumn> extras, Options options,
-                        boolean writesSpectraData) throws IOException {
+        SpectrumSignals(Path directory, List<WrittenMember> members, List<IntensityColumn> intensities,
+                        List<ExtraColumn> extras, Options options, boolean writesSpectraData) throws IOException {
             this.directory = directory;
             this.members = members;
+            this.intensities = intensities;
             this.extras = extras;
             this.options = options;
             this.numpress = options.signalEncoding() == SignalEncoding.NUMPRESS;
@@ -237,14 +244,15 @@ final class DatasetWriter {
 
         private SignalFile open(String name, DataKind kind) throws IOException {
             Path file = member(directory, members, name, EntityType.SPECTRUM, kind);
-            return numpress ? openNumpressChunks(file, extras, options) : openSpectrumPoints(file, extras, options);
+            return numpress ? openNumpressChunks(file, intensities, extras, options)
+                    : openSpectrumPoints(file, intensities, extras, options);
         }
 
         private void append(SignalFile file, SpectrumSignal spectrum, boolean peaksFile) throws IOException {
             if (numpress) {
-                appendNumpressChunks(file, spectrum, extras, peaksFile, options.numpressIntensity());
+                appendNumpressChunks(file, spectrum, intensities, extras, peaksFile, options.numpressIntensity());
             } else {
-                appendSpectrumPoints(file, spectrum, extras, peaksFile);
+                appendSpectrumPoints(file, spectrum, intensities, extras, peaksFile);
             }
         }
     }

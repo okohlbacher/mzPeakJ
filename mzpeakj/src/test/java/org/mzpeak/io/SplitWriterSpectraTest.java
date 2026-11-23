@@ -436,9 +436,11 @@ class SplitWriterSpectraTest {
         assertThat(SPLIT.withSignalEncoding(SignalEncoding.NUMPRESS).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(SPLIT.withRowGroupSize(4096).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(Options.defaults()).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
-                + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[]]");
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
         assertThat(packed).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
-                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[]]");
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
     }
 
     @Test

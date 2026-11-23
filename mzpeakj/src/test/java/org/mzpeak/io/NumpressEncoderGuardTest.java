@@ -175,9 +175,11 @@ class NumpressEncoderGuardTest {
     private static void assertRefusedByTheEncoder(SpectrumSignal signal, boolean peaksFile,
                                                   NumpressIntensityEncoding encoding, String message, Path file)
             throws Exception {
-        try (SignalFile out = NumpressSignalWriter.openNumpressChunks(file, List.of(), numpress(encoding))) {
-            assertThatThrownBy(() -> NumpressSignalWriter.appendNumpressChunks(out, signal, List.of(), peaksFile,
-                    encoding)).isExactlyInstanceOf(MzPeakException.class).hasMessage(message);
+        List<WritePlan.IntensityColumn> intensities = WritePlanner.spectrumIntensities(List.of("MS:1000131"));
+        try (SignalFile out = NumpressSignalWriter.openNumpressChunks(file, intensities, List.of(),
+                numpress(encoding))) {
+            assertThatThrownBy(() -> NumpressSignalWriter.appendNumpressChunks(out, signal, intensities, List.of(),
+                    peaksFile, encoding)).isExactlyInstanceOf(MzPeakException.class).hasMessage(message);
         }
         AtomicInteger rows = new AtomicInteger();
         ParquetGroups.forEach(file, row -> rows.incrementAndGet());
