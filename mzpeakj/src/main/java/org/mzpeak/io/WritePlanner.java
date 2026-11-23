@@ -372,7 +372,7 @@ final class WritePlanner {
     /**
      * Throws {@link MzPeakException} when a precursor_index of {@code spectra}, a session's spectra numbered
      * 0..n-1, that the {@code layout} writes (every precursor's in the split layout, the primary one's in the packed
-     * layout) names no spectrum of them.
+     * layout) names no spectrum of them. {@link #plan} writes such a reference as null instead (design D13-10).
      */
     static void requireWrittenParents(List<SpectrumEntry> spectra, MetadataLayout layout) {
         for (SpectrumEntry entry : spectra) {
@@ -880,6 +880,8 @@ final class WritePlanner {
     // the parent is not written. Input numbered 0..n-1 in index order is written as given. A chromatogram's
     // precursor_index names a chromatogram (spec HEAD chromatograms.md:75-80; the Rust reader resolves a chromatogram
     // precursor against the chromatograms, visitor.rs:3108-3122), so it goes through the chromatogram numbering.
+    // Design D13-10 keeps this renumbering and the null precursor_index, instead of rejecting gaps and references to
+    // spectra not written, so that a subset of what the reader returns can be written (WriterIndexDeviationTest).
 
     /**
      * {@code entities} in the order of their {@code index}: the caller's list when it is already in that order,
@@ -900,7 +902,8 @@ final class WritePlanner {
      * {@code precursors} as they are written: each precursor_index replaced by the index {@code writtenIndex} gives
      * its parent, or by null when the parent is not written. A precursor whose precursor_index changes is replaced by
      * a new {@link Precursor}; the caller's are never modified, and the caller's list is returned when nothing
-     * changes.
+     * changes. The precursor_id is kept, and a precursor_index naming no written spectrum becomes null, as
+     * spectra.md §Spectrum precursor metadata requires, rather than being rejected (design D13-10).
      */
     private static List<Precursor> writtenPrecursors(List<Precursor> precursors, Map<Long, Long> writtenIndex) {
         List<Precursor> out = null;
@@ -1041,7 +1044,8 @@ final class WritePlanner {
      * {@code layout} writes: a spectrum's primary precursor's for {@link MetadataLayout#PACKED}, every precursor's of
      * a spectrum or chromatogram for {@link MetadataLayout#SPLIT}. The reader finds a spectrum's data rows through
      * the index range of each row group, so spectra are written in index order: this returns the caller's list when
-     * it is already in index order, and otherwise a stable-sorted copy. The caller's list is never modified.
+     * it is already in index order, and otherwise a stable-sorted copy. The caller's list is never modified. Gaps
+     * between the indices are not rejected but renumbered by {@link #plan} (design D13-10); duplicates are rejected.
      */
     private static List<Spectrum> validateAndOrder(List<Spectrum> spectra, List<Chromatogram> chromatograms,
                                                    List<WavelengthSpectrum> wavelengthSpectra,
