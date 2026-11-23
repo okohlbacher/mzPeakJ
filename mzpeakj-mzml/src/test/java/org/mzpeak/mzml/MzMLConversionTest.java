@@ -843,35 +843,78 @@ class MzMLConversionTest {
         }
     }
 
+    /**
+     * Each source of a CURIE handed to the writer that an mzML can fill with a term of an unknown CV: the file
+     * metadata; a spectrum's params, param units, array keys, scans and precursors (isolation window, selected ion,
+     * activation); a wavelength spectrum's params; a chromatogram's params, array keys, intensity unit and precursor
+     * (isolation window, activation). The mzML reader fills a spectrum's intensity units and peak arrays and a
+     * chromatogram's type and time unit with terms of known CVs only.
+     */
     static Stream<Arguments> usesOfARejectedCv() {
         return Stream.of(
-                arguments("the file metadata or scan settings", "<fileContent>",
-                        "<cvParam cvRef=\"MS\" accession=\"MS:1000580\" name=\"MSn spectrum\" value=\"\"/>",
-                        "XYZ:0000001", "<cvParam cvRef=\"XYZ\" accession=\"XYZ:0000001\" name=\"odd\" value=\"\"/>"),
-                arguments("spectrum scan=19", SCAN_19,
+                arguments("the file metadata or scan settings", "XYZ:0000001", edit(s -> replaceAfter(s,
+                        "<fileContent>", "<cvParam cvRef=\"MS\" accession=\"MS:1000580\" name=\"MSn spectrum\""
+                                + " value=\"\"/>", xyz("XYZ:0000001")))),
+                arguments("spectrum scan=19", "XYZ:0000002", edit(s -> withParam(s, SCAN_19,
                         "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
-                        "XYZ:0000002",
-                        "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>\n"
-                                + "<cvParam cvRef=\"MS\" accession=\"MS:1000004\" name=\"sample mass\" value=\"1.5\""
-                                + " unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000002\" unitName=\"odd\"/>"),
-                arguments("chromatogram tic", "id=\"tic\"",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000004\" name=\"sample mass\" value=\"1.5\""
+                                + " unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000002\" unitName=\"odd\"/>"))),
+                arguments("spectrum scan=19", "XYZ:0000004", edit(s -> withArray(s, SCAN_19,
+                        array(cv("MS:1000786", "non-standard data array", "XYZ:0000004", null), ramp(15))))),
+                arguments("spectrum scan=19", "XYZ:0000005", edit(s -> withParam(s, SCAN_19,
+                        "<scan instrumentConfigurationRef=\"LCQ_x0020_Deca\">", xyz("XYZ:0000005")))),
+                arguments("spectrum scan=20", "XYZ:0000006", edit(s ->
+                        withParam(s, SCAN_20, "<isolationWindow>", xyz("XYZ:0000006")))),
+                arguments("spectrum scan=20", "XYZ:0000007", edit(s ->
+                        withParam(s, SCAN_20, "<selectedIon>", xyz("XYZ:0000007")))),
+                arguments("spectrum scan=20", "XYZ:0000008", edit(s ->
+                        withParam(s, SCAN_20, "<activation>", xyz("XYZ:0000008")))),
+                // scan=21 has empty arrays: with a wavelength array for its m/z array it is a wavelength spectrum
+                arguments("wavelength spectrum scan=21", "XYZ:0000009", edit(s -> replaceAfter(withParam(s, SCAN_21,
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
+                        xyz("XYZ:0000009")), SCAN_21, "accession=\"MS:1000514\" name=\"m/z array\" value=\"\""
+                                + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"",
+                        "accession=\"MS:1000617\" name=\"wavelength array\" value=\"\" unitCvRef=\"UO\""
+                                + " unitAccession=\"UO:0000018\" unitName=\"nanometer\""))),
+                arguments("chromatogram tic", "XYZ:0000003", edit(s -> withParam(s, "id=\"tic\"",
                         "<cvParam cvRef=\"MS\" accession=\"MS:1000235\" name=\"total ion current chromatogram\""
-                                + " value=\"\"/>", "XYZ:0000003",
-                        "<cvParam cvRef=\"MS\" accession=\"MS:1000235\" name=\"total ion current chromatogram\""
-                                + " value=\"\"/>\n<cvParam cvRef=\"XYZ\" accession=\"XYZ:0000003\" name=\"odd\""
-                                + " value=\"\"/>"));
+                                + " value=\"\"/>", xyz("XYZ:0000003")))),
+                arguments("chromatogram tic", "XYZ:0000010", edit(s -> withArray(s, "id=\"tic\"",
+                        array(cv("MS:1000786", "non-standard data array", "XYZ:0000010", null), ramp(15))))),
+                arguments("chromatogram tic", "XYZ:0000011", edit(s -> replaceAfter(s, "id=\"tic\"",
+                        "unitCvRef=\"MS\" unitAccession=\"MS:1000131\" unitName=\"number of counts\"",
+                        "unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000011\" unitName=\"odd\""))),
+                arguments("chromatogram sic", "XYZ:0000012", edit(s ->
+                        withParam(s, "id=\"sic\"", "<isolationWindow>", xyz("XYZ:0000012")))),
+                arguments("chromatogram sic", "XYZ:0000013", edit(s ->
+                        withParam(s, "id=\"sic\"", "<activation>", xyz("XYZ:0000013")))));
+    }
+
+    /** {@code edit} as a test argument. */
+    private static UnaryOperator<String> edit(UnaryOperator<String> edit) {
+        return edit;
+    }
+
+    /** A cvParam of the term {@code accession} of XYZ. */
+    private static String xyz(String accession) {
+        return "<cvParam cvRef=\"XYZ\" accession=\"" + accession + "\" name=\"odd\" value=\"\"/>";
+    }
+
+    /** {@code s} with {@code param} after the first {@code element} after {@code anchor}. */
+    private static String withParam(String s, String anchor, String element, String param) {
+        return replaceAfter(s, anchor, element, element + "\n" + param);
     }
 
     /**
      * A CURIE with the prefix of an unknown CV that has no version fails the conversion with the writer's message,
      * naming the mzML, the entity and the CURIE, and leaves no target; the header before the target is created.
      */
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "{0} {1}")
     @MethodSource("usesOfARejectedCv")
-    void aUseOfAnUnknownCvWithoutVersionFailsTheConversion(String what, String anchor, String target, String curie,
-                                                           String replacement) throws IOException {
-        Path file = tinyWith(s -> replaceAfter(withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\""
-                + " URI=\"https://example.org/xyz/1.0/xyz.obo\"/>"), anchor, target, replacement));
+    void aUseOfAnUnknownCvWithoutVersionFailsTheConversion(String what, String curie, UnaryOperator<String> edit)
+            throws IOException {
+        Path file = tinyWith(s -> edit.apply(withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\""
+                + " URI=\"https://example.org/xyz/1.0/xyz.obo\"/>")));
 
         assertConversionFails(file, "mzML " + file + ": " + what + " uses " + curie + ", but the cv list entry of"
                 + " XYZ (URI https://example.org/xyz/1.0/xyz.obo, version null) does not identify a fixed release of"
