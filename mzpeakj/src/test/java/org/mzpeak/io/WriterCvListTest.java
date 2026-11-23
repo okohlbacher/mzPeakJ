@@ -693,6 +693,57 @@ class WriterCvListTest {
         assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry(entry.id(), param.accession());
     }
 
+    static Stream<Arguments> callerEntriesForCvsUsedOnlyInAWavelengthScanParam() {
+        return Stream.of(
+                Arguments.of(new Param("odd", "XYZ:0000001", null, null), XYZ, List.of()),
+                Arguments.of(new Param("brain", "BTO:0000142", null, null), CALLER_BTO,
+                        List.of(REFERENCE_TABLE.get(7))));
+    }
+
+    /**
+     * X-34: a CV that only a param of a scan of has_uv's first wavelength spectrum uses, which the split layout
+     * writes into wavelength_spectra_metadata, is declared: by the built-in entry of a known CV, or by the caller's
+     * entry; without that entry, an unknown one is refused (W12) before anything is written.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("callerEntriesForCvsUsedOnlyInAWavelengthScanParam")
+    void aCvUsedOnlyInAWavelengthScanParamIsDeclared(Param param, CvEntry entry, List<String> builtIn,
+                                                     @TempDir Path tmp) throws IOException {
+        Source s = source(Fixtures.current("has_uv.mzpeak"));
+        List<WavelengthSpectrum> waves = new ArrayList<>(s.wavelengthSpectra);
+        WavelengthSpectrum first = withScanParam(waves.get(0), param);
+        waves.set(0, first);
+        Path plain = tmp.resolve("plain.mzpeak");
+        Path out = tmp.resolve("caller.mzpeak");
+
+        if (builtIn.isEmpty()) {
+            assertThatThrownBy(() -> MzPeakWriter.writeDirectory(plain, s.spectra, s.chromatograms, waves,
+                    s.scanSettings, s.fileMetadata)).isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("wavelength spectrum " + first.index() + ": scan 0: " + param + " uses "
+                            + param.accession());
+            assertThat(plain).doesNotExist();
+        } else {
+            List<LogRecord> plainWarnings = writerWarnings(() -> MzPeakWriter.writeDirectory(plain, s.spectra,
+                    s.chromatograms, waves, s.scanSettings, s.fileMetadata));
+            List<String> plainCvs = new ArrayList<>(List.of(MS, UO));
+            plainCvs.addAll(builtIn);
+            assertThat(cvList(plain)).containsExactlyElementsOf(plainCvs);
+            assertThat(plainWarnings).isEmpty();
+            assertThat(assertEveryWrittenPrefixIsDeclared(plain)).containsEntry(entry.id(), param.accession());
+        }
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra,
+                s.chromatograms, waves, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(List.of(entry))));
+
+        assertThat(cvList(out)).containsExactly(MS, UO, json(entry));
+        assertThat(warnings).isEmpty();
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry(entry.id(), param.accession());
+        try (MzPeakReader r = MzPeakReader.open(out)) {
+            assertThat(r.getWavelengthSpectrum(first.index()).orElseThrow().scans().get(0).parameters())
+                    .contains(param);
+        }
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------
 
     /**
@@ -853,6 +904,25 @@ class WriterCvListTest {
         params.add(param);
         return new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(), w.wavelength(), w.intensity(),
                 params);
+    }
+
+    /**
+     * {@code w} with {@code param} added to the Params of its first scan, or, without scans, to those of the one scan
+     * at its time the writer writes for it.
+     */
+    private static WavelengthSpectrum withScanParam(WavelengthSpectrum w, Param param) {
+        List<ScanEvent> scans = new ArrayList<>(w.scans());
+        if (scans.isEmpty()) {
+            scans.add(new ScanEvent(w.time(), null, null, null, null, null, List.of(), List.of()));
+        }
+        ScanEvent first = scans.get(0);
+        List<Param> params = new ArrayList<>(first.parameters());
+        params.add(param);
+        scans.set(0, new ScanEvent(first.startTime(), first.injectionTime(), first.filterString(),
+                first.presetScanConfiguration(), first.instrumentConfigurationRef(), first.spectrumReference(),
+                first.scanWindows(), params));
+        return new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(), w.wavelength(), w.intensity(),
+                w.parameters(), scans, w.auxiliaryArrays());
     }
 
     /** {@code c} with {@code param} added to its Params. */
