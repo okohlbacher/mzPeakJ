@@ -216,7 +216,7 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 | MS:1000617 wavelength, MS:1000595 time | the axis of a wavelength spectrum or chromatogram | wavelength in nm; time see chromatograms |
 | any other array type | `arrays()` keyed by the CURIE | see the units below |
 | MS:1000786 non-standard data array | `arrays()` keyed by its name | B: a name that is an array-type accession is rejected. A: every key that is not a known array type is written as MS:1000786 with the key as name; a nameless one gets the name 'non-standard data array' (A-33) |
-| a second array of a type already present | — | dropped (B-29) |
+| a second array of a type already present | — | dropped (B-29), whatever its declared length |
 | data types MS:1000521, 523, 519, 522 | `double[]` | B: the type is lost (B-21, silent); 64-bit integers above 2^53 round (B-31). A: always 64-bit float |
 | MS:1001479 null-terminated ASCII | — | dropped (B-21) |
 | MS:1000520 16-bit float | — | rejected when it is the only data type term; next to a known one jmzML decodes by that one |
@@ -224,7 +224,7 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 | MS-Numpress MS:1002312, 1002313, 1002314 (alone or with zlib as two terms) | — | decoded by jmzML; PIC counts of 2^31 and above rejected (guard 3); never written |
 | MS:1002746, 1002747, 1002748 (Numpress and zlib in one term) | — | rejected (guard 2) |
 | any other compression (pwiz truncation, zstd, grid) | — | rejected when it is the only compression term; next to a known one jmzML decodes by that one |
-| an array whose declared length differs from the axis array's | `auxiliaryArrays()` | B (R1): kept as an auxiliary array of 64-bit floats without compression, named by its array type (MS:1000786 with its name as value), its declared unit kept and its values not converted; checked before B-28, B-29 and the unit rules; an array type the Rust reference reader does not map (MS:1002478, 1002742 … 1002745, 1003143) is dropped (B-43). A: every auxiliary array is written after the other arrays with its decoded values and `arrayLength`; its params, data processing and a unit of a CV the cv list lacks are not written (A-34); one whose compression or data type cannot be decoded is dropped (A-35) |
+| an array whose declared length differs from the axis array's | `auxiliaryArrays()` | B (R1): kept as an auxiliary array of 64-bit floats without compression, named by its array type (MS:1000786 with its name as value), its declared unit kept and its values not converted; checked after B-29 (a second array of a key is dropped whatever its length, as the Rust reference reader would let it replace the first) and before B-28 and the unit rules; an array type the Rust reference reader does not map (MS:1002478, 1002742 … 1002745, 1003143) is dropped (B-43). A: every auxiliary array is written after the other arrays with its decoded values and `arrayLength`; its params, data processing and a unit of a CV the cv list lacks are not written (A-34); one whose compression or data type cannot be decoded is dropped (A-35) |
 | `@arrayLength`, `@encodedLength` | — | declared lengths tell auxiliary from extra arrays and must agree between the main arrays; decoded lengths are not checked (L-6). A: written for auxiliary arrays only |
 | array params other than type, data type and compression; `@dataProcessingRef` | — | lost (B-21) |
 

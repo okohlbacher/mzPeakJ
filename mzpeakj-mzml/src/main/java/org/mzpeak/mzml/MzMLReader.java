@@ -1092,11 +1092,11 @@ public final class MzMLReader {
      * extra arrays it can carry, keeps every other array whose declared length differs from the axis array's as an
      * auxiliary array, as stored and in its declared unit (R1), unless an auxiliary array cannot have its type (B-43),
      * and drops the rest: arrays without type (B-21), ASCII arrays (B-21), all arrays when the axis or intensity array
-     * is missing (B-9), a second array of a key (B-29), extras of wavelength spectra (B-28) and extras in a unit that
-     * is not their key's default and cannot be converted to it (B-21). An extra whose key has no default unit is kept
-     * without its unit (B-21). The first axis and intensity array are checked for their unit before B-9 drops them:
-     * design 6.3 rejects them in a unit the model cannot carry whether or not the other one is present, so an
-     * intensity-only spectrum with its intensity in MS:1000132 is rejected, not dropped as B-9.
+     * is missing (B-9), a second array of a key, whatever its length (B-29), extras of wavelength spectra (B-28) and
+     * extras in a unit that is not their key's default and cannot be converted to it (B-21). An extra whose key has no
+     * default unit is kept without its unit (B-21). The first axis and intensity array are checked for their unit
+     * before B-9 drops them: design 6.3 rejects them in a unit the model cannot carry whether or not the other one is
+     * present, so an intensity-only spectrum with its intensity in MS:1000132 is rejected, not dropped as B-9.
      *
      * @throws MzPeakException for axis and intensity arrays of different declared lengths, or a main array in a unit
      *                         the model cannot carry (design 6.3), with or without the other main array
@@ -1131,20 +1131,25 @@ public final class MzMLReader {
         Kept axisKept = kept(axis, kind == Kind.CHROMATOGRAM ? AS_IS : axisConversion);
         Kept intensityKept = kept(intensity, intensityConversion);
         List<Kept> auxiliary = new ArrayList<>();
+        // the Rust reader maps all arrays of an entry, auxiliary ones last, by their type: a second array of a key
+        // would replace the first there, so B-29 runs before the length rule
+        Set<String> auxiliaryKeys = new HashSet<>();
         for (Array a : usable) {
             if (a == axis || a == intensity) {
                 continue;
             }
             String target = CvTerms.DEFAULT_ARRAY_UNITS.get(a.key());
             DoubleUnaryOperator conversion = target == null ? AS_IS : conversion(a.unit(), target);
-            if (a.length() != axis.length()) {
+            if (a.key().equals(kind.axis) || a.key().equals(INTENSITY_ARRAY) || extras.containsKey(a.key())
+                    || auxiliaryKeys.contains(a.key())) {
+                note(B_29);
+            } else if (a.length() != axis.length()) {
                 if (NO_AUXILIARY_TYPES.contains(a.key())) {
                     note(B_43);
                 } else {
+                    auxiliaryKeys.add(a.key());
                     auxiliary.add(kept(a, AS_IS));
                 }
-            } else if (a.key().equals(kind.axis) || a.key().equals(INTENSITY_ARRAY) || extras.containsKey(a.key())) {
-                note(B_29);
             } else if (kind == Kind.WAVELENGTH) {
                 note(B_28);
             } else if (conversion == null) {

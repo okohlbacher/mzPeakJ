@@ -653,7 +653,7 @@ class MzMLWriterSpectraTest {
      * nameless one under the generated name (A-33); a name without accession as the name of a non-standard data
      * array. Params, data processing and a unit of an undeclared CV are not written (A-34); an array whose compression
      * {@code doubles()} cannot decode is dropped (A-35). The mzML read gives every array of another length back as an
-     * auxiliary array.
+     * auxiliary array but a second one of a key, which it drops (B-29).
      */
     @Test
     void auxiliaryArraysAreWrittenWithTheirLength() throws IOException {
@@ -703,10 +703,7 @@ class MzMLWriterSpectraTest {
                             tuple("MS:1000517", null, null, List.of(1.0, 2.0)),
                             tuple("MS:1000786", "my array", "UO:0000186", List.of(3.0, -4.0)),
                             tuple("MS:1000786", "non-standard data array", null, List.of(5.0)),
-                            tuple("MS:1000786", "my name", null, List.of(6.0)),
-                            tuple("MS:1000517", null, null, List.of(7.0)),
-                            tuple("MS:1000517", null, null, List.of(8.0)),
-                            tuple("MS:1000517", null, null, List.of(9.0)));
+                            tuple("MS:1000786", "my name", null, List.of(6.0)));
             assertThat(back.wavelengthSpectra().get(0).auxiliaryArrays()).singleElement()
                     .satisfies(a -> assertThat(a.doubles()).containsExactly(10, 11));
             assertThat(back.chromatograms().get(0).auxiliaryArrays()).singleElement()

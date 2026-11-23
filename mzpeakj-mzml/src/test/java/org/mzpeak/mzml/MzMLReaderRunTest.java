@@ -1196,35 +1196,45 @@ class MzMLReaderRunTest {
     }
 
     /**
-     * Arrays of another declared length become auxiliary arrays before any other rule applies: a non-standard data
-     * array keeps its name as the value of MS:1000786, a drift-time array in seconds keeps its values and unit
-     * unconverted, a second m/z array is no second array of its key (B-29), and the arrays of a chromatogram and of a
-     * wavelength spectrum (whose extras B-28 drops) are kept too. An array type the Rust reference reader does not
-     * map (MS:1002742 noise array) is dropped (B-43).
+     * Arrays of another declared length become auxiliary arrays before any rule but B-29: a non-standard data array
+     * keeps its name as the value of MS:1000786, a drift-time array in seconds keeps its values and unit unconverted,
+     * and the arrays of a chromatogram and of a wavelength spectrum (whose extras B-28 drops) are kept too. An array
+     * type the Rust reference reader does not map (MS:1002742 noise array) is dropped (B-43). A second array of a key,
+     * of the axis, the intensity, a kept extra or an earlier auxiliary array, is dropped whatever its length (B-29):
+     * the Rust reference reader would let it replace the first.
      */
     @Test
     void arraysOfAnotherDeclaredLengthOfEveryOwnerAreAuxiliaryArrays(@TempDir Path dir) throws IOException {
         String named = cv("MS:1000786", "non-standard data array", "my array", "UO:0000186");
         String drift = cv("MS:1002816", "mean ion mobility array", "", "UO:0000010");
         String mz = cv("MS:1000514", "m/z array", "", "MS:1000040");
+        String intensity = cv("MS:1000515", "intensity array", "", "MS:1000131");
         String noise = cv("MS:1002742", "noise array", "", null);
-        Path file = tinyWith(dir, s -> withArray(withArray(withArray(withArray(withArray(s, SCAN_19,
-                sized(2, named, 1, 2)), SCAN_19, sized(1, drift, 1.5)), SCAN_19, sized(3, mz, 7, 8, 9)), SCAN_19,
-                sized(2, noise, 5, 6)), "id=\"tic\"", sized(2, SN_TYPE, 3, 4)));
+        List<String> scanArrays = List.of(sized(2, named, 1, 2), sized(1, drift, 1.5), sized(3, mz, 7, 8, 9),
+                sized(1, intensity, 4), sized(2, noise, 5, 6), sized(1, named, 3), array(SN_TYPE, ramp(15)),
+                sized(2, SN_TYPE, 5, 6), array(drift, ramp(15)));
+        Path file = tinyWith(dir, s -> {
+            String t = withArray(s, "id=\"tic\"", sized(2, SN_TYPE, 3, 4));
+            for (String a : scanArrays) {
+                t = withArray(t, SCAN_19, a);
+            }
+            return t;
+        });
 
         Run run = read(file);
 
-        assertThat(run.spectra.get(0).arrays()).isEmpty();
+        assertThat(run.spectra.get(0).mz()).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+        assertThat(run.spectra.get(0).intensity()).containsExactly(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
+        assertThat(run.spectra.get(0).arrays()).containsOnlyKeys(SN);
+        assertThat(run.spectra.get(0).arrays().get(SN)).containsExactly(ramp(15));
         assertThat(run.spectra.get(0).auxiliaryArrays()).extracting(a -> a.name(), a -> a.unit(),
                 a -> Arrays.stream(a.doubles()).boxed().toList()).containsExactly(
                 tuple(new Param("non-standard data array", "MS:1000786", "my array", null), "UO:0000186",
                         List.of(1.0, 2.0)),
-                tuple(new Param("mean ion mobility array", "MS:1002816", null, null), "UO:0000010", List.of(1.5)),
-                tuple(new Param("m/z array", "MS:1000514", null, null), "MS:1000040", List.of(7.0, 8.0, 9.0)));
+                tuple(new Param("mean ion mobility array", "MS:1002816", null, null), "UO:0000010", List.of(1.5)));
         assertThat(run.chromatograms.get(0).auxiliaryArrays()).singleElement()
                 .satisfies(a -> assertThat(a.doubles()).containsExactly(3, 4));
-        assertThat(run.reader.warnings()).contains(MzMLReader.B_43 + " (1)")
-                .noneMatch(w -> w.startsWith("B-29"));
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_43 + " (1)", MzMLReader.B_29 + " (5)");
 
         Path tof = tofWith(dir, s -> withArray(s, UV_0, sized(2, SN_TYPE, 5, 6)));
         Run uv = read(tof);
