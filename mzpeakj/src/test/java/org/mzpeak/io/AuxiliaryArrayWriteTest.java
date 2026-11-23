@@ -199,18 +199,32 @@ class AuxiliaryArrayWriteTest {
     // ---- checks -------------------------------------------------------------------------------------------------
 
     /**
-     * W12 applies to the arrays: an undeclared CV prefix in the name, a param, the data type, the compression or a
-     * CURIE-shaped unit, and a data processing the file metadata does not declare, are each refused before anything
-     * is written, naming the entity and the array; a unit that is no CURIE is written as given.
+     * W12 applies to the arrays: an undeclared CV prefix in the name, a param or a CURIE-shaped unit, and a data
+     * processing the file metadata does not declare, are each refused before anything is written, naming the entity
+     * and the array; so is a data type or compression that is not a binary data type or compression term the Rust
+     * reference reader accepts (it panics on others), CURIE or not; a unit that is no CURIE is written as given.
      */
     @Test
     void theW12ChecksApplyToTheArrays() {
         assertRefused(array(new Param("foo", "FOO:0001", null, null), FLOAT64, NONE, null, List.of(), null),
                 "spectrum 0: auxiliary array 1 name: ");
         assertRefused(array(PLAIN.name(), "FOO:0002", NONE, null, List.of(), null),
-                "spectrum 0: auxiliary array 1: data type uses FOO:0002");
+                "spectrum 0: auxiliary array 1: data type FOO:0002 is not one of the binary data types (children of"
+                        + " MS:1000518) the Rust reference reader accepts: MS:1000521, MS:1000523, MS:1000519,"
+                        + " MS:1000522, MS:1001479");
+        assertRefused(array(PLAIN.name(), "float64", NONE, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: data type float64 is not one of the binary data types");
+        assertRefused(array(PLAIN.name(), "MS:", NONE, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: data type MS: is not one of the binary data types");
+        assertRefused(array(PLAIN.name(), "MS:1000576", NONE, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: data type MS:1000576 is not one of the binary data types");
         assertRefused(array(PLAIN.name(), FLOAT64, "FOO:0003", null, List.of(), null),
-                "spectrum 0: auxiliary array 1: compression uses FOO:0003");
+                "spectrum 0: auxiliary array 1: compression FOO:0003 is not one of the binary data compressions"
+                        + " (children of MS:1000572) the Rust reference reader accepts: MS:1000576, MS:1000574,");
+        assertRefused(array(PLAIN.name(), FLOAT64, "zlib", null, List.of(), null),
+                "spectrum 0: auxiliary array 1: compression zlib is not one of the binary data compressions");
+        assertRefused(array(PLAIN.name(), FLOAT64, "MS:", null, List.of(), null),
+                "spectrum 0: auxiliary array 1: compression MS: is not one of the binary data compressions");
         assertRefused(array(PLAIN.name(), FLOAT64, NONE, "FOO:0004", List.of(), null),
                 "spectrum 0: auxiliary array 1: unit uses FOO:0004");
         assertRefused(array(PLAIN.name(), FLOAT64, NONE, null, List.of(new Param("p", "FOO:0005", null, null)),
@@ -235,14 +249,16 @@ class AuxiliaryArrayWriteTest {
     @Test
     void theChecksCoverChromatogramsAndWavelengthSpectra() {
         Source source = ForwardBackwardCorpusTest.readSource(HAS_UV);
-        AuxiliaryArray undeclared = array(PLAIN.name(), "FOO:0002", NONE, null, List.of(), null);
+        AuxiliaryArray undeclared = array(PLAIN.name(), FLOAT64, NONE, "FOO:0002", List.of(), null);
+        AuxiliaryArray badType = array(PLAIN.name(), "float64", NONE, null, List.of(), null);
+        AuxiliaryArray badCompression = array(PLAIN.name(), FLOAT64, "zlib", null, List.of(), null);
         AuxiliaryArray nameless = array(new Param(null, null, "v", null), FLOAT64, NONE, null, List.of(), null);
         List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
         chromatograms.set(1, withArrays(chromatograms.get(1), List.of(undeclared)));
         assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("c.mzpeak"), source.spectra,
                 chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("chromatogram 1: auxiliary array 0: data type uses FOO:0002");
+                .hasMessageStartingWith("chromatogram 1: auxiliary array 0: unit uses FOO:0002");
         chromatograms.set(1, withArrays(chromatograms.get(1), List.of(nameless)));
         assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("c2.mzpeak"), source.spectra,
                 chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
@@ -253,24 +269,85 @@ class AuxiliaryArrayWriteTest {
         assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("w.mzpeak"), source.spectra,
                 source.chromatograms, wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
                 .isInstanceOf(MzPeakException.class)
-                .hasMessageStartingWith("wavelength spectrum 2: auxiliary array 0: data type uses FOO:0002");
+                .hasMessageStartingWith("wavelength spectrum 2: auxiliary array 0: unit uses FOO:0002");
         wavelengthSpectra.set(2, withArrays(wavelengthSpectra.get(2), List.of(nameless)));
         assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("w2.mzpeak"), source.spectra,
                 source.chromatograms, wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessageContaining("a parameter needs a name or an accession");
+        chromatograms.set(1, withArrays(chromatograms.get(1), List.of(PLAIN, badCompression)));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("c3.mzpeak"), source.spectra,
+                chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chromatogram 1: auxiliary array 1: compression zlib is not one of");
+        wavelengthSpectra.set(2, withArrays(wavelengthSpectra.get(2), List.of(badType)));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("w3.mzpeak"), source.spectra,
+                source.chromatograms, wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("wavelength spectrum 2: auxiliary array 0: data type float64 is not one of");
         assertThat(tmp.resolve("c.mzpeak")).doesNotExist();
         assertThat(tmp.resolve("w.mzpeak")).doesNotExist();
+        assertThat(tmp.resolve("c3.mzpeak")).doesNotExist();
+        assertThat(tmp.resolve("w3.mzpeak")).doesNotExist();
 
         try (Session session = MzPeakWriter.openDirectory(tmp.resolve("session.mzpeak"), source.fileMetadata,
                 source.scanSettings, new LinkedHashSet<>(), SPLIT)) {
             assertThatThrownBy(() -> session.addWavelengthSpectrum(withArrays(source.wavelengthSpectra.get(0),
                     List.of(undeclared)))).isInstanceOf(MzPeakException.class)
-                    .hasMessageStartingWith("wavelength spectrum 0: auxiliary array 0: data type uses FOO:0002");
+                    .hasMessageStartingWith("wavelength spectrum 0: auxiliary array 0: unit uses FOO:0002");
             assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0), List.of(undeclared))))
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessageStartingWith("spectrum 0: auxiliary array 0: data type uses FOO:0002");
+                    .hasMessageStartingWith("spectrum 0: auxiliary array 0: unit uses FOO:0002");
+            assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0), List.of(badType))))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("spectrum 0: auxiliary array 0: data type float64 is not one of");
+            assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0),
+                    List.of(PLAIN, badCompression)))).isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("spectrum 0: auxiliary array 1: compression zlib is not one of");
+            assertThatThrownBy(() -> session.addWavelengthSpectrum(withArrays(source.wavelengthSpectra.get(0),
+                    List.of(badCompression)))).isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("wavelength spectrum 0: auxiliary array 0: compression zlib is not one of");
         }
+    }
+
+    /**
+     * metadata.cv_list declares the CV prefixes that only auxiliary arrays use (conformance.md: declare every CV
+     * prefix used): of the name's unit, the unit and a param's accession and unit of a spectrum's array, and a param
+     * of a chromatogram's and of a wavelength spectrum's array; none of these CVs is declared without the arrays.
+     * A session declares them too.
+     */
+    @Test
+    void theCvListDeclaresThePrefixesOnlyTheArraysUse() {
+        Source plain = ForwardBackwardCorpusTest.readSource(HAS_UV);
+        Path without = tmp.resolve("without.mzpeak");
+        MzPeakWriter.writeDirectory(without, plain.spectra, plain.chromatograms, plain.wavelengthSpectra,
+                plain.scanSettings, plain.fileMetadata, SPLIT);
+        List<String> used = List.of("EFO", "OBI", "BFO", "NCIT", "BTO", "PRIDE");
+        assertThat(cvIds(without)).doesNotContainAnyElementsOf(used);
+
+        AuxiliaryArray spectrumArray = new AuxiliaryArray(
+                new Param("non-standard data array", "MS:1000786", "x", "BFO:0000001"), float64(1.0, 2.0, 3.0),
+                FLOAT64, NONE, 3, "NCIT:C25301", List.of(new Param("factor", "EFO:0000001", null, "BTO:0000001")),
+                null);
+        Source source = withSpectrumArrays(HAS_UV, List.of(spectrumArray));
+        List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
+        chromatograms.set(0, withArrays(chromatograms.get(0), List.of(array(PLAIN.name(), FLOAT64, NONE, null,
+                List.of(new Param("assay", "OBI:0000070", null, null)), null))));
+        List<WavelengthSpectrum> wavelengthSpectra = new ArrayList<>(source.wavelengthSpectra);
+        wavelengthSpectra.set(0, withArrays(wavelengthSpectra.get(0), List.of(array(PLAIN.name(), FLOAT64, NONE,
+                null, List.of(new Param("pride", "PRIDE:0000001", null, null)), null))));
+        Path out = tmp.resolve("with.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, chromatograms, wavelengthSpectra, source.scanSettings,
+                source.fileMetadata, SPLIT);
+        assertThat(cvIds(out)).containsAll(used);
+
+        Path session = tmp.resolve("session-cv.mzpeak");
+        try (Session s = MzPeakWriter.openDirectory(session, source.fileMetadata, source.scanSettings,
+                new LinkedHashSet<>(), SPLIT)) {
+            s.addSpectrum(source.spectra.get(0));
+            s.finish();
+        }
+        assertThat(cvIds(session)).contains("EFO", "BFO", "NCIT", "BTO").doesNotContain("OBI", "PRIDE");
     }
 
     /**
@@ -373,6 +450,13 @@ class AuxiliaryArrayWriteTest {
         return ArrayIndexTest.captureLog(MzPeakWriter.class, write).stream()
                 .filter(r -> r.getLevel() == Level.WARNING).map(LogRecord::getMessage)
                 .filter(m -> m.contains("auxiliary")).toList();
+    }
+
+    /** The ids of the metadata.cv_list of {@code dataset}, as written. */
+    private static List<String> cvIds(Path dataset) {
+        try (MzPeakReader reader = MzPeakReader.open(dataset)) {
+            return reader.manifest().cvList().stream().map(MzPeakManifest.CvEntry::id).toList();
+        }
     }
 
     private static List<Group> rows(Path member) {

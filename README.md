@@ -350,8 +350,9 @@ Writer notes:
 - In the `SPLIT` layout, `spectra_metadata`, `chromatograms_metadata` and `wavelength_spectra_metadata` carry each
   entity's `auxiliaryArrays()` in `auxiliary_arrays`, their bytes and compression as given (compressed bytes stay
   compressed), with `number_of_auxiliary_arrays`, and an `ARROW:schema` footer entry that types them as the
-  reference does; the Rust reference reader needs both columns. Their names, units, data types, compressions and
-  params pass the CV prefix check below, and their data processing must be declared. The Rust reference reader
+  reference does; the Rust reference reader needs both columns. Their names, units and params pass the CV prefix
+  check below, their data processing must be declared, and their data type and compression must each be a term the
+  Rust reference reader accepts (it panics on any other value), else the write is refused. The Rust reference reader
   cannot decode a zlib-compressed one (R-13) and drops those of a chunked spectrum spanning row groups (R-14); the
   `PACKED` layout writes none and warns.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
@@ -407,7 +408,7 @@ Writer notes:
   name an entry of the file metadata (without file metadata nothing is declared, so any such reference is
   rejected), and the prefix of every CURIE (param
   accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units,
-  auxiliary-array names, data types, compressions and units) must be one of
+  auxiliary-array names, params and units) must be one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
   written as given, except as an intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array
   unit of the array index and must be a CURIE. A null run default gets the first entry of its list, else a stub

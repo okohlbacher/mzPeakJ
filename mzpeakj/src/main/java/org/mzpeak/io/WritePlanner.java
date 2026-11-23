@@ -83,6 +83,21 @@ final class WritePlanner {
     private static final String NON_STANDARD_ARRAY = "MS:1000786";
     /** An extra key that is a CURIE, {@code PREFIX:local}; any other key names a non-standard data array. */
     private static final Pattern CURIE = Pattern.compile("[A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_]+");
+    /**
+     * The binary data types (children of MS:1000518) an auxiliary array may have, in the order of their message: the
+     * terms the Rust reference reader maps (mzdata's {@code BinaryDataArrayType::from_accession}); it panics on any
+     * other value (R1).
+     */
+    private static final List<String> AUXILIARY_DATA_TYPES = List.of("MS:1000521", "MS:1000523", "MS:1000519",
+            "MS:1000522", "MS:1001479");
+    /**
+     * The compressions (children of MS:1000572) an auxiliary array may have, in the order of their message: the CV
+     * terms the Rust reference reader maps (mzdata's {@code BinaryCompressionType::from_accession}); it panics on any
+     * other value (R1).
+     */
+    private static final List<String> AUXILIARY_COMPRESSIONS = List.of("MS:1000576", "MS:1000574", "MS:1002312",
+            "MS:1002314", "MS:1002313", "MS:1002746", "MS:1002748", "MS:1002747", "MS:1003089", "MS:1003090",
+            "MS:1003780", "MS:1003781", "MS:1003782", "MS:1003783", "MS:1003784", "MS:1003785");
     /** The columns of the spectrum signal files in either encoding, which no extra column may take. */
     private static final Set<String> SPECTRUM_SIGNAL_COLUMNS = Set.of("spectrum_index", "mz", "intensity",
             "mz_chunk_start", "mz_chunk_end", "mz_chunk_values", "chunk_encoding", "mz_numpress_linear_bytes",
@@ -1547,21 +1562,36 @@ final class WritePlanner {
         }
 
         /**
-         * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): the accession and unit of
-         * its name and of its params, its data type and compression, and its unit when it has the CURIE shape, each
-         * with a declared prefix; its data processing, when it names one, declared by the file metadata.
+         * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): its data type one of
+         * {@link #AUXILIARY_DATA_TYPES} and its compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the
+         * Rust reference reader accepts (auxiliary-arrays.md requires CV terms; that reader panics on others); the
+         * accession and unit of its name and of its params, and its unit when it has the CURIE shape, each with a
+         * declared prefix; its data processing, when it names one, declared by the file metadata.
          */
         private void requireAuxiliaryArrays(String owner, List<AuxiliaryArray> arrays) {
             for (int i = 0; i < arrays.size(); i++) {
                 AuxiliaryArray a = arrays.get(i);
                 String array = owner + ": auxiliary array " + i;
                 requireParams(array + " name", List.of(a.name()));
-                requirePrefix(array, "data type", a.dataType());
-                requirePrefix(array, "compression", a.compression());
+                requireTerm(array, "data type", a.dataType(), "binary data types (children of MS:1000518)",
+                        AUXILIARY_DATA_TYPES);
+                requireTerm(array, "compression", a.compression(),
+                        "binary data compressions (children of MS:1000572)", AUXILIARY_COMPRESSIONS);
                 requireUnit(array, "unit", a.unit());
                 requireParams(array, a.parameters());
                 requireNamed(owner, "auxiliary array " + i + " data_processing_id", a.dataProcessingId(), processing,
                         "data processing");
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} naming {@code owner}, {@code what} and {@code value} when {@code value} is
+         * not one of {@code terms}, the {@code kind} a file may hold there.
+         */
+        private static void requireTerm(String owner, String what, String value, String kind, List<String> terms) {
+            if (!terms.contains(value)) {
+                throw new MzPeakException(owner + ": " + what + " " + value + " is not one of the " + kind
+                        + " the Rust reference reader accepts: " + String.join(", ", terms));
             }
         }
 
