@@ -60,7 +60,7 @@ class KnownCvsTest {
         used.put("NCIT", "NCIT:C25464");
         CvEntry xx = new CvEntry("XX", "XX ontology", "https://example.org/xx.obo", "1");
         CvEntry yy = new CvEntry("YY", "YY ontology", "https://example.org/yy.obo", "2");
-        CvEntry ms = new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", "4.1.117");
+        CvEntry ms = new CvEntry("MS", "PSI-MS", "http://purl.obolibrary.org/obo/ms/4.1.117/psi-ms.obo", "4.1.117");
         List<CvEntry> caller = List.of(xx, new CvEntry(null, "no id", null, null), ms,
                 new CvEntry("BTO", "BTO", "https://example.org/bto.owl", "1"), yy);
         WriteReport report = new WriteReport();
@@ -74,30 +74,35 @@ class KnownCvsTest {
     }
 
     /**
-     * mzML's cv@version is optional: a caller entry of a known CV that lacks fields is declared with the built-in
-     * entry's values for them, one warning per CV naming the fields; one of an unused CV is neither declared nor
-     * warned about.
+     * mzML's cv@version is optional: a caller entry of a known CV that lacks its URI or version shows no fixed release
+     * and gives way to the built-in entry, with one warning per CV naming the given URI and version (W8); one that
+     * names its release but lacks the full name is declared with the built-in entry's, with a warning naming the
+     * field; one of an unused CV is neither declared nor warned about.
      */
     @Test
     void aCallerEntryOfAKnownCvTakesTheFieldsItLacksFromTheBuiltInEntry() {
         CvEntry uo = new CvEntry("UO", "Unit Ontology", "https://example.org/unit.obo", null);
-        CvEntry ms = new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", null);
-        CvEntry bto = new CvEntry("BTO", null, null, "2019");
+        CvEntry ms = new CvEntry("MS", "PSI-MS", null, "4.1.117");
+        CvEntry bto = new CvEntry("BTO", null, "http://purl.obolibrary.org/obo/bto/releases/2019-04-02/bto.owl",
+                "2019-04-02");
         CvEntry ncit = new CvEntry("NCIT", null, null, null);
         WriteReport report = new WriteReport();
 
         List<CvEntry> declared = KnownCvs.declare(Map.of("BTO", "BTO:0000142"), List.of(uo, ms, bto, ncit), report);
 
-        assertThat(declared).containsExactly(new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", "4.1.249"),
-                new CvEntry("UO", "Unit Ontology", "https://example.org/unit.obo", "2026-01-16"),
+        assertThat(declared).containsExactly(KnownCvs.ALL.get(0), KnownCvs.ALL.get(1),
                 new CvEntry("BTO", "The BRENDA Tissue Ontology (BTO)",
-                        "http://purl.obolibrary.org/obo/bto/releases/2021-10-26/bto.owl", "2019"));
+                        "http://purl.obolibrary.org/obo/bto/releases/2019-04-02/bto.owl", "2019-04-02"));
         assertThat(report.warnings()).containsExactly(
-                "the cv list entry of MS has no version; metadata.cv_list fills in the missing fields from"
-                        + " mzPeakJ's entry of MS",
-                "the cv list entry of UO has no version; metadata.cv_list fills in the missing fields from"
-                        + " mzPeakJ's entry of UO",
-                "the cv list entry of BTO has no full_name, uri; metadata.cv_list fills in the missing fields from"
+                "the cv list entry of MS (URI null, version 4.1.117) does not show that it identifies a fixed"
+                        + " release of MS, as conformance.md requires of metadata.cv_list; metadata.cv_list declares"
+                        + " mzPeakJ's entry of MS (URI http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo, version"
+                        + " 4.1.249)",
+                "the cv list entry of UO (URI https://example.org/unit.obo, version null) does not show that it"
+                        + " identifies a fixed release of UO, as conformance.md requires of metadata.cv_list;"
+                        + " metadata.cv_list declares mzPeakJ's entry of UO (URI"
+                        + " http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo, version 2026-01-16)",
+                "the cv list entry of BTO has no full_name; metadata.cv_list fills in the missing fields from"
                         + " mzPeakJ's entry of BTO");
     }
 

@@ -37,8 +37,13 @@ class MzPeakConvertProcessTest {
 
         assertThat(r.exitStatus()).as(r.stderr()).isZero();
         assertThat(r.stdout()).isEqualTo("wrote " + target + ": 4 spectra, 0 wavelength spectra, 2 chromatograms" + NL);
-        assertThat(r.stderr().lines()).startsWith("warning: " + MzMLReader.LIMITS.get(0))
-                .allMatch(line -> line.startsWith("warning: "));
+        List<String> lines = r.stderr().lines().toList();
+        assertThat(lines).allMatch(line -> line.startsWith("warning: "));
+        // First the mzPeak writer's warnings for tiny's MS and UO, whose URIs are CVS checkouts and so identify no
+        // fixed release (W8), then the conversion's.
+        assertThat(lines.get(0)).startsWith("warning: the cv list entry of MS (URI http://psidev.cvs.sourceforge.net/");
+        assertThat(lines.get(1)).startsWith("warning: the cv list entry of UO (URI http://obo.cvs.sourceforge.net/");
+        assertThat(lines.subList(2, lines.size())).startsWith("warning: " + MzMLReader.LIMITS.get(0));
         try (MzPeakReader reader = MzPeakReader.open(target)) {
             assertThat(reader.size()).isEqualTo(4);
         }

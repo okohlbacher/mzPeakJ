@@ -887,6 +887,7 @@ public final class ModelAssert {
     private static final Pattern SPECTRUM_PARAM = Pattern.compile("spectrum\\[\\d+]\\.parameters\\[(.*)]");
     private static final Pattern RUN_DEFAULT_IC = Pattern.compile("fileMetadata\\.run\\.defaultInstrumentId");
     private static final Pattern RUN_START_TIME = Pattern.compile("fileMetadata\\.run\\.startTime");
+    private static final Pattern CV_FIELD = Pattern.compile("cvList\\[\\d+]\\.(fullName|uri|version)");
     private static final Pattern SIGNAL = Pattern.compile("spectrum\\[\\d+]\\.(mz|intensity|arrays(\\[.*)?)");
     private static final Pattern MZ = Pattern.compile("spectrum\\[\\d+]\\.mz");
     private static final Pattern CHROMATOGRAM_TIME = Pattern.compile("chromatogram\\[\\d+]\\.(time|timeUnit)");
@@ -1013,9 +1014,20 @@ public final class ModelAssert {
             d -> CHROMATOGRAM_TIME.matcher(d.path()).matches() && d.expectedRoot() instanceof Chromatogram e
                     && d.actualRoot() instanceof Chromatogram a && inMinutes(e, a));
 
+    /** W-8: a known CV's entry that shows no fixed release replaced by the mzPeak writer's. */
+    public static final Exclusion W_8 = new Exclusion("W_8",
+            "W-8: the full name, URI or version of a cv list entry that is not an entry of CvEntry.known() in expected"
+                    + " and is the entry of CvEntry.known() with its id in actual, as the mzPeak writer declares a known"
+                    + " CV whose given entry shows no fixed release (W8, D13-15): tiny's MS and UO (SourceForge CVS"
+                    + " checkouts), those of small.mzML, TOFsulfas and diaPASEF.mzML (GitHub master branches) in B",
+            d -> CV_FIELD.matcher(d.path()).matches() && d.expectedRoot() instanceof MzPeakManifest.CvEntry e
+                    && d.actualRoot() instanceof MzPeakManifest.CvEntry a
+                    && !MzPeakManifest.CvEntry.known().contains(e) && MzPeakManifest.CvEntry.known().contains(a)
+                    && a.id().equals(e.id()));
+
     /** Every exclusion above. */
     public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, A_26, B_22,
-            B_34, W_3);
+            B_34, W_3, W_8);
 
     /**
      * W-3: {@code expected} has another time unit than minute, {@code actual} has minute and the times of

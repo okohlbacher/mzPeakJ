@@ -115,9 +115,12 @@ class WriterCvListTest {
     private static final CvEntry CALLER_UO = new CvEntry("UO", "Unit Ontology",
             "https://raw.githubusercontent.com/bio-ontology-research-group/unit-ontology/master/unit.obo",
             "09:04:2014");
+    /** MS in a fixed release other than the writer's. */
+    private static final CvEntry RELEASED_MS = new CvEntry("MS", "PSI-MS",
+            "http://purl.obolibrary.org/obo/ms/4.1.117/psi-ms.obo", "4.1.117");
     /** A known CV in a caller's own release. */
     private static final CvEntry CALLER_BTO = new CvEntry("BTO", "The BRENDA Tissue Ontology (BTO)",
-            "https://example.org/bto.owl", "caller-1");
+            "http://purl.obolibrary.org/obo/bto/releases/2019-04-02/bto.owl", "2019-04-02");
     /** A CV mzPeakJ does not know. */
     private static final CvEntry XYZ = new CvEntry("XYZ", "An ontology mzPeakJ does not know",
             "https://example.org/xyz.obo", "1.2");
@@ -470,9 +473,12 @@ class WriterCvListTest {
         assertThat(CvEntry.known()).containsExactlyElementsOf(known);
     }
 
-    /** The cv list of an mzML source, with releases of MS and UO other than the writer's: both are kept. */
+    /**
+     * The cv list of an mzML source, with MS and UO on master branches, which identify no fixed release (W8): the
+     * built-in entries are declared, with one logged warning each naming the CV and the given URI and version.
+     */
     @Test
-    void theCallersMsAndUoEntriesReplaceTheBuiltInOnes(@TempDir Path tmp) {
+    void theCallersMsAndUoEntriesOnMasterBranchesGiveWayToTheBuiltInOnes(@TempDir Path tmp) {
         Source s = source(Fixtures.current("small.unpacked.mzpeak"));
         Path out = tmp.resolve("small.mzpeak");
 
@@ -480,15 +486,26 @@ class WriterCvListTest {
                 s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
                 MzPeakWriter.Options.defaults().withCvList(List.of(CALLER_MS, CALLER_UO))));
 
-        assertThat(cvList(out)).containsExactly(
-                "{\"id\":\"MS\",\"full_name\":\"Proteomics Standards Initiative Mass Spectrometry Ontology\","
-                        + "\"uri\":\"https://raw.githubusercontent.com/HUPO-PSI/psi-ms-CV/master/psi-ms.obo\","
-                        + "\"version\":\"4.1.117\"}",
-                "{\"id\":\"UO\",\"full_name\":\"Unit Ontology\",\"uri\":\"https://raw.githubusercontent.com/"
-                        + "bio-ontology-research-group/unit-ontology/master/unit.obo\",\"version\":\"09:04:2014\"}");
+        assertThat(cvList(out)).containsExactly(MS, UO);
+        assertThat(warnings).hasSize(2).allSatisfy(w -> assertThat(w.getLevel()).isEqualTo(Level.WARNING));
+        assertThat(warnings.get(0).getMessage()).contains("entry of MS", CALLER_MS.uri(), "version 4.1.117");
+        assertThat(warnings.get(1).getMessage()).contains("entry of UO", CALLER_UO.uri(), "version 09:04:2014");
+    }
+
+    /** A caller's MS of a fixed release other than the writer's is declared as given. */
+    @Test
+    void theCallersMsOfAFixedReleaseReplacesTheBuiltInOne(@TempDir Path tmp) {
+        Source s = source(Fixtures.current("small.unpacked.mzpeak"));
+        Path out = tmp.resolve("small.mzpeak");
+
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(List.of(RELEASED_MS))));
+
+        assertThat(cvList(out)).containsExactly(json(RELEASED_MS), UO);
         assertThat(warnings).isEmpty();
         try (MzPeakReader r = MzPeakReader.open(out)) {
-            assertThat(r.manifest().cvList()).containsExactly(CALLER_MS, CALLER_UO);
+            assertThat(r.manifest().cvList()).containsExactly(RELEASED_MS, KnownCvs.ALL.get(1));
         }
     }
 
@@ -538,7 +555,7 @@ class WriterCvListTest {
         spectra.set(1, withParam(withParam(spectra.get(1), new Param("other", "QRS:0000001", null, null)),
                 new Param("concept", "NCIT:C25330", null, null)));
         CvEntry qrs = new CvEntry("QRS", "Another ontology mzPeakJ does not know", "https://example.org/qrs.obo", "7");
-        List<CvEntry> caller = List.of(qrs, CALLER_BTO, CALLER_MS, XYZ,
+        List<CvEntry> caller = List.of(qrs, CALLER_BTO, RELEASED_MS, XYZ,
                 new CvEntry("XYZ", "A second XYZ", "https://example.org/xyz-2.obo", "2.0"),
                 new CvEntry("MS", "A second MS", "https://example.org/ms-2.obo", "9.9.9"));
         Path out = tmp.resolve("order.mzpeak");
@@ -547,7 +564,7 @@ class WriterCvListTest {
                 s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
                 MzPeakWriter.Options.defaults().withCvList(caller)));
 
-        assertThat(cvList(out)).containsExactly(json(CALLER_MS), UO, REFERENCE_TABLE.get(6), json(CALLER_BTO),
+        assertThat(cvList(out)).containsExactly(json(RELEASED_MS), UO, REFERENCE_TABLE.get(6), json(CALLER_BTO),
                 json(qrs), json(XYZ));
         assertThat(warnings).isEmpty();
         assertEveryWrittenPrefixIsDeclared(out);
@@ -556,8 +573,8 @@ class WriterCvListTest {
     /**
      * The cv list of an mzML header, whose cv@version is optional, with entries that lack fields and one without an
      * id: every cv_list entry written has a string id, full_name, uri and version, as the spec's cv_list schema
-     * requires; the known CVs are filled from the built-in entries, the unknown FOO is left undeclared, and each case
-     * is warned about once.
+     * requires; the known CVs, which without URI or version show no fixed release, are declared as the built-in
+     * entries, the unknown FOO without a URI is left undeclared, and each case is warned about once.
      */
     @Test
     void everyWrittenCvListEntryHasStringFieldsWhateverTheCallersEntriesLack(@TempDir Path tmp) {
@@ -565,7 +582,7 @@ class WriterCvListTest {
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
         spectra.set(0, withParam(spectra.get(0), new Param("odd", "FOO:0000001", null, null)));
         List<CvEntry> caller = List.of(new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", null),
-                new CvEntry("UO", null, null, null), new CvEntry("FOO", "Foo", "https://example.org/foo.obo", null),
+                new CvEntry("UO", null, null, null), new CvEntry("FOO", "Foo", null, "1"),
                 new CvEntry(null, "no id", null, null));
         Path out = tmp.resolve("cv.mzpeak");
 
@@ -580,13 +597,12 @@ class WriterCvListTest {
                 assertThat(cv.path(field).isTextual()).as("%s of %s", field, cv).isTrue();
             }
         }
-        assertThat(cvList(out)).containsExactly("{\"id\":\"MS\",\"full_name\":\"PSI-MS\","
-                + "\"uri\":\"https://example.org/ms.obo\",\"version\":\"4.1.249\"}", UO);
+        assertThat(cvList(out)).containsExactly(MS, UO);
         assertThat(warnings).extracting(LogRecord::getMessage).hasSize(4)
                 .anySatisfy(m -> assertThat(m).contains("without an id"))
-                .anySatisfy(m -> assertThat(m).contains("entry of MS has no version"))
-                .anySatisfy(m -> assertThat(m).contains("entry of UO has no full_name, uri, version"))
-                .anySatisfy(m -> assertThat(m).contains("FOO:0000001").contains("has no version"));
+                .anySatisfy(m -> assertThat(m).contains("entry of MS (URI https://example.org/ms.obo, version null)"))
+                .anySatisfy(m -> assertThat(m).contains("entry of UO (URI null, version null)"))
+                .anySatisfy(m -> assertThat(m).contains("FOO:0000001").contains("has no uri"));
     }
 
     static Stream<Arguments> callerEntriesForCvsUsedOnlyInWavelengthOrChromatogramParams() {

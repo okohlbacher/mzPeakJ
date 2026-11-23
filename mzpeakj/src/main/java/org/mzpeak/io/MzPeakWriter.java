@@ -577,21 +577,33 @@ public final class MzPeakWriter {
 
         /**
          * These options with the caller's controlled vocabularies, such as the cv list of an mzML source, so that
-         * {@code metadata.cv_list} keeps their versions and URIs. The writer still declares only MS, UO and the CVs
-         * the dataset uses, in the order of {@link CvEntry#known()}, but a CV the list holds is declared with the
-         * list's entry, the first one when the list holds its id more than once, its missing fields filled: each
-         * {@code null} full name, URI or version takes the value of {@link CvEntry#known()}, with a warning naming
-         * the fields. A CV in use that {@link CvEntry#known()} lacks and the list holds is declared after the known
-         * ones, in the list's order, without the warning that such a CV otherwise gets, if the list's entry has all
-         * fields; else it is not declared, and the warning names the missing fields. An entry without an id is not
-         * declared, with a warning; nor is an entry for a CV the dataset does not use. So every
-         * {@code metadata.cv_list} entry has an id, full name, URI and version. The list is copied.
+         * {@code metadata.cv_list} keeps their versions and URIs where they identify a fixed release, as
+         * conformance.md requires. The writer still declares only MS, UO and the CVs the dataset uses, in the order
+         * of {@link CvEntry#known()}. A CV of {@link CvEntry#known()} the list holds is declared with the list's
+         * entry, the first one when the list holds its id more than once, if that entry has the URI and version of
+         * {@link CvEntry#known()} or shows its release: a URI on {@code purl.obolibrary.org} or
+         * {@code www.ebi.ac.uk} with a path segment equal to the version (or {@code v} and the version), or a
+         * {@code raw.githubusercontent.com} URI whose ref is a 40-hex commit hash; a {@code null} full name takes the
+         * value of {@link CvEntry#known()}, with a warning. Otherwise the entry of {@link CvEntry#known()} is
+         * declared, with a warning naming the CV and the list's URI and version. A CV in use that
+         * {@link CvEntry#known()} lacks and the list holds is declared after the known ones, in the list's order,
+         * without the warning that such a CV otherwise gets, if the list's entry has all fields; else it is not
+         * declared, and the warning names the missing fields. An entry without an id is not declared, with a
+         * warning; nor is an entry for a CV the dataset does not use. So every {@code metadata.cv_list} entry has an
+         * id, full name, URI and version. The list is copied.
          *
-         * @throws NullPointerException if {@code cvList} or one of its entries is {@code null}
+         * @throws NullPointerException     if {@code cvList} or one of its entries is {@code null}
+         * @throws IllegalArgumentException if an entry of a CV {@link CvEntry#known()} lacks cannot identify a fixed
+         *                                  release: it has no version, or its URI has a path segment {@code master},
+         *                                  {@code main}, {@code HEAD}, {@code trunk}, {@code heads}, {@code cvs},
+         *                                  {@code viewvc} or {@code svn} (in any case), a host ending in
+         *                                  {@code .cvs.sourceforge.net} or {@code *checkout*} in it; the message
+         *                                  names the CV, the URI and the version
          */
         public Options withCvList(List<CvEntry> cvList) {
-            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout,
-                    List.copyOf(Objects.requireNonNull(cvList, "cvList")));
+            List<CvEntry> copy = List.copyOf(Objects.requireNonNull(cvList, "cvList"));
+            KnownCvs.requireFixedReleases(copy);
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, copy);
         }
 
         @Override
