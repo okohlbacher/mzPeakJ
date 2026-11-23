@@ -96,10 +96,14 @@ class ColumnTableTest {
             sizes.put(f, ColumnTable.columns(f).size());
         }
 
-        assertThat(sizes).isEqualTo(Map.of(
-                Facet.SPECTRUM, 12, Facet.SPECTRUM_SCAN, 8, Facet.SPECTRUM_PRECURSOR, 5,
-                Facet.SPECTRUM_SELECTED_ION, 3, Facet.CHROMATOGRAM, 3, Facet.CHROMATOGRAM_PRECURSOR, 5,
-                Facet.CHROMATOGRAM_SELECTED_ION, 3, Facet.WAVELENGTH_SPECTRUM, 8, Facet.WAVELENGTH_SCAN, 6));
+        // no current manifest maps a products member (R6)
+        assertThat(sizes).isEqualTo(Map.ofEntries(
+                Map.entry(Facet.SPECTRUM, 12), Map.entry(Facet.SPECTRUM_SCAN, 8),
+                Map.entry(Facet.SPECTRUM_PRECURSOR, 5), Map.entry(Facet.SPECTRUM_SELECTED_ION, 3),
+                Map.entry(Facet.SPECTRUM_PRODUCT, 0), Map.entry(Facet.CHROMATOGRAM, 3),
+                Map.entry(Facet.CHROMATOGRAM_PRECURSOR, 5), Map.entry(Facet.CHROMATOGRAM_SELECTED_ION, 3),
+                Map.entry(Facet.CHROMATOGRAM_PRODUCT, 0), Map.entry(Facet.WAVELENGTH_SPECTRUM, 8),
+                Map.entry(Facet.WAVELENGTH_SCAN, 6)));
     }
 
     @Test
@@ -341,11 +345,15 @@ class ColumnTableTest {
                 "source_index", "precursor_index");
         assertFacet(Facet.SPECTRUM_SELECTED_ION, "spectrum", "selected_ions", "selected_ion", false,
                 "source_index", "precursor_index", "selected_ion_index");
+        assertFacet(Facet.SPECTRUM_PRODUCT, "spectrum", "products", "product", false,
+                "source_index", "product_index");
         assertFacet(Facet.CHROMATOGRAM, "chromatogram", "metadata", "chromatogram", true, "index");
         assertFacet(Facet.CHROMATOGRAM_PRECURSOR, "chromatogram", "precursors", "precursor", false,
                 "source_index", "precursor_index");
         assertFacet(Facet.CHROMATOGRAM_SELECTED_ION, "chromatogram", "selected_ions", "selected_ion", false,
                 "source_index", "precursor_index", "selected_ion_index");
+        assertFacet(Facet.CHROMATOGRAM_PRODUCT, "chromatogram", "products", "product", false,
+                "source_index", "product_index");
         assertFacet(Facet.WAVELENGTH_SPECTRUM, "wavelength_spectrum", "metadata", "spectrum", true, "index");
         assertFacet(Facet.WAVELENGTH_SCAN, "wavelength_spectrum", "scans", "scan", false,
                 "source_index", "scan_index");
@@ -359,7 +367,7 @@ class ColumnTableTest {
             names.put(f, f.entry(hasUv).map(Entry::name).orElse(null));
         }
 
-        assertThat(names).isEqualTo(Map.of(
+        Map<Facet, String> expected = new EnumMap<>(Map.of(
                 Facet.SPECTRUM, "spectra_metadata.parquet",
                 Facet.SPECTRUM_SCAN, "spectra_metadata_scans.parquet",
                 Facet.SPECTRUM_PRECURSOR, "spectra_metadata_precursors.parquet",
@@ -369,6 +377,10 @@ class ColumnTableTest {
                 Facet.CHROMATOGRAM_SELECTED_ION, "chromatograms_metadata_selected_ions.parquet",
                 Facet.WAVELENGTH_SPECTRUM, "wavelength_spectra_metadata.parquet",
                 Facet.WAVELENGTH_SCAN, "wavelength_spectra_metadata_scans.parquet"));
+        // has_uv has no products members
+        expected.put(Facet.SPECTRUM_PRODUCT, null);
+        expected.put(Facet.CHROMATOGRAM_PRODUCT, null);
+        assertThat(names).isEqualTo(expected);
 
         MzPeakManifest legacy = manifest(Fixtures.legacy("small.unpacked.mzpeak"));
         assertThat(Facet.SPECTRUM.entry(legacy)).map(Entry::name).contains("spectra_metadata.parquet");

@@ -7,16 +7,17 @@ import java.util.Optional;
 
 /**
  * Reads spectrum metadata in the split layout (HUPO-PSI/mzPeak 0a28759 and later): one flat table per facet, each
- * its own member found by manifest role. The spectrum table ({@code index}) and its scans, precursors and selected
- * ions ({@code source_index}) feed a {@link SpectrumFacetAssembler}, which joins them strictly by key. A facet
- * member the manifest does not list is legal and contributes no rows; members of other roles (products, provenance,
+ * its own member found by manifest role. The spectrum table ({@code index}) and its scans, precursors, selected
+ * ions and products ({@code source_index}) feed a {@link SpectrumFacetAssembler}, which joins them strictly by key.
+ * A facet member the manifest does not list is legal and contributes no rows; members of other roles (provenance,
  * signature, other) are not read.
  */
 final class SplitMetadataReader {
 
     /** The spectrum facets read, the entity's own table first. */
     private static final List<Facet> FACETS = List.of(
-            Facet.SPECTRUM, Facet.SPECTRUM_SCAN, Facet.SPECTRUM_PRECURSOR, Facet.SPECTRUM_SELECTED_ION);
+            Facet.SPECTRUM, Facet.SPECTRUM_SCAN, Facet.SPECTRUM_PRECURSOR, Facet.SPECTRUM_SELECTED_ION,
+            Facet.SPECTRUM_PRODUCT);
 
     private SplitMetadataReader() {
     }

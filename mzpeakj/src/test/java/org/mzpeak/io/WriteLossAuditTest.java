@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
+import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
@@ -18,6 +19,7 @@ import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
 import org.mzpeak.model.meta.FileMetadata.MsRun;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -41,7 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       descriptions, signal arrays and peaks with their extra arrays, chromatograms with their extra arrays, units
  *       and Params, wavelength spectra, scan settings and file metadata;
  *   <li>(c) has_uv's written wavelength scans hold the spectrum-scan columns the wavelength scan table has, an empty
- *       {@code scan_windows} and the stored times.
+ *       {@code scan_windows} and the stored times;
+ *   <li>(d) what mzPeakJ reads but does not write ({@link #READ_ONLY}): the products and the precursor MS level
+ *       (R6, D13-21), which none of these fixtures has, are lost by both layouts on the crafted copy of
+ *       {@link PrecursorMsLevelAndProductsTest}.
  * </ul>
  */
 class WriteLossAuditTest {
@@ -68,6 +73,13 @@ class WriteLossAuditTest {
             "wavelength_spectra_metadata_scans.parquet",
             Set.of("ion_mobility_value", "ion_mobility_type", "spectrum_reference"),
             "wavelength_spectra_metadata.parquet", Set.of("spectrum_representation"));
+
+    /** The model components mzPeakJ reads and does not write, with the reason: the write losses of (d). */
+    static final Map<String, String> READ_ONLY = Map.of(
+            "SpectrumDescription.products", "no products member is written (D13-21): the Rust reference panics on"
+                    + " a products member (src/reader/metadata.rs DataKind::Products => todo!())",
+            "Chromatogram.products", "no products member is written, as for spectra (D13-21)",
+            "Precursor.msLevel", "the precursor ms_level is read only (D13-21)");
 
     /** The metadata members of each fixture: Example_Processed.img has no chromatograms, has_uv wavelength spectra. */
     private static final Map<String, Integer> METADATA_MEMBERS = Map.of("small.unpacked.mzpeak", 7,
@@ -234,6 +246,42 @@ class WriteLossAuditTest {
             List<String> expected = new ArrayList<>(ParquetFooter.read(reference.inputFile(member)).topLevelFields());
             expected.removeAll(NOT_IN_SPEC.get(member));
             assertThat(ParquetFooter.read(written.inputFile(member)).topLevelFields()).isEqualTo(expected);
+        }
+    }
+
+    // ---- (d) read only ------------------------------------------------------------------------------------------
+
+    @Test
+    void theProductsAndThePrecursorMsLevelAreWriteLosses(@TempDir Path tmp) throws IOException {
+        assertThat(READ_ONLY.keySet()).containsExactlyInAnyOrder("SpectrumDescription.products",
+                "Chromatogram.products", "Precursor.msLevel");
+        Source source = ForwardBackwardCorpusTest.readSource(PrecursorMsLevelAndProductsTest.craft(tmp, true));
+        SpectrumDescription five = source.spectra.get((int) PrecursorMsLevelAndProductsTest.SPECTRUM).description();
+        assertThat(five.products()).isEqualTo(PrecursorMsLevelAndProductsTest.PRODUCTS);
+        assertThat(five.primaryPrecursor().msLevel()).isEqualTo(2);
+        assertThat(source.chromatograms.get(0).products()).isEqualTo(PrecursorMsLevelAndProductsTest.PRODUCTS);
+
+        for (MetadataLayout layout : MetadataLayout.values()) {
+            Path out = tmp.resolve("out-" + layout + ".mzpeak");
+            MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                    source.scanSettings, source.fileMetadata, Options.defaults().withMetadataLayout(layout));
+            try (MzPeakSource written = MzPeakSource.open(out)) {
+                for (Entry e : MzPeakManifest.fromSource(written).files()) {
+                    assertThat(e.kind()).as("%s: %s", layout, e.name()).isNotEqualTo(DataKind.PRODUCTS);
+                    if (e.kind() == DataKind.PRECURSORS) {
+                        assertThat(ParquetFooter.read(written.inputFile(e.name())).topLevelFields())
+                                .as("%s: %s", layout, e.name()).doesNotContain("ms_level");
+                    }
+                }
+            }
+            Source back = ForwardBackwardCorpusTest.readSource(out);
+            assertThat(back.spectra).as("%s", layout).hasSameSizeAs(source.spectra)
+                    .allMatch(s -> s.description().products().isEmpty())
+                    .allMatch(s -> s.description().precursors().stream().allMatch(p -> p.msLevel() == null));
+            assertThat(back.spectra.get((int) PrecursorMsLevelAndProductsTest.SPECTRUM).description()
+                    .primaryPrecursor()).as("%s", layout).isNotNull();
+            assertThat(back.chromatograms).as("%s", layout).isNotEmpty()
+                    .allMatch(c -> c.products().isEmpty());
         }
     }
 

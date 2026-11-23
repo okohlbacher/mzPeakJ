@@ -14,6 +14,7 @@ import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.Product;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
@@ -349,6 +350,22 @@ class ModelAssertTest {
         // X-25 (R6): SpectrumDescription.dataProcessingRef
         assertOnly(small, withSpectrum(small, 3, s -> withDescription(s, d -> with(d, "dataProcessingRef", "dp2"))),
                 "spectrum[3].dataProcessingRef", "spectrum[3].dataProcessingRef: expected null, got \"dp2\"");
+
+        // X-26 (R6): Precursor.msLevel, SpectrumDescription.products, Chromatogram.products
+        assertOnly(withPrecursor, withChromatogram(small, c -> with(c, "precursors",
+                        List.of(with(precursor, "msLevel", 2)))),
+                "chromatogram[0].precursors[0].msLevel",
+                "chromatogram[0].precursors[0].msLevel: expected null, got 2");
+        Product product = new Product(4L, 0, new IsolationWindow(500.0, 1.0, 1.0), List.of());
+        assertOnly(small, withSpectrum(small, 5, s -> withDescription(s, d -> with(d, "products", List.of(product)))),
+                "spectrum[5].products.size", "spectrum[5].products.size: expected 0 elements, got 1");
+        Model withProduct = withChromatogram(small, c -> with(c, "products", List.of(product)));
+        assertOnly(small, withProduct, "chromatogram[0].products.size",
+                "chromatogram[0].products.size: expected 0 elements, got 1");
+        assertOnly(withProduct, withChromatogram(small, c -> with(c, "products",
+                        List.of(with(product, "precursorIndex", 3L)))),
+                "chromatogram[0].products[0].precursorIndex",
+                "chromatogram[0].products[0].precursorIndex: expected 4, got 3");
 
         // MZ-7: FileDescription.contacts, Contact.name, affiliation, parameters
         FileMetadata.Contact contact = new FileMetadata.Contact("Bob", "Higglesworth University",

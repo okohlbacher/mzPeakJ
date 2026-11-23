@@ -115,12 +115,13 @@ Any other value, including `other` and an absent one, parses to `OTHER`, which n
 | spectrum / peaks | `spectra_peaks.parquet` (centroid peaks) — **optional** | `SpectrumArrayStore` (§3) |
 | chromatogram / metadata | `chromatograms_metadata.parquet` | `ChromatogramMetadataDecoder` (§2.5) |
 | chromatogram / precursors, selected_ions | `chromatograms_metadata_precursors.parquet`, `_selected_ions` | `ChromatogramMetadataDecoder` (§2.5) |
+| spectrum / products, chromatogram / products | `spectra_metadata_products.parquet`, `chromatograms_metadata_products.parquet` | `ProductRowDecoder`, through `SplitMetadataReader` and `ChromatogramMetadataDecoder` (read only) |
 | chromatogram / data_arrays | `chromatograms_data.parquet` | `ChromatogramDataDecoder` (§3.5) |
 | wavelength_spectrum / metadata | `wavelength_spectra_metadata.parquet` | `WavelengthMetadataDecoder` (§2.5) |
 | wavelength_spectrum / scans | `wavelength_spectra_metadata_scans.parquet` | not decoded (§10) |
 | wavelength_spectrum / data_arrays | `wavelength_spectra_data.parquet` | `WavelengthSpectrumStore` (§3.5) |
 
-Members of other roles (products, provenance, signature, proprietary, other) are ignored. Checksums are not
+Members of other roles (provenance, signature, proprietary, other) are ignored. Checksums are not
 verified when a dataset is opened; `MzPeakReader.verifyIntegrity()` checks them on request (§8.2), and
 `UpstreamFixtureIntegrityTest` and `VerifyIntegrityTest` check those of the vendored examples.
 
@@ -194,7 +195,7 @@ OpenJDK 27.0.1, `-Xmx16g`, medians of interleaved runs), opening it and decoding
 instead of 2.67 s in 0.11.1 (0.835×), which recovers the slowdown of the split-layout reader; the signal path is
 unchanged (0.996×), and the decoded descriptions are identical.
 
-`ColumnTable` is the constant column identity of the nine facets, shared by reader and writer. Its canonical
+`ColumnTable` is the constant column identity of the eleven facets, shared by reader and writer. Its canonical
 rows are the union of the `column_mapping`s of the 8 current example manifests, copied verbatim. Paths are
 dotted and omit list and element levels (`scan_windows.scan_window_lower_limit`). Example_Processed.img stores
 its imaging positions in the columns `opt_IMS_1000050_position_x` and `opt_IMS_1000051_position_y`.
@@ -1272,7 +1273,8 @@ check.
 - **Byte determinism.** The Parquet members, and with them their checksums and CRCs, can differ between JVM runs
   in the order of a column chunk's encodings in the footer, which parquet-java takes from a `HashSet` (§8.1);
   their content does not.
-- **Metadata not decoded:** products facets; the wavelength scans facet; precursor-scope leftovers;
+- **Metadata not written:** the products facets and the precursor `ms_level` are read only (D13-21).
+- **Metadata not decoded:** the wavelength scans facet; precursor-scope leftovers;
   leftover Params of the legacy packed scan, precursor and selected-ion structs (those of the `spectrum` struct are
   read, §2.4); a scan start time whose unit is given by a unit column (it throws).
 - **Precursor join.** The reference-identical join (precursors in reverse, last precursor for unmatched ions,

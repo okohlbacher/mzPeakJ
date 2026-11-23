@@ -113,11 +113,12 @@ final class ChromatogramStore {
             ChromatogramDataDecoder.Decoded d = data.get(h.index());
             if (d == null) {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), new double[0], new double[0], null,
-                        Map.of(), h.polarity(), h.dataProcessingRef(), h.parameters(), h.precursors(), timeUnit));
+                        Map.of(), h.polarity(), h.dataProcessingRef(), h.parameters(), h.precursors(), timeUnit,
+                        h.products()));
             } else {
                 all.add(new Chromatogram(h.index(), h.id(), h.typeCurie(), d.time(), d.intensity(),
                         d.intensityUnit(), d.arrays(), h.polarity(), h.dataProcessingRef(), h.parameters(),
-                        h.precursors(), timeUnit));
+                        h.precursors(), timeUnit, h.products()));
             }
         }
         return new ChromatogramStore(all, plan);

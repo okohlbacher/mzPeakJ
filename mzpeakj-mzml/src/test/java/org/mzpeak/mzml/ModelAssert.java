@@ -221,6 +221,7 @@ public final class ModelAssert {
             entry("SpectrumDescription.precursors", Rule.list(Rule.RECORD)),
             entry("SpectrumDescription.parameters", Rule.PARAMS),
             entry("SpectrumDescription.dataProcessingRef", Rule.EXACT),
+            entry("SpectrumDescription.products", Rule.list(Rule.RECORD)),
 
             entry("ScanEvent.startTime", Rule.DOUBLE),
             entry("ScanEvent.injectionTime", Rule.DOUBLE),
@@ -239,6 +240,12 @@ public final class ModelAssert {
             entry("Precursor.isolationWindow", Rule.RECORD),
             entry("Precursor.selectedIons", Rule.list(Rule.RECORD)),
             entry("Precursor.activation", Rule.RECORD),
+            entry("Precursor.msLevel", Rule.EXACT),
+
+            entry("Product.precursorIndex", Rule.EXACT),
+            entry("Product.productIndex", Rule.EXACT),
+            entry("Product.isolationWindow", Rule.RECORD),
+            entry("Product.parameters", Rule.PARAMS),
 
             entry("IsolationWindow.targetMz", Rule.DOUBLE),
             entry("IsolationWindow.lowerOffset", Rule.DOUBLE),
@@ -268,6 +275,7 @@ public final class ModelAssert {
             entry("Chromatogram.parameters", Rule.PARAMS),
             entry("Chromatogram.precursors", Rule.list(Rule.RECORD)),
             entry("Chromatogram.timeUnit", Rule.EXACT),
+            entry("Chromatogram.products", Rule.list(Rule.RECORD)),
 
             entry("WavelengthSpectrum.index", Rule.EXACT),
             entry("WavelengthSpectrum.id", Rule.EXACT),

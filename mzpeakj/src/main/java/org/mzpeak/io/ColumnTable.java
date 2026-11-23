@@ -11,15 +11,16 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * The constant column identity of the nine metadata facets, shared by reader and writer so that column names cannot
- * drift between them. Legacy names are kept here as data rather than in a second decoder.
+ * The constant column identity of the eleven metadata facets, shared by reader and writer so that column names
+ * cannot drift between them. Legacy names are kept here as data rather than in a second decoder.
  *
  * <p>Each facet lists its CV-mapped columns. The canonical rows are the union of the {@code column_mapping}s of the
- * 8 HUPO-PSI/mzPeak 2ee2589 example manifests, copied verbatim and in file order, but for the wavelength
- * representation, whose canonical path is {@code opt_spectrum_representation} as metadata-tables.md §Column naming
- * requires (the manifests' {@code spectrum_representation} is its first fallback). Each row also lists fallbacks,
- * the other names the same column has gone by: first the spec's alternate names, then the pin-era packed names
- * (HUPO-PSI/mzPeak 29e59b2, mzPeakJ 0.10.3 and earlier).
+ * 8 HUPO-PSI/mzPeak 2ee2589 example manifests, which map no products member, so the products facets list none; their
+ * isolation-window columns are found by their spec names. The rows are copied verbatim and in file order, but for the
+ * wavelength representation, whose canonical path is {@code opt_spectrum_representation} as metadata-tables.md
+ * §Column naming requires (the manifests' {@code spectrum_representation} is its first fallback). Each row also lists
+ * fallbacks, the other names the same column has gone by: first the spec's alternate names, then the pin-era packed
+ * names (HUPO-PSI/mzPeak 29e59b2, mzPeakJ 0.10.3 and earlier).
  *
  * <p>Paths are dotted, relative to the facet's table or packed struct, and omit list and element levels, like
  * {@link MzPeakManifest.ColumnMapping#path()}.
@@ -58,7 +59,7 @@ final class ColumnTable {
     /** Key and bookkeeping columns, never data and never Params. */
     private static final Set<String> STRUCTURAL = Collections.unmodifiableSet(new LinkedHashSet<>(List.of(
             "index", "id", "source_index", "spectrum_index",
-            "scan_index", "precursor_index", "selected_ion_index",
+            "scan_index", "precursor_index", "selected_ion_index", "product_index",
             "parameters", "auxiliary_arrays", "number_of_auxiliary_arrays", "data_processing_id",
             "data_processing_ref")));
 
@@ -94,11 +95,12 @@ final class ColumnTable {
 
     /**
      * The columns of {@code facet} that are never data and never become Params: the keys ({@code index}, {@code id},
-     * {@code source_index}, its alias {@code spectrum_index}, {@code scan_index}, {@code precursor_index} and
-     * {@code selected_ion_index}), {@code parameters}, {@code auxiliary_arrays}, {@code number_of_auxiliary_arrays}
-     * and the data processing reference in both spellings, the spec's {@code data_processing_id} and the
-     * {@code data_processing_ref} mzPeakJ 0.12.0 wrote for chromatograms. The set is the same for every facet, so a
-     * stray key or bookkeeping column in any facet is not taken for data. Unmodifiable.
+     * {@code source_index}, its alias {@code spectrum_index}, {@code scan_index}, {@code precursor_index},
+     * {@code selected_ion_index} and {@code product_index}), {@code parameters}, {@code auxiliary_arrays},
+     * {@code number_of_auxiliary_arrays} and the data processing reference in both spellings, the spec's
+     * {@code data_processing_id} and the {@code data_processing_ref} mzPeakJ 0.12.0 wrote for chromatograms. The set
+     * is the same for every facet, so a stray key or bookkeeping column in any facet is not taken for data.
+     * Unmodifiable.
      */
     static Set<String> structural(Facet facet) {
         Objects.requireNonNull(facet, "facet");
@@ -138,6 +140,7 @@ final class ColumnTable {
                         "position_y", "IMS_1000051_position_y"))));
         t.put(Facet.SPECTRUM_PRECURSOR, precursors(Facet.SPECTRUM_PRECURSOR));
         t.put(Facet.SPECTRUM_SELECTED_ION, selectedIons(Facet.SPECTRUM_SELECTED_ION));
+        t.put(Facet.SPECTRUM_PRODUCT, List.of());
         Facet c = Facet.CHROMATOGRAM;
         t.put(c, List.of(
                 column(c, "scan_polarity", "MS:1000465", "scan polarity", null, "MS_1000465_scan_polarity"),
@@ -146,6 +149,7 @@ final class ColumnTable {
                         "MS_1003060_number_of_data_points")));
         t.put(Facet.CHROMATOGRAM_PRECURSOR, precursors(Facet.CHROMATOGRAM_PRECURSOR));
         t.put(Facet.CHROMATOGRAM_SELECTED_ION, selectedIons(Facet.CHROMATOGRAM_SELECTED_ION));
+        t.put(Facet.CHROMATOGRAM_PRODUCT, List.of());
         Facet w = Facet.WAVELENGTH_SPECTRUM;
         t.put(w, List.of(
                 marker(w, "spectrum_type", "MS:1000559", "spectrum type", "MS_1000559_spectrum_type"),

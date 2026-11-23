@@ -466,7 +466,7 @@ class SplitPrecursorsTest {
                 unextended.precursorId(),
                 new IsolationWindow(window.targetMz(), window.lowerOffset(), window.upperOffset(),
                         List.of(WINDOW_MS_LEVEL, new Param("opt_window_width_ratio", null, 0.5, null))),
-                unextended.activation()));
+                unextended.activation(), null));
         assertThat(records).singleElement().satisfies(r -> {
             assertThat(r.getLevel()).isEqualTo(Level.FINE);
             assertThat(r.getMessage()).contains("spectra_metadata_precursors.parquet", "source_index 5",
