@@ -475,6 +475,45 @@ class MzMLConversionTest {
     }
 
     /**
+     * R1: scan=19 with 3 points and a signal to noise array of 2 values keeps that array as an auxiliary array
+     * (64-bit float, no compression, its type and unit kept) and writes it back as a binaryDataArray with
+     * {@code arrayLength="2"} and the same values.
+     */
+    @Test
+    void anArrayOfAnotherLengthBecomesAnAuxiliaryArrayAndComesBack() throws IOException {
+        String sn = sized(2, cv(SN, "signal to noise array", "", "UO:0000186"), 7.5, 8.25);
+        Path file = tinyWith(s -> spectrum19With(s, 3, array(MZ_TYPE, 100, 200, 300), array(INTENSITY_TYPE, 1, 2, 3),
+                sn));
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("declared length"));
+        try (MzPeakReader mzpeak = MzPeakReader.open(b.mzpeak)) {
+            Spectrum spectrum = mzpeak.getSpectrumAt(0);
+            assertThat(spectrum.mz()).containsExactly(100, 200, 300);
+            assertThat(spectrum.arrays()).isEmpty();
+            assertThat(spectrum.auxiliaryArrays()).singleElement().satisfies(a -> {
+                assertThat(a.name().accession()).isEqualTo(SN);
+                assertThat(a.dataType()).isEqualTo("MS:1000523");
+                assertThat(a.compression()).isEqualTo("MS:1000576");
+                assertThat(a.items()).isEqualTo(2);
+                assertThat(a.unit()).isEqualTo("UO:0000186");
+                assertThat(a.doubles()).containsExactly(7.5, 8.25);
+            });
+        }
+        uk.ac.ebi.jmzml.model.mzml.BinaryDataArray written = jmzmlSpectra(b.mzml).get(0).getBinaryDataArrayList()
+                .getBinaryDataArray().stream()
+                .filter(a -> a.getCvParam().stream().anyMatch(p -> SN.equals(p.getAccession())))
+                .findFirst().orElseThrow();
+        assertThat(written.getArrayLength()).isEqualTo(2);
+        assertThat(written.getBinaryDataAsNumberArray()).containsExactly(7.5, 8.25);
+        assertThat(written.getCvParam()).filteredOn(p -> SN.equals(p.getAccession()))
+                .extracting(uk.ac.ebi.jmzml.model.mzml.CVParam::getUnitAccession).containsExactly("UO:0000186");
+        assertThat(model(b.mzml).spectrumList().get(0).auxiliaryArrays()).singleElement()
+                .satisfies(a -> assertThat(a.doubles()).containsExactly(7.5, 8.25));
+    }
+
+    /**
      * B-26 counts an empty extra array of a spectrum and a NaN-only one of a chromatogram, not one with a number; the
      * mzPeak read drops exactly the counted ones.
      */
@@ -915,6 +954,17 @@ class MzMLConversionTest {
                                 + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"",
                         "accession=\"MS:1000617\" name=\"wavelength array\" value=\"\" unitCvRef=\"UO\""
                                 + " unitAccession=\"UO:0000018\" unitName=\"nanometer\""))),
+                // R1: the unit of an array of another length, kept as an auxiliary array
+                arguments("spectrum scan=19", "XYZ:0000020", edit(s -> withArray(s, SCAN_19,
+                        sized(2, cv(SN, "signal to noise array", "", "XYZ:0000020"), 1, 2)))),
+                arguments("wavelength spectrum scan=21", "XYZ:0000021", edit(s -> withArray(replaceAfter(s, SCAN_21,
+                        "accession=\"MS:1000514\" name=\"m/z array\" value=\"\""
+                                + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"",
+                        "accession=\"MS:1000617\" name=\"wavelength array\" value=\"\" unitCvRef=\"UO\""
+                                + " unitAccession=\"UO:0000018\" unitName=\"nanometer\""), SCAN_21,
+                        sized(2, cv(SN, "signal to noise array", "", "XYZ:0000021"), 1, 2)))),
+                arguments("chromatogram tic", "XYZ:0000022", edit(s -> withArray(s, "id=\"tic\"",
+                        sized(2, cv(SN, "signal to noise array", "", "XYZ:0000022"), 1, 2)))),
                 arguments("chromatogram tic", "XYZ:0000003", edit(s -> withParam(s, "id=\"tic\"",
                         "<cvParam cvRef=\"MS\" accession=\"MS:1000235\" name=\"total ion current chromatogram\""
                                 + " value=\"\"/>", xyz("XYZ:0000003")))),
@@ -1322,7 +1372,7 @@ class MzMLConversionTest {
         return lines;
     }
 
-    /** The limit lines and the A-13 and A-14 lines every writer notes, then {@code losses}. */
+    /** The limit lines and the A-13 line every writer notes, then {@code losses}. */
     private static List<String> writerLimits(String... losses) {
         List<String> lines = new ArrayList<>(MzMLWriter.LIMITS);
         lines.addAll(MzMLWriter.NOT_VISIBLE);
@@ -1459,6 +1509,14 @@ class MzMLConversionTest {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /**
+     * A binaryDataArray of 64-bit floats without compression, with the array type term {@code type} and the declared
+     * length {@code length}.
+     */
+    private static String sized(int length, String type, double... values) {
+        return array(type, values).replace("<binaryDataArray ", "<binaryDataArray arrayLength=\"" + length + "\" ");
     }
 
     /** An intensity array of 64-bit floats holding {@code counts} as an MS-Numpress PIC payload (MS:1002313). */

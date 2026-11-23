@@ -1166,23 +1166,81 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-29 second arrays of a type already present dropped (2)");
     }
 
-    /** An extra array declared shorter (3), then longer (16), than scan=19's m/z array (15). */
+    /**
+     * An extra array declared shorter (3), then longer (16), than scan=19's m/z array (15) is kept as an auxiliary
+     * array (R1): its values as 64-bit floats without compression, named by its array type, its unit kept.
+     */
     @Test
-    void anExtraArrayOfAnotherDeclaredLengthIsDropped(@TempDir Path dir) throws IOException {
+    void anExtraArrayOfAnotherDeclaredLengthIsAnAuxiliaryArray(@TempDir Path dir) throws IOException {
         for (int length : new int[] {3, 16}) {
-            String values = floats(ramp(length));
-            String sn = "<binaryDataArray arrayLength=\"" + length + "\" encodedLength=\"" + values.length() + "\">\n"
-                    + F64 + "\n" + NO_COMPRESSION + "\n" + SN_TYPE + "\n<binary>" + values
-                    + "</binary>\n</binaryDataArray>\n";
-            Path file = tinyWith(dir, s -> withArray(s, SCAN_19, sn));
+            Path file = tinyWith(dir, s -> withArray(s, SCAN_19, sized(length, SN_TYPE, ramp(length))));
 
             Run run = read(file);
 
-            assertThat(run.spectra.get(0).arrays()).as("length %d", length).isEmpty();
+            Spectrum spectrum = run.spectra.get(0);
+            assertThat(spectrum.arrays()).as("length %d", length).isEmpty();
             assertThat(run.reader.survey().spectrumArrays()).as("length %d", length).isEmpty();
-            assertThat(run.reader.warnings()).as("length %d", length)
-                    .contains("B-21 dropped array whose declared length differs from its axis array's (1)");
+            assertThat(spectrum.auxiliaryArrays()).as("length %d", length).singleElement().satisfies(a -> {
+                assertThat(a.name()).isEqualTo(new Param("signal to noise array", SN, null, null));
+                assertThat(a.dataType()).isEqualTo("MS:1000523");
+                assertThat(a.compression()).isEqualTo("MS:1000576");
+                assertThat(a.items()).isEqualTo(length);
+                assertThat(a.unit()).isNull();
+                assertThat(a.parameters()).isEmpty();
+                assertThat(a.dataProcessingId()).isNull();
+                assertThat(a.doubles()).containsExactly(ramp(length));
+                assertThat(a.data()).hasSize(8 * length);
+            });
+            assertThat(run.reader.warnings()).as("length %d", length).noneMatch(w -> w.contains("declared length"));
         }
+    }
+
+    /**
+     * Arrays of another declared length become auxiliary arrays before any rule but B-29: a non-standard data array
+     * keeps its name as the value of MS:1000786, a drift-time array in seconds keeps its values and unit unconverted,
+     * and the arrays of a chromatogram and of a wavelength spectrum (whose extras B-28 drops) are kept too. An array
+     * type the Rust reference reader does not map (MS:1002742 noise array) is dropped (B-43). A second array of a key,
+     * of the axis, the intensity, a kept extra or an earlier auxiliary array, is dropped whatever its length (B-29):
+     * the Rust reference reader would let it replace the first.
+     */
+    @Test
+    void arraysOfAnotherDeclaredLengthOfEveryOwnerAreAuxiliaryArrays(@TempDir Path dir) throws IOException {
+        String named = cv("MS:1000786", "non-standard data array", "my array", "UO:0000186");
+        String drift = cv("MS:1002816", "mean ion mobility array", "", "UO:0000010");
+        String mz = cv("MS:1000514", "m/z array", "", "MS:1000040");
+        String intensity = cv("MS:1000515", "intensity array", "", "MS:1000131");
+        String noise = cv("MS:1002742", "noise array", "", null);
+        List<String> scanArrays = List.of(sized(2, named, 1, 2), sized(1, drift, 1.5), sized(3, mz, 7, 8, 9),
+                sized(1, intensity, 4), sized(2, noise, 5, 6), sized(1, named, 3), array(SN_TYPE, ramp(15)),
+                sized(2, SN_TYPE, 5, 6), array(drift, ramp(15)));
+        Path file = tinyWith(dir, s -> {
+            String t = withArray(s, "id=\"tic\"", sized(2, SN_TYPE, 3, 4));
+            for (String a : scanArrays) {
+                t = withArray(t, SCAN_19, a);
+            }
+            return t;
+        });
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+        assertThat(run.spectra.get(0).intensity()).containsExactly(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
+        assertThat(run.spectra.get(0).arrays()).containsOnlyKeys(SN);
+        assertThat(run.spectra.get(0).arrays().get(SN)).containsExactly(ramp(15));
+        assertThat(run.spectra.get(0).auxiliaryArrays()).extracting(a -> a.name(), a -> a.unit(),
+                a -> Arrays.stream(a.doubles()).boxed().toList()).containsExactly(
+                tuple(new Param("non-standard data array", "MS:1000786", "my array", null), "UO:0000186",
+                        List.of(1.0, 2.0)),
+                tuple(new Param("mean ion mobility array", "MS:1002816", null, null), "UO:0000010", List.of(1.5)));
+        assertThat(run.chromatograms.get(0).auxiliaryArrays()).singleElement()
+                .satisfies(a -> assertThat(a.doubles()).containsExactly(3, 4));
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_43 + " (1)", MzMLReader.B_29 + " (5)");
+
+        Path tof = tofWith(dir, s -> withArray(s, UV_0, sized(2, SN_TYPE, 5, 6)));
+        Run uv = read(tof);
+        assertThat(uv.wavelengthSpectra.get(0).auxiliaryArrays()).singleElement()
+                .satisfies(a -> assertThat(a.doubles()).containsExactly(5, 6));
+        assertThat(uv.reader.warnings()).noneMatch(w -> w.startsWith("B-28"));
     }
 
     @Test
@@ -2376,6 +2434,14 @@ class MzMLReaderRunTest {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /**
+     * A binaryDataArray of 64-bit floats without compression, with the array type term {@code type} and the declared
+     * length {@code length}.
+     */
+    private static String sized(int length, String type, double... values) {
+        return array(type, values).replace("<binaryDataArray ", "<binaryDataArray arrayLength=\"" + length + "\" ");
     }
 
     /** A binaryDataArray with the cvParam elements {@code terms} and {@code binary} as its Base64 text. */

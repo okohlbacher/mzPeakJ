@@ -42,7 +42,7 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * {@link MzMLAssert#valid} and {@link MzMLMappingCheck}, converted back by {@link MzMLConversion#toMzPeak} (defaults,
  * archive) and read again; {@link ModelAssert} compares the two models strictly, arrays bit-exact, with exactly the
  * exclusions of the A table of design 12.4, each hiding the pinned number of differences. The warnings of both steps
- * are pinned: the limit lines (L-8 and L-9 and the A-13 and A-14 lines of the writer, L-1 to L-6 of the reader), the
+ * are pinned: the limit lines (L-8 and L-9 and the A-13 line of the writer, L-1 to L-6 of the reader), the
  * writer's loss lines per fixture, no A-25 to A-29 line, and the loss lines of the way back per fixture
  * ({@link #back}). Last, the array-key case of design 12.4: extra
  * arrays keyed outside {@link CvTerms#ARRAY_TYPES} go through A as MS:1000786 'non-standard data array'.

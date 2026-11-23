@@ -658,14 +658,14 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 ### What is lost
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
-kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, scan
-start times converted to minutes or lost array data processing refs, and A-1 … A-33 for mzPeak → mzML, such as required
+kind with its count: B-1 … B-43 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, scan
+start times converted to minutes or lost array data processing refs, and A-1 … A-35 for mzPeak → mzML, such as required
 content synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
 [losses section of the mzML converter design](docs/mzml-converter.md#losses) lists each loss and which class counts
 it; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
-Two losses the converter does not count are printed as fixed lines without count after the limits of mzPeak → mzML:
-A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`); the library reads the
-auxiliary arrays and the spectrum intensity units, but the converter does not use them yet. The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
+One loss the converter does not count is printed as a fixed line without count after the limits of mzPeak → mzML:
+A-13 (array units and data types as stored in mzPeak); the library reads the spectrum intensity units, but the
+converter does not use them yet. Arrays whose length differs from the axis travel as `auxiliary_arrays` both ways. The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
 lacks what the rule asks for (it does not invent the data): spectra without exactly one spectrum type and
 representation (`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum
 precursor activations without a dissociation method (`precursor_activation_must`), instrument configurations
@@ -679,6 +679,9 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
 - A-33: a non-standard data array without a name (keyed MS:1000786 or with an empty key) is written with the name
   'non-standard data array', the name the library gives such an array, under which it comes back; the mzML read
   drops a nameless one.
+- A-34, A-35: an auxiliary array is written with its decoded values, its name and its unit; its params, its data
+  processing and a unit whose CV prefix the cv list lacks are not written (A-34), and an array whose compression or
+  data type cannot be decoded is dropped (A-35).
 - B-14 also counts the summary params (m/z range, base peak, total ion current) and selected-ion peak intensities
   written without unit, as ProteoWizard writes the total ion current: they are given their default unit (m/z or
   detector counts) and typed as numbers with decimals, so that they reach the mzPeak summary columns (and the TIC
@@ -689,6 +692,9 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
   reference, the `spectrumRef`.
 - B-42: a `spectrumRef` that names no spectrum of the file is kept as the reference's id, without index, and comes
   back as an `externalSpectrumID`.
+- B-43: an array whose declared length differs from its axis array's becomes an auxiliary array, unless its array
+  type is one the Rust reference reader does not map for auxiliary arrays (MS:1002478, MS:1002742 to MS:1002745,
+  MS:1003143): such an array is dropped.
 - A-18 also counts the spectrum precursors without index that are written as `externalSpectrumID`, and drops (and
   counts) every external reference when the run has no default source file, which mzML requires next to an
   `externalSpectrumID`. The HEAD Python reader attaches selected ions to their precursor by `(source_index,

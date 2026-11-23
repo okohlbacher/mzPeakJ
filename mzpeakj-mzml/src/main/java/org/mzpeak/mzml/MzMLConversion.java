@@ -4,6 +4,7 @@ import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.io.MzPeakWriter;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -237,6 +238,7 @@ public final class MzMLConversion {
             List<String> curies = new ArrayList<>(spectrum.arrays().keySet());
             curies.addAll(spectrum.peakArrays().keySet());
             curies.addAll(Arrays.asList(spectrum.intensityUnit(), spectrum.peakIntensityUnit()));
+            curies.addAll(auxiliaryCuries(spectrum.auxiliaryArrays()));
             cvs.check("spectrum " + d.id(), descriptionParams(d), curies);
             losses.note(B_26, nanOnly(spectrum.arrays()));
             losses.note(B_24_TYPE, has(d.parameters(), MzMLTerms.SPECTRUM_TYPES.keySet()) ? 0 : 1);
@@ -248,7 +250,8 @@ public final class MzMLConversion {
 
         @Override
         public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
-            cvs.check("wavelength spectrum " + spectrum.id(), List.of(spectrum.parameters()), List.of());
+            cvs.check("wavelength spectrum " + spectrum.id(), List.of(spectrum.parameters()),
+                    auxiliaryCuries(spectrum.auxiliaryArrays()));
             session.addWavelengthSpectrum(spectrum);
             wavelengthSpectra++;
         }
@@ -260,6 +263,7 @@ public final class MzMLConversion {
             List<String> curies = new ArrayList<>(chromatogram.arrays().keySet());
             curies.addAll(Arrays.asList(chromatogram.typeCurie(), chromatogram.intensityUnit(),
                     chromatogram.timeUnit()));
+            curies.addAll(auxiliaryCuries(chromatogram.auxiliaryArrays()));
             cvs.check("chromatogram " + chromatogram.id(), params, curies);
             losses.note(B_26, nanOnly(chromatogram.arrays()));
             losses.note(B_36, chromatogram.size() == 0 && chromatogram.intensityUnit() != null ? 1 : 0);
@@ -302,6 +306,13 @@ public final class MzMLConversion {
                     spectrum.peakArrays(), spectrum.intensityUnit(), spectrum.peakIntensityUnit(),
                     spectrum.auxiliaryArrays());
         }
+    }
+
+    /** The accessions of the names and the units of {@code arrays}, auxiliary arrays the mzML read made (R1). */
+    private static List<String> auxiliaryCuries(List<AuxiliaryArray> arrays) {
+        List<String> curies = new ArrayList<>();
+        arrays.forEach(a -> curies.addAll(Arrays.asList(a.name().accession(), a.unit())));
+        return curies;
     }
 
     /** Whether {@code params} hold a param with one of {@code accessions}; a userParam has none (null). */
