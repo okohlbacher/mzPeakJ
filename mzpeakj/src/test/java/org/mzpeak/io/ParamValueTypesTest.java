@@ -200,8 +200,9 @@ class ParamValueTypesTest {
                 Options.defaults())).isInstanceOf(MzPeakException.class)
                 .hasMessage("scan settings 0: the value of the parameter \"w2 time\" is a java.time.Instant"
                         + REFUSED);
-        FileMetadata badMeta = withSoftware(small.fileMetadata,
-                List.of(new Software("w2", "1", List.of(param("w2 time", at)))));
+        List<Software> badSoftware = new ArrayList<>(small.fileMetadata.software());
+        badSoftware.add(new Software("w2", "1", List.of(param("w2 time", at))));
+        FileMetadata badMeta = withSoftware(small.fileMetadata, badSoftware);
         assertThatThrownBy(() -> MzPeakWriter.openArchive(out, badMeta, List.of(), Set.of(), Options.defaults()))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("software w2: the value of the parameter \"w2 time\" is a java.time.Instant" + REFUSED);

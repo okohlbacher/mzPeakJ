@@ -52,6 +52,8 @@ class MzMLRoundTripATest {
     private static final String NON_STANDARD_ARRAY = "MS:1000786";
     private static final String ZLIB = "MS:1000574";
     private static final String NO_COMPRESSION = "MS:1000576";
+    /** A CV mzPeakJ does not know, in a release. */
+    private static final CvEntry XX = new CvEntry("XX", "XX ontology", "https://example.org/xx/1/xx.obo", "1");
 
     @TempDir
     Path dir;
@@ -208,8 +210,10 @@ class MzMLRoundTripATest {
     /**
      * Current small.mzpeak with spectrum 0 given two extra arrays whose keys are no array type of
      * {@link CvTerms#ARRAY_TYPES}: 'MS:9999999' holding 0, 1, ..., n-1 and 'XX:0000001' their squares, n its point
-     * count. The mzML holds both as MS:1000786 with the key as value and declares no CV XX; back in mzPeak, spectrum 0
-     * has both keys with the values bit-exact, and the whole model equals the input up to A-7.
+     * count. The input declares the CV XX, which mzPeakJ does not know, by the writer's cv list (W12 refuses an
+     * undeclared one). The mzML holds both keys as MS:1000786 with the key as value, uses no XX term and declares XX
+     * as the input does; back in mzPeak, spectrum 0 has both keys with the values bit-exact, and the whole model
+     * equals the input up to A-7.
      */
     @Test
     void arrayKeysOutsideTheArrayTypesComeBackThroughNonStandardDataArrays() throws IOException {
@@ -238,9 +242,10 @@ class MzMLRoundTripATest {
             spectra.set(0, new Spectrum(first.description(), first.mz(), first.intensity(), first.peaks(), arrays,
                     first.peakArrays()));
             Set<String> keys = new LinkedHashSet<>(List.of(msKey, xxKey));
+            List<CvEntry> cvs = new ArrayList<>(reader.manifest().cvList());
+            cvs.add(XX);
             try (MzPeakWriter.Session session = MzPeakWriter.openArchive(input, reader.fileMetadata(),
-                    reader.scanSettings(), keys, MzPeakWriter.Options.defaults().withCvList(
-                            reader.manifest().cvList()))) {
+                    reader.scanSettings(), keys, MzPeakWriter.Options.defaults().withCvList(cvs))) {
                 spectra.forEach(session::addSpectrum);
                 reader.chromatograms().forEach(session::addChromatogram);
                 reader.wavelengthSpectra().forEach(session::addWavelengthSpectrum);
@@ -249,7 +254,7 @@ class MzMLRoundTripATest {
         }
         Model given = Model.load(input);
         assertThat(given.spectrumList().get(0).arrays()).containsOnlyKeys(msKey, xxKey);
-        assertThat(given.cvList()).extracting(CvEntry::id).containsExactly("MS", "UO");
+        assertThat(given.cvList()).extracting(CvEntry::id).containsExactly("MS", "UO", "XX");
 
         Path mzml = dir.resolve("keys.mzML");
         MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
@@ -266,7 +271,7 @@ class MzMLRoundTripATest {
         Xml xml = xml(mzml);
         // spectrum 0's two keys, then the 'ms level' array of the TIC
         assertThat(xml.nonStandardArrays()).containsExactly(msKey, xxKey, "ms level");
-        assertThat(xml.cvs()).containsExactly("MS", "UO");
+        assertThat(xml.cvs()).containsExactly("MS", "UO", "XX");
         assertThat(xml.prefixes()).doesNotContain("XX");
         try (MzPeakReader reader = MzPeakReader.open(back)) {
             Map<String, double[]> arrays = reader.getSpectrumAt(0).arrays();

@@ -1,7 +1,12 @@
 package org.mzpeak.io;
 
+import org.mzpeak.model.meta.FileMetadata;
+import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
+import org.mzpeak.model.meta.FileMetadata.MsRun;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -68,6 +73,26 @@ public final class Fixtures {
     /** The legacy dataset {@code name}, one of {@link #LEGACY_NAMES}. */
     public static Path legacy(String name) {
         return resolve(LEGACY, LEGACY_NAMES, name);
+    }
+
+    /**
+     * {@code meta} with the instrument configuration its run names as default but does not declare, as the run of
+     * diaPASEF.ref and diaPASEF.grid names configuration 1 while only 0 is declared: the configuration of that id
+     * without components and params, with the first configuration's software, is appended, which is the stub the
+     * writer added for it before it rejected such a reference (W12, D13-9). Any other {@code meta} is returned as it
+     * is.
+     */
+    public static FileMetadata withDeclaredDefaults(FileMetadata meta) {
+        MsRun run = meta.run();
+        if (run == null || run.defaultInstrumentId() == null || meta.instrumentConfigurations().stream()
+                .anyMatch(ic -> ic.id() == run.defaultInstrumentId())) {
+            return meta;
+        }
+        List<InstrumentConfiguration> configurations = new ArrayList<>(meta.instrumentConfigurations());
+        configurations.add(new InstrumentConfiguration(run.defaultInstrumentId(), List.of(),
+                configurations.get(0).softwareReference(), List.of()));
+        return new FileMetadata(meta.fileDescription(), configurations, meta.dataProcessingMethods(), meta.samples(),
+                meta.software(), run);
     }
 
     private static Path resolve(Path dir, List<String> names, String name) {

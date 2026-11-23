@@ -58,8 +58,9 @@ The upstream update to HUPO-PSI/mzPeak `2ee2589` (spec snapshot `0220201`, mzdat
   only `default_instrument_configuration_id` in the split layout and only `default_instrument_id` in the packed one.
   *Why:* the spec's `ms_run.json` (963d64a) requires `default_instrument_configuration_id`, the packed layout keeps its
   pin-era dialect, and writing both makes serde reject a duplicate field.
-- **Unknown CURIE prefixes.** The writer warns and never throws; the reader keeps the literal value without a warning.
-  *Why:* writes must not fail on user data, and the conformance text asks readers to keep unknown terms.
+- **Unknown CURIE prefixes.** The reader keeps the literal value without a warning. *Why:* the conformance text asks
+  readers to keep unknown terms. The writer's half (it warned and never threw) was replaced on 2026-11-23 (X-27): see
+  "undeclared CV prefixes and dangling references" below.
 - **Imaging.** `KnownCvs` is a verbatim copy of the reference's CV list (IMS on its master branch); the reader resolves
   every position spelling by accession; the writer writes `opt_IMS_1000050_position_x` and
   `opt_IMS_1000051_position_y`. *Why:* parity with the only producer seen; the draft imaging profile disagrees with
@@ -131,6 +132,20 @@ decisions cause.
   (else `data_processing_ref`) and written as `data_processing_id` by the split layout, the column only when some
   spectrum has one; the packed layout drops it with a warning (2026-11-23, X-25, D13-21). *Why:* spectra.md
   (l.108-111) names the column; until then the reader skipped it and the converter lost `spectrum@dataProcessingRef`.
+- **The writer rejects undeclared CV prefixes and dangling references** before anything is written, naming the
+  entity (2026-11-23, X-27, D13-6, D13-9, D13-26; replaces "the writer warns" on unknown CURIE prefixes and the stub
+  part of D-17). A CURIE (a param accession or unit, an extra-array key that is a CURIE, a chromatogram type or
+  intensity unit) needs a prefix `metadata.cv_list` declares: one of `CvEntry.known()` or a caller entry with all four
+  fields. A unit without a colon, such as `seconds`, is written as given. An explicit reference must name an entry of
+  the file metadata: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
+  of an instrument configuration or processing method, a scan setting's source file and the run's non-null defaults.
+  A batch write checks before its target exists, a session at open (file metadata, scan settings, spectrum arrays)
+  and at each add. A null run default is still filled, with a stub and a WARNING when nothing can be named. Without
+  file metadata (`null` or `FileMetadata.EMPTY`) no reference is checked, since nothing is declared and the overloads
+  without file metadata write the spectra a reader returns. diaPASEF.ref and diaPASEF.grid, whose run names
+  instrument configuration 1 while only 0 exists, are now written only with that configuration added. *Why:*
+  `conformance.md` requires every CV prefix used to be declared (l.24-25) and every non-null foreign key to resolve
+  (§Validation); a stub or an undeclared prefix wrote a file that fails both.
 - **A NaN m/z, time, wavelength or intensity fails the write, and so the conversion** (2026-11-22, X-18, D13-14;
   until then a NaN m/z in mzML input was warned as B-34). A NaN extra-array cell and a NaN optional metadata double
   are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec

@@ -223,6 +223,12 @@ class ForwardBackwardCorpusTest {
         FileMetadata fileMetadata;
     }
 
+    /**
+     * Everything {@code src} holds, its file metadata with the instrument configuration its run names
+     * ({@link Fixtures#withDeclaredDefaults}): the run of diaPASEF.ref and diaPASEF.grid names configuration 1, which
+     * they do not declare, and the writer rejects such a reference (W12); every test that rewrites a fixture read
+     * here writes that configuration. The metadata of any other dataset is the reader's.
+     */
     static Source readSource(Path src) {
         Source s = new Source();
         try (MzPeakReader r = MzPeakReader.open(src)) {
@@ -233,7 +239,7 @@ class ForwardBackwardCorpusTest {
             s.chromatograms = new ArrayList<>(r.chromatograms());
             s.wavelengthSpectra = new ArrayList<>(r.wavelengthSpectra());
             s.scanSettings = new ArrayList<>(r.scanSettings());
-            s.fileMetadata = r.fileMetadata();
+            s.fileMetadata = Fixtures.withDeclaredDefaults(r.fileMetadata());
         }
         return s;
     }

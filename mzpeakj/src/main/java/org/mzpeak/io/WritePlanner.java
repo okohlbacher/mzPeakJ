@@ -1,5 +1,6 @@
 package org.mzpeak.io;
 
+import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
@@ -20,8 +21,18 @@ import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
+import org.mzpeak.model.meta.FileMetadata.Component;
+import org.mzpeak.model.meta.FileMetadata.DataProcessing;
+import org.mzpeak.model.meta.FileMetadata.FileDescription;
+import org.mzpeak.model.meta.FileMetadata.InstrumentConfiguration;
+import org.mzpeak.model.meta.FileMetadata.MsRun;
+import org.mzpeak.model.meta.FileMetadata.ProcessingMethod;
+import org.mzpeak.model.meta.FileMetadata.Sample;
+import org.mzpeak.model.meta.FileMetadata.Software;
+import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 
 import java.util.ArrayList;
@@ -56,7 +67,9 @@ import java.util.regex.Pattern;
  * references, Params and precursors of chromatograms (a fourth). Each re-sorted main axis gets a warning of its own, and so do, in the split layout, the
  * scan settings without an id, which get one. A NaN in an axis (m/z, chromatogram time, wavelength) or an intensity
  * is refused as a contract violation in every encoding ({@link #requireNoNaN}), and with
- * {@link SignalEncoding#NUMPRESS} so is a value the Numpress codecs cannot encode.
+ * {@link SignalEncoding#NUMPRESS} so is a value the Numpress codecs cannot encode. So is a CURIE whose CV prefix
+ * {@code metadata.cv_list} would not declare, and a reference that names nothing of the file metadata
+ * ({@link Declarations}, W12).
  *
  * <p>A {@link MzPeakWriter.Session} is planned one spectrum at a time ({@link #sessionSignal}) with the same checks,
  * its spectrum signal files get the extra columns of the keys it is opened with ({@link #spectrumExtras}), and its
@@ -109,6 +122,10 @@ final class WritePlanner {
         List<Spectrum> ordered = validateAndOrder(spectra, inMinutes, wavelengthSpectra,
                 options.metadataLayout());
         requireWritableScanSettings(scanSettings);
+        Declarations declared = declarations(fileMetadata, scanSettings, options);
+        ordered.forEach(declared::require);
+        inMinutes.forEach(declared::require);
+        wavelengthSpectra.forEach(declared::require);
         Map<Long, Long> writtenIndex = new HashMap<>();
         for (int i = 0; i < ordered.size(); i++) {
             writtenIndex.put(ordered.get(i).index(), (long) i);
@@ -1199,5 +1216,244 @@ final class WritePlanner {
         if (!seen.add(value)) {
             throw new MzPeakException("duplicate " + what + ": " + value + " (mzPeak indices are unique)");
         }
+    }
+
+    // Declared CV prefixes and references (design W12, D13-6, D13-9, D13-26). conformance.md requires a writer to
+    // declare every CV prefix it uses in metadata.cv_list (l.24-25), and every non-null foreign key to resolve
+    // (§Validation). A write is refused before anything is written when a CURIE (a value with text before a colon, as
+    // KnownCvs.prefix takes it, the values ManifestWriter declares the CVs of) has a prefix metadata.cv_list would not
+    // declare, or when an explicit reference names nothing the file metadata declares. A value without a colon, such
+    // as the unit "seconds" (C6), is no CURIE and is written as given; an extra-array key that is not a CURIE is
+    // written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a stub and a WARNING when the
+    // file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) no reference is checked:
+    // such a write declares no instrument configuration, data processing or source file, and the overloads without
+    // file metadata write the spectra a reader returns this way.
+
+    /**
+     * What the entities of a write may name (W12): the CV prefixes {@code metadata.cv_list} declares with the cv list
+     * of the write's options ({@link KnownCvs#undeclared}), and the instrument configurations, data processings and
+     * source files of its file metadata. Built by {@link WritePlanner#declarations}, which checks the file metadata
+     * and the scan settings; {@link #require(Spectrum)}, {@link #require(Chromatogram)} and
+     * {@link #require(WavelengthSpectrum)} check an entity. Each check throws {@link MzPeakException} naming the
+     * entity, before anything of it is written.
+     */
+    static final class Declarations {
+
+        private final List<CvEntry> cvList;
+        /** The prefixes found declared so far. */
+        private final Set<String> declaredPrefixes = new HashSet<>();
+        /** Whether the write has file metadata, against which the references are checked. */
+        private final boolean checksReferences;
+        private final List<Integer> configurations = new ArrayList<>();
+        private final List<String> processing = new ArrayList<>();
+        private final List<String> sourceFiles = new ArrayList<>();
+
+        private Declarations(FileMetadata meta, Options options) {
+            this.cvList = options.cvList();
+            this.checksReferences = meta != null && !meta.equals(FileMetadata.EMPTY);
+            if (checksReferences) {
+                meta.instrumentConfigurations().forEach(ic -> configurations.add(ic.id()));
+                meta.dataProcessingMethods().forEach(dp -> processing.add(dp.id()));
+                if (meta.fileDescription() != null) {
+                    meta.fileDescription().sourceFiles().forEach(sf -> sourceFiles.add(sf.id()));
+                }
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} when a CURIE of {@code s} has an undeclared prefix: the accession or unit of
+         * a param of it, of its scans, or of its precursors' isolation windows, activations and selected ions, or a
+         * key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} that is a CURIE; or when its data
+         * processing or the instrument configuration of a scan names nothing the file metadata declares.
+         */
+        void require(Spectrum s) {
+            String owner = "spectrum " + s.index();
+            SpectrumDescription d = s.description();
+            requireParams(owner, d.parameters());
+            requireNamed(owner, "data_processing_id", d.dataProcessingRef(), processing, "data processing");
+            for (int i = 0; i < d.scans().size(); i++) {
+                ScanEvent scan = d.scans().get(i);
+                requireParams(owner + ": scan " + i, scan.parameters());
+                requireNamed(owner, "scan " + i + " instrument_configuration_id",
+                        scan.instrumentConfigurationRef(), configurations, "instrument configuration");
+            }
+            requirePrecursors(owner, d.precursors());
+            for (Map<String, double[]> arrays : List.of(s.arrays(), s.peakArrays())) {
+                requireArrayKeys(owner, arrays.keySet());
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} when a CURIE of {@code c} has an undeclared prefix: its type, its intensity
+         * unit, the accession or unit of a param of it or of its precursors, or a key of its arrays that is a CURIE;
+         * or when its data processing names nothing the file metadata declares.
+         */
+        void require(Chromatogram c) {
+            String owner = "chromatogram " + c.index();
+            requirePrefix(owner, "type", c.typeCurie());
+            requirePrefix(owner, "intensity unit", c.intensityUnit());
+            requireParams(owner, c.parameters());
+            requireNamed(owner, "data_processing_id", c.dataProcessingRef(), processing, "data processing");
+            requirePrecursors(owner, c.precursors());
+            requireArrayKeys(owner, c.arrays().keySet());
+        }
+
+        /** Throws {@link MzPeakException} when the accession or unit of a param of {@code w} has an undeclared prefix. */
+        void require(WavelengthSpectrum w) {
+            requireParams("wavelength spectrum " + w.index(), w.parameters());
+        }
+
+        /**
+         * Throws {@link MzPeakException} when a key of {@code keys}, the array keys of {@code owner}, is a CURIE whose
+         * prefix is not declared.
+         */
+        void requireArrayKeys(String owner, Collection<String> keys) {
+            for (String key : keys) {
+                if (CURIE.matcher(key).matches()) {
+                    requirePrefix(owner, "array", key);
+                }
+            }
+        }
+
+        /** The checks of the params of each of {@code precursors} of {@code owner}. */
+        private void requirePrecursors(String owner, List<Precursor> precursors) {
+            for (int i = 0; i < precursors.size(); i++) {
+                Precursor p = precursors.get(i);
+                String precursor = owner + ": precursor " + i;
+                if (p.isolationWindow() != null) {
+                    requireParams(precursor + " isolation window", p.isolationWindow().parameters());
+                }
+                requireParams(precursor + " activation", p.activation().parameters());
+                for (int j = 0; j < p.selectedIons().size(); j++) {
+                    requireParams(precursor + " selected ion " + j, p.selectedIons().get(j).parameters());
+                }
+            }
+        }
+
+        /** The checks of the accession and unit of each of {@code params} of {@code owner}; {@code null} has none. */
+        private void requireParams(String owner, List<Param> params) {
+            for (Param p : params == null ? List.<Param>of() : params) {
+                requirePrefix(owner, p, p.accession());
+                requirePrefix(owner, p, p.unit());
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} naming {@code owner} and {@code what} (a param, or what of the owner
+         * {@code curie} is) when {@code curie} has a prefix ({@link KnownCvs#prefix}) that {@code metadata.cv_list}
+         * would not declare.
+         */
+        private void requirePrefix(String owner, Object what, String curie) {
+            String prefix = KnownCvs.prefix(curie);
+            if (prefix == null || declaredPrefixes.contains(prefix)) {
+                return;
+            }
+            String why = KnownCvs.undeclared(prefix, cvList);
+            if (why != null) {
+                throw new MzPeakException(owner + ": " + what + " uses " + curie + ", whose CV prefix " + prefix
+                        + " metadata.cv_list would not declare: " + why + "; conformance.md requires every CV prefix"
+                        + " a file uses to be declared, so give its CV with id, full name, URI and version to"
+                        + " MzPeakWriter.Options.withCvList");
+            }
+            declaredPrefixes.add(prefix);
+        }
+
+        /**
+         * Throws {@link MzPeakException} when references are checked and {@code reference}, the {@code what} of
+         * {@code owner}, is not {@code null} and none of {@code declared}, the {@code kind}s the file metadata
+         * declares.
+         */
+        private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind) {
+            if (checksReferences && reference != null && !declared.contains(reference)) {
+                throw new MzPeakException(owner + ": " + what + " " + reference + " names no " + kind
+                        + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")");
+            }
+        }
+    }
+
+    /**
+     * The {@link Declarations} of a write of {@code fileMetadata}, which may be {@code null}, and {@code scanSettings},
+     * which may be {@code null}, with {@code options}, after checking them: the accession and unit of every param of
+     * the file metadata and of the scan settings (their own and their targets') have a declared prefix; the software
+     * reference of every instrument configuration and processing method, the run's default instrument configuration,
+     * data processing and source file, and every source file reference of the scan settings name, when not
+     * {@code null}, an entry the file metadata declares. Called by {@link #plan} and when a session opens.
+     *
+     * @throws MzPeakException naming the place, when a check fails
+     */
+    static Declarations declarations(FileMetadata fileMetadata, List<ScanSettings> scanSettings, Options options) {
+        Declarations declared = new Declarations(fileMetadata, options);
+        if (declared.checksReferences) {
+            requireDeclared(fileMetadata, declared);
+        }
+        if (scanSettings != null) {
+            for (int i = 0; i < scanSettings.size(); i++) {
+                ScanSettings s = scanSettings.get(i);
+                String owner = owner("scan settings", i, s.id());
+                declared.requireParams(owner, s.parameters());
+                for (int j = 0; j < s.targets().size(); j++) {
+                    declared.requireParams(owner + ": target " + j, s.targets().get(j));
+                }
+                for (String ref : s.sourceFileRefs()) {
+                    declared.requireNamed(owner, "source file reference", ref, declared.sourceFiles, "source file");
+                }
+            }
+        }
+        return declared;
+    }
+
+    /** The checks of {@link #declarations} of {@code meta}, a file metadata that is not empty. */
+    private static void requireDeclared(FileMetadata meta, Declarations declared) {
+        List<String> software = new ArrayList<>();
+        meta.software().forEach(s -> software.add(s.id()));
+        String owner = "file metadata";
+        FileDescription description = meta.fileDescription();
+        if (description != null) {
+            declared.requireParams(owner + ": file description", description.contents());
+            for (SourceFile sf : description.sourceFiles()) {
+                declared.requireParams(owner + ": source file " + sf.id(), sf.parameters());
+            }
+            for (int i = 0; i < description.contacts().size(); i++) {
+                declared.requireParams(owner + ": contact " + i, description.contacts().get(i).parameters());
+            }
+        }
+        for (InstrumentConfiguration ic : meta.instrumentConfigurations()) {
+            String configuration = owner + ": instrument configuration " + ic.id();
+            declared.requireParams(configuration, ic.parameters());
+            for (Component c : ic.components()) {
+                declared.requireParams(configuration + " component " + c.order(), c.parameters());
+            }
+            declared.requireNamed(configuration, "software_reference", ic.softwareReference(), software, "software");
+        }
+        for (Software s : meta.software()) {
+            declared.requireParams(owner + ": software " + s.id(), s.parameters());
+        }
+        for (DataProcessing dp : meta.dataProcessingMethods()) {
+            for (ProcessingMethod m : dp.methods()) {
+                String method = owner + ": data processing " + dp.id() + " method " + m.order();
+                declared.requireParams(method, m.parameters());
+                declared.requireNamed(method, "software_reference", m.softwareReference(), software, "software");
+            }
+        }
+        for (Sample s : meta.samples()) {
+            declared.requireParams(owner + ": sample " + s.id(), s.parameters());
+        }
+        MsRun run = meta.run();
+        if (run != null) {
+            declared.requireParams(owner + ": run", run.parameters());
+            declared.requireNamed(owner + ": run", "default_instrument_configuration_id", run.defaultInstrumentId(),
+                    declared.configurations, "instrument configuration");
+            declared.requireNamed(owner + ": run", "default_data_processing_id", run.defaultDataProcessingId(),
+                    declared.processing, "data processing");
+            declared.requireNamed(owner + ": run", "default_source_file_id", run.defaultSourceFileId(),
+                    declared.sourceFiles, "source file");
+        }
+    }
+
+    /** {@code ids} as {@code a, b, c}. */
+    private static String joinedIds(List<?> ids) {
+        List<String> parts = new ArrayList<>(ids.size());
+        ids.forEach(id -> parts.add(String.valueOf(id)));
+        return String.join(", ", parts);
     }
 }

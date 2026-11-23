@@ -348,7 +348,8 @@ class WriterManifestConformanceTest {
 
     /**
      * W1 (D13-11): in the current (split) dialect the run names its default instrument with
-     * {@code default_instrument_configuration_id} only (diaPASEF.ref's 1 by its stub configuration), and every file
+     * {@code default_instrument_configuration_id} only (diaPASEF.ref's 1 by the configuration
+     * {@link Fixtures#withDeclaredDefaults} adds), and every file
      * metadata document, the run's against {@code ms_run.json} of spec 963d64a, passes the schema check and resolves,
      * in the manifest and in every footer that holds them.
      */

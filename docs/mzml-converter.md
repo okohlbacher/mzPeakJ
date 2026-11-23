@@ -299,6 +299,11 @@ with the writer's message, which names the entity's index and the position, for 
 position 1 is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, ...`, and leaves no target. parquet-java
 writes no column index for a page holding a NaN, and the spec requires a page index for every column (W10, D13-14). A
 NaN in any other array is written as null and reads back as NaN; an array of NaN only is dropped (B-26).
+So does, by the writer's W12 checks (D13-6, D13-9), a term whose CV prefix the mzML's `cvList` does not declare
+(nor `CvEntry.known()`), and a reference that names nothing of the header: a spectrum's or chromatogram's
+`dataProcessingRef`, the `softwareRef` of a processing method or instrument configuration, a scan setting's
+`sourceFileRef`, or the run's `defaultSourceFileRef` or the spectrum list's `defaultDataProcessingRef`. An unknown
+`instrumentConfigurationRef` is still dropped (B-39).
 Every write through jmzML's `MzMLMarshaller` also sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`; it changes no output.
 

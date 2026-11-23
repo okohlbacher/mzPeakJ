@@ -124,6 +124,9 @@ class WriterCvListTest {
     /** A CV mzPeakJ does not know. */
     private static final CvEntry XYZ = new CvEntry("XYZ", "An ontology mzPeakJ does not know",
             "https://example.org/xyz.obo", "1.2");
+    /** PATO, which mzPeakJ does not know, in a fixed release. */
+    private static final CvEntry PATO = new CvEntry("PATO", "Phenotype And Trait Ontology",
+            "http://purl.obolibrary.org/obo/pato/releases/2025-05-14/pato.obo", "2025-05-14");
 
     /** A CURIE as a whole cell value: prefix, colon, local id. */
     private static final Pattern CURIE = Pattern.compile("([A-Za-z][A-Za-z0-9_.-]*):([A-Za-z0-9_]+)");
@@ -254,31 +257,40 @@ class WriterCvListTest {
 
     // ---- unknown prefix -----------------------------------------------------------------------------------------
 
+    /**
+     * W12 (D13-6): a prefix no known CV and no caller entry has is refused before anything is written, the file
+     * metadata's first; with the caller's entry of PATO the terms are written as given and PATO is declared.
+     */
     @Test
-    void aPatoParamGivesExactlyOneWarningAndStaysUndeclared(@TempDir Path tmp) throws IOException {
+    void aPatoParamIsRefusedUnlessTheCallerDeclaresPato(@TempDir Path tmp) throws IOException {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
         Param pato = new Param("quality", "PATO:0000001", null, null);
-        // The same unknown prefix on two spectra and on the run: still one warning.
         List<Spectrum> spectra = List.of(withParam(s.spectra.get(0), pato), withParam(s.spectra.get(1), pato));
         FileMetadata.MsRun run = s.fileMetadata.run();
+        Param trait = new Param("trait", "PATO:0000070", null, null);
         FileMetadata metadata = new FileMetadata(s.fileMetadata.fileDescription(),
                 s.fileMetadata.instrumentConfigurations(), s.fileMetadata.dataProcessingMethods(),
                 s.fileMetadata.samples(), s.fileMetadata.software(),
                 new FileMetadata.MsRun(run.id(), run.defaultInstrumentId(), run.defaultDataProcessingId(),
-                        run.defaultSourceFileId(), run.startTime(),
-                        List.of(new Param("trait", "PATO:0000070", null, null))));
+                        run.defaultSourceFileId(), run.startTime(), List.of(trait)));
         Path out = tmp.resolve("pato.mzpeak");
 
-        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, List.of(),
-                List.of(), List.of(), metadata));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(),
+                metadata)).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("file metadata: run: " + trait + " uses PATO:0000070, whose CV prefix PATO"
+                        + " metadata.cv_list would not declare");
+        assertThat(out).doesNotExist();
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(),
+                s.fileMetadata)).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("spectrum 0: " + pato + " uses PATO:0000001");
+        assertThat(out).doesNotExist();
 
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.get(0).getMessage()).contains("PATO");
-        assertThat(cvList(out)).containsExactly(MS, UO);
-        Map<String, String> used = writtenPrefixes(out);
-        assertThat(used).containsKey("PATO");
-        assertThat(declaredIds(out)).doesNotContain("PATO").containsAll(
-                used.keySet().stream().filter(p -> !p.equals("PATO")).toList());
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, List.of(),
+                List.of(), List.of(), metadata, MzPeakWriter.Options.defaults().withCvList(List.of(PATO))));
+
+        assertThat(warnings).isEmpty();
+        assertThat(cvList(out)).containsExactly(MS, UO, json(PATO));
+        assertEveryWrittenPrefixIsDeclared(out);
         // The term itself is written and read back as it was given.
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.getSpectrumAt(0).description().parameters()).contains(pato);
@@ -374,25 +386,32 @@ class WriterCvListTest {
         assertThat(plan.report().warnings().get(0)).contains("PATO:0000117");
     }
 
+    /**
+     * W12 (D13-26): a unit that is a CURIE is prefix-checked: an unknown prefix used only as a param unit is refused
+     * before anything is written, and declared with the caller's entry of its CV.
+     */
     @Test
-    void anUnknownPrefixUsedOnlyAsAParamUnitGivesExactlyOneWarningAndStaysUndeclared(@TempDir Path tmp)
+    void anUnknownPrefixUsedOnlyAsAParamUnitIsRefusedUnlessTheCallerDeclaresIt(@TempDir Path tmp)
             throws IOException {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
         Param pato = new Param("sample mass", "MS:1000004", 1.5, "PATO:0000117");
-        // The same unknown unit on two spectra: still one warning.
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
         spectra.set(0, withParam(spectra.get(0), pato));
         spectra.set(1, withParam(spectra.get(1), pato));
         Path out = tmp.resolve("pato-unit.mzpeak");
 
-        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
-                s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms, s.wavelengthSpectra,
+                s.scanSettings, s.fileMetadata)).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("spectrum 0: " + pato + " uses PATO:0000117, whose CV prefix PATO");
+        assertThat(out).doesNotExist();
 
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.get(0).getMessage()).contains("PATO:0000117");
-        assertThat(cvList(out)).containsExactly(MS, UO);
-        assertThat(writtenPrefixes(out)).containsEntry("PATO", "PATO:0000117");
-        assertThat(declaredIds(out)).doesNotContain("PATO");
+        List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withCvList(List.of(PATO))));
+
+        assertThat(warnings).isEmpty();
+        assertThat(cvList(out)).containsExactly(MS, UO, json(PATO));
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry("PATO", "PATO:0000117");
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.getSpectrumAt(0).description().parameters()).contains(pato);
         }
@@ -428,28 +447,35 @@ class WriterCvListTest {
         }
     }
 
+    /**
+     * W12: an unknown prefix in an isolation window param is refused before anything is written, in either layout,
+     * and declared with the caller's entry of its CV.
+     */
     @ParameterizedTest
     @EnumSource(MzPeakWriter.MetadataLayout.class)
-    void anUnknownPrefixInAnIsolationWindowParamGivesExactlyOneWarningAndStaysUndeclared(
+    void anUnknownPrefixInAnIsolationWindowParamIsRefusedUnlessTheCallerDeclaresIt(
             MzPeakWriter.MetadataLayout layout, @TempDir Path tmp) throws IOException {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
         Param pato = new Param("quality", "PATO:0000001", null, null);
-        // The same unknown prefix in the windows of two spectra: still one warning.
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
         List<Integer> ms2 = precursorSpectra(spectra);
         spectra.set(ms2.get(0), withWindowParams(spectra.get(ms2.get(0)), List.of(pato)));
         spectra.set(ms2.get(1), withWindowParams(spectra.get(ms2.get(1)), List.of(pato)));
         Path out = tmp.resolve("window-pato.mzpeak");
+        MzPeakWriter.Options options = MzPeakWriter.Options.defaults().withMetadataLayout(layout);
+
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms, s.wavelengthSpectra,
+                s.scanSettings, s.fileMetadata, options)).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("spectrum " + ms2.get(0) + ": precursor 0 isolation window: " + pato
+                        + " uses PATO:0000001");
+        assertThat(out).doesNotExist();
 
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
-                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
-                MzPeakWriter.Options.defaults().withMetadataLayout(layout)));
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata, options.withCvList(List.of(PATO))));
 
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.get(0).getMessage()).contains("PATO:0000001");
-        assertThat(cvList(out)).containsExactly(MS, UO);
-        assertThat(writtenPrefixes(out)).containsEntry("PATO", "PATO:0000001");
-        assertThat(declaredIds(out)).doesNotContain("PATO");
+        assertThat(warnings).isEmpty();
+        assertThat(cvList(out)).containsExactly(MS, UO, json(PATO));
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry("PATO", "PATO:0000001");
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.getSpectrumAt(ms2.get(1)).description().precursors().get(0).isolationWindow().parameters())
                     .contains(pato);
@@ -510,9 +536,8 @@ class WriterCvListTest {
     }
 
     /**
-     * A prefix in use that mzPeakJ does not know is declared by the caller's entry for it, without the warning, and
-     * still reported when the caller's list lacks it; caller entries for prefixes not in use, known or not, are not
-     * declared.
+     * A prefix in use that mzPeakJ does not know is declared by the caller's entry for it, and refused (W12) when the
+     * caller's list lacks it; caller entries for prefixes not in use, known or not, are not declared.
      */
     @Test
     void aCallerEntryForAnUnknownPrefixInUseIsDeclaredAndAnUnusedOneIsNot(@TempDir Path tmp) {
@@ -524,19 +549,24 @@ class WriterCvListTest {
         Path plain = tmp.resolve("plain.mzpeak");
         Path out = tmp.resolve("caller.mzpeak");
 
-        List<LogRecord> plainWarnings = writerWarnings(() -> MzPeakWriter.writeDirectory(plain, spectra,
-                s.chromatograms, s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(plain, spectra, s.chromatograms, s.wavelengthSpectra,
+                s.scanSettings, s.fileMetadata)).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("spectrum 0: Param[name=odd, accession=XYZ:0000001, value=null, unit=null]"
+                        + " uses XYZ:0000001");
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms, s.wavelengthSpectra,
+                s.scanSettings, s.fileMetadata, MzPeakWriter.Options.defaults()
+                        .withCvList(List.of(unused, CALLER_BTO, XYZ)))).isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("spectrum 1: Param[name=quality, accession=PATO:0000001, value=null,"
+                        + " unit=null] uses PATO:0000001");
+        assertThat(plain).doesNotExist();
+        assertThat(out).doesNotExist();
+
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
                 s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
-                MzPeakWriter.Options.defaults().withCvList(List.of(unused, CALLER_BTO, XYZ))));
+                MzPeakWriter.Options.defaults().withCvList(List.of(unused, CALLER_BTO, XYZ, PATO))));
 
-        assertThat(plainWarnings).extracting(LogRecord::getMessage).hasSize(2)
-                .anySatisfy(m -> assertThat(m).contains("XYZ:0000001"))
-                .anySatisfy(m -> assertThat(m).contains("PATO:0000001"));
-        assertThat(cvList(plain)).containsExactly(MS, UO);
-        assertThat(cvList(out)).containsExactly(MS, UO, json(XYZ));
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.get(0).getMessage()).contains("PATO:0000001").doesNotContain("XYZ");
+        assertThat(cvList(out)).containsExactly(MS, UO, json(XYZ), json(PATO));
+        assertThat(warnings).isEmpty();
         assertThat(writtenPrefixes(out)).containsEntry("XYZ", "XYZ:0000001").doesNotContainKeys("ABC", "BTO");
     }
 
@@ -574,17 +604,25 @@ class WriterCvListTest {
      * The cv list of an mzML header, whose cv@version is optional, with entries that lack fields and one without an
      * id: every cv_list entry written has a string id, full_name, uri and version, as the spec's cv_list schema
      * requires; the known CVs, which without URI or version show no fixed release, are declared as the built-in
-     * entries, the unknown FOO without a URI is left undeclared, and each case is warned about once.
+     * entries, the unused FOO is not declared, and each case is warned about once. A term of FOO, whose entry lacks a
+     * URI, is refused (W12).
      */
     @Test
     void everyWrittenCvListEntryHasStringFieldsWhateverTheCallersEntriesLack(@TempDir Path tmp) {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
-        spectra.set(0, withParam(spectra.get(0), new Param("odd", "FOO:0000001", null, null)));
+        List<Spectrum> withFoo = new ArrayList<>(s.spectra);
+        withFoo.set(0, withParam(spectra.get(0), new Param("odd", "FOO:0000001", null, null)));
         List<CvEntry> caller = List.of(new CvEntry("MS", "PSI-MS", "https://example.org/ms.obo", null),
                 new CvEntry("UO", null, null, null), new CvEntry("FOO", "Foo", null, "1"),
                 new CvEntry(null, "no id", null, null));
         Path out = tmp.resolve("cv.mzpeak");
+
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, withFoo, s.chromatograms, s.wavelengthSpectra,
+                s.scanSettings, s.fileMetadata, MzPeakWriter.Options.defaults().withCvList(caller)))
+                .isInstanceOf(MzPeakException.class).hasMessageContaining("uses FOO:0000001, whose CV prefix FOO"
+                        + " metadata.cv_list would not declare: its cv list entry has no uri;");
+        assertThat(out).doesNotExist();
 
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
                 s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
@@ -598,11 +636,10 @@ class WriterCvListTest {
             }
         }
         assertThat(cvList(out)).containsExactly(MS, UO);
-        assertThat(warnings).extracting(LogRecord::getMessage).hasSize(4)
+        assertThat(warnings).extracting(LogRecord::getMessage).hasSize(3)
                 .anySatisfy(m -> assertThat(m).contains("without an id"))
                 .anySatisfy(m -> assertThat(m).contains("entry of MS (URI https://example.org/ms.obo, version null)"))
-                .anySatisfy(m -> assertThat(m).contains("entry of UO (URI null, version null)"))
-                .anySatisfy(m -> assertThat(m).contains("FOO:0000001").contains("has no uri"));
+                .anySatisfy(m -> assertThat(m).contains("entry of UO (URI null, version null)"));
     }
 
     static Stream<Arguments> callerEntriesForCvsUsedOnlyInWavelengthOrChromatogramParams() {
@@ -615,7 +652,7 @@ class WriterCvListTest {
 
     /**
      * A CV that only a param of has_uv's first wavelength spectrum or first chromatogram uses is declared by the
-     * caller's entry, without a warning; without that entry, an unknown one is left undeclared and a known one is
+     * caller's entry, without a warning; without that entry, an unknown one is refused (W12) and a known one is
      * declared by the built-in entry.
      */
     @ParameterizedTest(name = "{1} on a {0}")
@@ -634,15 +671,22 @@ class WriterCvListTest {
         Path plain = tmp.resolve("plain.mzpeak");
         Path out = tmp.resolve("caller.mzpeak");
 
-        List<LogRecord> plainWarnings = writerWarnings(() -> MzPeakWriter.writeDirectory(plain, s.spectra,
-                chromatograms, waves, s.scanSettings, s.fileMetadata));
+        if (builtIn.isEmpty()) {
+            assertThatThrownBy(() -> MzPeakWriter.writeDirectory(plain, s.spectra, chromatograms, waves,
+                    s.scanSettings, s.fileMetadata)).isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith(where + " 0: " + param + " uses " + param.accession());
+            assertThat(plain).doesNotExist();
+        } else {
+            List<LogRecord> plainWarnings = writerWarnings(() -> MzPeakWriter.writeDirectory(plain, s.spectra,
+                    chromatograms, waves, s.scanSettings, s.fileMetadata));
+            List<String> plainCvs = new ArrayList<>(List.of(MS, UO));
+            plainCvs.addAll(builtIn);
+            assertThat(cvList(plain)).containsExactlyElementsOf(plainCvs);
+            assertThat(plainWarnings).isEmpty();
+        }
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra, chromatograms,
                 waves, s.scanSettings, s.fileMetadata, MzPeakWriter.Options.defaults().withCvList(List.of(entry))));
 
-        List<String> plainCvs = new ArrayList<>(List.of(MS, UO));
-        plainCvs.addAll(builtIn);
-        assertThat(cvList(plain)).containsExactlyElementsOf(plainCvs);
-        assertThat(plainWarnings).hasSize(builtIn.isEmpty() ? 1 : 0);
         assertThat(cvList(out)).containsExactly(MS, UO, json(entry));
         assertThat(warnings).isEmpty();
         assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry(entry.id(), param.accession());

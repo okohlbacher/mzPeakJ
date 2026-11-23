@@ -249,6 +249,24 @@ final class KnownCvs {
         return missing;
     }
 
+    /**
+     * Why {@link #declare} does not declare the CV {@code prefix} with the caller's entries {@code callerCvs}, or
+     * {@code null} if it does: it is the id of an entry of {@link #ALL}, or the first entry of {@code callerCvs} with
+     * that id has all four fields.
+     */
+    static String undeclared(String prefix, List<CvEntry> callerCvs) {
+        if (isKnown(prefix)) {
+            return null;
+        }
+        for (CvEntry cv : callerCvs) {
+            if (prefix.equals(cv.id())) {
+                List<String> missing = missing(cv);
+                return missing.isEmpty() ? null : "its cv list entry has no " + String.join(", ", missing);
+            }
+        }
+        return "neither mzPeakJ nor the cv list of the options knows it";
+    }
+
     /** {@code true} if {@code id} is the id of an entry of {@link #ALL}. */
     private static boolean isKnown(String id) {
         return ALL.stream().anyMatch(cv -> cv.id().equals(id));

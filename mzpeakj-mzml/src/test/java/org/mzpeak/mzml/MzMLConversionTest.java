@@ -278,7 +278,9 @@ class MzMLConversionTest {
     /**
      * Wavelength spectra and chromatograms go both ways; a dataset without file description and run, whose spectra use
      * a CV that no cv list declares, is written with that CV completed as the prefix with URI 'unknown'. That entry
-     * identifies no release, so the mzML converts back only once the entry names one (W8).
+     * identifies no release, so the mzML converts back only once the entry names one (W8). The dataset is unpacked and
+     * its cv list entry of the CV removed after the write ({@link #withoutCvs}), since mzPeakJ refuses to write a
+     * CV it does not declare (W12).
      */
     @Test
     void aDatasetWithoutFileMetadataAndWithWavelengthSpectraAndAnUndeclaredCvGoesBothWays() throws IOException {
@@ -291,8 +293,9 @@ class MzMLConversionTest {
                 new double[] {0.5, 0.25}, List.of(new Param("absorption spectrum", "MS:1000806", null, null)));
         Chromatogram tic = new Chromatogram(0, "tic", "MS:1000235", new double[] {1, 2}, new double[] {3, 4},
                 "MS:1000131", Map.of());
-        MzPeakWriter.writeArchive(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of(tic),
-                List.of(uv), List.of(), FileMetadata.EMPTY);
+        MzPeakWriter.writeDirectory(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2),
+                List.of(tic), List.of(uv), List.of(), FileMetadata.EMPTY, withCvs("XX"));
+        withoutCvs(input, "XX");
         try (MzPeakReader reader = MzPeakReader.open(input)) {
             assertThat(reader.fileMetadata().fileDescription()).isNull();
             assertThat(reader.fileMetadata().run()).isNull();
@@ -628,8 +631,9 @@ class MzMLConversionTest {
 
     /**
      * The CV prefixes the spectra use only as the unit of a scan param (XYZ) or as the accession of an activation
-     * param (ABC), which the mzPeak writer leaves undeclared, are announced to the mzML writer: it declares both
-     * (A-17) instead of rejecting the spectrum.
+     * param (ABC), which the dataset's cv list does not declare, are announced to the mzML writer: it declares both
+     * (A-17) instead of rejecting the spectrum. The dataset is unpacked and its cv list entries of the two removed
+     * after the write ({@link #withoutCvs}), since mzPeakJ refuses to write a CV it does not declare (W12).
      */
     @Test
     void theCvPrefixesOfScanParamUnitsAndActivationParamsAreDeclared() throws IOException {
@@ -643,7 +647,9 @@ class MzMLConversionTest {
         Spectrum ms2 = new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
                 d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), List.of(scan),
                 d.precursors(), d.parameters()), s.mz(), s.intensity(), s.peaks());
-        MzPeakWriter.writeArchive(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of());
+        MzPeakWriter.writeDirectory(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of(),
+                List.of(), List.of(), FileMetadata.EMPTY, withCvs("XYZ", "ABC"));
+        withoutCvs(input, "XYZ", "ABC");
         try (MzPeakReader reader = MzPeakReader.open(input)) {
             assertThat(reader.manifest().cvList()).extracting(CvEntry::id).doesNotContain("XYZ", "ABC");
         }
@@ -891,7 +897,8 @@ class MzMLConversionTest {
                         "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
                         "<cvParam cvRef=\"MS\" accession=\"MS:1000004\" name=\"sample mass\" value=\"1.5\""
                                 + " unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000002\" unitName=\"odd\"/>"))),
-                arguments("spectrum scan=19", "XYZ:0000004", edit(s -> withArray(s, SCAN_19,
+                // Checked before the session opens, which refuses an undeclared CV of the spectrum arrays (W12).
+                arguments("a spectrum array", "XYZ:0000004", edit(s -> withArray(s, SCAN_19,
                         array(cv("MS:1000786", "non-standard data array", "XYZ:0000004", null), ramp(15))))),
                 arguments("spectrum scan=19", "XYZ:0000005", edit(s -> withParam(s, SCAN_19,
                         "<scan instrumentConfigurationRef=\"LCQ_x0020_Deca\">", xyz("XYZ:0000005")))),
@@ -1345,6 +1352,31 @@ class MzMLConversionTest {
         String edited = edit.apply(original);
         assertThat(edited).as("the edit changes the document").isNotEqualTo(original);
         return Files.writeString(dir.resolve("tiny-edited.mzML"), edited, StandardCharsets.ISO_8859_1);
+    }
+
+    /** The writer's options with a cv list entry of each of {@code ids}, CVs mzPeakJ does not know, in a release. */
+    private static MzPeakWriter.Options withCvs(String... ids) {
+        List<CvEntry> cvs = new ArrayList<>();
+        for (String id : ids) {
+            cvs.add(new CvEntry(id, id + " ontology", "https://example.org/" + id + "/1/" + id + ".obo", "1"));
+        }
+        return MzPeakWriter.Options.defaults().withCvList(cvs);
+    }
+
+    /**
+     * Removes the {@code metadata.cv_list} entry of each of {@code ids} from the manifest of the unpacked dataset
+     * {@code dataset}, which the writer wrote with them ({@link #withCvs}): a dataset that uses CVs it does not
+     * declare, as another producer may write one. The manifest has no checksum of its own.
+     */
+    private static void withoutCvs(Path dataset, String... ids) throws IOException {
+        Path index = dataset.resolve("mzpeak_index.json");
+        String json = Files.readString(index, StandardCharsets.UTF_8);
+        for (String id : ids) {
+            String stripped = json.replaceFirst(",\\s*\\{\\s*\"id\"\\s*:\\s*\"" + id + "\"[^{}]*}", "");
+            assertThat(stripped).as("the cv_list entry of %s is removed", id).isNotEqualTo(json);
+            json = stripped;
+        }
+        Files.writeString(index, json, StandardCharsets.UTF_8);
     }
 
     /** {@code s} with its single occurrence of {@code target} replaced. */

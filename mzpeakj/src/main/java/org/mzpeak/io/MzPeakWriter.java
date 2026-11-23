@@ -182,6 +182,16 @@ public final class MzPeakWriter {
      * {@code String}, a {@code Boolean}, or a {@code java.util.Collection} or Java array of these, written as a JSON
      * array (a JSON string of it in a Parquet {@code parameters} list) and read back as its compact JSON text
      * ({@code "[1,2]"}).
+     * Every CURIE written must have a CV prefix that {@code metadata.cv_list} declares, as conformance.md requires:
+     * one of {@link CvEntry#known()} or one the {@link Options#withCvList cv list} of {@code options} gives with all
+     * four fields. Checked are the accession and unit of every param (of the entities, their scans, precursors and
+     * selected ions, the scan settings and the file metadata), every array key that is a CURIE and the type and
+     * intensity unit of every chromatogram; a value without a colon, such as the unit {@code seconds}, is no CURIE and
+     * is written as given. Every explicit reference must name an entry of {@code fileMetadata}: a scan's
+     * instrument configuration, a spectrum's or chromatogram's data processing, the software of an instrument
+     * configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
+     * run default is filled with the first entry of its list, else with a stub entry and a WARNING. Without file
+     * metadata ({@code null} or {@link FileMetadata#EMPTY}) no reference is checked.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}
@@ -367,7 +377,10 @@ public final class MzPeakWriter {
      *                              created or written, when a key of {@code spectrumArrays} is MS:1000514 or
      *                              MS:1000515, which a spectrum holds in {@code mz()} and {@code intensity()}, or when
      *                              a Param of {@code fileMetadata} or {@code scanSettings} has a value of a type
-     *                              {@code writeDirectory} does not write
+     *                              {@code writeDirectory} does not write, or when a CURIE of {@code fileMetadata},
+     *                              {@code scanSettings} or {@code spectrumArrays} has a CV prefix that
+     *                              {@code metadata.cv_list} would not declare or a reference of {@code fileMetadata}
+     *                              or {@code scanSettings} names nothing, as {@code writeDirectory} states
      * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
      */
     public static Session openDirectory(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
@@ -392,7 +405,8 @@ public final class MzPeakWriter {
      * @throws MzPeakException      when {@code target} exists, when the temp directory cannot be created or written,
      *                              when a key of {@code spectrumArrays} is MS:1000514 or MS:1000515, or when a Param of
      *                              {@code fileMetadata} or {@code scanSettings} has a value of a type
-     *                              {@code writeDirectory} does not write
+     *                              {@code writeDirectory} does not write, or when a CURIE or reference of them breaks
+     *                              a rule {@code openDirectory} names
      * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
      */
     public static Session openArchive(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
@@ -662,7 +676,10 @@ public final class MzPeakWriter {
      * spectrum. A main axis that is not ascending is written re-sorted, with a WARNING. Chromatograms and wavelength
      * spectra are held until the finish and written then as {@code writeDirectory} writes them: in the order of their
      * indices, which must be unique and non-negative, numbered 0..n-1, each precursor_index of a chromatogram as the
-     * new index of the chromatogram it names, or null; a violation fails the finish.
+     * new index of the chromatogram it names, or null; a violation fails the finish. A spectrum, chromatogram or
+     * wavelength spectrum with a CURIE whose CV prefix {@code metadata.cv_list} would not declare, or with a reference
+     * that names nothing of the file metadata (rules of {@code writeDirectory}), is refused when it is added, and
+     * nothing of it is added.
      *
      * <p><b>Targets.</b> {@link MzPeakWriter#openDirectory openDirectory} writes the members into the directory as the
      * session goes; the directory must not exist (it is then created) or be empty. {@link MzPeakWriter#openArchive
@@ -705,6 +722,8 @@ public final class MzPeakWriter {
         private final List<ScanSettings> scanSettings;
         private final Map<String, String> footer;
         private final WriteReport report;
+        /** What the entities added may name (W12); {@code null} in replace mode, whose plan checked its entities. */
+        private final WritePlanner.Declarations declarations;
         private final DatasetWriter dataset;
         private final List<Chromatogram> chromatograms = new ArrayList<>();
         private final List<WavelengthSpectrum> wavelengthSpectra = new ArrayList<>();
@@ -721,7 +740,7 @@ public final class MzPeakWriter {
          */
         private Session(Path target, boolean archive, boolean replace, boolean createdDirectory, Options options,
                         List<ExtraColumn> extras, boolean writesSpectraData, List<ScanSettings> scanSettings,
-                        Map<String, String> footer, WriteReport report) {
+                        Map<String, String> footer, WriteReport report, WritePlanner.Declarations declarations) {
             this.target = target;
             this.archive = archive;
             this.replace = replace;
@@ -735,6 +754,7 @@ public final class MzPeakWriter {
             this.scanSettings = scanSettings;
             this.footer = footer;
             this.report = report;
+            this.declarations = declarations;
             this.directory = archive ? ArchivePacker.stagingDirectory(target) : target;
             this.dataset = new DatasetWriter(directory, options, extras, writesSpectraData);
             try (Step step = new Step()) {
@@ -756,6 +776,8 @@ public final class MzPeakWriter {
             }
             Objects.requireNonNull(options, "options");
             List<ExtraColumn> extras = WritePlanner.spectrumExtras(keys);
+            WritePlanner.Declarations declarations = WritePlanner.declarations(fileMetadata, settings, options);
+            declarations.requireArrayKeys("spectrumArrays", keys);
             boolean exists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
             if (exists && (archive || !isEmptyDirectory(target))) {
                 throw new MzPeakException(archive
@@ -764,7 +786,8 @@ public final class MzPeakWriter {
                         + " writes only into a new or empty directory");
             }
             return new Session(target, archive, false, !archive && !exists, options, extras, true, settings,
-                    FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), new WriteReport());
+                    FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()), new WriteReport(),
+                    declarations);
         }
 
         /**
@@ -777,7 +800,7 @@ public final class MzPeakWriter {
          */
         static Session replacing(Path target, boolean archive, WritePlan plan) {
             return new Session(target, archive, true, false, plan.options(), plan.spectrumExtras(),
-                    plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report());
+                    plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report(), null);
         }
 
         /** Whether {@code target}, which exists, is a directory without an entry. */
@@ -807,6 +830,7 @@ public final class MzPeakWriter {
             if (spectrum.index() != expected) {
                 throw new MzPeakException("expected spectrum index " + expected + ", got " + spectrum.index());
             }
+            declarations.require(spectrum);
             WriteReport warnings = new WriteReport();
             append(WritePlanner.sessionSignal(spectrum, spectrumArrays, options, warnings, packedDrops));
             for (String warning : warnings.warnings()) {
@@ -820,12 +844,16 @@ public final class MzPeakWriter {
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code chromatogram} is {@code null}
          * @throws MzPeakException       if its {@link Chromatogram#timeUnit()} cannot be converted to minutes (it is
-         *                               not minute, second, millisecond or hour); it is not added
+         *                               not minute, second, millisecond or hour), or if a CURIE of it has an undeclared
+         *                               CV prefix or its data processing names nothing (see the class documentation);
+         *                               it is not added
          */
         public void addChromatogram(Chromatogram chromatogram) {
             requireOpen();
             Objects.requireNonNull(chromatogram, "chromatogram");
-            chromatograms.add(WritePlanner.inMinutes(chromatogram));
+            Chromatogram inMinutes = WritePlanner.inMinutes(chromatogram);
+            declarations.require(inMinutes);
+            chromatograms.add(inMinutes);
         }
 
         /**
@@ -833,10 +861,13 @@ public final class MzPeakWriter {
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code spectrum} is {@code null}
+         * @throws MzPeakException       if the accession or unit of a param of it has an undeclared CV prefix (see the
+         *                               class documentation); it is not added
          */
         public void addWavelengthSpectrum(WavelengthSpectrum spectrum) {
             requireOpen();
-            wavelengthSpectra.add(Objects.requireNonNull(spectrum, "spectrum"));
+            declarations.require(Objects.requireNonNull(spectrum, "spectrum"));
+            wavelengthSpectra.add(spectrum);
         }
 
         /**
