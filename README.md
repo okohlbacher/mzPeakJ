@@ -314,8 +314,8 @@ Without a row-group size, the `mzpeak.writer.rowGroupSize` system property appli
   reference reader read this output; both are checked (the Rust reader in CI, see the writer notes).
 - **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
   and only the first scan and the primary precursor of a spectrum; no spectrum data processing reference, no
-  wavelength-spectrum Params, and no chromatogram polarity, data processing reference, Params or precursors (one
-  WARNING for each kind dropped).
+  wavelength-spectrum Params, no chromatogram polarity, data processing reference, Params or precursors, and no
+  auxiliary arrays (one WARNING for each kind dropped).
   Since 0.12.0 a spectrum type or summary term it writes as a column no longer stays in the `parameters` list as
   well. Use it only for readers of that era; the current Python and Rust readers reject it.
 
@@ -347,8 +347,18 @@ Writer notes:
   range are not also kept in the list (the spec forbids writing a term both ways); the Rust reference reader takes
   them from the columns, once each, where it reads the reference's has_uv with each twice. A param with an accession but no name in a `parameters` list is written with its term's name (its accession
   where mzPeakJ does not know the term), which the Rust reference reader requires.
-- In the `SPLIT` layout, `spectra_metadata` and `wavelength_spectra_metadata` carry empty `auxiliary_arrays` and
-  an `ARROW:schema` footer entry that types them as the reference does; the Rust reference reader needs both.
+- In the `SPLIT` layout, `spectra_metadata`, `chromatograms_metadata` and `wavelength_spectra_metadata` carry each
+  entity's `auxiliaryArrays()` in `auxiliary_arrays`, their bytes and compression as given (compressed bytes stay
+  compressed), with `number_of_auxiliary_arrays`, and an `ARROW:schema` footer entry that types them as the
+  reference does; the Rust reference reader needs both columns. Their names, units and params pass the CV prefix
+  check below, their data processing must be declared, and the accession of their name (a binary data array type,
+  MS:1000786 non-standard data array with the array's name as its value included), their data type and their
+  compression must each be a term the Rust reference reader accepts (it panics on a name without an accession and
+  on any other value), else the write is refused. So is a unit of the array, of its name or of a param, or a param
+  accession, that is neither null nor a CURIE that reader parses, `PREFIX:number` with a number up to 4294967295
+  (it panics on others): a unit such as `seconds` is refused here, give `UO:0000010`. The Rust reference reader
+  cannot decode a zlib-compressed one (R-13) and drops those of a chunked spectrum spanning row groups (R-14); the
+  `PACKED` layout writes none and warns.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
   only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
   A CENTROID spectrum with a non-finite m/z keeps both files, since `spectra_peaks` would read such a row back
@@ -393,7 +403,7 @@ Writer notes:
 - In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
   one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
   scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), and
-  `chromatograms_metadata` carries empty `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
+  `chromatograms_metadata` carries `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
   them. The wavelength representation column is `opt_spectrum_representation` (the spec's wavelength table does not
   name it); the reader also reads the reference's `spectrum_representation`.
 - Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written,
@@ -401,11 +411,11 @@ Writer notes:
   of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
   name an entry of the file metadata (without file metadata nothing is declared, so any such reference is
   rejected), and the prefix of every CURIE (param
-  accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units) must be
-  one of
+  accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units,
+  auxiliary-array names, params and units) must be one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
   written as given, except as an intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array
-  unit of the array index and must be a CURIE. A null run default gets the first entry of its list, else a stub
+  unit of the array index and must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else a stub
   entity with one WARNING.
   diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
   read; add configuration 1 to write them.
@@ -427,7 +437,10 @@ Writer notes:
   (`reader.py:421`, a pandas groupby drops NaN keys; mzPeakJ and the Rust reference attach them), its
   pynumpress cannot decode a spectrum of one point in the Numpress layout (a 12-byte linear payload; the writer
   never leaves a one-point chunk otherwise), and it cannot open a dataset with 0 spectra, such as one written for
-  a chromatogram-only mzML (an `IndexError` in `_read_spectra`, `reader.py:569-573`).
+  a chromatogram-only mzML (an `IndexError` in `_read_spectra`, `reader.py:569-573`). It cannot read a spectrum
+  with a zlib-compressed auxiliary array: it hands the array's bytes, which pyarrow gives as a list, to
+  `zlib.decompress` (`reader.py:196`, `TypeError: a bytes-like object is required, not 'list'`); uncompressed
+  auxiliary arrays read.
 
 ## Running the CLI & examples
 
@@ -797,12 +810,11 @@ classes statically reference Hadoop types — but it is never actually invoked.
 - **Writing**: the delta-`chunk` layout (the m/z + intensity payload is preserved in full). The `PACKED`
   compatibility layout writes only the primary scan / precursor / selected ion of a spectrum (with a warning),
   so combineIMS frames lose their secondary mobility-scan metadata there, and no spectrum data processing
-  reference, wavelength-spectrum Params or chromatogram polarity, data processing reference, Params or precursors
-  (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
+  reference, wavelength-spectrum Params, chromatogram polarity, data processing reference, Params or precursors, or
+  auxiliary arrays (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
   `Chromatogram.products()`) or the precursor MS level (`Precursor.msLevel()`), which are read only (D13-21; the
-  Rust reference panics on a chromatogram products member), nor yet the auxiliary arrays of spectra, chromatograms
-  and wavelength spectra or the scans of a wavelength spectrum beyond one scan holding its time (the R1 and R8
-  writer units); a write that drops any of these warns once, with the counts.
+  Rust reference panics on a chromatogram products member), nor yet the scans of a wavelength spectrum beyond one
+  scan holding its time (the R8 writer unit); a write that drops any of these warns once, with the counts.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).

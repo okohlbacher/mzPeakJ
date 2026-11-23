@@ -442,6 +442,77 @@ class UpstreamInteropTest {
     }
 
     /**
+     * R1 (X-32): small.unpacked with spectrum 0 given the plain and the zlib auxiliary array of
+     * {@link AuxiliaryArrayWriteTest}, and spectrum 1 the plain one, written split as an archive. The Python reader
+     * decodes the plain array to [1, 2, 3] and reads spectrum 1 with it under its name; the zlib array, whose
+     * {@code data} holds the zlib bytes as auxiliary-arrays.md stores them, it fails to decode: it hands the list of
+     * bytes pyarrow gives it to {@code zlib.decompress} (reader.py:196), so its read of spectrum 0 fails (a known limit
+     * of the reader, README.md). The archive passes {@code check_archive_integrity()} with its 48 spectra.
+     */
+    @Test
+    void thePythonReaderReadsThePlainAuxiliaryArraysButNotTheZlibOne() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("auxiliary"));
+        ForwardBackwardCorpusTest.Source source = AuxiliaryArrayWriteTest.withSpectrumArrays(
+                Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN, AuxiliaryArrayWriteTest.ZLIB));
+        source.spectra.set(1, AuxiliaryArrayWriteTest.withArrays(source.spectra.get(1),
+                List.of(AuxiliaryArrayWriteTest.PLAIN)));
+        Path archive = dir.resolve("auxiliary.mzpeak");
+        MzPeakWriter.writeArchive(archive, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("auxiliary.py"), String.join("\n",
+                "import json",
+                "import sys",
+                "",
+                "from mzpeak import MzPeakFile",
+                "from mzpeak.reader import _AuxiliaryArrayDecoder",
+                "",
+                "def error(e):",
+                "    return type(e).__name__ + ': ' + str(e)",
+                "",
+                "reader = MzPeakFile(sys.argv[1])",
+                "arrays = []",
+                "for item in reader.spectrum_metadata.spectra.loc[0, 'auxiliary_arrays']:",
+                "    try:",
+                "        a = _AuxiliaryArrayDecoder.decode(item)",
+                "        arrays.append({'name': a.name, 'values': [float(x) for x in a.values]})",
+                "    except Exception as e:",
+                "        arrays.append({'error': error(e)})",
+                "spectra = {}",
+                "for i in (0, 1, 2):",
+                "    try:",
+                "        spec = reader[i]",
+                "        spectra[str(i)] = {'signal to noise array': [float(x) for x in spec['signal to noise array']]",
+                "                           } if 'signal to noise array' in spec else {}",
+                "    except Exception as e:",
+                "        spectra[str(i)] = error(e)",
+                "print(json.dumps({'arrays': arrays, 'spectra': spectra}))",
+                ""), StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "auxiliary.json");
+
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        JsonNode arrays = read.path("arrays");
+        assertThat(arrays.size()).as("%s", read).isEqualTo(2);
+        assertThat(arrays.get(0).path("name").asText()).as("%s", read).isEqualTo("signal to noise array");
+        assertThat(doubles(arrays.get(0).path("values"))).as("%s", read).containsExactly(1.0, 2.0, 3.0);
+        String zlibError = "TypeError: a bytes-like object is required, not 'list'";
+        assertThat(arrays.get(1).path("error").asText()).as("%s", read).isEqualTo(zlibError);
+        JsonNode spectra = read.path("spectra");
+        assertThat(spectra.path("0").asText()).as("%s", read).isEqualTo(zlibError);
+        assertThat(doubles(spectra.path("1").path("signal to noise array"))).as("%s", read)
+                .containsExactly(1.0, 2.0, 3.0);
+        assertThat(spectra.path("2").size()).as("%s", read).isZero();
+
+        Result counted = python(probe, archive, "auxiliary-counts.json");
+        assertThat(counted.exit()).as("probe on %s: %s", archive, counted).isZero();
+        JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
+        assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
+        assertThat(counts.path("spectra").asInt()).isEqualTo(48);
+    }
+
+    /**
      * D-13 (V-24): diaPASEF.ref written split as an archive: the Python reader reads the {@code ion_mobility_value}
      * and {@code ion_mobility_type} columns of the scans and selected ions, in row order, with the values of the
      * source's ion mobility Params and MS:1002815, and nothing for spectrum 0's scan, which has none.

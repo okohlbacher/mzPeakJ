@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
@@ -100,31 +101,34 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
      * {@code precursors} are those of the caller's description, in its order, each with the precursor_index it is
      * written with (WR-8), followed in the split layout by the MSn selected-ion chain the planner appends (W7).
      *
-     * @param dataRows the rows this spectrum writes to spectra_data, its number_of_data_points; 0 without
-     *                 {@code data}
-     * @param peakRows the rows this spectrum writes to spectra_peaks, its number_of_peaks; 0 without {@code peaks}
-     * @param summary  the summary values of the caller's spectrum ({@link SpectrumSummary#derive})
+     * @param dataRows        the rows this spectrum writes to spectra_data, its number_of_data_points; 0 without
+     *                        {@code data}
+     * @param peakRows        the rows this spectrum writes to spectra_peaks, its number_of_peaks; 0 without
+     *                        {@code peaks}
+     * @param summary         the summary values of the caller's spectrum ({@link SpectrumSummary#derive})
+     * @param auxiliaryArrays the caller's {@link Spectrum#auxiliaryArrays()}, which the split layout writes to the
+     *                        spectrum's metadata row as they are (R1)
      */
     record SpectrumEntry(SpectrumDescription description, long sourceIndex, List<Precursor> precursors, boolean data,
                          boolean peaks, boolean peaksFromArrays, int dataRows, int peakRows,
-                         SpectrumSummary.Values summary) {
+                         SpectrumSummary.Values summary, List<AuxiliaryArray> auxiliaryArrays) {
 
         /**
          * The entry of {@code source}, written as {@code sourceIndex} with the caller's precursors as given, whose rows
          * go where {@code data}, {@code peaks} and {@code peaksFromArrays} say. It keeps nothing of the signal of
-         * {@code source} but the row counts and summary values derived from it.
+         * {@code source} but the row counts and summary values derived from it, and its auxiliary arrays.
          */
         SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
             this(source.description(), sourceIndex, source.description().precursors(), data, peaks, peaksFromArrays,
                     data ? source.mz().length : 0,
                     peaks ? (peaksFromArrays ? source.mz().length : source.peaks().size()) : 0,
-                    SpectrumSummary.derive(source));
+                    SpectrumSummary.derive(source), source.auxiliaryArrays());
         }
 
         /** This entry written as {@code index}, with {@code precursors} written in place of its own. */
         SpectrumEntry renumbered(long index, List<Precursor> precursors) {
             return new SpectrumEntry(description, index, precursors, data, peaks, peaksFromArrays, dataRows, peakRows,
-                    summary);
+                    summary, auxiliaryArrays);
         }
 
         /** The first of {@link #precursors()}, the only one the packed layout writes, or {@code null}. */

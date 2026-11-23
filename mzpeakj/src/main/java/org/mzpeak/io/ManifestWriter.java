@@ -14,6 +14,7 @@ import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
 import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -233,7 +234,9 @@ final class ManifestWriter {
      * (UO:0000031), the unit of the chromatograms_data time column; the unit of every intensity column of
      * chromatograms_data, that is every intensity unit of a chromatogram; the array type and unit of every extra
      * column of chromatograms_data, that is every CURIE key of the chromatograms' {@code arrays()}; and the accession
-     * and unit of every param of a wavelength spectrum. The packed layout writes
+     * and unit of every param of a wavelength spectrum; and the accession and unit of the name and of every param, the
+     * data type, the compression and the unit of every auxiliary array of a spectrum, chromatogram or wavelength
+     * spectrum. The packed layout writes
      * only a spectrum's first scan and primary precursor and selected ion, and no chromatogram precursor or
      * chromatogram or wavelength-spectrum param, but the prefixes of the others count too. The other CURIEs the
      * writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params give
@@ -248,6 +251,7 @@ final class ManifestWriter {
                 addParamPrefixes(scan.parameters(), used);
             }
             addPrecursorPrefixes(d.precursors(), used);
+            addAuxiliaryPrefixes(entry.auxiliaryArrays(), used);
         }
         for (IntensityColumn intensity : plan.spectrumIntensities()) {
             addPrefix(intensity.unit(), used);
@@ -260,6 +264,7 @@ final class ManifestWriter {
             addPrefix(entry.source().typeCurie(), used);
             addParamPrefixes(entry.source().parameters(), used);
             addPrecursorPrefixes(entry.source().precursors(), used);
+            addAuxiliaryPrefixes(entry.source().auxiliaryArrays(), used);
         }
         if (plan.writesChromatograms()) {
             addPrefix(ArrayIndex.MINUTE_UNIT, used);
@@ -273,8 +278,20 @@ final class ManifestWriter {
         }
         for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
             addParamPrefixes(entry.source().parameters(), used);
+            addAuxiliaryPrefixes(entry.source().auxiliaryArrays(), used);
         }
         return used;
+    }
+
+    /** Adds the prefixes of the name, params, data type, compression and unit of each of {@code arrays}. */
+    private static void addAuxiliaryPrefixes(List<AuxiliaryArray> arrays, Map<String, String> used) {
+        for (AuxiliaryArray a : arrays) {
+            addParamPrefixes(List.of(a.name()), used);
+            addPrefix(a.dataType(), used);
+            addPrefix(a.compression(), used);
+            addPrefix(a.unit(), used);
+            addParamPrefixes(a.parameters(), used);
+        }
     }
 
     /** Adds the prefixes of the params of each precursor's isolation window, activation and selected ions. */
