@@ -50,12 +50,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code scan_windows} and the stored times;
  *   <li>(d) what mzPeakJ reads but does not write ({@link #READ_ONLY}): the products and the precursor MS level
  *       (R6, D13-21), which none of these fixtures has, are lost by both layouts on the crafted copy of
- *       {@link PrecursorMsLevelAndProductsTest}; the auxiliary arrays (R1), which the writer writes empty until
- *       its unit (X-32), are lost by both layouts on has_uv given one auxiliary array per entity type; and the
+ *       {@link PrecursorMsLevelAndProductsTest}; and the
  *       wavelength scans (R8), for which the writer writes one scan with the spectrum time until its unit (X-34),
  *       which (b) expects of has_uv.
  *   <li>(e) a write that drops any of (d) says so in one WARNING with counts, until the writer units write them.
  * </ul>
+ * The auxiliary arrays (R1), read only until X-32, are written by the split layout and lost by the packed one, on
+ * has_uv given one auxiliary array per entity type.
  */
 class WriteLossAuditTest {
 
@@ -88,9 +89,6 @@ class WriteLossAuditTest {
                     + " a products member (src/reader/metadata.rs DataKind::Products => todo!())",
             "Chromatogram.products", "no products member is written, as for spectra (D13-21)",
             "Precursor.msLevel", "the precursor ms_level is read only (D13-21)",
-            "Spectrum.auxiliaryArrays", "read only so far (R1, X-31): the writer writes auxiliary_arrays empty",
-            "Chromatogram.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)",
-            "WavelengthSpectrum.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)",
             "WavelengthSpectrum.scans", "read only so far (R8, X-33): the writer writes one scan with the spectrum"
                     + " time");
 
@@ -304,10 +302,9 @@ class WriteLossAuditTest {
     }
 
     @Test
-    void theAuxiliaryArraysAreWriteLosses(@TempDir Path tmp) {
+    void theAuxiliaryArraysAreWrittenSplitAndLostPacked(@TempDir Path tmp) {
         assertThat(READ_ONLY.keySet()).containsExactlyInAnyOrder("SpectrumDescription.products",
-                "Chromatogram.products", "Precursor.msLevel", "Spectrum.auxiliaryArrays",
-                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays", "WavelengthSpectrum.scans");
+                "Chromatogram.products", "Precursor.msLevel", "WavelengthSpectrum.scans");
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
         List<AuxiliaryArray> one = List.of(new AuxiliaryArray(new Param("signal to noise array", "MS:1000517", null,
                 null), new byte[8], "MS:1000523", "MS:1000576", 1, null, List.of(), null));
@@ -330,11 +327,14 @@ class WriteLossAuditTest {
             MzPeakWriter.writeDirectory(out, spectra, chromatograms, wavelengths, source.scanSettings,
                     source.fileMetadata, Options.defaults().withMetadataLayout(layout));
             Source back = ForwardBackwardCorpusTest.readSource(out);
-            assertThat(back.spectra).as("%s", layout).hasSameSizeAs(spectra)
-                    .allMatch(b -> b.auxiliaryArrays().isEmpty());
-            assertThat(back.chromatograms).as("%s", layout).hasSameSizeAs(chromatograms)
-                    .allMatch(b -> b.auxiliaryArrays().isEmpty());
-            assertThat(back.wavelengthSpectra).as("%s", layout).hasSameSizeAs(wavelengths)
+            int written = layout == MetadataLayout.SPLIT ? 1 : 0;
+            assertThat(back.spectra).as("%s", layout).hasSameSizeAs(spectra);
+            assertThat(back.chromatograms).as("%s", layout).hasSameSizeAs(chromatograms);
+            assertThat(back.wavelengthSpectra).as("%s", layout).hasSameSizeAs(wavelengths);
+            assertThat(back.spectra.get(0).auxiliaryArrays()).as("%s", layout).hasSize(written);
+            assertThat(back.chromatograms.get(0).auxiliaryArrays()).as("%s", layout).hasSize(written);
+            assertThat(back.wavelengthSpectra.get(0).auxiliaryArrays()).as("%s", layout).hasSize(written);
+            assertThat(back.spectra.subList(1, back.spectra.size())).as("%s", layout)
                     .allMatch(b -> b.auxiliaryArrays().isEmpty());
         }
     }
@@ -343,8 +343,8 @@ class WriteLossAuditTest {
 
     /**
      * Rewriting has_uv warns once that the scans of its 520 wavelength spectra, each naming instrument configuration
-     * 0, are not written beyond one scan holding the time; given one auxiliary array per entity type, the warning
-     * counts those too. With every wavelength scan the time-only one the writer writes, two such scans of one
+     * 0, are not written beyond one scan holding the time; given one auxiliary array per entity type, which the
+     * writer writes since X-32, the warning stays the same. With every wavelength scan the time-only one the writer writes, two such scans of one
      * spectrum are counted, and with none instead nothing is dropped and nothing is warned. The crafted copy of {@link PrecursorMsLevelAndProductsTest}
      * counts its products and precursor MS level. Batch writes and sessions, in both layouts, warn alike.
      */
@@ -366,8 +366,7 @@ class WriteLossAuditTest {
         WavelengthSpectrum w = uv.wavelengthSpectra.get(0);
         uv.wavelengthSpectra.set(0, new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(),
                 w.wavelength(), w.intensity(), w.parameters(), w.scans(), List.of(aux)));
-        assertThat(unwrittenWarnings(uv, tmp.resolve("aux"))).containsOnly(WritePlanner.UNWRITTEN
-                + "the auxiliary arrays of 1 spectrum, 1 chromatogram and 1 wavelength spectrum; " + scans);
+        assertThat(unwrittenWarnings(uv, tmp.resolve("aux"))).containsOnly(WritePlanner.UNWRITTEN + scans);
 
         List<WavelengthSpectrum> timeOnly = new ArrayList<>();
         for (WavelengthSpectrum x : uv.wavelengthSpectra) {

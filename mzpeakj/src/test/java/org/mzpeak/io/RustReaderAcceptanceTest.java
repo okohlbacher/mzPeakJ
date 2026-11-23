@@ -2,6 +2,8 @@ package org.mzpeak.io;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.io.LocalInputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
@@ -14,6 +16,7 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakReader.SignalMode;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
@@ -176,6 +179,106 @@ class RustReaderAcceptanceTest {
         assertThat(record.path("id").asText()).isEqualTo(d.id());
         assertThat(mz).isNotEmpty();
         assertValues("spectrum 3 peak m/z", dump.array(record.path("peaks"), "mz_off"), mz, Match.MZ);
+    }
+
+    /**
+     * R1 (X-32): small.unpacked with spectrum 0 given the plain and the zlib auxiliary array of
+     * {@link AuxiliaryArrayWriteTest}, written split as an archive: Rust reads both among the arrays of spectrum 0,
+     * each decoded to [1, 2, 3], next to its m/z and intensity; spectrum 1 has neither.
+     */
+    @Test
+    void rustReadsTheAuxiliaryArraysOfASpectrum() throws Exception {
+        Source small = AuxiliaryArrayWriteTest.withSpectrumArrays(Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN, AuxiliaryArrayWriteTest.ZLIB));
+        Path out = tmp.resolve("auxiliary.mzpeak");
+        MzPeakWriter.writeArchive(out, small.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, SPLIT);
+
+        assertAuxiliaryArraysOfSpectrum0(rdump(out), small.spectra.get(0));
+    }
+
+    /**
+     * R1 (X-32): the same spectra written as a directory with a row-group size of 1 KiB, so that the 13589 points of
+     * spectrum 0 in spectra_data span several row groups: Rust's read of a spectrum over several row groups
+     * (reader.rs:552 onward) still reads its auxiliary arrays.
+     */
+    @Test
+    void rustReadsTheAuxiliaryArraysOfASpectrumOverSeveralRowGroups() throws Exception {
+        Source small = AuxiliaryArrayWriteTest.withSpectrumArrays(Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN, AuxiliaryArrayWriteTest.ZLIB));
+        Path out = tmp.resolve("row-groups.mzpeak");
+        MzPeakWriter.writeDirectory(out, small.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, SPLIT.withRowGroupSize(1024));
+        try (ParquetFileReader pfr = ParquetFileReader.open(new LocalInputFile(out.resolve("spectra_data.parquet")),
+                ParquetGroups.readOptions())) {
+            assertThat(pfr.getRowGroups()).hasSizeGreaterThan(1);
+            assertThat(pfr.getRowGroups().get(0).getRowCount()).as("rows of spectrum 0 in row group 0")
+                    .isLessThan(small.spectra.get(0).mz().length);
+        }
+
+        assertAuxiliaryArraysOfSpectrum0(rdump(out), small.spectra.get(0));
+    }
+
+    /**
+     * R1 (X-32), R-14: in the chunked layout Rust drops the auxiliary arrays of a spectrum whose chunks span several
+     * row groups: its chunk path (reader.rs:552-565) returns before {@code load_auxiliary_arrays_for_spectrum}.
+     * small.unpacked written with Numpress chunks and a row-group size of 1 KiB, spectra 0 and 8 given
+     * {@link AuxiliaryArrayWriteTest#PLAIN}: spectrum 0's chunks lie in row group 0 (parquet-java checks the size
+     * first after 100 rows) and Rust reads the array; spectrum 8's chunks span row groups 0 and 1, and Rust reads its
+     * signal without the array. mzPeakJ reads both.
+     */
+    @Test
+    void rustDropsTheAuxiliaryArraysOfAChunkedSpectrumOverSeveralRowGroups() throws Exception {
+        Source small = AuxiliaryArrayWriteTest.withSpectrumArrays(Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN));
+        small.spectra.set(8, AuxiliaryArrayWriteTest.withArrays(small.spectra.get(8),
+                List.of(AuxiliaryArrayWriteTest.PLAIN)));
+        Path out = tmp.resolve("chunk-row-groups.mzpeak");
+        MzPeakWriter.writeDirectory(out, small.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata,
+                SPLIT.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS).withRowGroupSize(1024));
+        Path data = out.resolve("spectra_data.parquet");
+        long firstRowGroup;
+        try (ParquetFileReader pfr = ParquetFileReader.open(new LocalInputFile(data), ParquetGroups.readOptions())) {
+            firstRowGroup = pfr.getRowGroups().get(0).getRowCount();
+        }
+        List<Long> chunkSpectra = new ArrayList<>();
+        ParquetGroups.forEach(data, row -> chunkSpectra.add(ParquetGroups.optLong(
+                ParquetGroups.optGroup(row, "chunk"), "spectrum_index")));
+        assertThat(chunkSpectra.get(0)).isZero();
+        assertThat(chunkSpectra.get((int) firstRowGroup - 1)).as("last spectrum of row group 0").isEqualTo(8);
+        assertThat(chunkSpectra.get((int) firstRowGroup)).as("first spectrum of row group 1").isEqualTo(8);
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            for (int i : new int[] {0, 8}) {
+                assertThat(reader.getSpectrum(i).orElseThrow().auxiliaryArrays()).as("spectrum %d", i).hasSize(1);
+            }
+        }
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("S");
+        JsonNode s0 = records.get(0).path("arrays");
+        assertThat(dump.array(s0.path("SignalToNoiseArray"))).as("%s", s0).containsExactly(1.0, 2.0, 3.0);
+        JsonNode s8 = records.get(8).path("arrays");
+        assertThat(s8.has("MZArray")).as("%s", s8).isTrue();
+        assertThat(s8.has("SignalToNoiseArray")).as("R-14: %s", s8).isFalse();
+    }
+
+    /**
+     * Rust's read of spectrum 0, given {@link AuxiliaryArrayWriteTest#PLAIN} and {@link AuxiliaryArrayWriteTest#ZLIB},
+     * and of spectrum 1: the plain array decodes to [1, 2, 3] next to the m/z of {@code s0}; the zlib array, whose
+     * {@code data} holds the zlib bytes as auxiliary-arrays.md stores them, fails to decode (R-13: the reader passes
+     * the bytes to mzdata as if they were base64 text); spectrum 1 has neither.
+     */
+    private static void assertAuxiliaryArraysOfSpectrum0(Dump dump, Spectrum s0) {
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(48);
+        JsonNode arrays = records.get(0).path("arrays");
+        assertThat(dump.array(arrays.path("SignalToNoiseArray"))).as("%s", arrays).containsExactly(1.0, 2.0, 3.0);
+        JsonNode zlib = arrays.path("NonStandardDataArray { name: \"" + AuxiliaryArrayWriteTest.ZLIB_NAME + "\" }");
+        assertThat(zlib.path("error").asText()).as("R-13: %s", arrays)
+                .isEqualTo("The content was not properly Base64 encoded");
+        assertThat(dump.array(arrays.path("MZArray"))).isEqualTo(s0.mz());
+        assertThat(records.get(1).path("arrays").size()).as("%s", records.get(1)).isEqualTo(2);
     }
 
     /**

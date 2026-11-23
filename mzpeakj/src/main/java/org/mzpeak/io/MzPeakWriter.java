@@ -48,9 +48,11 @@ import java.util.stream.Stream;
  * written as extra columns of spectra_data and spectra_peaks, in both signal encodings, and those of chromatograms,
  * {@link Chromatogram#arrays()} (such as the {@code ms level} array of a TIC), as extra columns of chromatograms_data,
  * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
- * own. A read &rarr; write cycle keeps everything {@link MzPeakReader} exposes, except the intensity unit of a
- * chromatogram without points: the reader takes a chromatogram's unit from the column that holds its values, so such
- * a chromatogram reads back without one. Chromatogram times are written in minutes (UO:0000031), the unit the
+ * own. The auxiliary arrays of spectra, chromatograms and wavelength spectra ({@link Spectrum#auxiliaryArrays()})
+ * are written to the {@code auxiliary_arrays} of their metadata rows with their bytes and compression as given; the
+ * packed layout does not write them and logs one WARNING. A read &rarr; write cycle keeps everything
+ * {@link MzPeakReader} exposes, except the intensity unit of a chromatogram without points: the reader takes a
+ * chromatogram's unit from the column that holds its values, so such a chromatogram reads back without one. Chromatogram times are written in minutes (UO:0000031), the unit the
  * format requires: times in seconds, milliseconds or hours ({@link Chromatogram#timeUnit()}) are converted once
  * with {@link Chromatogram#withTimeUnit}, so such a chromatogram reads back in minutes, and a chromatogram of any
  * other time unit is refused with an {@link MzPeakException} before anything of it is written.
@@ -195,12 +197,13 @@ public final class MzPeakWriter {
      * one of {@link CvEntry#known()} or one the {@link Options#withCvList cv list} of {@code options} gives with all
      * four fields. Checked are the accession and unit of every param (of the entities, their scans, precursors and
      * selected ions, the scan settings and the file metadata), every array key that is a CURIE, the intensity and
-     * peak intensity unit of every spectrum and the type and intensity unit of every chromatogram; a value without a
-     * colon, such as the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a
-     * spectrum, its peaks or a chromatogram, which must be a CURIE (array_index.json). Every explicit reference must
+     * peak intensity unit of every spectrum, the type and intensity unit of every chromatogram, and the name, the
+     * params, the data type, the compression and the unit of every auxiliary array; a value without a colon, such as
+     * the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a spectrum, its
+     * peaks or a chromatogram, which must be a CURIE (array_index.json). Every explicit reference must
      * name an entry of {@code fileMetadata}: a scan's
-     * instrument configuration, a spectrum's or chromatogram's data processing, the software of an instrument
-     * configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
+     * instrument configuration, a spectrum's, chromatogram's or auxiliary array's data processing, the software of an
+     * instrument configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
      * run default is filled with the first entry of its list, else with a stub entry and a WARNING. Without file
      * metadata ({@code null} or {@link FileMetadata#EMPTY}) nothing is declared, so every non-null reference is
      * rejected.
@@ -794,7 +797,7 @@ public final class MzPeakWriter {
         private final int[] packedDrops = new int[4];
         /**
          * What the writer does not write yet of the spectra added ({@link WritePlanner#countUnwritten(Spectrum,
-         * int[])}): auxiliary arrays, products, precursor MS levels.
+         * int[])}): products, precursor MS levels.
          */
         private final int[] unwritten = new int[WritePlanner.UNWRITTEN_KINDS];
         private State state = State.OPEN;
@@ -933,8 +936,9 @@ public final class MzPeakWriter {
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code spectrum} is {@code null}
-         * @throws MzPeakException       if the accession or unit of a param of it has an undeclared CV prefix (see the
-         *                               class documentation); it is not added
+         * @throws MzPeakException       if the accession or unit of a param of it, or a CURIE of one of its auxiliary
+         *                               arrays, has an undeclared CV prefix, or the data processing of an auxiliary
+         *                               array names nothing (see the class documentation); it is not added
          */
         public void addWavelengthSpectrum(WavelengthSpectrum spectrum) {
             requireOpen();

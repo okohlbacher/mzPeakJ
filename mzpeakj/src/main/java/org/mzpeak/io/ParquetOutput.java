@@ -51,8 +51,9 @@ final class ParquetOutput {
     /**
      * {@code auxiliary_arrays: list<struct<data, name, data_type, compression, items, unit, parameters,
      * data_processing_id>>} as the reference writes it in {@code spectra_metadata} and
-     * {@code wavelength_spectra_metadata}. mzPeakJ writes it empty; the Rust reader projects it for every wavelength
-     * spectrum and fails when the column is missing.
+     * {@code wavelength_spectra_metadata}, also written to {@code chromatograms_metadata}: each entity's
+     * {@code AuxiliaryArray}s, an empty list for an entity without any. The Rust reader projects it for every
+     * wavelength spectrum and fails when the column is missing.
      */
     static Type auxiliaryArrayListField() {
         GroupType itemType = Types.buildGroup(Type.Repetition.OPTIONAL)
@@ -256,21 +257,28 @@ final class ParquetOutput {
         Group wrapper = owner.addGroup("parameters");
         for (Param p : params) {
             Group slot = wrapper.addGroup("list");
-            Group item = slot.addGroup("item");
-            // value union
-            Group valueGroup = item.addGroup("value");
-            Object v = p.value();
-            if (ParamValues.isInteger(v)) { valueGroup.add("integer", ((Number) v).longValue()); }
-            else if (v instanceof Double || v instanceof Float) {
-                double d = ((Number) v).doubleValue();
-                if (!Double.isNaN(d)) { valueGroup.add("float", d); }
-            }
-            else if (v instanceof String s) { valueGroup.add("string", s); }
-            else if (v instanceof Boolean b) { valueGroup.add("boolean", b); }
-            else if (v != null) { valueGroup.add("string", ParamValues.json(v).toString()); } // collection, array
-            if (p.accession() != null) { item.add("accession", p.accession()); }
-            if (p.name() != null)      { item.add("name", p.name()); }
-            if (p.unit() != null)      { item.add("unit", p.unit()); }
+            writeParam(slot.addGroup("item"), p);
         }
+    }
+
+    /**
+     * Writes {@code p} into {@code item}, a param struct ({@code value} union, {@code accession}, {@code name},
+     * {@code unit}) as {@link #writeParams} writes each item of a {@code parameters} list.
+     */
+    static void writeParam(Group item, Param p) {
+        // value union
+        Group valueGroup = item.addGroup("value");
+        Object v = p.value();
+        if (ParamValues.isInteger(v)) { valueGroup.add("integer", ((Number) v).longValue()); }
+        else if (v instanceof Double || v instanceof Float) {
+            double d = ((Number) v).doubleValue();
+            if (!Double.isNaN(d)) { valueGroup.add("float", d); }
+        }
+        else if (v instanceof String s) { valueGroup.add("string", s); }
+        else if (v instanceof Boolean b) { valueGroup.add("boolean", b); }
+        else if (v != null) { valueGroup.add("string", ParamValues.json(v).toString()); } // collection, array
+        if (p.accession() != null) { item.add("accession", p.accession()); }
+        if (p.name() != null)      { item.add("name", p.name()); }
+        if (p.unit() != null)      { item.add("unit", p.unit()); }
     }
 }

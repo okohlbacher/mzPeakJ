@@ -15,6 +15,7 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
 import org.mzpeak.model.IsolationWindow;
@@ -48,6 +49,7 @@ import static org.mzpeak.io.ParquetOutput.auxiliaryArrayListField;
 import static org.mzpeak.io.ParquetOutput.countKey;
 import static org.mzpeak.io.ParquetOutput.openWriter;
 import static org.mzpeak.io.ParquetOutput.paramListField;
+import static org.mzpeak.io.ParquetOutput.writeParam;
 import static org.mzpeak.io.ParquetOutput.writeParams;
 
 /**
@@ -60,7 +62,7 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *   <li>spectra_metadata: one row per spectrum with its typed columns (index, id, ms level, time, polarity,
  *       representation, spectrum type, the five summary values, the point counts of the files written), its
  *       {@code data_processing_id} (the column is there only when some spectrum has one), its {@code parameters}
- *       and an empty {@code auxiliary_arrays} list with {@code number_of_auxiliary_arrays} 0;
+ *       and its {@code auxiliary_arrays}, as they are, with their {@code number_of_auxiliary_arrays} (R1);
  *   <li>spectra_metadata_scans: one row per scan of every spectrum, keyed by {@code source_index} with a global
  *       {@code scan_index}, with its typed columns, {@code parameters}, {@code scan_windows} and, when some scan has
  *       one, the imaging positions. A spectrum without scans gets one row all the same, as in the packed layout: its
@@ -112,7 +114,7 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *   <li>chromatograms_metadata: one row per chromatogram with its index, id, {@code scan_polarity} (1, -1, or null
  *       when unknown), its type as a term marker, its {@code data_processing_id} (the spec's spelling, which 0.12.0
  *       wrote as {@code data_processing_ref}; the column is there only when some chromatogram has one), its point
- *       count, its {@code parameters}, none promoted to a column, and, as in spectra_metadata, empty auxiliary
+ *       count, its {@code parameters}, none promoted to a column, and, as in spectra_metadata, its auxiliary
  *       arrays; chromatograms_metadata_precursors and chromatograms_metadata_selected_ions have the schemas of the
  *       spectrum facets and are written as those are, keyed by the chromatogram's index: one row per precursor of
  *       every chromatogram, with the {@code precursor_index} the planner maps through the chromatogram numbering,
@@ -121,7 +123,7 @@ import static org.mzpeak.io.ParquetOutput.writeParams;
  *   <li>wavelength_spectra_metadata: one row per wavelength spectrum with its index, id, time, spectrum type,
  *       representation, lowest and highest observed wavelength, point count, lambda max, base peak intensity and
  *       total ion current, in the reference's column order, its {@code parameters} and, as in spectra_metadata,
- *       empty auxiliary arrays. The representation column is {@code opt_spectrum_representation}, since
+ *       its auxiliary arrays. The representation column is {@code opt_spectrum_representation}, since
  *       wavelength-spectra.md does not name it (D13-12). Each of these terms moves to its column and leaves the
  *       list, which metadata-tables.md requires (W11): the reference also keeps the type and the wavelength range in
  *       the list, so the Rust reader, which reads both, gives them twice for its has_uv, once for this output. The
@@ -183,7 +185,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final Column MS_LEVEL = column(Facet.SPECTRUM, "MS:1000511");
     private static final Column SCAN_POLARITY = column(Facet.SPECTRUM, "MS:1000465");
     private static final Column REPRESENTATION = column(Facet.SPECTRUM, "MS:1000525");
-    /** Written empty, as the reference does: the Rust reader needs both columns (see auxiliaryArrayListField). */
+    /** Written for every row, if need be empty, as the reference does: the Rust reader needs both columns. */
     private static final String AUXILIARY_ARRAYS = "auxiliary_arrays";
     private static final String AUXILIARY_COUNT = "number_of_auxiliary_arrays";
     private static final LogicalTypeAnnotation UINT32 = LogicalTypeAnnotation.intType(32, false);
@@ -491,7 +493,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     row.add(DATA_PROCESSING_ID, d.dataProcessingRef());
                 }
                 params(row, params.rest());
-                noAuxiliaryArrays(row);
+                auxiliaryArrays(row, entry.auxiliaryArrays());
                 writer.write(row);
             }
         }
@@ -760,7 +762,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 }
                 row.add(field(CHROMATOGRAM_POINTS), (long) c.size());
                 params(row, c.parameters());
-                noAuxiliaryArrays(row);
+                auxiliaryArrays(row, c.auxiliaryArrays());
                 writer.write(row);
             }
         }
@@ -797,7 +799,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                 addIfPresent(row, field(LAMBDA_MAX), w.lambdaMax());
                 promoteDoubles(row, params, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC);
                 params(row, params.rest());
-                noAuxiliaryArrays(row);
+                auxiliaryArrays(row, w.auxiliaryArrays());
                 writer.write(row);
             }
         }
@@ -1008,10 +1010,34 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
     }
 
-    /** An empty {@code auxiliary_arrays} list and a zero count, as the reference writes for a row without any. */
-    private static void noAuxiliaryArrays(Group row) {
-        row.add(AUXILIARY_COUNT, 0);
-        row.addGroup(AUXILIARY_ARRAYS);
+    /**
+     * Writes {@code arrays} as the row's {@code auxiliary_arrays} list and their number as
+     * {@code number_of_auxiliary_arrays} (R1, D13-19); an empty list and a zero count, as the reference writes for a
+     * row without any. Each array's {@code data} and {@code compression} are written as they are, so compressed
+     * bytes stay compressed; its name is written as a {@code parameters} item is ({@link #named}), and its
+     * {@code parameters} as {@link #params} writes a list.
+     */
+    private static void auxiliaryArrays(Group row, List<AuxiliaryArray> arrays) {
+        row.add(AUXILIARY_COUNT, arrays.size());
+        Group list = row.addGroup(AUXILIARY_ARRAYS);
+        for (AuxiliaryArray a : arrays) {
+            Group item = list.addGroup("list").addGroup("item");
+            Group data = item.addGroup("data");
+            for (byte b : a.data()) {
+                data.addGroup("list").add("item", b & 0xff);
+            }
+            writeParam(item.addGroup("name"), named(a.name()));
+            item.add("data_type", a.dataType());
+            item.add("compression", a.compression());
+            item.add("items", a.items());
+            if (a.unit() != null) {
+                item.add("unit", a.unit());
+            }
+            params(item, a.parameters());
+            if (a.dataProcessingId() != null) {
+                item.add(DATA_PROCESSING_ID, a.dataProcessingId());
+            }
+        }
     }
 
     /**
@@ -1039,12 +1065,19 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
         List<Param> named = new ArrayList<>(params.size());
         for (Param p : params) {
-            named.add(p.name() == null
-                    ? new Param(TERM_NAMES.getOrDefault(p.accession(), p.accession()), p.accession(), p.value(),
-                    p.unit())
-                    : p);
+            named.add(named(p));
         }
         writeParams(row, named);
+    }
+
+    /**
+     * {@code p} as a {@code parameters} item is written ({@link #params}): itself when it has a name, else with the
+     * name of its term where {@link #TERM_NAMES} knows it, else its accession.
+     */
+    private static Param named(Param p) {
+        return p.name() == null
+                ? new Param(TERM_NAMES.getOrDefault(p.accession(), p.accession()), p.accession(), p.value(), p.unit())
+                : p;
     }
 
     /** {@code footer} with the {@link ArrowSchemaHint} of {@code schema} added last, as Arrow writers place it. */

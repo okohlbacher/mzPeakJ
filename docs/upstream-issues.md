@@ -2,13 +2,15 @@
 
 Found while checking mzPeakJ-written files with the Rust reference reader (`mzpeak_prototyping` of
 [HUPO-PSI/mzPeak](https://github.com/HUPO-PSI/mzPeak) at `2ee2589`, 2026-11-10). The issues are not filed upstream
-(maintainer, 2026-11-11). Each but R-10, R-11 and R-12 also shows on the reference's own example files, so none is
-caused by mzPeakJ; R-10, R-11 and the first half of R-12 follow from spec rules mzPeakJ keeps (see below), the second
-half of R-12 is not traced yet.
+(maintainer, 2026-11-11). Each but R-10 to R-14 also shows on the reference's own example files, so none is caused
+by mzPeakJ; R-10, R-11 and the first half of R-12 follow from spec rules mzPeakJ keeps, the second half of R-12 is not
+traced yet, and R-13 and R-14 show only on auxiliary arrays, which no example file holds and which mzPeakJ writes since
+0.13.0 (see below).
 
 The reader is checked with [`tools/rdump`](../tools/rdump/README.md), a small dumper on the reference's public API.
-`RustReaderAcceptanceTest` (CI job `rust-reader`) expects R-1, R-2, R-3, R-10 and R-11 on the files mzPeakJ writes and
-fails on any other unreadable entity; when one of them no longer occurs, the test fails too, so the table is updated.
+`RustReaderAcceptanceTest` (CI job `rust-reader`) expects R-1, R-2, R-3, R-10, R-11, R-13 and R-14 on the files
+mzPeakJ writes and fails on any other unreadable entity; when one of them no longer occurs, the test fails too, so the
+table is updated.
 R-12 was found with rdump by hand (2026-11-23) and is not asserted by the test yet.
 
 | # | Problem | Where it shows | Effect |
@@ -25,6 +27,8 @@ R-12 was found with rdump by hand (2026-11-23) and is not asserted by the test y
 | R-10 | A null cell of an extra array reads as 0.0 (`src/reader/point.rs:128`, `val.unwrap_or_default()`) instead of NaN or absent; so does a null element of a Numpress chunk's extra list | any file with a null extra cell; mzPeakJ writes a NaN extra cell as null since 0.13.0 (W10) | value reported as 0 |
 | R-11 | The range read `extract_signal` projects only the first intensity column of the point layout (`src/reader/point.rs:528`, `array_indices.get(&ArrayType::IntensityArray)`), so a spectrum whose intensities are in another column, such as `intensity_MS_1000132` (percent of base peak), comes back without intensity; reading it by index (`get_spectrum`) is right | any spectra_data with spectra in two intensity units; mzPeakJ writes one intensity column per unit since 0.13.0 (R5) | intensities missing in range reads |
 | R-12 | In the Numpress (chunked) layout, (a) the chunk decoder labels the intensity of a spectrum stored in a per-unit transform column, such as `intensity_MS_1000132_numpress_slof_bytes`, as `DetectorCounts` (the values are right), and (b) the range read `extract_signal` panics with "list array" | (a) any Numpress spectra_data with spectra in two intensity units, which mzPeakJ writes since 0.13.0 (R5); (b) mzPeakJ's Numpress output, also with one intensity unit; not the reference's small.numpress | (a) wrong intensity unit; (b) range reads of Numpress data fail |
+| R-13 | A compressed auxiliary array does not decode: `AuxiliaryArrayVisitor` (`src/reader/visitor.rs:1880-1925`) hands the stored bytes to mzdata as the array's data with its compression, and mzdata takes the data of a compressed array for base64 text ("The content was not properly Base64 encoded"); auxiliary-arrays.md stores the compressed bytes themselves ("No base64 encoding is used") | any auxiliary array with a compression other than MS:1000576, such as zlib (MS:1000574) | array unreadable |
+| R-14 | The auxiliary arrays of a chunked spectrum whose chunks span several row groups are dropped: the chunk path of `get_spectrum_arrays` (`src/reader.rs:552-565`) returns before `load_auxiliary_arrays_for_spectrum`, which the single-row-group and point paths call | a spectrum with auxiliary arrays in the chunked (Numpress) layout across a row-group boundary | arrays missing |
 
 How the test sees them on mzPeakJ's own output:
 
@@ -76,6 +80,24 @@ How the test sees them on mzPeakJ's own output:
   current small.unpacked written as Numpress with its one intensity unit, while on the reference's own
   small.numpress it returns the `intensity_numpress_slof_bytes` column undecoded (no intensity). The spec requires a
   column for each intensity unit, so (a) has no form both accept; the cause of (b) is not traced.
+
+- R-13 shows on the zlib-compressed auxiliary array of spectrum 0 that `RustReaderAcceptanceTest` writes next to an
+  uncompressed one, both holding the float64 values [1, 2, 3] (`AuxiliaryArrayWriteTest`). mzPeakJ writes an array's
+  bytes and compression as given (D13-19), so no form satisfies both the spec and the Rust reader short of
+  decompressing; the uncompressed array reads, with the same record whether spectrum 0's 13589 points lie in one
+  row group or, written with a 1 KiB row-group size, in several (the point path loads the arrays). rdump's arrays of
+  spectrum 0, with the values its `.bin` file holds:
+
+  ```text
+  "NonStandardDataArray { name: \"zlib signal to noise\" }": {"dtype": "Float64", "error": "The content was not properly Base64 encoded"}
+  "SignalToNoiseArray": {"ctype": "SignalToNoiseArray", "dtype": "Float64", "n": 3, "off": 27178, "unit": "Unknown"}
+  SignalToNoiseArray  [1.0, 2.0, 3.0]
+  ```
+
+- R-14 shows on small.unpacked written with Numpress chunks and a 1 KiB row-group size, spectra 0 and 8 each given
+  the uncompressed array: spectrum 8's chunks span row groups 0 and 1, and rdump reads its m/z and intensity without
+  the array, while it reads spectrum 0's (all its chunks in row group 0; parquet-java checks the row-group size
+  first after 100 rows, so spectrum 0 cannot span row groups in a write by mzPeakJ). mzPeakJ reads both.
 
 A latent difference, not seen by the test: the reference's `ScanSettings` struct still uses the pin-era names,
 `source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the
