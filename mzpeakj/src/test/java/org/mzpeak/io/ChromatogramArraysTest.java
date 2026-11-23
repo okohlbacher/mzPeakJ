@@ -178,8 +178,7 @@ class ChromatogramArraysTest {
 
         double[] slof = slofDecoded();
         assertThat(all).extracting(Chromatogram::id).containsExactly("c0", "c1", "c2", "c3");
-        // C4: the chunk without a start reads its one point at time 0, as a spectrum chunk row (it was skipped)
-        assertArrays(all.get(0), new double[] {10, 11, 12, 20, 21, 0}, new double[] {1, 2, 3, 4, 5, 9});
+        assertArrays(all.get(0), new double[] {10, 11, 12, 20, 21}, new double[] {1, 2, 3, 4, 5});
         assertArrays(all.get(1), new double[] {0, 1, 2, 5, 6}, new double[] {7, 8, 9, 1, 1});
         assertArrays(all.get(2), new double[] {0, 0.5}, slof);
         assertArrays(all.get(3), new double[] {0, 1, 2, 3}, new double[] {1, 2, slof[0], slof[1]});
@@ -460,7 +459,7 @@ class ChromatogramArraysTest {
 
     /**
      * Chunk rows: an extra list aligns 1:1 with the time values its chunk decodes to, a null list reads as NaN
-     * cells, and the chunks of one index are appended in row order; a chunk without a start starts at time 0 (C4).
+     * cells, and the chunks of one index are appended in row order.
      * A list of another length drops that key for that chromatogram with one WARNING. The unit is that of the
      * intensity list or the SLOF entry that supplied the chunk; mixed units give null with one WARNING. An extra
      * stored only as a chunk transform is not decoded: it is dropped with one WARNING.
@@ -474,8 +473,7 @@ class ChromatogramArraysTest {
 
         assertThat(all.get(0).intensityUnit()).isEqualTo("MS:1000131");
         assertThat(all.get(0).arrays().keySet()).containsExactly("ms level");
-        // C4: with the cell of the chunk without a start, which was skipped
-        assertThat(all.get(0).arrays().get("ms level")).containsExactly(1, Double.NaN, 2, Double.NaN, Double.NaN, 9);
+        assertThat(all.get(0).arrays().get("ms level")).containsExactly(1, Double.NaN, 2, Double.NaN, Double.NaN);
 
         assertThat(all.get(1).intensityUnit()).isEqualTo("MS:1000131");
         assertThat(all.get(1).arrays()).isEmpty();
@@ -589,7 +587,7 @@ class ChromatogramArraysTest {
 
     /**
      * The chromatograms 0 to 3 of the chunk member: 0 has two chunks of the intensity list (the second without
-     * 'ms level' cells) and a chunk without a start; 1 has an 'ms level' list one short in its first chunk; 2 has
+     * 'ms level' cells); 1 has an 'ms level' list one short in its first chunk; 2 has
      * SLOF intensity and null 'ms level' cells; 3 has one list chunk and one SLOF chunk. The SLOF intensity entry
      * carries another unit than the list.
      */
@@ -617,8 +615,6 @@ class ChromatogramArraysTest {
                         List.of(1), "intensity", List.of(4, 5)),
                 row(rows, "chunk", "chromatogram_index", 1L, "time_chunk_start", 5, "time_chunk_values",
                         List.of(1), "intensity", List.of(1, 1), "ms_level", List.of(2, 2)),
-                row(rows, "chunk", "chromatogram_index", 0L, "time_chunk_values", List.of(), "intensity",
-                        List.of(9), "ms_level", List.of(9)),
                 row(rows, "chunk", "chromatogram_index", 2L, "time_chunk_start", 0, "time_chunk_values",
                         List.of(0.5), "intensity_numpress_slof_bytes", slof, "ms_level", Arrays.asList(null, null),
                         "ms_level_slof", slof),

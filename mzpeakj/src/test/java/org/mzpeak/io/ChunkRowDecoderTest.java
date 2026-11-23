@@ -98,6 +98,58 @@ class ChunkRowDecoderTest {
         assertThat(row.intensity()).containsExactly(1.0, 2.0, 3.0);
     }
 
+    /**
+     * chunked-layout.md requires the chunk start of a chunk: a delta row whose chunk_start is null is refused, naming
+     * the spectrum, and so is a plan without the column (the audit's fx/c7 spectrum 0: values 0.1, 0.1 and three
+     * intensities, which decoded as m/z 0.0, 0.1, 0.2), and a row of one intensity without values, which read as
+     * the start alone at m/z 0. A basic (absolute) row needs no start, and a row without points decodes empty.
+     */
+    @Test
+    void aDeltaRowWithoutAChunkStartIsRefused() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY);
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        Group nullStart = row(schema);
+        addList(nullStart, "mz_chunk_values", 0.1, 0.1);
+        nullStart.add("chunk_encoding", DELTA);
+        addList(nullStart, "intensity", 1, 2, 3);
+
+        assertThatThrownBy(() -> decoder.decode(nullStart, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of spectrum_index 0 has a null m/z chunk start, which chunked-layout.md"
+                        + " requires of a chunk whose values are not absolute; decoding it from 0 would invent m/z"
+                        + " values");
+
+        MessageType withoutStart = schema(VALUES, ENCODING, INTENSITY);
+        Group noColumn = row(withoutStart);
+        addList(noColumn, "mz_chunk_values", 0.1, 0.1);
+        noColumn.add("chunk_encoding", DELTA);
+        addList(noColumn, "intensity", 1, 2);
+        assertThatThrownBy(() -> new ChunkRowDecoder(inferred(withoutStart)).decode(noColumn, 3))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of spectrum_index 3 has no m/z chunk start column in its signal plan, which"
+                        + " chunked-layout.md requires of a chunk whose values are not absolute; decoding it from 0"
+                        + " would invent m/z values");
+        // a single intensity would read as the start alone, at m/z 0
+        Group startOnly = row(schema);
+        addList(startOnly, "mz_chunk_values");
+        startOnly.add("chunk_encoding", DELTA);
+        addList(startOnly, "intensity", 7);
+        assertThatThrownBy(() -> decoder.decode(startOnly, 4))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chunk row of spectrum_index 4 has a null m/z chunk start");
+
+        Group basic = row(schema);
+        addList(basic, "mz_chunk_values", 100.0, 100.5);
+        basic.add("chunk_encoding", "MS:1000576");
+        addList(basic, "intensity", 1, 2);
+        assertThat(decoder.decode(basic, 1).axis()).containsExactly(100.0, 100.5);
+        Group empty = row(schema);
+        addList(empty, "mz_chunk_values");
+        empty.add("chunk_encoding", DELTA);
+        addList(empty, "intensity");
+        assertThat(decoder.decode(empty, 2).axis()).isEmpty();
+    }
+
     @Test
     void withoutAnAxisValuesColumnTheChunkStartIsTheOnlyPoint() {
         MessageType schema = schema(START, ENCODING, INTENSITY);

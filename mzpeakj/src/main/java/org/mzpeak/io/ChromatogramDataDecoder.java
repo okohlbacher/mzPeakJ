@@ -31,9 +31,10 @@ import java.util.stream.Collectors;
  *       absolute), coordinate grid and MS-Numpress linear time, with the intensities of the first SLOF column whose
  *       payload decodes to values, else of the first such PIC column, else of the plain list; an intensity list of
  *       another length than the times, or than the times plus the chunk start, throws. A null intensity reads as 0,
- *       and a chunk without a start decodes from time 0. The null-marked times of each chunk row are filled by the
- *       spec's rule ({@link NullFill}) when the reader's {@code reconstructProfile} option is set, else dropped with
- *       their intensities and extra cells; a time that cannot be filled throws.
+ *       and a delta chunk with points but without a start throws, as chunked-layout.md requires the start. The
+ *       null-marked times of each chunk row are filled by the spec's rule ({@link NullFill}) when the reader's
+ *       {@code reconstructProfile} option is set, else dropped with their intensities and extra cells; a time that
+ *       cannot be filled throws.
  * </ul>
  * Rows without the prefix struct or an index are skipped; the chunks and points of one index are appended in row
  * order.

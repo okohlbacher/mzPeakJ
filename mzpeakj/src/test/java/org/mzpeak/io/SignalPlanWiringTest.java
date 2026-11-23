@@ -532,8 +532,9 @@ class SignalPlanWiringTest {
     /**
      * Chunk rows, decoded as spectrum chunk rows (C4): the time axis is {@code time_chunk_start} plus the running sum
      * of the deltas (chunk_encoding null or MS:1003089); intensities come from the SLOF bytes, else the plain list, and
-     * a null intensity reads as 0. A row without an index is skipped, a row without a start decodes from time 0, a
-     * row without time values or intensities adds no point; chunks of one index are appended in row order.
+     * a null intensity reads as 0. A row without an index is skipped, a row without a start is refused (it decoded
+     * from time 0 until the final fix-up of 0.13.0), a row without time values or intensities adds no point; chunks
+     * of one index are appended in row order.
      *
      * <p>C4 changed these rows, which before read as follows: chromatogram 0's first chunk had the deltas
      * [1, null, 2] (a null delta added 0: times 10, 11, 11, 13 and a padded 0 intensity), now null-marked times are
@@ -553,7 +554,6 @@ class SignalPlanWiringTest {
                 chunk(rows, 1L, 5.0, null).list("time_chunk_values", 0.5)
                         .bytes("intensity_numpress_slof_bytes", slof).parent,
                 chunk(rows, 0L, 20.0, null).list("time_chunk_values").list("intensity").parent,
-                chunk(rows, 2L, null, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent,
                 chunk(rows, null, 1.0, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent,
                 chunk(rows, 3L, 1.0, null).list("time_chunk_values", 1.0, 1.0)
                         .list("intensity", 7.0, 8.0, 9.0).parent,
@@ -573,12 +573,20 @@ class SignalPlanWiringTest {
         assertThat(decoded[1]).isCloseTo(200.0, within(0.1));
         assertArrays(all.get(0), new double[] {10.0, 11.0, 12.0}, new double[] {1.0, 0.0, 3.0});
         assertArrays(all.get(1), new double[] {5.0, 5.5}, decoded);
-        assertArrays(all.get(2), new double[] {0.0, 1.0}, new double[] {1.0, 2.0});
+        assertArrays(all.get(2), new double[0], new double[0]);
         assertArrays(all.get(3), new double[] {1.0, 2.0, 3.0}, new double[] {7.0, 8.0, 9.0});
         assertArrays(all.get(4), new double[0], new double[0]);
         assertArrays(all.get(5), new double[] {0.0, 1.0}, decoded);
         assertArrays(all.get(6), new double[0], new double[0]);
         assertArrays(all.get(7), new double[] {0.0}, new double[] {6.0});
+
+        Path startless = write("chromatograms_data.parquet", schema,
+                chunk(rows, 2L, null, null).list("time_chunk_values", 1.0).list("intensity", 1.0, 2.0).parent);
+        assertThatThrownBy(() -> chromatograms(startless, 2))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of chromatogram_index 2 has a null time chunk start, which chunked-layout.md"
+                        + " requires of a chunk whose values are not absolute; decoding it from 0 would invent time"
+                        + " values");
 
         // C4: an intensity list of another length than the times, or the times plus the start, throws
         Path surplus = write("chromatograms_data.parquet", schema,

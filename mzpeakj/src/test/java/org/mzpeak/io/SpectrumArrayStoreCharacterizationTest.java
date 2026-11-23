@@ -226,17 +226,23 @@ class SpectrumArrayStoreCharacterizationTest {
 
     // ---- chunk rows ---------------------------------------------------------------------------------------------
 
+    /**
+     * chunked-layout.md requires the chunk start: a delta chunk without one is refused, naming the spectrum (until the
+     * final fix-up of 0.13.0 it stepped from m/z 0, which invented the m/z values).
+     */
     @Test
-    void aDeltaChunkWithoutChunkStartStepsFromZero() {
+    void aDeltaChunkWithoutChunkStartIsRefused() {
         Row0 r = Row0.INSTANCE;
         ChunkRow row = new ChunkRow();
         row.encoding = "MS:1003089";
         row.values = new double[] {r.mz[1] - r.mz[0], r.mz[2] - r.mz[1]};
         row.intensity = new double[] {r.intensity[0], r.intensity[1], r.intensity[2]};
-        SpectrumArrayStore.Arrays arrays = read(writeChunk(row), 0, false);
-        double first = 0.0 + row.values[0];
-        assertExact("m/z", new double[] {0.0, first, first + row.values[1]}, arrays.mz());
-        assertExact("intensity", row.intensity, arrays.intensity());
+        Path file = writeChunk(row);
+        assertThatThrownBy(() -> read(file, 0, false))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of spectrum_index 0 has a null m/z chunk start, which chunked-layout.md"
+                        + " requires of a chunk whose values are not absolute; decoding it from 0 would invent m/z"
+                        + " values");
     }
 
     @Test
