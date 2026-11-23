@@ -246,6 +246,45 @@ class AuxiliaryArrayWriteTest {
     }
 
     /**
+     * An uncompressed array of a fixed-width data type must hold its items: 8 bytes of float64 with items 2, and of
+     * int32, float32 and int64 with a length that is not a multiple of the width or not items * width, are refused,
+     * naming the array, its length and items * width (AuxiliaryArray.doubles() would throw on the read-back). A
+     * compressed array and a string array are not checked (D13-19): they are written as given.
+     */
+    @Test
+    void anUncompressedFixedWidthArrayMustHoldItsItems() {
+        assertRefused(new AuxiliaryArray(PLAIN.name(), float64(1.0), FLOAT64, NONE, 2, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: its 8 bytes are not the 16 bytes of its 2 items of MS:1000523 (8"
+                        + " bytes each); an uncompressed (MS:1000576) array holds items times the width of its data"
+                        + " type");
+        assertRefused(new AuxiliaryArray(PLAIN.name(), new byte[6], "MS:1000519", NONE, 1, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: its 6 bytes are not the 4 bytes of its 1 items of MS:1000519 (4");
+        assertRefused(new AuxiliaryArray(PLAIN.name(), new byte[7], "MS:1000521", NONE, 2, null, List.of(), null),
+                "spectrum 0: auxiliary array 1: its 7 bytes are not the 8 bytes of its 2 items of MS:1000521 (4");
+        assertRefused(new AuxiliaryArray(PLAIN.name(), new byte[8], "MS:1000522", NONE, Long.MAX_VALUE, null,
+                List.of(), null), "spectrum 0: auxiliary array 1: its 8 bytes are not the 73786976294838206456"
+                + " bytes of its 9223372036854775807 items of MS:1000522 (8");
+
+        AuxiliaryArray zlibShort = new AuxiliaryArray(ZLIB.name(), ZLIB.data(), FLOAT64, ZLIB_COMPRESSION, 4, null,
+                List.of(), null);
+        AuxiliaryArray text = new AuxiliaryArray(new Param("non-standard data array", "MS:1000786", "labels", null),
+                "abc".getBytes(java.nio.charset.StandardCharsets.UTF_8), "MS:1001479", NONE, 2, null, List.of(),
+                null);
+        Source source = withSpectrumArrays(SMALL, List.of(PLAIN, zlibShort, text));
+        Path out = tmp.resolve("unchecked.mzpeak");
+        MzPeakWriter.writeDirectory(out, source.spectra, List.of(), List.of(), source.scanSettings,
+                source.fileMetadata, SPLIT);
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            List<AuxiliaryArray> back = reader.getSpectrum(0).orElseThrow().auxiliaryArrays();
+            assertThat(back).hasSize(3);
+            assertThat(back.get(1).data()).isEqualTo(zlibShort.data());
+            assertThat(back.get(1).items()).isEqualTo(4);
+            assertThat(back.get(2).data()).isEqualTo(text.data());
+            assertThat(back.get(2).items()).isEqualTo(2);
+        }
+    }
+
+    /**
      * The Rust reference reader parses the unit of an auxiliary array, of its name and of each of its params, and the
      * accession of each param, as an mzdata CURIE (curie_array_visitor.rs:65-71, {@code parse::<CURIE>().unwrap()}):
      * a prefix, a colon and a number that fits u32 (mzdata-param 0.68 curie_.rs:446-463); it panics on anything else,

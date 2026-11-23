@@ -36,6 +36,7 @@ import org.mzpeak.model.meta.FileMetadata.Software;
 import org.mzpeak.model.meta.FileMetadata.SourceFile;
 import org.mzpeak.model.meta.ScanSettings;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -1635,7 +1636,8 @@ final class WritePlanner {
          * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): the accession of its name
          * one of {@link #AUXILIARY_ARRAY_TYPES}, its data type one of {@link #AUXILIARY_DATA_TYPES} and its
          * compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the Rust reference reader accepts
-         * (auxiliary-arrays.md requires CV terms; that reader panics on others); its unit, the unit of its name and
+         * (auxiliary-arrays.md requires CV terms; that reader panics on others); its bytes its items, when it is
+         * uncompressed and of a fixed-width data type ({@link #requireItems}); its unit, the unit of its name and
          * the accession and unit of each of its params null or a CURIE that reader parses ({@link #requireRustCurie});
          * the accession and unit of its name and of its params, and its unit, each with a declared prefix; its data
          * processing, when it names one, declared by the file metadata.
@@ -1651,6 +1653,7 @@ final class WritePlanner {
                         AUXILIARY_DATA_TYPES);
                 requireTerm(array, "compression", a.compression(),
                         "binary data compressions (children of MS:1000572)", AUXILIARY_COMPRESSIONS);
+                requireItems(array, a);
                 requireRustCurie(array, "unit", a.unit());
                 requireRustCurie(array, "name unit", a.name().unit());
                 for (int p = 0; p < a.parameters().size(); p++) {
@@ -1662,6 +1665,31 @@ final class WritePlanner {
                 requireParams(array, a.parameters());
                 requireNamed(owner, "auxiliary array " + i + " data_processing_id", a.dataProcessingId(), processing,
                         "data processing");
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} naming {@code array}, the length of the data of {@code a} and its items times
+         * the width of its data type when {@code a} is uncompressed (MS:1000576) and of a fixed-width data type
+         * (MS:1000521 float32 and MS:1000519 int32 of 4 bytes, MS:1000523 float64 and MS:1000522 int64 of 8 bytes) and
+         * its data is not that long: {@link AuxiliaryArray#doubles()} could not read it back. A compressed array and
+         * one of another data type (MS:1001479, a string) are written as given (D13-19).
+         */
+        private static void requireItems(String array, AuxiliaryArray a) {
+            int width = switch (a.dataType()) {
+                case "MS:1000521", "MS:1000519" -> Integer.BYTES;
+                case "MS:1000523", "MS:1000522" -> Long.BYTES;
+                default -> 0;
+            };
+            if (width == 0 || !"MS:1000576".equals(a.compression())) {
+                return;
+            }
+            int length = a.data().length;
+            if (length % width != 0 || length / width != a.items()) {
+                throw new MzPeakException(array + ": its " + length + " bytes are not the "
+                        + BigInteger.valueOf(a.items()).multiply(BigInteger.valueOf(width)) + " bytes of its "
+                        + a.items() + " items of " + a.dataType() + " (" + width + " bytes each); an uncompressed"
+                        + " (MS:1000576) array holds items times the width of its data type");
             }
         }
 
