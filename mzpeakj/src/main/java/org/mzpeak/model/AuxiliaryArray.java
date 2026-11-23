@@ -87,12 +87,12 @@ public record AuxiliaryArray(Param name, byte[] data, String dataType, String co
                     + " MS:1000523 (64-bit float), MS:1000519 (32-bit integer) and MS:1000522 (64-bit integer)");
         };
         byte[] bytes = decompressed();
-        if (bytes.length != items * width) {
+        if (bytes.length % width != 0 || items != bytes.length / width) {
             throw new IllegalStateException("auxiliary array " + name.name() + ": " + bytes.length
                     + " bytes do not hold " + items + " values of " + dataType + " (" + width + " bytes each)");
         }
         ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        double[] out = new double[(int) items];
+        double[] out = new double[bytes.length / width];
         for (int i = 0; i < out.length; i++) {
             out[i] = switch (dataType) {
                 case FLOAT32 -> buffer.getFloat();

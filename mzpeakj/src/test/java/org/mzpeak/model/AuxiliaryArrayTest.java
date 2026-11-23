@@ -81,6 +81,19 @@ class AuxiliaryArrayTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("auxiliary array signal to noise array: 12 bytes do not hold 2 values of MS:1000523 (8"
                         + " bytes each)");
+        // item counts whose byte size overflows a long are refused, not wrapped around
+        assertThatThrownBy(array(new byte[0], "MS:1000523", NONE, 1L << 61)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: 0 bytes do not hold 2305843009213693952 values of"
+                        + " MS:1000523 (8 bytes each)");
+        assertThatThrownBy(array(new byte[8], "MS:1000523", NONE, (1L << 61) + 1)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: 8 bytes do not hold 2305843009213693953 values of"
+                        + " MS:1000523 (8 bytes each)");
+        assertThatThrownBy(array(new byte[0], "MS:1000521", NONE, 1L << 62)::doubles)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("auxiliary array signal to noise array: 0 bytes do not hold 4611686018427387904 values of"
+                        + " MS:1000521 (4 bytes each)");
         assertThatThrownBy(array(new byte[] {1, 2, 3}, "MS:1000523", ZLIB, 1)::doubles)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageStartingWith("auxiliary array signal to noise array: the zlib data cannot be decompressed:");
