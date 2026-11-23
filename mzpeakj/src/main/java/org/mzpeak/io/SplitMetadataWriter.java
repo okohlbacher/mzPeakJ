@@ -263,7 +263,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(field(BASE_PEAK_MZ))
             .optional(PrimitiveTypeName.DOUBLE).named(field(BASE_PEAK_INTENSITY))
             .optional(PrimitiveTypeName.DOUBLE).named(field(TIC))
-            .addField(paramListField())
+            .addField(paramListField(true))
             .addField(auxiliaryArrayListField())
             .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
             .named("spectra_metadata");
@@ -276,13 +276,13 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named(field(ISOLATION_TARGET))
                     .optional(PrimitiveTypeName.DOUBLE).named(field(ISOLATION_LOWER))
                     .optional(PrimitiveTypeName.DOUBLE).named(field(ISOLATION_UPPER))
-                    .addField(paramListField())
+                    .addField(paramListField(true))
                     .named(ISOLATION_WINDOW))
             .addField(Types.optionalGroup()
                     .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                     .named(field(DISSOCIATION_METHOD))
                     .optional(PrimitiveTypeName.DOUBLE).named(field(COLLISION_ENERGY))
-                    .addField(paramListField())
+                    .addField(paramListField(true))
                     .named(ACTIVATION))
             .named("spectra_metadata_precursors");
 
@@ -295,7 +295,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(field(PEAK_INTENSITY))
             .optional(PrimitiveTypeName.DOUBLE).named(ION_MOBILITY_VALUE)
             .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named(ION_MOBILITY_TYPE)
-            .addField(paramListField())
+            .addField(paramListField(true))
             .named("spectra_metadata_selected_ions");
 
     /** The chromatogram precursor and selected-ion facets have the fields of the spectrum facets (design §11.8). */
@@ -317,7 +317,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             .optional(PrimitiveTypeName.DOUBLE).named(field(LAMBDA_MAX))
             .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_BASE_PEAK_INTENSITY))
             .optional(PrimitiveTypeName.DOUBLE).named(field(WAVELENGTH_TIC))
-            .addField(paramListField())
+            .addField(paramListField(true))
             .addField(auxiliaryArrayListField())
             .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
             .named("wavelength_spectra_metadata");
@@ -624,7 +624,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     .named(SPECTRUM_REFERENCE);
         }
         builder = builder
-                .addField(paramListField())
+                .addField(paramListField(true))
                 .addField(scanWindowListField(massSpectrum ? PrimitiveTypeName.DOUBLE : PrimitiveTypeName.FLOAT));
         for (Column position : positions) {
             builder = builder.optional(PrimitiveTypeName.INT32).named(field(position));
@@ -662,7 +662,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                         addIfPresent(iso, field(ISOLATION_TARGET), window.targetMz());
                         addIfPresent(iso, field(ISOLATION_LOWER), window.lowerOffset());
                         addIfPresent(iso, field(ISOLATION_UPPER), window.upperOffset());
-                        params(iso, window.parameters());
+                        params(iso, window.parameters(), row);
                     }
                     Group activation = row.addGroup(ACTIVATION);
                     Promotion params = new Promotion(precursor.activation().parameters());
@@ -674,7 +674,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
                     if (energy != null) {
                         activation.add(field(COLLISION_ENERGY), ((Number) energy.value()).doubleValue());
                     }
-                    params(activation, params.rest());
+                    params(activation, params.rest(), row);
                     writer.write(row);
                 }
             }
@@ -747,7 +747,7 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
         }
         MessageType schema = builder
                 .optional(PrimitiveTypeName.INT64).as(UINT64).named(field(CHROMATOGRAM_POINTS))
-                .addField(paramListField())
+                .addField(paramListField(true))
                 .addField(auxiliaryArrayListField())
                 .optional(PrimitiveTypeName.INT32).as(UINT32).named(AUXILIARY_COUNT)
                 .named("chromatograms_metadata");
@@ -1041,7 +1041,8 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * {@code number_of_auxiliary_arrays} (R1, D13-19); an empty list and a zero count, as the reference writes for a
      * row without any. Each array's {@code data} and {@code compression} are written as they are, so compressed
      * bytes stay compressed; its name is written as a {@code parameters} item is ({@link #named}), and its
-     * {@code parameters} as {@link #params} writes a list.
+     * {@code parameters} as {@link #params} writes a list. Its {@code data_type}, {@code compression} and
+     * {@code items}, required fields (W14), are never null: the model requires them.
      */
     private static void auxiliaryArrays(Group row, List<AuxiliaryArray> arrays) {
         row.add(AUXILIARY_COUNT, arrays.size());
@@ -1052,14 +1053,14 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
             for (byte b : a.data()) {
                 data.addGroup("list").add("item", b & 0xff);
             }
-            writeParam(item.addGroup("name"), named(a.name()));
+            writeParam(item.addGroup("name"), named(a.name(), row));
             item.add("data_type", a.dataType());
             item.add("compression", a.compression());
             item.add("items", a.items());
             if (a.unit() != null) {
                 item.add("unit", a.unit());
             }
-            params(item, a.parameters());
+            params(item, a.parameters(), row);
             if (a.dataProcessingId() != null) {
                 item.add(DATA_PROCESSING_ID, a.dataProcessingId());
             }
@@ -1085,25 +1086,47 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
      * planner refuses it before anything is written ({@code WritePlanner.requireWritableParams}).
      */
     private static void params(Group row, List<Param> params) {
+        params(row, params, row);
+    }
+
+    /** {@link #params(Group, List)} into {@code target}, a group of {@code row}, the metadata row of its entity. */
+    private static void params(Group target, List<Param> params, Group row) {
         if (params.isEmpty()) {
-            row.addGroup(PARAMETERS);
+            target.addGroup(PARAMETERS);
             return;
         }
         List<Param> named = new ArrayList<>(params.size());
         for (Param p : params) {
-            named.add(named(p));
+            named.add(named(p, row));
         }
-        writeParams(row, named);
+        writeParams(target, named);
     }
 
     /**
      * {@code p} as a {@code parameters} item is written ({@link #params}): itself when it has a name, else with the
      * name of its term where {@link #TERM_NAMES} knows it, else its accession.
+     *
+     * @throws MzPeakException when {@code p} has neither a name nor an accession, since the item's {@code name} is a
+     *                         required field (W14); the message names the entity by {@code row}, the metadata row
+     *                         being written ({@link #entity}). The planner refuses such a Param first.
      */
-    private static Param named(Param p) {
-        return p.name() == null
-                ? new Param(TERM_NAMES.getOrDefault(p.accession(), p.accession()), p.accession(), p.value(), p.unit())
-                : p;
+    static Param named(Param p, Group row) {
+        if (p.name() != null) {
+            return p;
+        }
+        if (p.accession() == null) {
+            throw new MzPeakException(entity(row) + ": a parameter has neither a name nor an accession, but the"
+                    + " name of a parameters item is a required field: " + p);
+        }
+        return new Param(TERM_NAMES.getOrDefault(p.accession(), p.accession()), p.accession(), p.value(), p.unit());
+    }
+
+    /**
+     * The entity of a metadata row: its table and its first column, the entity's {@code index} or the
+     * {@code source_index} of a facet row, such as {@code spectra_metadata index 3}.
+     */
+    private static String entity(Group row) {
+        return row.getType().getName() + " " + row.getType().getFieldName(0) + " " + row.getLong(0, 0);
     }
 
     /** {@code footer} with the {@link ArrowSchemaHint} of {@code schema} added last, as Arrow writers place it. */

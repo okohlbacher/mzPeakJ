@@ -151,7 +151,7 @@ class ChromatogramMetadataTest {
                 .named("data_processing_ref")
                 .optional(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false))
                 .named("number_of_data_points")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("chromatograms_metadata");
         SimpleGroupFactory factory = new SimpleGroupFactory(legacy);
         List<Group> copies = new ArrayList<>();
@@ -498,7 +498,7 @@ class ChromatogramMetadataTest {
                 .optional(PrimitiveTypeName.DOUBLE).named("tic_a")
                 .optional(PrimitiveTypeName.DOUBLE).named("tic_b")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("comment")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("arrow_schema");
         Param listedLevel = new Param("ms level", "MS:1000511", 2L, null);
         Group row = new SimpleGroupFactory(schema).newGroup().append("index", 0L).append("id", "TIC")
@@ -535,7 +535,7 @@ class ChromatogramMetadataTest {
                         .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                         .named("data_processing_ref")
                         .optional(PrimitiveTypeName.DOUBLE).named("comment_value")
-                        .addField(ParquetOutput.paramListField())
+                        .addField(ParquetOutput.paramListField(false))
                         .named("chromatogram"))
                 .named("arrow_schema");
         Group row = new SimpleGroupFactory(schema).newGroup();

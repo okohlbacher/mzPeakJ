@@ -35,6 +35,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -80,7 +82,8 @@ class SplitWriterRustReaderTest {
 
     /**
      * Both members end with {@code parameters}, {@code auxiliary_arrays} and {@code number_of_auxiliary_arrays}, the
-     * last two typed exactly as in the reference's has_uv, and every row has an empty list and a count of 0.
+     * last two typed exactly as in the reference's has_uv but for the fields auxiliary-arrays.md requires, which are
+     * required ({@link #withRequiredFields}, W14), and every row has an empty list and a count of 0.
      */
     @Test
     void bothMetadataMembersCarryEmptyAuxiliaryArraysTypedAsTheReference() {
@@ -97,7 +100,8 @@ class SplitWriterRustReaderTest {
             }
             assertThat(names.subList(names.size() - 3, names.size())).as(member)
                     .containsExactly("parameters", AUXILIARY_ARRAYS, AUXILIARY_COUNT);
-            assertThat(written.getType(AUXILIARY_ARRAYS)).as(member).isEqualTo(reference.getType(AUXILIARY_ARRAYS));
+            assertThat(written.getType(AUXILIARY_ARRAYS)).as(member).hasToString(
+                    withRequiredFields(reference.getType(AUXILIARY_ARRAYS).toString()));
             assertThat(written.getType(AUXILIARY_COUNT)).as(member).isEqualTo(reference.getType(AUXILIARY_COUNT));
             assertThat(footer(out, member)).as(member).containsEntry(ArrowSchemaHint.KEY,
                     ArrowSchemaHint.encode(written));
@@ -205,7 +209,7 @@ class SplitWriterRustReaderTest {
                 .required(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("spectrum_type")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("wavelength_spectra_metadata");
         Group row = new SimpleGroupFactory(schema).newGroup().append("index", 0L).append("id", "w0")
                 .append("spectrum_type", "MS:1000804");
@@ -402,6 +406,23 @@ class SplitWriterRustReaderTest {
     /** Writes the spectra and chromatograms of {@code s} with {@code waves} as a split directory. */
     private static Path write(List<WavelengthSpectrum> waves, Source s, Path out) {
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, waves, s.scanSettings, s.fileMetadata, SPLIT);
+        return out;
+    }
+
+    /**
+     * {@code auxiliaryArrays}, the reference's {@code auxiliary_arrays} as text, with the item's {@code name} group,
+     * its {@code name}, {@code data_type}, {@code compression} and {@code items} required, as auxiliary-arrays.md
+     * declares them and the writer writes them (W14, X-37); the reference writes them optional.
+     */
+    private static String withRequiredFields(String auxiliaryArrays) {
+        String out = auxiliaryArrays;
+        for (String field : List.of("group name {", "binary data_type (", "binary compression (", "int64 items (",
+                "\n        optional binary name (")) {
+            String optional = field.startsWith("\n") ? field : "optional " + field;
+            String required = optional.replace("optional", "required");
+            assertThat(out).contains(optional);
+            out = out.replaceFirst(Pattern.quote(optional), Matcher.quoteReplacement(required));
+        }
         return out;
     }
 
