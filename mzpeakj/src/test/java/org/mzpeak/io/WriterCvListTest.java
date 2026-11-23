@@ -225,13 +225,14 @@ class WriterCvListTest {
 
     @Test
     void everyKnownCvIsDeclaredWhereverItIsUsedInTheTablesOrder(@TempDir Path tmp) throws IOException {
-        // Each known CV besides MS and UO is used in one place the writer writes, none in the table's order.
+        // Each known CV besides MS and UO is used in one place the writer writes, none in the table's order. NCIT is
+        // a sample param: an NCIT term (NCIT:C25330) is no CURIE the Rust reference reader parses, which the split
+        // layout refuses in its parameters lists (D13-28, X-40).
         ScanEvent scan = new ScanEvent(1.0, null, null, null, null, null, List.of(),
                 List.of(new Param("tissue", "BTO:0000089", null, null)));
         SelectedIon ion = new SelectedIon(500.0, 2, null,
                 List.of(new Param("ancestry", "HANCESTRO:0004", null, null)));
-        Precursor precursor = new Precursor(null, null, null, List.of(ion),
-                new Activation(List.of(new Param("concept", "NCIT:C25330", null, null))));
+        Precursor precursor = new Precursor(null, null, null, List.of(ion), new Activation(List.of()));
         SpectrumDescription description = new SpectrumDescription(0, "scan=1", 2, 1.0, null, null, 0, 0,
                 List.of(scan), List.of(precursor), List.of(new Param("project", "PRIDE:0000001", null, null)));
         Spectrum spectrum = new Spectrum(description, new double[] {100.0, 200.0}, new double[] {1.0, 2.0},
@@ -243,7 +244,8 @@ class WriterCvListTest {
         FileMetadata metadata = new FileMetadata(null, List.of(), List.of(),
                 List.of(new FileMetadata.Sample("sample", "sample", List.of(
                         new Param("entity", "BFO:0000001", null, null),
-                        new Param("disease", "EFO:0000408", null, null)))),
+                        new Param("disease", "EFO:0000408", null, null),
+                        new Param("concept", "NCIT:C25330", null, null)))),
                 List.of(), null);
         Path out = tmp.resolve("all.mzpeak");
 
@@ -322,6 +324,8 @@ class WriterCvListTest {
     void aKnownPrefixUsedOnlyAsAParamUnitIsDeclared(@TempDir Path tmp) throws IOException {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
         // MS accessions; BTO and NCIT appear only as the units, BTO first although NCIT comes first in the table.
+        // Written packed: an NCIT term (NCIT:C48505) is no CURIE the Rust reference reader parses, which the split
+        // layout refuses (D13-28, X-40).
         Param spectrumParam = new Param("sample mass", "MS:1000004", 1.5, "BTO:0000089");
         Param scanParam = new Param("sample volume", "MS:1000005", 2.5, "NCIT:C48505");
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
@@ -330,7 +334,8 @@ class WriterCvListTest {
         Path out = tmp.resolve("units.mzpeak");
 
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
-                s.wavelengthSpectra, s.scanSettings, s.fileMetadata));
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
+                MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED)));
 
         assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(6), REFERENCE_TABLE.get(7));
         assertThat(warnings).isEmpty();
@@ -425,25 +430,42 @@ class WriterCvListTest {
                                                                 @TempDir Path tmp) throws IOException {
         Source s = source(Fixtures.legacy("small.unpacked.mzpeak"));
         // BTO is only the unit of one window param and NCIT only the accession of another, BTO first although NCIT
-        // comes first in the table.
+        // comes first in the table. The split layout refuses the NCIT term, which is no CURIE the Rust reference
+        // reader parses (D13-28, X-40), and is written with the BTO unit only.
         Param btoUnit = new Param("sample mass", "MS:1000004", 1.5, "BTO:0000089");
         Param ncit = new Param("concept", "NCIT:C25330", null, null);
         List<Spectrum> spectra = new ArrayList<>(s.spectra);
         int ms2 = precursorSpectra(spectra).get(0);
-        spectra.set(ms2, withWindowParams(spectra.get(ms2), List.of(btoUnit, ncit)));
+        Spectrum original = spectra.get(ms2);
+        spectra.set(ms2, withWindowParams(original, List.of(btoUnit, ncit)));
         Path out = tmp.resolve("window.mzpeak");
+        MzPeakWriter.Options options = MzPeakWriter.Options.defaults().withMetadataLayout(layout);
+        boolean split = layout == MzPeakWriter.MetadataLayout.SPLIT;
+        List<Param> written = split ? List.of(btoUnit) : List.of(btoUnit, ncit);
+        if (split) {
+            int at = original.description().precursors().get(0).isolationWindow().parameters().size() + 1;
+            assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms, s.wavelengthSpectra,
+                    s.scanSettings, s.fileMetadata, options)).isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("spectrum " + original.index() + ": precursor 0 isolation window: param "
+                            + at + " accession NCIT:C25330 is not a CURIE the Rust reference reader parses");
+            assertThat(out).doesNotExist();
+            spectra.set(ms2, withWindowParams(original, written));
+        }
 
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
-                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
-                MzPeakWriter.Options.defaults().withMetadataLayout(layout)));
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata, options));
 
-        assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(6), REFERENCE_TABLE.get(7));
+        if (split) {
+            assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(7));
+        } else {
+            assertThat(cvList(out)).containsExactly(MS, UO, REFERENCE_TABLE.get(6), REFERENCE_TABLE.get(7));
+            assertThat(writtenPrefixes(out)).containsEntry("NCIT", "NCIT:C25330");
+        }
         assertThat(warnings).isEmpty();
-        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000089")
-                .containsEntry("NCIT", "NCIT:C25330");
+        assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000089");
         try (MzPeakReader r = MzPeakReader.open(out)) {
             assertThat(r.getSpectrumAt(ms2).description().precursors().get(0).isolationWindow().parameters())
-                    .contains(btoUnit, ncit);
+                    .containsAll(written);
         }
     }
 
@@ -590,9 +612,11 @@ class WriterCvListTest {
                 new CvEntry("MS", "A second MS", "https://example.org/ms-2.obo", "9.9.9"));
         Path out = tmp.resolve("order.mzpeak");
 
+        // Written packed: an NCIT term is no CURIE the Rust reference reader parses, which the split layout refuses
+        // (D13-28, X-40).
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, spectra, s.chromatograms,
-                s.wavelengthSpectra, s.scanSettings, s.fileMetadata,
-                MzPeakWriter.Options.defaults().withCvList(caller)));
+                s.wavelengthSpectra, s.scanSettings, s.fileMetadata, MzPeakWriter.Options.defaults()
+                        .withCvList(caller).withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED)));
 
         assertThat(cvList(out)).containsExactly(json(RELEASED_MS), UO, REFERENCE_TABLE.get(6), json(CALLER_BTO),
                 json(qrs), json(XYZ));

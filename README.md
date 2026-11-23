@@ -417,9 +417,16 @@ Writer notes:
   accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units,
   auxiliary-array names, params and units) must be one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
-  written as given, except as an intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array
-  unit of the array index and must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else a stub
-  entity with one WARNING.
+  written as given in the file metadata, the scan settings and the params of the `PACKED` layout, except as an
+  intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array unit of the array index and
+  must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else
+  a stub entity with one WARNING.
+- In the `SPLIT` layout the accession and unit of every param of a spectrum, its scans and precursors (isolation
+  window, activation, selected ions), a chromatogram and its precursors, a wavelength spectrum and its scans must be
+  null or a CURIE the Rust reference reader parses, `PREFIX:number` with a number up to 4294967295 (it panics on
+  any other value, R-16 in [docs/upstream-issues.md](docs/upstream-issues.md)), else the write is refused before
+  anything is written, naming the entity, its index, the param's position and the field: give `UO:0000010`, not
+  `seconds`.
   diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
   read; add configuration 1 to write them.
 - A `SPLIT` write of a legacy (packed) dataset keeps the summary values it stores (observed m/z range, base peak,

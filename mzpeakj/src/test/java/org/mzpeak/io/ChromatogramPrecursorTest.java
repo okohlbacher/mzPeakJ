@@ -314,23 +314,24 @@ class ChromatogramPrecursorTest {
     /**
      * (e): BTO, which the small write uses nowhere else, as an activation param of a chromatogram precursor in a split
      * write is declared in metadata.cv_list; so are CVs used only by an isolation-window or a selected-ion param of
-     * one. A write without them declares none of them.
+     * one. A write without them declares none of them. The window param is an EFO term: an NCIT term such as
+     * NCIT:C25677 is no CURIE the Rust reference reader parses, which the split layout refuses (D13-28, X-40).
      */
     @Test
     void aCvUsedOnlyInAChromatogramPrecursorIsDeclared() throws IOException {
         Path plain = tmp.resolve("plain.mzpeak");
         writeSmall(plain, List.of(chromatogram(0, "sic", List.of(Q1))), SPLIT);
-        assertThat(cvIds(plain)).doesNotContain("BTO", "NCIT", "PRIDE");
+        assertThat(cvIds(plain)).doesNotContain("BTO", "EFO", "PRIDE");
 
         Param brain = new Param("brain", "BTO:0000142", null, null);
-        Param window = new Param("window", "NCIT:C25677", 1L, null);
+        Param window = new Param("window", "EFO:0000408", 1L, null);
         Param ion = new Param("ion", "PRIDE:0000001", null, null);
         Precursor precursor = new Precursor(null, "scan=19", new IsolationWindow(456.7, null, null, List.of(window)),
                 List.of(new SelectedIon(445.34, 2, null, List.of(ion))), new Activation(List.of(CID, brain)));
         Path out = tmp.resolve("bto.mzpeak");
         writeSmall(out, List.of(chromatogram(0, "sic", List.of(precursor))), SPLIT);
 
-        assertThat(cvIds(out)).contains("BTO", "NCIT", "PRIDE");
+        assertThat(cvIds(out)).contains("BTO", "EFO", "PRIDE");
         assertThat(WriterCvListTest.assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000142");
         assertThat(chromatograms(out).get(0).precursors()).containsExactly(precursor);
     }

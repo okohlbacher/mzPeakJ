@@ -118,11 +118,12 @@ final class WritePlanner {
             "MS:1002314", "MS:1002313", "MS:1002746", "MS:1002748", "MS:1002747", "MS:1003089", "MS:1003090",
             "MS:1003780", "MS:1003781", "MS:1003782", "MS:1003783", "MS:1003784", "MS:1003785");
     /**
-     * A CURIE as the Rust reference reader parses a unit or param accession of an auxiliary array (mzdata-param 0.68
-     * {@code CURIE::from_str}): a prefix, a colon and a number, here with its leading zeros apart; the number must
-     * also fit u32 ({@link #U32_MAX}). Required of auxiliary arrays only (provisional D13-28, which deviates from
-     * D13-26 there): a param of an entity, its scans or precursors keeps a unit that is not a CURIE as given (D13-26),
-     * although the Rust reader panics on it as well (upstream-issues.md R-16).
+     * A CURIE as the Rust reference reader parses a unit or param accession of an auxiliary array or of a
+     * {@code parameters} list (mzdata-param 0.68 {@code CURIE::from_str}): a prefix, a colon and a number, here with
+     * its leading zeros apart; the number must also fit u32 ({@link #U32_MAX}). Required of auxiliary arrays (D13-28)
+     * and, in the {@link MetadataLayout#SPLIT} layout, of every param of an entity, its scans and its precursors
+     * (D13-28, X-40, which replaces D13-26 there; upstream-issues.md R-16); the packed layout writes a param unit that
+     * is not a CURIE as given (D13-26).
      */
     private static final Pattern RUST_CURIE = Pattern.compile("[^:]+:0*([0-9]{1,10})");
     /** The largest accession number the Rust reference reader parses (u32). */
@@ -1521,8 +1522,10 @@ final class WritePlanner {
     // KnownCvs.prefix takes it, the values ManifestWriter declares the CVs of) has a prefix metadata.cv_list would not
     // declare, or when an explicit reference names nothing the file metadata declares. A unit is a CURIE only when it
     // has the CURIE shape PREFIX:local (CURIE); any other param unit, such as "seconds" (C6) or "counts: per second", is
-    // written as given (D13-26), but the intensity unit of a spectrum, its peaks or a chromatogram, which becomes the
-    // unit of an array of the array index, must be a CURIE (array_index.json: unit pattern \S+:\S+); an extra-array
+    // written as given by the packed layout (D13-26); the split layout, whose parameters lists the Rust reference
+    // reader parses, refuses a param unit or accession of an entity that is no CURIE it parses (D13-28, X-40); and
+    // the intensity unit of a spectrum, its peaks or a chromatogram, which becomes the unit of an array of the array
+    // index, must be a CURIE (array_index.json: unit pattern \S+:\S+); an extra-array
     // key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a
     // stub and a WARNING when the file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) nothing is declared, so
     // every non-null reference is refused.
@@ -1538,6 +1541,8 @@ final class WritePlanner {
     static final class Declarations {
 
         private final List<CvEntry> cvList;
+        /** Whether the write's layout is {@link MetadataLayout#SPLIT}, whose params pass {@link #requireRustCurie}. */
+        private final boolean split;
         /** The prefixes found declared so far. */
         private final Set<String> declaredPrefixes = new HashSet<>();
         private final List<Integer> configurations = new ArrayList<>();
@@ -1546,6 +1551,7 @@ final class WritePlanner {
 
         private Declarations(FileMetadata meta, Options options) {
             this.cvList = options.cvList();
+            this.split = options.metadataLayout() == MetadataLayout.SPLIT;
             if (meta != null) {
                 meta.instrumentConfigurations().forEach(ic -> configurations.add(ic.id()));
                 meta.dataProcessingMethods().forEach(dp -> processing.add(dp.id()));
@@ -1562,18 +1568,19 @@ final class WritePlanner {
          * peak intensity unit, or a CURIE of one of its auxiliary arrays; when its intensity or peak intensity unit
          * is not a CURIE ({@link #requireArrayUnit}); or when its data processing, the instrument configuration of a
          * scan or the data processing of an auxiliary array names nothing the file metadata declares
-         * ({@link #requireAuxiliaryArrays}).
+         * ({@link #requireAuxiliaryArrays}); in the split layout also when the accession or unit of one of those
+         * params is no CURIE the Rust reference reader parses ({@link #requireWrittenParams}).
          */
         void require(Spectrum s) {
             String owner = "spectrum " + s.index();
             SpectrumDescription d = s.description();
             requireArrayUnit(owner, "intensity unit", s.intensityUnit());
             requireArrayUnit(owner, "peak intensity unit", s.peakIntensityUnit());
-            requireParams(owner, d.parameters());
+            requireWrittenParams(owner, d.parameters());
             requireNamed(owner, "data_processing_id", d.dataProcessingRef(), processing, "data processing");
             for (int i = 0; i < d.scans().size(); i++) {
                 ScanEvent scan = d.scans().get(i);
-                requireParams(owner + ": scan " + i, scan.parameters());
+                requireWrittenParams(owner + ": scan " + i, scan.parameters());
                 requireNamed(owner, "scan " + i + " instrument_configuration_id",
                         scan.instrumentConfigurationRef(), configurations, "instrument configuration");
             }
@@ -1589,13 +1596,14 @@ final class WritePlanner {
          * unit, the accession or unit of a param of it or of its precursors, a key of its arrays that is a CURIE, or
          * a CURIE of one of its auxiliary arrays; when its intensity unit is not a CURIE ({@link #requireArrayUnit});
          * or when its data processing or that of an auxiliary array names nothing the file metadata declares
-         * ({@link #requireAuxiliaryArrays}).
+         * ({@link #requireAuxiliaryArrays}); in the split layout also when the accession or unit of a param of it or
+         * of its precursors is no CURIE the Rust reference reader parses ({@link #requireWrittenParams}).
          */
         void require(Chromatogram c) {
             String owner = "chromatogram " + c.index();
             requirePrefix(owner, "type", c.typeCurie());
             requireArrayUnit(owner, "intensity unit", c.intensityUnit());
-            requireParams(owner, c.parameters());
+            requireWrittenParams(owner, c.parameters());
             requireNamed(owner, "data_processing_id", c.dataProcessingRef(), processing, "data processing");
             requirePrecursors(owner, c.precursors());
             requireArrayKeys(owner, c.arrays().keySet());
@@ -1606,14 +1614,15 @@ final class WritePlanner {
          * Throws {@link MzPeakException} when the accession or unit of a param of {@code w} or of its scans has an
          * undeclared prefix, or a CURIE of one of its auxiliary arrays does, or the instrument configuration of a
          * scan or the data processing of an auxiliary array names nothing the file metadata declares
-         * ({@link #requireAuxiliaryArrays}).
+         * ({@link #requireAuxiliaryArrays}); in the split layout also when the accession or unit of a param of it or
+         * of its scans is no CURIE the Rust reference reader parses ({@link #requireWrittenParams}).
          */
         void require(WavelengthSpectrum w) {
             String owner = "wavelength spectrum " + w.index();
-            requireParams(owner, w.parameters());
+            requireWrittenParams(owner, w.parameters());
             for (int i = 0; i < w.scans().size(); i++) {
                 ScanEvent scan = w.scans().get(i);
-                requireParams(owner + ": scan " + i, scan.parameters());
+                requireWrittenParams(owner + ": scan " + i, scan.parameters());
                 requireNamed(owner, "scan " + i + " instrument_configuration_id",
                         scan.instrumentConfigurationRef(), configurations, "instrument configuration");
             }
@@ -1645,11 +1654,7 @@ final class WritePlanner {
                 requireItems(array, a);
                 requireRustCurie(array, "unit", a.unit());
                 requireRustCurie(array, "name unit", a.name().unit());
-                for (int p = 0; p < a.parameters().size(); p++) {
-                    Param param = a.parameters().get(p);
-                    requireRustCurie(array, "param " + p + " accession", param.accession());
-                    requireRustCurie(array, "param " + p + " unit", param.unit());
-                }
+                requireRustCuries(array, a.parameters());
                 requireUnit(array, "unit", a.unit());
                 requireParams(array, a.parameters());
                 requireNamed(owner, "auxiliary array " + i + " data_processing_id", a.dataProcessingId(), processing,
@@ -1685,8 +1690,10 @@ final class WritePlanner {
         /**
          * Throws {@link MzPeakException} naming {@code owner}, {@code what} and {@code value} when {@code value} is not
          * null and not a CURIE the Rust reference reader parses ({@link #RUST_CURIE}): it reads the units and param
-         * accessions of an auxiliary array with {@code parse::<CURIE>().unwrap()} (curie_array_visitor.rs:65-71) and
-         * panics on any other value, such as the unit {@code seconds} or the accession {@code MS:abc}.
+         * accessions of an auxiliary array with {@code parse::<CURIE>().unwrap()} (curie_array_visitor.rs:65-71), and
+         * those of a {@code parameters} list through {@code AnyCURIEArray} and {@code UnitArray}, which do the same
+         * (curie_array_visitor.rs:34, 70, 257), and panics on any other value, such as the unit {@code seconds} or the
+         * accession {@code MS:abc}.
          */
         private static void requireRustCurie(String owner, String what, String value) {
             if (value == null) {
@@ -1733,18 +1740,43 @@ final class WritePlanner {
             }
         }
 
-        /** The checks of the params of each of {@code precursors} of {@code owner}. */
+        /** The checks of the params of each of {@code precursors} of {@code owner} ({@link #requireWrittenParams}). */
         private void requirePrecursors(String owner, List<Precursor> precursors) {
             for (int i = 0; i < precursors.size(); i++) {
                 Precursor p = precursors.get(i);
                 String precursor = owner + ": precursor " + i;
                 if (p.isolationWindow() != null) {
-                    requireParams(precursor + " isolation window", p.isolationWindow().parameters());
+                    requireWrittenParams(precursor + " isolation window", p.isolationWindow().parameters());
                 }
-                requireParams(precursor + " activation", p.activation().parameters());
+                requireWrittenParams(precursor + " activation", p.activation().parameters());
                 for (int j = 0; j < p.selectedIons().size(); j++) {
-                    requireParams(precursor + " selected ion " + j, p.selectedIons().get(j).parameters());
+                    requireWrittenParams(precursor + " selected ion " + j, p.selectedIons().get(j).parameters());
                 }
+            }
+        }
+
+        /**
+         * The checks of {@code params}, a {@code parameters} list of {@code owner}, an entity, its scans or its
+         * precursors ({@link #requireParams}), and in the {@link MetadataLayout#SPLIT} layout, which writes them to
+         * the {@code parameters} lists the Rust reference reader parses, {@link #requireRustCuries} (D13-28, X-40).
+         */
+        private void requireWrittenParams(String owner, List<Param> params) {
+            requireParams(owner, params);
+            if (split) {
+                requireRustCuries(owner, params);
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} naming {@code owner}, the position of the param in {@code params} and the
+         * field when the accession or unit of a param of {@code params} is not null and not a CURIE the Rust
+         * reference reader parses ({@link #requireRustCurie}).
+         */
+        private static void requireRustCuries(String owner, List<Param> params) {
+            for (int p = 0; p < params.size(); p++) {
+                Param param = params.get(p);
+                requireRustCurie(owner, "param " + p + " accession", param.accession());
+                requireRustCurie(owner, "param " + p + " unit", param.unit());
             }
         }
 

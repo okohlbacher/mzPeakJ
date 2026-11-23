@@ -205,10 +205,13 @@ public final class MzPeakWriter {
      * the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a spectrum, its
      * peaks or a chromatogram, which must be a CURIE (array_index.json), and as the unit of an auxiliary array, of its
      * name or of one of its params, or the accession of one of its params, which must be null or a CURIE the Rust
-     * reference reader parses, {@code PREFIX:number} with a number that fits u32. The name accession, the data type
-     * and the compression of an auxiliary array must be terms that reader maps. These auxiliary-array rules are the
-     * provisional decision D13-28 (docs/releases/0.13.0.md), which deviates from D13-19 and D13-26 and waits for the
-     * maintainer's approval. Every explicit reference must
+     * reference reader parses, {@code PREFIX:number} with a number that fits u32; in the
+     * {@link MetadataLayout#SPLIT} layout so must the accession and unit of every param of an entity, its scans and
+     * its precursors (their isolation windows, activations and selected ions), which that layout writes to the
+     * {@code parameters} lists that reader parses. The name accession, the data type
+     * and the compression of an auxiliary array must be terms that reader maps. These Rust-reader rules are the
+     * decision D13-28 (docs/releases/0.13.0.md), which deviates from D13-19 and, in the split layout, D13-26. Every
+     * explicit reference must
      * name an entry of {@code fileMetadata}: a scan's
      * instrument configuration, a spectrum's, chromatogram's or auxiliary array's data processing, the software of an
      * instrument configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
@@ -747,8 +750,9 @@ public final class MzPeakWriter {
      * spectra are held until the finish and written then as {@code writeDirectory} writes them: in the order of their
      * indices, which must be unique and non-negative, numbered 0..n-1, each precursor_index of a chromatogram as the
      * new index of the chromatogram it names, or null; a violation of these index rules fails the finish. A spectrum,
-     * chromatogram or wavelength spectrum with a CURIE whose CV prefix {@code metadata.cv_list} would not declare, or
-     * with a reference that names nothing of the file metadata (rules of {@code writeDirectory}), is refused when it
+     * chromatogram or wavelength spectrum with a CURIE whose CV prefix {@code metadata.cv_list} would not declare,
+     * with a reference that names nothing of the file metadata, or, in the split layout, with a param accession or
+     * unit that is no CURIE the Rust reference reader parses (rules of {@code writeDirectory}), is refused when it
      * is added, and nothing of it is added; so is a chromatogram or wavelength spectrum that breaks one of its own
      * rules of {@code writeDirectory} (its Params, NaN values, a negative precursor_index or a wavelength scan
      * spectrum reference in the split layout).
@@ -931,8 +935,9 @@ public final class MzPeakWriter {
          * @throws NullPointerException  if {@code chromatogram} is {@code null}
          * @throws MzPeakException       if its {@link Chromatogram#timeUnit()} cannot be converted to minutes (it is
          *                               not minute, second, millisecond or hour), if a CURIE of it has an undeclared
-         *                               CV prefix or its data processing or that of an auxiliary array names nothing
-         *                               (see the class documentation), if a Param of it, its precursors or its
+         *                               CV prefix or its data processing or that of an auxiliary array names nothing,
+         *                               or, in the split layout, a param accession or unit of it or its precursors is
+         *                               no CURIE the Rust reference reader parses (see the class documentation), if a Param of it, its precursors or its
          *                               auxiliary arrays has neither name nor accession or a value of a type mzPeak
          *                               cannot write, if a time or intensity is NaN, or if, in the split layout, a
          *                               precursor_index is negative; it is not added
@@ -954,7 +959,9 @@ public final class MzPeakWriter {
          * @throws MzPeakException       if the accession or unit of a param of it or of its scans, or a CURIE of one of
          *                               its auxiliary arrays, has an undeclared CV prefix, if the instrument
          *                               configuration of a scan or the data processing of an auxiliary array names
-         *                               nothing (see the class documentation), if a Param of it, its scans or its
+         *                               nothing, or, in the split layout, a param accession or unit of it or its
+         *                               scans is no CURIE the Rust reference reader parses (see the class
+         *                               documentation), if a Param of it, its scans or its
          *                               auxiliary arrays has neither name nor accession or a value of a type mzPeak
          *                               cannot write, if a wavelength or intensity is NaN, or if, in the split
          *                               layout, a scan has a spectrum reference (D13-12); it is not added

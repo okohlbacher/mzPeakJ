@@ -265,8 +265,10 @@ class WavelengthParamsTest {
     // ---- (f): the cv-list prefix scan ------------------------------------------------------------------------
 
     /**
-     * A BTO accession on has_uv's first wavelength spectrum, and an NCIT unit on its second, are declared in
+     * A BTO accession on has_uv's first wavelength spectrum, and an EFO unit on its second, are declared in
      * metadata.cv_list of a split write; has_uv uses neither CV elsewhere, so a write without them declares neither.
+     * (An NCIT unit such as NCIT:C48505 is no CURIE the Rust reference reader parses, which the split layout refuses,
+     * D13-28, X-40.)
      */
     @Test
     void aCvUsedOnlyInAWavelengthParamIsDeclared() throws IOException {
@@ -274,10 +276,10 @@ class WavelengthParamsTest {
         Path plain = tmp.resolve("plain.mzpeak");
         MzPeakWriter.writeDirectory(plain, source.spectra, source.chromatograms, source.wavelengthSpectra,
                 source.scanSettings, source.fileMetadata, SPLIT);
-        assertThat(cvIds(plain)).doesNotContain("BTO", "NCIT");
+        assertThat(cvIds(plain)).doesNotContain("BTO", "EFO");
 
         Param brain = new Param("brain", "BTO:0000142", null, null);
-        Param mass = new Param("sample mass", "MS:1000004", 1.5, "NCIT:C48505");
+        Param mass = new Param("sample mass", "MS:1000004", 1.5, "EFO:0000408");
         List<WavelengthSpectrum> waves = new ArrayList<>(source.wavelengthSpectra);
         waves.set(0, withParam(waves.get(0), brain));
         waves.set(1, withParam(waves.get(1), mass));
@@ -285,9 +287,9 @@ class WavelengthParamsTest {
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, waves, source.scanSettings,
                 source.fileMetadata, SPLIT);
 
-        assertThat(cvIds(out)).contains("BTO", "NCIT");
+        assertThat(cvIds(out)).contains("BTO", "EFO");
         assertThat(WriterCvListTest.assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000142")
-                .containsEntry("NCIT", "NCIT:C48505");
+                .containsEntry("EFO", "EFO:0000408");
         // Each added Param stays in the list, so it reads back after the title and before the columns.
         List<WavelengthSpectrum> back = wavelengthSpectra(out);
         assertThat(back.get(0).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(0), brain));
