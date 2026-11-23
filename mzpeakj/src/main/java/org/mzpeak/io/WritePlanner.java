@@ -227,8 +227,9 @@ final class WritePlanner {
      * numbered 0..n-1 as added, with their signal already written and their precursors as given, the
      * {@code spectrumIntensities} and {@code spectrumExtras} of its spectrum signal files, and the chromatograms and
      * wavelength spectra added to it, which were checked when they were added ({@link #requireWritable(Chromatogram,
-     * MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum, MetadataLayout)}) and are here checked for their
-     * indices ({@link #requireIndices}), ordered and numbered as {@link #plan} does it. The plan has
+     * MetadataLayout)}, {@link #requireWritable(WavelengthSpectrum, MetadataLayout)}) and are here checked again with
+     * their indices ({@link #validateOthers}), since they hold the caller's arrays and Params, which may have changed
+     * since, and ordered and numbered as {@link #plan} does it. The plan has
      * no spectrum signals. {@code footer} is the session's serialized file metadata, {@code unwritten} what the
      * writer drops of the spectra added ({@link #countUnwritten(Spectrum, int[])}), and {@code report} holds the
      * warnings of the spectra added.
@@ -238,7 +239,7 @@ final class WritePlanner {
                                 List<Chromatogram> chromatograms, List<WavelengthSpectrum> wavelengthSpectra,
                                 List<ScanSettings> scanSettings, Map<String, String> footer, int[] unwritten,
                                 WriteReport report) {
-        requireIndices(chromatograms, wavelengthSpectra);
+        validateOthers(chromatograms, wavelengthSpectra, options.metadataLayout());
         return complete(options, options.metadataLayout() == MetadataLayout.SPLIT ? withChains(spectra) : spectra,
                 List.of(), spectrumIntensities, spectrumExtras, chromatograms, wavelengthSpectra, scanSettings, footer,
                 unwritten, report);
@@ -1347,24 +1348,6 @@ final class WritePlanner {
             requireNonNegative(w.index(), "wavelength spectrum index");
             requireUnique(seen, w.index(), "wavelength spectrum index");
             requireWritable(w, layout);
-        }
-    }
-
-    /**
-     * The checks across the chromatograms and wavelength spectra of a session, at its finish: their indices
-     * non-negative and unique within each kind, as {@link #validateOthers} checks them.
-     */
-    private static void requireIndices(List<Chromatogram> chromatograms,
-                                       List<WavelengthSpectrum> wavelengthSpectra) {
-        Set<Long> seen = new HashSet<>();
-        for (Chromatogram c : chromatograms) {
-            requireNonNegative(c.index(), "chromatogram index");
-            requireUnique(seen, c.index(), "chromatogram index");
-        }
-        seen.clear();
-        for (WavelengthSpectrum w : wavelengthSpectra) {
-            requireNonNegative(w.index(), "wavelength spectrum index");
-            requireUnique(seen, w.index(), "wavelength spectrum index");
         }
     }
 

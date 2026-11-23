@@ -623,6 +623,31 @@ class WriterSessionTest {
         }
     }
 
+    /**
+     * A chromatogram whose time array the caller changes to hold a NaN after it was added fails the finish, which
+     * checks again what it writes, since a chromatogram does not copy its arrays; the finish then leaves nothing.
+     */
+    @Test
+    void aChromatogramChangedAfterItWasAddedIsCheckedAgainAtTheFinish(@TempDir Path tmp) {
+        Source s = source(SMALL);
+        Chromatogram c = s.chromatograms.get(0);
+        double[] time = c.time().clone();
+        Chromatogram mutable = new Chromatogram(c.index(), c.id(), c.typeCurie(), time, c.intensity(),
+                c.intensityUnit(), c.arrays(), c.polarity(), c.dataProcessingRef(), c.parameters(), c.precursors(),
+                c.timeUnit(), c.products(), c.auxiliaryArrays());
+        Path out = tmp.resolve("out");
+        try (Session session = MzPeakWriter.openDirectory(out, s.fileMetadata, s.scanSettings, Set.of(),
+                Options.defaults())) {
+            session.addSpectrum(s.spectra.get(0));
+            session.addChromatogram(mutable);
+            time[0] = Double.NaN;
+            assertThatThrownBy(session::finish)
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessageStartingWith("chromatogram " + c.index() + ": the time at position 0 is NaN;");
+        }
+        assertThat(list(tmp)).isEmpty();
+    }
+
     /** A chromatogram that breaks the contract fails the finish, which then removes what the session wrote. */
     @Test
     void aDuplicateChromatogramIndexFailsTheFinishAndRemovesTheDirectory(@TempDir Path tmp) {
