@@ -195,7 +195,8 @@ public final class MzPeakWriter {
      * four fields. Checked are the accession and unit of every param (of the entities, their scans, precursors and
      * selected ions, the scan settings and the file metadata), every array key that is a CURIE, the intensity and
      * peak intensity unit of every spectrum and the type and intensity unit of every chromatogram; a value without a
-     * colon, such as the unit {@code seconds}, is no CURIE and is written as given. Every explicit reference must
+     * colon, such as the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a
+     * spectrum, its peaks or a chromatogram, which must be a CURIE (array_index.json). Every explicit reference must
      * name an entry of {@code fileMetadata}: a scan's
      * instrument configuration, a spectrum's or chromatogram's data processing, the software of an instrument
      * configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
@@ -654,8 +655,9 @@ public final class MzPeakWriter {
          * column for each unit of the spectra written. The column of MS:1000131, else of the first unit, is named
          * {@code intensity}; every other one {@code intensity_} followed by the unit with each character other than an
          * ASCII letter or digit as {@code _} ({@code intensity_MS_1000132}), made unique, and its array-index entry
-         * has buffer priority secondary. A repeated unit counts once. A unit with the CURIE shape must have a CV
-         * prefix that {@code metadata.cv_list} declares, which the session checks when it opens.
+         * has buffer priority secondary. A repeated unit counts once. Each unit must be a CURIE
+         * ({@code PREFIX:local}, as array_index.json requires of the unit of an array) with a CV prefix that
+         * {@code metadata.cv_list} declares, which the session checks when it opens.
          *
          * @throws NullPointerException     if {@code units} or one of them is {@code null}
          * @throws IllegalArgumentException if {@code units} is empty

@@ -402,7 +402,9 @@ Writer notes:
   accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units) must be
   one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
-  written as given. A null run default gets the first entry of its list, else a stub entity with one WARNING.
+  written as given, except as an intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array
+  unit of the array index and must be a CURIE. A null run default gets the first entry of its list, else a stub
+  entity with one WARNING.
   diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
   read; add configuration 1 to write them.
 - A `SPLIT` write of a legacy (packed) dataset keeps the summary values it stores (observed m/z range, base peak,

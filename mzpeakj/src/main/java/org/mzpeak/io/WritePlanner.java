@@ -1299,9 +1299,11 @@ final class WritePlanner {
     // (§Validation). A write is refused before anything is written when a CURIE (a value with text before a colon, as
     // KnownCvs.prefix takes it, the values ManifestWriter declares the CVs of) has a prefix metadata.cv_list would not
     // declare, or when an explicit reference names nothing the file metadata declares. A unit is a CURIE only when it
-    // has the CURIE shape PREFIX:local (CURIE); any other unit, such as "seconds" (C6) or "counts: per second", is
-    // written as given; an extra-array key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a stub and a WARNING when the
-    // file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) nothing is declared, so
+    // has the CURIE shape PREFIX:local (CURIE); any other param unit, such as "seconds" (C6) or "counts: per second", is
+    // written as given (D13-26), but the intensity unit of a spectrum, its peaks or a chromatogram, which becomes the
+    // unit of an array of the array index, must be a CURIE (array_index.json: unit pattern \S+:\S+); an extra-array
+    // key that is not a CURIE is written as MS:1000786. A null run default is filled by FooterMetadataWriter, with a
+    // stub and a WARNING when the file metadata has nothing to name. Without file metadata (null or FileMetadata.EMPTY) nothing is declared, so
     // every non-null reference is refused.
 
     /**
@@ -1336,14 +1338,15 @@ final class WritePlanner {
          * Throws {@link MzPeakException} when a CURIE of {@code s} has an undeclared prefix: the accession or unit of
          * a param of it, of its scans, or of its precursors' isolation windows, activations and selected ions, or a
          * key of its {@link Spectrum#arrays()} or {@link Spectrum#peakArrays()} that is a CURIE, or its intensity or
-         * peak intensity unit; or when its data processing or the instrument configuration of a scan names nothing the
-         * file metadata declares.
+         * peak intensity unit; when its intensity or peak intensity unit is not a CURIE ({@link #requireArrayUnit});
+         * or when its data processing or the instrument configuration of a scan names nothing the file metadata
+         * declares.
          */
         void require(Spectrum s) {
             String owner = "spectrum " + s.index();
             SpectrumDescription d = s.description();
-            requireUnit(owner, "intensity unit", s.intensityUnit());
-            requireUnit(owner, "peak intensity unit", s.peakIntensityUnit());
+            requireArrayUnit(owner, "intensity unit", s.intensityUnit());
+            requireArrayUnit(owner, "peak intensity unit", s.peakIntensityUnit());
             requireParams(owner, d.parameters());
             requireNamed(owner, "data_processing_id", d.dataProcessingRef(), processing, "data processing");
             for (int i = 0; i < d.scans().size(); i++) {
@@ -1361,12 +1364,13 @@ final class WritePlanner {
         /**
          * Throws {@link MzPeakException} when a CURIE of {@code c} has an undeclared prefix: its type, its intensity
          * unit, the accession or unit of a param of it or of its precursors, or a key of its arrays that is a CURIE;
-         * or when its data processing names nothing the file metadata declares.
+         * when its intensity unit is not a CURIE ({@link #requireArrayUnit}); or when its data processing names
+         * nothing the file metadata declares.
          */
         void require(Chromatogram c) {
             String owner = "chromatogram " + c.index();
             requirePrefix(owner, "type", c.typeCurie());
-            requireUnit(owner, "intensity unit", c.intensityUnit());
+            requireArrayUnit(owner, "intensity unit", c.intensityUnit());
             requireParams(owner, c.parameters());
             requireNamed(owner, "data_processing_id", c.dataProcessingRef(), processing, "data processing");
             requirePrecursors(owner, c.precursors());
@@ -1392,11 +1396,11 @@ final class WritePlanner {
 
         /**
          * Throws {@link MzPeakException} when a unit of {@code units}, the spectrum intensity units of {@code owner},
-         * has the CURIE shape and a prefix that is not declared.
+         * is not a CURIE or has a prefix that is not declared ({@link #requireArrayUnit}).
          */
         void requireIntensityUnits(String owner, Collection<String> units) {
             for (String unit : units) {
-                requireUnit(owner, "spectrum intensity unit", unit);
+                requireArrayUnit(owner, "spectrum intensity unit", unit);
             }
         }
 
@@ -1431,6 +1435,21 @@ final class WritePlanner {
             if (unit != null && CURIE.matcher(unit).matches()) {
                 requirePrefix(owner, what, unit);
             }
+        }
+
+        /**
+         * The check of {@code unit}, the {@code what} of {@code owner}, which becomes the unit of an array of the array
+         * index: {@code null}, or a CURIE ({@code PREFIX:local}, as array_index.json requires of the unit of an array)
+         * whose prefix is declared. Unlike a param unit (D13-26), a unit that is not a CURIE, such as
+         * {@code percent}, is refused.
+         */
+        private void requireArrayUnit(String owner, String what, String unit) {
+            if (unit != null && !CURIE.matcher(unit).matches()) {
+                throw new MzPeakException(owner + ": " + what + " " + unit + " is not a CURIE (PREFIX:local), which"
+                        + " array_index.json requires of the unit of an array; give a unit term such as MS:1000131"
+                        + " (number of detector counts) or MS:1000132 (percent of base peak), or null");
+            }
+            requireUnit(owner, what, unit);
         }
 
         /**

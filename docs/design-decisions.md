@@ -142,7 +142,10 @@ decisions cause.
   entity (2026-11-23, X-27, D13-6, D13-9, D13-26; replaces "the writer warns" on unknown CURIE prefixes and the stub
   part of D-17). A CURIE (a param accession or unit, an extra-array key that is a CURIE, a chromatogram type or
   intensity unit) needs a prefix `metadata.cv_list` declares: one of `CvEntry.known()` or a caller entry with all four
-  fields. A unit without a colon, such as `seconds`, is written as given. An explicit reference must name an entry of
+  fields. A param unit without a colon, such as `seconds`, is written as given; an intensity unit of a spectrum, its
+  peaks or a chromatogram, and a session's spectrum intensity unit, must be a CURIE, since it becomes the unit of an
+  array of the array index (`array_index.json`, pattern `\S+:\S+`; 2026-11-23, final fix-up of 0.13.0, until then
+  `percent` was written there). An explicit reference must name an entry of
   the file metadata: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
   of an instrument configuration or processing method, a scan setting's source file and the run's non-null defaults.
   A batch write checks before its target exists, a session at open (file metadata, scan settings, spectrum arrays)
