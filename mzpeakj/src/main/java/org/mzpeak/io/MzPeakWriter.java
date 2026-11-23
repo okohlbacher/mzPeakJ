@@ -200,7 +200,9 @@ public final class MzPeakWriter {
      * peak intensity unit of every spectrum, the type and intensity unit of every chromatogram, and the name, the
      * params, the data type, the compression and the unit of every auxiliary array; a value without a colon, such as
      * the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a spectrum, its
-     * peaks or a chromatogram, which must be a CURIE (array_index.json). Every explicit reference must
+     * peaks or a chromatogram, which must be a CURIE (array_index.json), and as the unit of an auxiliary array, of its
+     * name or of one of its params, or the accession of one of its params, which must be null or a CURIE the Rust
+     * reference reader parses, {@code PREFIX:number} with a number that fits u32. Every explicit reference must
      * name an entry of {@code fileMetadata}: a scan's
      * instrument configuration, a spectrum's, chromatogram's or auxiliary array's data processing, the software of an
      * instrument configuration or a processing method, a scan setting's source file and each non-null default of the run. A null

@@ -354,7 +354,9 @@ Writer notes:
   check below, their data processing must be declared, and the accession of their name (a binary data array type,
   MS:1000786 non-standard data array with the array's name as its value included), their data type and their
   compression must each be a term the Rust reference reader accepts (it panics on a name without an accession and
-  on any other value), else the write is refused. The Rust reference reader
+  on any other value), else the write is refused. So is a unit of the array, of its name or of a param, or a param
+  accession, that is neither null nor a CURIE that reader parses, `PREFIX:number` with a number up to 4294967295
+  (it panics on others): a unit such as `seconds` is refused here, give `UO:0000010`. The Rust reference reader
   cannot decode a zlib-compressed one (R-13) and drops those of a chunked spectrum spanning row groups (R-14); the
   `PACKED` layout writes none and warns.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
@@ -413,7 +415,7 @@ Writer notes:
   auxiliary-array names, params and units) must be one of
   `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
   written as given, except as an intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array
-  unit of the array index and must be a CURIE. A null run default gets the first entry of its list, else a stub
+  unit of the array index and must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else a stub
   entity with one WARNING.
   diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
   read; add configuration 1 to write them.

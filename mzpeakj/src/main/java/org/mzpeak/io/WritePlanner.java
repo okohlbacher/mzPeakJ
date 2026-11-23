@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.ToLongFunction;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -109,6 +110,14 @@ final class WritePlanner {
     private static final List<String> AUXILIARY_COMPRESSIONS = List.of("MS:1000576", "MS:1000574", "MS:1002312",
             "MS:1002314", "MS:1002313", "MS:1002746", "MS:1002748", "MS:1002747", "MS:1003089", "MS:1003090",
             "MS:1003780", "MS:1003781", "MS:1003782", "MS:1003783", "MS:1003784", "MS:1003785");
+    /**
+     * A CURIE as the Rust reference reader parses a unit or param accession of an auxiliary array (mzdata-param 0.68
+     * {@code CURIE::from_str}): a prefix, a colon and a number, here with its leading zeros apart; the number must
+     * also fit u32 ({@link #U32_MAX}).
+     */
+    private static final Pattern RUST_CURIE = Pattern.compile("[^:]+:0*([0-9]{1,10})");
+    /** The largest accession number the Rust reference reader parses (u32). */
+    private static final long U32_MAX = 0xFFFFFFFFL;
     /** The columns of the spectrum signal files in either encoding, which no extra column may take. */
     private static final Set<String> SPECTRUM_SIGNAL_COLUMNS = Set.of("spectrum_index", "mz", "intensity",
             "mz_chunk_start", "mz_chunk_end", "mz_chunk_values", "chunk_encoding", "mz_numpress_linear_bytes",
@@ -1576,8 +1585,9 @@ final class WritePlanner {
          * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): the accession of its name
          * one of {@link #AUXILIARY_ARRAY_TYPES}, its data type one of {@link #AUXILIARY_DATA_TYPES} and its
          * compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the Rust reference reader accepts
-         * (auxiliary-arrays.md requires CV terms; that reader panics on others); the accession and unit of its name
-         * and of its params, and its unit when it has the CURIE shape, each with a declared prefix; its data
+         * (auxiliary-arrays.md requires CV terms; that reader panics on others); its unit, the unit of its name and
+         * the accession and unit of each of its params null or a CURIE that reader parses ({@link #requireRustCurie});
+         * the accession and unit of its name and of its params, and its unit, each with a declared prefix; its data
          * processing, when it names one, declared by the file metadata.
          */
         private void requireAuxiliaryArrays(String owner, List<AuxiliaryArray> arrays) {
@@ -1591,10 +1601,35 @@ final class WritePlanner {
                         AUXILIARY_DATA_TYPES);
                 requireTerm(array, "compression", a.compression(),
                         "binary data compressions (children of MS:1000572)", AUXILIARY_COMPRESSIONS);
+                requireRustCurie(array, "unit", a.unit());
+                requireRustCurie(array, "name unit", a.name().unit());
+                for (int p = 0; p < a.parameters().size(); p++) {
+                    Param param = a.parameters().get(p);
+                    requireRustCurie(array, "param " + p + " accession", param.accession());
+                    requireRustCurie(array, "param " + p + " unit", param.unit());
+                }
                 requireUnit(array, "unit", a.unit());
                 requireParams(array, a.parameters());
                 requireNamed(owner, "auxiliary array " + i + " data_processing_id", a.dataProcessingId(), processing,
                         "data processing");
+            }
+        }
+
+        /**
+         * Throws {@link MzPeakException} naming {@code owner}, {@code what} and {@code value} when {@code value} is not
+         * null and not a CURIE the Rust reference reader parses ({@link #RUST_CURIE}): it reads the units and param
+         * accessions of an auxiliary array with {@code parse::<CURIE>().unwrap()} (curie_array_visitor.rs:65-71) and
+         * panics on any other value, such as the unit {@code seconds} or the accession {@code MS:abc}.
+         */
+        private static void requireRustCurie(String owner, String what, String value) {
+            if (value == null) {
+                return;
+            }
+            Matcher m = RUST_CURIE.matcher(value);
+            if (!m.matches() || Long.parseLong(m.group(1)) > U32_MAX) {
+                throw new MzPeakException(owner + ": " + what + " " + value + " is not a CURIE the Rust reference"
+                        + " reader parses (PREFIX:number, the number at most 4294967295; it panics on any other"
+                        + " value): give a CV term such as UO:0000010 (second), or null");
             }
         }
 

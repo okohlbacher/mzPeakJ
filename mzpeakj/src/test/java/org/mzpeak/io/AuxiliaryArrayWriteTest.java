@@ -203,7 +203,8 @@ class AuxiliaryArrayWriteTest {
      * processing the file metadata does not declare, are each refused before anything is written, naming the entity
      * and the array; so is a name without an accession or with one that is not a binary data array type, and a data
      * type or compression that is not a binary data type or compression term, the Rust reference reader accepts (it
-     * panics on others), CURIE or not; a unit that is no CURIE is written as given.
+     * panics on others), CURIE or not. The units and param accessions are covered by
+     * {@link #unitsAndParamAccessionsMustBeCuriesTheRustReaderParses}.
      */
     @Test
     void theW12ChecksApplyToTheArrays() {
@@ -242,14 +243,88 @@ class AuxiliaryArrayWriteTest {
         assertRefused(array(new Param(null, null, "v", null), FLOAT64, NONE, null, List.of(), null),
                 "spectrum 0 (" + ForwardBackwardCorpusTest.readSource(SMALL).spectra.get(0).description().id()
                         + "): a parameter needs a name or an accession");
+    }
 
-        Source source = withSpectrumArrays(SMALL, List.of(array(PLAIN.name(), FLOAT64, NONE, "seconds", List.of(),
-                null)));
-        Path out = tmp.resolve("seconds.mzpeak");
-        MzPeakWriter.writeDirectory(out, source.spectra, List.of(), List.of(), source.scanSettings,
-                source.fileMetadata, SPLIT);
+    /**
+     * The Rust reference reader parses the unit of an auxiliary array, of its name and of each of its params, and the
+     * accession of each param, as an mzdata CURIE (curie_array_visitor.rs:65-71, {@code parse::<CURIE>().unwrap()}):
+     * a prefix, a colon and a number that fits u32 (mzdata-param 0.68 curie_.rs:446-463); it panics on anything else,
+     * "seconds" ({@code MissingNamespaceSeparator}) and "MS:abc" ({@code ParseIntError}) as rdump showed. Each such
+     * value is refused, naming the entity, the array and the field, in a batch write and in a session, for spectra,
+     * chromatograms and wavelength spectra; null and a CURIE whose number fits u32, leading zeros or not, are written.
+     */
+    @Test
+    void unitsAndParamAccessionsMustBeCuriesTheRustReaderParses() {
+        String why = " is not a CURIE the Rust reference reader parses (PREFIX:number, the number at most 4294967295;"
+                + " it panics on any other value): give a CV term such as UO:0000010 (second), or null";
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, "seconds", List.of(), null),
+                "spectrum 0: auxiliary array 1: unit seconds" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, "UO:second", List.of(), null),
+                "spectrum 0: auxiliary array 1: unit UO:second" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, "NCIT:C25301", List.of(), null),
+                "spectrum 0: auxiliary array 1: unit NCIT:C25301" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, "UO:4294967296", List.of(), null),
+                "spectrum 0: auxiliary array 1: unit UO:4294967296" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, "UO:", List.of(), null),
+                "spectrum 0: auxiliary array 1: unit UO:" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, ":0000010", List.of(), null),
+                "spectrum 0: auxiliary array 1: unit :0000010" + why);
+        assertRefused(array(new Param("signal to noise array", "MS:1000517", null, "seconds"), FLOAT64, NONE, null,
+                List.of(), null), "spectrum 0: auxiliary array 1: name unit seconds" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, null, List.of(new Param("comment", null, "note", null),
+                new Param("foo", "foo", null, null)), null), "spectrum 0: auxiliary array 1: param 1 accession foo"
+                + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, null, List.of(new Param("abc", "MS:abc", null, null)), null),
+                "spectrum 0: auxiliary array 1: param 0 accession MS:abc" + why);
+        assertRefused(array(PLAIN.name(), FLOAT64, NONE, null, List.of(new Param("p", "MS:1000786", 1.0,
+                "minutes")), null), "spectrum 0: auxiliary array 1: param 0 unit minutes" + why);
+
+        Source source = ForwardBackwardCorpusTest.readSource(HAS_UV);
+        AuxiliaryArray seconds = array(PLAIN.name(), FLOAT64, NONE, "seconds", List.of(), null);
+        AuxiliaryArray badAccession = array(PLAIN.name(), FLOAT64, NONE, null,
+                List.of(new Param("abc", "MS:abc", null, null)), null);
+        List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
+        chromatograms.set(1, withArrays(chromatograms.get(1), List.of(PLAIN, seconds)));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("c.mzpeak"), source.spectra,
+                chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram 1: auxiliary array 1: unit seconds" + why);
+        List<WavelengthSpectrum> wavelengthSpectra = new ArrayList<>(source.wavelengthSpectra);
+        wavelengthSpectra.set(2, withArrays(wavelengthSpectra.get(2), List.of(badAccession)));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("w.mzpeak"), source.spectra,
+                source.chromatograms, wavelengthSpectra, source.scanSettings, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("wavelength spectrum 2: auxiliary array 0: param 0 accession MS:abc" + why);
+        assertThat(tmp.resolve("c.mzpeak")).doesNotExist();
+        assertThat(tmp.resolve("w.mzpeak")).doesNotExist();
+
+        try (Session session = MzPeakWriter.openDirectory(tmp.resolve("session.mzpeak"), source.fileMetadata,
+                source.scanSettings, new LinkedHashSet<>(), SPLIT)) {
+            assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0), List.of(seconds))))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectrum 0: auxiliary array 0: unit seconds" + why);
+            assertThatThrownBy(() -> session.addSpectrum(withArrays(source.spectra.get(0),
+                    List.of(PLAIN, badAccession)))).isInstanceOf(MzPeakException.class)
+                    .hasMessage("spectrum 0: auxiliary array 1: param 0 accession MS:abc" + why);
+            assertThatThrownBy(() -> session.addChromatogram(withArrays(source.chromatograms.get(0),
+                    List.of(badAccession)))).isInstanceOf(MzPeakException.class)
+                    .hasMessage("chromatogram 0: auxiliary array 0: param 0 accession MS:abc" + why);
+            assertThatThrownBy(() -> session.addWavelengthSpectrum(withArrays(source.wavelengthSpectra.get(0),
+                    List.of(seconds)))).isInstanceOf(MzPeakException.class)
+                    .hasMessage("wavelength spectrum 0: auxiliary array 0: unit seconds" + why);
+        }
+
+        AuxiliaryArray accepted = array(new Param("signal to noise array", "MS:1000517", null, "UO:0000186"), FLOAT64,
+                NONE, "UO:4294967295", List.of(new Param("p", "MS:1000786", 1.0, "UO:10")), null);
+        Source small = withSpectrumArrays(SMALL, List.of(accepted));
+        Path out = tmp.resolve("accepted.mzpeak");
+        MzPeakWriter.writeDirectory(out, small.spectra, List.of(), List.of(), small.scanSettings, small.fileMetadata,
+                SPLIT);
         try (MzPeakReader reader = MzPeakReader.open(out)) {
-            assertThat(reader.getSpectrum(0).orElseThrow().auxiliaryArrays().get(0).unit()).isEqualTo("seconds");
+            AuxiliaryArray back = reader.getSpectrum(0).orElseThrow().auxiliaryArrays().get(0);
+            assertThat(back.unit()).isEqualTo("UO:4294967295");
+            assertThat(back.name().unit()).isEqualTo("UO:0000186");
+            assertThat(back.parameters().get(0).unit()).isEqualTo("UO:10");
         }
     }
 
@@ -354,13 +429,13 @@ class AuxiliaryArrayWriteTest {
         Path without = tmp.resolve("without.mzpeak");
         MzPeakWriter.writeDirectory(without, plain.spectra, plain.chromatograms, plain.wavelengthSpectra,
                 plain.scanSettings, plain.fileMetadata, SPLIT);
-        List<String> used = List.of("EFO", "OBI", "BFO", "NCIT", "BTO", "PRIDE");
+        List<String> used = List.of("EFO", "OBI", "BFO", "HANCESTRO", "BTO", "PRIDE");
         assertThat(cvIds(without)).doesNotContainAnyElementsOf(used);
 
         AuxiliaryArray spectrumArray = new AuxiliaryArray(
                 new Param("non-standard data array", "MS:1000786", "x", "BFO:0000001"), float64(1.0, 2.0, 3.0),
-                FLOAT64, NONE, 3, "NCIT:C25301", List.of(new Param("factor", "EFO:0000001", null, "BTO:0000001")),
-                null);
+                FLOAT64, NONE, 3, "HANCESTRO:0000004",
+                List.of(new Param("factor", "EFO:0000001", null, "BTO:0000001")), null);
         Source source = withSpectrumArrays(HAS_UV, List.of(spectrumArray));
         List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
         chromatograms.set(0, withArrays(chromatograms.get(0), List.of(array(PLAIN.name(), FLOAT64, NONE, null,
@@ -379,7 +454,7 @@ class AuxiliaryArrayWriteTest {
             s.addSpectrum(source.spectra.get(0));
             s.finish();
         }
-        assertThat(cvIds(session)).contains("EFO", "BFO", "NCIT", "BTO").doesNotContain("OBI", "PRIDE");
+        assertThat(cvIds(session)).contains("EFO", "BFO", "HANCESTRO", "BTO").doesNotContain("OBI", "PRIDE");
     }
 
     /**
