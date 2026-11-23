@@ -504,7 +504,9 @@ summary.
 ./run-example.sh org.mzpeak.examples.ExtractSpectra \
     mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
 ```
-Produces an unpacked directory or STORED ZIP depending on the output name.
+Produces an unpacked directory or STORED ZIP depending on the output name. A write the writer refuses, such as
+diaPASEF.ref or diaPASEF.grid with their undeclared run default instrument configuration, prints its message and
+exits with status 1.
 
 #### `ConvertToDta` — MSn spectra → Sequest `.dta` files
 

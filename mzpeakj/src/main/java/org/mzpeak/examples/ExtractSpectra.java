@@ -1,5 +1,6 @@
 package org.mzpeak.examples;
 
+import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.io.MzPeakWriter;
 import org.mzpeak.model.Chromatogram;
@@ -20,7 +21,9 @@ import java.util.List;
  *
  * If {@code <out>} ends in {@code .mzpeak} a single-file ZIP is written, otherwise an unpacked directory. The input's
  * file metadata is written with them, which declares the instrument configurations and data processings the spectra
- * name (W12).
+ * name (W12). A file whose metadata names a configuration or processing it does not declare, such as diaPASEF.ref
+ * and diaPASEF.grid with their run default instrument configuration 1, is refused (D13-9): the command line prints
+ * the writer's message and exits with status 1.
  */
 public final class ExtractSpectra {
 
@@ -53,7 +56,11 @@ public final class ExtractSpectra {
         ExampleArgs.exit(run(args, System.out, System.err), System::exit);
     }
 
-    /** Writes the filtered copy, prints a summary to {@code out} and returns 0, or the usage to {@code err} and 2. */
+    /**
+     * Writes the filtered copy, prints a summary to {@code out} and returns 0; or prints the usage to {@code err} and
+     * returns 2; or, when reading or writing fails with an {@link MzPeakException}, prints its message to {@code err}
+     * and returns 1.
+     */
     static int run(String[] args, PrintStream out, PrintStream err) {
         ExampleArgs a = new ExampleArgs(args);
         if (a.positional.size() < 2) {
@@ -62,7 +69,13 @@ public final class ExtractSpectra {
             return 2;
         }
         SpectrumFilter filter = SpectrumFilter.from(a);
-        int n = run(Path.of(a.positional.get(0)), Path.of(a.positional.get(1)), filter);
+        int n;
+        try {
+            n = run(Path.of(a.positional.get(0)), Path.of(a.positional.get(1)), filter);
+        } catch (MzPeakException e) {
+            err.println("ExtractSpectra: " + e.getMessage());
+            return 1;
+        }
         out.printf("Wrote %d spectra (%s) to %s%n", n, filter.describe(), a.positional.get(1));
         return 0;
     }
