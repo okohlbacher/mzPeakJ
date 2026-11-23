@@ -652,8 +652,10 @@ class WriterCvListTest {
 
     /**
      * A CV that only a param of has_uv's first wavelength spectrum or first chromatogram uses is declared by the
-     * caller's entry, without a warning; without that entry, an unknown one is refused (W12) and a known one is
-     * declared by the built-in entry.
+     * caller's entry, without a warning about it; without that entry, an unknown one is refused (W12) and a known one
+     * is declared by the built-in entry. The only warning of these writes is the one about has_uv's wavelength scans,
+     * which the writer does not write yet: of all 520, but the first when the param is added to it, which drops its
+     * scans.
      */
     @ParameterizedTest(name = "{1} on a {0}")
     @MethodSource("callerEntriesForCvsUsedOnlyInWavelengthOrChromatogramParams")
@@ -670,6 +672,8 @@ class WriterCvListTest {
         }
         Path plain = tmp.resolve("plain.mzpeak");
         Path out = tmp.resolve("caller.mzpeak");
+        String scans = WritePlanner.UNWRITTEN + "the scans of " + (where.equals("chromatogram") ? 520 : 519)
+                + " wavelength spectra beyond one scan holding the spectrum time";
 
         if (builtIn.isEmpty()) {
             assertThatThrownBy(() -> MzPeakWriter.writeDirectory(plain, s.spectra, chromatograms, waves,
@@ -682,13 +686,13 @@ class WriterCvListTest {
             List<String> plainCvs = new ArrayList<>(List.of(MS, UO));
             plainCvs.addAll(builtIn);
             assertThat(cvList(plain)).containsExactlyElementsOf(plainCvs);
-            assertThat(plainWarnings).isEmpty();
+            assertThat(plainWarnings).extracting(LogRecord::getMessage).containsExactly(scans);
         }
         List<LogRecord> warnings = writerWarnings(() -> MzPeakWriter.writeDirectory(out, s.spectra, chromatograms,
                 waves, s.scanSettings, s.fileMetadata, MzPeakWriter.Options.defaults().withCvList(List.of(entry))));
 
         assertThat(cvList(out)).containsExactly(MS, UO, json(entry));
-        assertThat(warnings).isEmpty();
+        assertThat(warnings).extracting(LogRecord::getMessage).containsExactly(scans);
         assertThat(assertEveryWrittenPrefixIsDeclared(out)).containsEntry(entry.id(), param.accession());
     }
 

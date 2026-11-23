@@ -792,6 +792,11 @@ public final class MzPeakWriter {
          * processing references.
          */
         private final int[] packedDrops = new int[4];
+        /**
+         * What the writer does not write yet of the spectra added ({@link WritePlanner#countUnwritten(Spectrum,
+         * int[])}): auxiliary arrays, products, precursor MS levels.
+         */
+        private final int[] unwritten = new int[WritePlanner.UNWRITTEN_KINDS];
         private State state = State.OPEN;
 
         /**
@@ -899,6 +904,7 @@ public final class MzPeakWriter {
             declarations.require(spectrum);
             WriteReport warnings = new WriteReport();
             append(WritePlanner.sessionSignal(spectrum, spectrumArrays, intensities, options, warnings, packedDrops));
+            WritePlanner.countUnwritten(spectrum, unwritten);
             for (String warning : warnings.warnings()) {
                 report.warn(warning);
             }
@@ -949,7 +955,7 @@ public final class MzPeakWriter {
             finish(() -> {
                 WritePlanner.warnPackedDrops(packedDrops, report);
                 return WritePlanner.planFinish(options, dataset.entries(), intensities, extras, chromatograms,
-                        wavelengthSpectra, scanSettings, footer, report);
+                        wavelengthSpectra, scanSettings, footer, unwritten, report);
             });
         }
 

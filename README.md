@@ -797,7 +797,9 @@ classes statically reference Hadoop types — but it is never actually invoked.
   reference, wavelength-spectrum Params or chromatogram polarity, data processing reference, Params or precursors
   (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
   `Chromatogram.products()`) or the precursor MS level (`Precursor.msLevel()`), which are read only (D13-21; the
-  Rust reference panics on a chromatogram products member).
+  Rust reference panics on a chromatogram products member), nor yet the auxiliary arrays of spectra, chromatograms
+  and wavelength spectra or the scans of a wavelength spectrum beyond one scan holding its time (the R1 and R8
+  writer units); a write that drops any of these warns once, with the counts.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
