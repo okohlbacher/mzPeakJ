@@ -26,16 +26,17 @@ final class ChunkCodecs {
 
     /**
      * The values of the Numpress payload in {@code field} ({@code cvAccession} names the codec), none for an empty or
-     * null payload; a payload that does not decode throws, naming {@code what} and the entity. PIC is decoded by
-     * {@link #decodePic}, linear and SLOF by {@code MSNumpress.decode}.
+     * null payload; a payload that does not decode, or a byte list with a null byte, throws an
+     * {@link MzPeakException} naming {@code what} and the entity. PIC is decoded by {@link #decodePic}, linear and
+     * SLOF by {@code MSNumpress.decode}.
      */
     static double[] decodeNumpress(Group chunk, String field, String cvAccession, SignalEntity.Ref ref,
                                   String what) {
-        byte[] bytes = ParquetGroups.byteList(chunk, field);
-        if (bytes.length == 0) {
-            return new double[0];
-        }
         try {
+            byte[] bytes = ParquetGroups.byteList(chunk, field);
+            if (bytes.length == 0) {
+                return new double[0];
+            }
             return cvAccession.equals(MSNumpress.ACC_NUMPRESS_PIC) ? decodePic(bytes)
                     : MSNumpress.decode(cvAccession, bytes, bytes.length);
         } catch (RuntimeException e) {

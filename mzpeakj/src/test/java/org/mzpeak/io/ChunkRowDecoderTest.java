@@ -150,6 +150,45 @@ class ChunkRowDecoderTest {
         assertThat(decoder.decode(empty, 2).axis()).isEmpty();
     }
 
+    /**
+     * An absolute (MS:1000576 or MS:1003088) row with one intensity more than values reads the chunk start as its
+     * first point: a null chunk start, or a plan without the column, is refused rather than read as m/z 0 (U2; the
+     * Rust reference always writes a non-null chunk_start). With the start, the row decodes as before.
+     */
+    @Test
+    void anAbsoluteRowWithValuesPlusOneIntensitiesNeedsTheChunkStart() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY);
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        for (String encoding : List.of("MS:1000576", "MS:1003088")) {
+            Group nullStart = row(schema);
+            addList(nullStart, "mz_chunk_values", 100.5, 101.0);
+            nullStart.add("chunk_encoding", encoding);
+            addList(nullStart, "intensity", 1, 2, 3);
+            assertThatThrownBy(() -> decoder.decode(nullStart, 5))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("chunk row of spectrum_index 5 has one intensity more than m/z values, whose first"
+                            + " point is the m/z chunk start, but its m/z chunk start is null; reading it as 0 would"
+                            + " invent m/z values");
+        }
+
+        MessageType withoutStart = schema(VALUES, ENCODING, INTENSITY);
+        Group noColumn = row(withoutStart);
+        addList(noColumn, "mz_chunk_values", 100.5);
+        noColumn.add("chunk_encoding", "MS:1000576");
+        addList(noColumn, "intensity", 1, 2);
+        assertThatThrownBy(() -> new ChunkRowDecoder(inferred(withoutStart)).decode(noColumn, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chunk row of spectrum_index 6 has one intensity more than m/z values")
+                .hasMessageContaining("but its signal plan has no m/z chunk start column;");
+
+        Group withStart = row(schema);
+        withStart.add("mz_chunk_start", 100.0);
+        addList(withStart, "mz_chunk_values", 100.5, 101.0);
+        withStart.add("chunk_encoding", "MS:1000576");
+        addList(withStart, "intensity", 1, 2, 3);
+        assertThat(decoder.decode(withStart, 5).axis()).containsExactly(100.0, 100.5, 101.0);
+    }
+
     @Test
     void withoutAnAxisValuesColumnTheChunkStartIsTheOnlyPoint() {
         MessageType schema = schema(START, ENCODING, INTENSITY);
