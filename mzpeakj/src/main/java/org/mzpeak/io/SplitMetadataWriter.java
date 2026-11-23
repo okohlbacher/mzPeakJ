@@ -341,9 +341,12 @@ final class SplitMetadataWriter implements MetadataTablesWriter {
     private static final List<ColumnMapping> WAVELENGTH_MAPPING = mapping(Facet.WAVELENGTH_SPECTRUM,
             Set.of(WAVELENGTH_TYPE, WAVELENGTH_REPRESENTATION, LOWEST_WAVELENGTH, HIGHEST_WAVELENGTH,
                     WAVELENGTH_POINTS, LAMBDA_MAX, WAVELENGTH_BASE_PEAK_INTENSITY, WAVELENGTH_TIC));
-    /** The wavelength scans map the CV-mapped columns of the spectrum scans, as the reference does (V-25). */
-    private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.WAVELENGTH_SCAN,
-            sameColumns(Facet.WAVELENGTH_SCAN, SCAN_COLUMNS));
+    /**
+     * The wavelength scans map the CV-mapped columns of the spectrum scans, as the reference does (V-25): the scan
+     * windows in m/z, as has_uv maps them, not in the nanometers of {@link Facet#WAVELENGTH_SCAN}'s rows, until the
+     * windows are written (R8 writer). The written windows are always empty.
+     */
+    private static final List<ColumnMapping> WAVELENGTH_SCAN_MAPPING = mapping(Facet.SPECTRUM_SCAN, SCAN_COLUMNS);
 
     /** See {@link #termNames()}. */
     private static final Map<String, String> TERM_NAMES = termNames();

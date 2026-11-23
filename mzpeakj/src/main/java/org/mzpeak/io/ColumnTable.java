@@ -18,9 +18,11 @@ import java.util.Set;
  * 8 HUPO-PSI/mzPeak 2ee2589 example manifests, which map no products member, so the products facets list none; their
  * isolation-window columns are found by their spec names. The rows are copied verbatim and in file order, but for the
  * wavelength representation, whose canonical path is {@code opt_spectrum_representation} as metadata-tables.md
- * §Column naming requires (the manifests' {@code spectrum_representation} is its first fallback). Each row also lists
- * fallbacks, the other names the same column has gone by: first the spec's alternate names, then the pin-era packed
- * names (HUPO-PSI/mzPeak 29e59b2, mzPeakJ 0.10.3 and earlier).
+ * §Column naming requires (the manifests' {@code spectrum_representation} is its first fallback), and for the
+ * wavelength scan windows, whose unit is nanometer (UO:0000018) as wavelength-spectra.md gives it, where has_uv's
+ * manifest maps them in m/z (D13-24). Each row also lists fallbacks, the other names the same column has gone by:
+ * first the spec's alternate names, then the pin-era packed names (HUPO-PSI/mzPeak 29e59b2, mzPeakJ 0.10.3 and
+ * earlier).
  *
  * <p>Paths are dotted, relative to the facet's table or packed struct, and omit list and element levels, like
  * {@link MzPeakManifest.ColumnMapping#path()}.
@@ -52,6 +54,7 @@ final class ColumnTable {
     }
 
     private static final String MZ = "MS:1000040";
+    private static final String NANOMETER = "UO:0000018";
     private static final String COUNTS = "MS:1000131";
 
     private static final Map<Facet, List<Column>> TABLE = table();
@@ -133,7 +136,7 @@ final class ColumnTable {
                         "MS_1000285_total_ion_current_unit_MS_1000131"),
                 column(s, "polynomial_delta_coordinate_interpolation", "MS:1003821",
                         "polynomial delta coordinate interpolation", null)));
-        t.put(Facet.SPECTRUM_SCAN, concat(scans(Facet.SPECTRUM_SCAN), List.of(
+        t.put(Facet.SPECTRUM_SCAN, concat(scans(Facet.SPECTRUM_SCAN, MZ), List.of(
                 column(Facet.SPECTRUM_SCAN, "opt_IMS_1000050_position_x", "IMS:1000050", "position x", null,
                         "position_x", "IMS_1000050_position_x"),
                 column(Facet.SPECTRUM_SCAN, "opt_IMS_1000051_position_y", "IMS:1000051", "position y", null,
@@ -170,12 +173,15 @@ final class ColumnTable {
                         "MS_1000505_base_peak_intensity_unit_MS_1000131"),
                 column(w, "total_ion_current", "MS:1000285", "total ion current", COUNTS,
                         "MS_1000285_total_ion_current_unit_MS_1000131")));
-        t.put(Facet.WAVELENGTH_SCAN, scans(Facet.WAVELENGTH_SCAN));
+        // scan windows in nm (D13-24); the pin-era names keep the m/z suffix they were stored with
+        t.put(Facet.WAVELENGTH_SCAN, scans(Facet.WAVELENGTH_SCAN, NANOMETER));
         return Collections.unmodifiableMap(t);
     }
 
-    /** The scan columns shared by spectrum and wavelength-spectrum scans. */
-    private static List<Column> scans(Facet f) {
+    /**
+     * The scan columns shared by spectrum and wavelength-spectrum scans, with the scan windows in {@code windowUnit}.
+     */
+    private static List<Column> scans(Facet f, String windowUnit) {
         return List.of(
                 column(f, "scan_start_time", "MS:1000016", "scan start time", "UO:0000031",
                         "MS_1000016_scan_start_time_unit_UO_0000031"),
@@ -184,10 +190,10 @@ final class ColumnTable {
                 column(f, "filter_string", "MS:1000512", "filter string", null, "MS_1000512_filter_string"),
                 column(f, "ion_injection_time", "MS:1000927", "ion injection time", "UO:0000028",
                         "MS_1000927_ion_injection_time_unit_UO_0000028"),
-                column(f, "scan_windows.scan_window_lower_limit", "MS:1000501", "scan window lower limit", MZ,
-                        "scan_windows.MS_1000501_scan_window_lower_limit_unit_MS_1000040"),
-                column(f, "scan_windows.scan_window_upper_limit", "MS:1000500", "scan window upper limit", MZ,
-                        "scan_windows.MS_1000500_scan_window_upper_limit_unit_MS_1000040"));
+                column(f, "scan_windows.scan_window_lower_limit", "MS:1000501", "scan window lower limit",
+                        windowUnit, "scan_windows.MS_1000501_scan_window_lower_limit_unit_MS_1000040"),
+                column(f, "scan_windows.scan_window_upper_limit", "MS:1000500", "scan window upper limit",
+                        windowUnit, "scan_windows.MS_1000500_scan_window_upper_limit_unit_MS_1000040"));
     }
 
     /** The precursor columns shared by spectra and chromatograms. */

@@ -7,6 +7,7 @@ import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.parquet.ParquetGroups;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.util.ArrayList;
@@ -19,6 +20,9 @@ import java.util.Optional;
  * Reads {@code wavelength_spectra_metadata.parquet} + {@code wavelength_spectra_data.parquet} into
  * {@link WavelengthSpectrum}s. The metadata member, packed or split, is decoded by
  * {@link WavelengthMetadataDecoder}; spectra keep its order, and an index without data rows reads as empty arrays.
+ * Their scans come from the split scans member {@code wavelength_spectra_metadata_scans} when the manifest lists one
+ * (R8); without it, as in the legacy packed layout, whose scans live in its metadata member and are not read
+ * (D13-24), and for members given directly, spectra have no scans.
  * The data member is read through its {@link SignalPlan}: from its {@code wavelength_spectrum_array_index} footer,
  * else inferred from its column names. In {@code point} layout its rows are grouped by {@link PointArrays}; in
  * {@code chunk} layout (C5, wavelength-spectra.md: point or chunked layout) each chunk row is decoded by
@@ -62,7 +66,8 @@ final class WavelengthSpectrumStore {
 
     /**
      * Loads the members that {@code manifest} lists under the roles (wavelength spectrum, metadata) and (wavelength
-     * spectrum, data arrays); error messages name the metadata member by its file name.
+     * spectrum, data arrays), with the scans of the (wavelength spectrum, scans) member when it lists one; error
+     * messages name the members by their file names.
      *
      * @return the store, or {@code null} when the manifest lacks either member
      */
@@ -73,24 +78,27 @@ final class WavelengthSpectrumStore {
         if (metadata == null || dataName == null) {
             return null;
         }
-        return load(WavelengthMetadataDecoder.decode(source.inputFile(metadata.name()), metadata),
+        Map<Long, List<ScanEvent>> scans = Facet.WAVELENGTH_SCAN.entry(manifest)
+                .map(e -> WavelengthMetadataDecoder.scans(source.inputFile(e.name()), e)).orElse(Map.of());
+        return load(WavelengthMetadataDecoder.decode(source.inputFile(metadata.name()), metadata), scans,
                 source.inputFile(dataName), dataName);
     }
 
     /**
-     * Loads a metadata member of either layout and a data member given directly; error messages name the members by
-     * their roles.
+     * Loads a metadata member of either layout and a data member given directly, without scans; error messages name
+     * the members by their roles.
      */
     static WavelengthSpectrumStore load(InputFile metadataFile, InputFile dataFile) {
         Entry metadata = new Entry(MEMBER, EntityType.WAVELENGTH_SPECTRUM.canonical(), DataKind.METADATA.canonical());
-        return load(WavelengthMetadataDecoder.decode(metadataFile, metadata), dataFile, DATA_MEMBER);
+        return load(WavelengthMetadataDecoder.decode(metadataFile, metadata), Map.of(), dataFile, DATA_MEMBER);
     }
 
     /**
-     * Pairs {@code headers} with the data member's arrays; the data member is not read when there are none. Errors
-     * name the data member {@code dataName}.
+     * Pairs {@code headers} with their {@code scans}, by index, and the data member's arrays; the data member is not
+     * read when there are no headers. Errors name the data member {@code dataName}.
      */
-    private static WavelengthSpectrumStore load(List<WavelengthMetadataDecoder.Header> headers, InputFile dataFile,
+    private static WavelengthSpectrumStore load(List<WavelengthMetadataDecoder.Header> headers,
+                                                Map<Long, List<ScanEvent>> scans, InputFile dataFile,
                                                 String dataName) {
         if (headers.isEmpty()) {
             return new WavelengthSpectrumStore(List.of(), null);
@@ -109,7 +117,7 @@ final class WavelengthSpectrumStore {
             double[] wavelength = xy == null ? new double[0] : xy.x();
             double[] intensity = xy == null ? new double[0] : xy.intensity();
             all.add(new WavelengthSpectrum(h.index(), h.id(), h.time(), h.lambdaMax(), wavelength, intensity,
-                    h.parameters(), h.auxiliaryArrays()));
+                    h.parameters(), scans.get(h.index()), h.auxiliaryArrays()));
         }
         return new WavelengthSpectrumStore(all, plan);
     }

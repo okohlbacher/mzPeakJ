@@ -14,6 +14,7 @@ import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -47,8 +48,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code scan_windows} and the stored times;
  *   <li>(d) what mzPeakJ reads but does not write ({@link #READ_ONLY}): the products and the precursor MS level
  *       (R6, D13-21), which none of these fixtures has, are lost by both layouts on the crafted copy of
- *       {@link PrecursorMsLevelAndProductsTest}; and the auxiliary arrays (R1), which the writer writes empty until
- *       its unit (X-32), are lost by both layouts on has_uv given one auxiliary array per entity type.
+ *       {@link PrecursorMsLevelAndProductsTest}; the auxiliary arrays (R1), which the writer writes empty until
+ *       its unit (X-32), are lost by both layouts on has_uv given one auxiliary array per entity type; and the
+ *       wavelength scans (R8), for which the writer writes one scan with the spectrum time until its unit (X-34),
+ *       which (b) expects of has_uv.
  * </ul>
  */
 class WriteLossAuditTest {
@@ -84,7 +87,9 @@ class WriteLossAuditTest {
             "Precursor.msLevel", "the precursor ms_level is read only (D13-21)",
             "Spectrum.auxiliaryArrays", "read only so far (R1, X-31): the writer writes auxiliary_arrays empty",
             "Chromatogram.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)",
-            "WavelengthSpectrum.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)");
+            "WavelengthSpectrum.auxiliaryArrays", "read only so far, as for spectra (R1, X-31)",
+            "WavelengthSpectrum.scans", "read only so far (R8, X-33): the writer writes one scan with the spectrum"
+                    + " time");
 
     /** The metadata members of each fixture: Example_Processed.img has no chromatograms, has_uv wavelength spectra. */
     private static final Map<String, Integer> METADATA_MEMBERS = Map.of("small.unpacked.mzpeak", 7,
@@ -175,11 +180,16 @@ class WriteLossAuditTest {
                     .isEqualTo(Canonical.lines(a.precursors(), Canonical::precursor));
         }
 
-        // W11: the wavelength Params read back from their columns (WavelengthColumnsTest)
+        // W11: the wavelength Params read back from their columns (WavelengthColumnsTest); R8: the scans as the one
+        // scan with the spectrum time that the writer writes (READ_ONLY)
         List<WavelengthSpectrum> expectedWavelengthSpectra = new ArrayList<>();
         for (WavelengthSpectrum w : source.wavelengthSpectra) {
+            assertThat(w.scans()).as("%s wavelength spectrum %d scans", name, w.index()).hasSize(1)
+                    .first().extracting(ScanEvent::instrumentConfigurationRef).isEqualTo(0);
             expectedWavelengthSpectra.add(new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(),
-                    w.wavelength(), w.intensity(), WavelengthColumnsTest.readBack(w.parameters())));
+                    w.wavelength(), w.intensity(), WavelengthColumnsTest.readBack(w.parameters()),
+                    List.of(new ScanEvent(w.time(), null, null, null, null, null, List.of(), List.of())),
+                    List.of()));
         }
         assertThat(Canonical.lines(back.wavelengthSpectra, Canonical::describe)).as("%s wavelength spectra", name)
                 .containsExactlyElementsOf(Canonical.lines(expectedWavelengthSpectra, Canonical::describe));
@@ -294,7 +304,7 @@ class WriteLossAuditTest {
     void theAuxiliaryArraysAreWriteLosses(@TempDir Path tmp) {
         assertThat(READ_ONLY.keySet()).containsExactlyInAnyOrder("SpectrumDescription.products",
                 "Chromatogram.products", "Precursor.msLevel", "Spectrum.auxiliaryArrays",
-                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays");
+                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays", "WavelengthSpectrum.scans");
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
         List<AuxiliaryArray> one = List.of(new AuxiliaryArray(new Param("signal to noise array", "MS:1000517", null,
                 null), new byte[8], "MS:1000523", "MS:1000576", 1, null, List.of(), null));

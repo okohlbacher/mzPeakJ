@@ -105,7 +105,7 @@ class MzMLWriterSpectraTest {
                 fixture("current", "small.chunked.mzpeak", counts(ModelAssert.A_1, 14, ModelAssert.A_7, 48)),
                 fixture("current", "small.numpress.mzpeak", counts(ModelAssert.A_7, 48)),
                 fixture("current", "small.unpacked.mzpeak", counts(ModelAssert.A_7, 48)),
-                fixture("current", "has_uv.mzpeak", counts(ModelAssert.A_7, 212 + 520)),
+                fixture("current", "has_uv.mzpeak", counts(ModelAssert.A_7, 212 + 520, ModelAssert.R_8, 520)),
                 fixture("current", "diaPASEF.ref.mzpeak", dia),
                 fixture("current", "diaPASEF.grid.mzpeak", dia),
                 fixture("current", "Example_Processed.img.mzpeak", counts(ModelAssert.A_7, 9, ModelAssert.A_17, 1)),

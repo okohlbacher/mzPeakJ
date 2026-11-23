@@ -212,7 +212,7 @@ class LegacyMetadataSnapshotTest {
         assertThat(components(Param.class)).containsExactly("name", "accession", "value", "unit");
         // The wavelength line writes the arrays as their length.
         assertThat(components(WavelengthSpectrum.class)).containsExactly("index", "id", "time", "lambdaMax",
-                "wavelength", "intensity", "parameters", "auxiliaryArrays");
+                "wavelength", "intensity", "parameters", "scans", "auxiliaryArrays");
         assertThat(components(AuxiliaryArray.class)).containsExactly("name", "data", "dataType", "compression",
                 "items", "unit", "parameters", "dataProcessingId");
     }

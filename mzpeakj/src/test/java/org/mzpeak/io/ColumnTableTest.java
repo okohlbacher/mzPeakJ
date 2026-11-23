@@ -88,6 +88,8 @@ class ColumnTableTest {
 
     /** The one canonical path that is not the current manifests' (D13-12). */
     private static final String RENAMED = "opt_spectrum_representation";
+    /** The unit has_uv's manifest gives the wavelength scan windows, which the table maps in nm (D13-24). */
+    private static final String MZ = "MS:1000040";
 
     @Test
     void eachFacetHasTheUnionOfTheCurrentMappings() {
@@ -189,6 +191,29 @@ class ColumnTableTest {
                 List.of("MS_1003812_lambda_max_unit_UO:0000018")));
         assertThat(ColumnTable.columns(Facet.SPECTRUM).stream().filter(Column::termMarker).map(Column::path))
                 .containsExactly("spectrum_representation", "spectrum_type");
+    }
+
+    /**
+     * R8 (D13-24): the wavelength scan windows have their own rows, in nanometers (wavelength-spectra.md), with the
+     * paths and pin-era fallbacks of the spectrum scan windows, which stay in m/z.
+     */
+    @Test
+    void wavelengthScanWindowsAreInNanometers() {
+        for (String accession : List.of("MS:1000501", "MS:1000500")) {
+            Column spectrum = ColumnTable.byAccession(Facet.SPECTRUM_SCAN, accession).orElseThrow();
+            Column wavelength = ColumnTable.byAccession(Facet.WAVELENGTH_SCAN, accession).orElseThrow();
+            assertThat(spectrum.unit()).isEqualTo(MZ);
+            assertThat(wavelength.unit()).isEqualTo("UO:0000018");
+            assertThat(wavelength).isEqualTo(new Column(Facet.WAVELENGTH_SCAN, spectrum.path(), accession,
+                    spectrum.name(), "UO:0000018", false, spectrum.fallbacks()));
+        }
+        for (Column c : ColumnTable.columns(Facet.WAVELENGTH_SCAN)) {
+            if (!c.path().startsWith("scan_windows.")) {
+                assertThat(c).isEqualTo(ColumnTable.byAccession(Facet.SPECTRUM_SCAN, c.accession()).map(s ->
+                        new Column(Facet.WAVELENGTH_SCAN, s.path(), s.accession(), s.name(), s.unit(),
+                                s.termMarker(), s.fallbacks())).orElseThrow());
+            }
+        }
     }
 
     @Test
@@ -402,7 +427,15 @@ class ColumnTableTest {
 
     private static boolean sameIdentity(Column c, ColumnMapping m) {
         return manifestPath(c).equals(m.path()) && c.accession().equals(m.accession()) && c.name().equals(m.name())
-                && Objects.equals(c.unit(), m.unit()) && c.termMarker() == Boolean.TRUE.equals(m.termMarker());
+                && Objects.equals(manifestUnit(c), m.unit()) && c.termMarker() == Boolean.TRUE.equals(m.termMarker());
+    }
+
+    /**
+     * The unit the current manifests give {@code c}: its own, but for the wavelength scan windows, which the
+     * reference maps in m/z while wavelength-spectra.md gives nanometers (D13-24).
+     */
+    private static String manifestUnit(Column c) {
+        return c.facet() == Facet.WAVELENGTH_SCAN && c.path().startsWith("scan_windows.") ? MZ : c.unit();
     }
 
     private static String identity(Column c) {

@@ -80,7 +80,8 @@ class ModelAssertRulesTest {
                 "FileMetadata.FileDescription.contacts", "FileMetadata.Contact.name",
                 "FileMetadata.Contact.affiliation", "FileMetadata.Contact.parameters", "ScanSettings.sourceFileRefs",
                 "ScanSettings.targets", "MzPeakManifest.CvEntry.version", "Spectrum.auxiliaryArrays",
-                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays", "AuxiliaryArray.data");
+                "Chromatogram.auxiliaryArrays", "WavelengthSpectrum.auxiliaryArrays", "AuxiliaryArray.data",
+                "WavelengthSpectrum.scans");
     }
 
     @Test

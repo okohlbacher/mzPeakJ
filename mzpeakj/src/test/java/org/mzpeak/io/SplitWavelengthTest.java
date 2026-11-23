@@ -107,8 +107,10 @@ class SplitWavelengthTest {
     /**
      * The split current has_uv and the packed legacy has_uv give the same wavelength spectra, value for value,
      * Params included: both carry the leftovers of their scalar columns after the list's Params (MZ-4 for split,
-     * LIB-1 for packed), the representation term marker, the base peak intensity and the TIC. So the current spectra
-     * have the canonical digest that CH-1 pins for the legacy file.
+     * LIB-1 for packed), the representation term marker, the base peak intensity and the TIC. They differ in their
+     * scans only: the current spectra have the one scan of the split scans member, the legacy ones none, since the
+     * packed scan struct is not read (R8, D13-24). So the current spectra without their scans have the canonical
+     * digest that CH-1 pins for the legacy file.
      */
     @Test
     void currentAndLegacyHasUvGiveTheSameSpectra() {
@@ -125,8 +127,12 @@ class SplitWavelengthTest {
             assertThat(c.parameters()).as("params %d", i).isEqualTo(l.parameters());
             assertThat(c.parameters().subList(4, c.parameters().size())).as("leftovers %d", i)
                     .extracting(Param::accession).containsExactly("MS:1000128", "MS:1000505", "MS:1000285");
+            assertThat(c.scans()).as("current scans %d", i).hasSize(1);
+            assertThat(l.scans()).as("legacy scans %d", i).isEmpty();
         }
-        assertThat(Canonical.sha256(Canonical.lines(current, Canonical::describe)))
+        List<WavelengthSpectrum> withoutScans = current.stream().map(c -> new WavelengthSpectrum(c.index(), c.id(),
+                c.time(), c.lambdaMax(), c.wavelength(), c.intensity(), c.parameters(), c.auxiliaryArrays())).toList();
+        assertThat(Canonical.sha256(Canonical.lines(withoutScans, Canonical::describe)))
                 .isEqualTo(LEGACY_HAS_UV_WAVELENGTH_SHA256);
     }
 
