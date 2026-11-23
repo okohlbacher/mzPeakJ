@@ -141,8 +141,8 @@ class MzMLConversionTest {
         Model m3 = model(b.mzml);
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2007-06-27T15:23:45Z");
         assertThat(ModelAssert.assertEqual("tiny B", model(tiny), m3, STRICT, ModelAssert.A_26,
-                ModelAssert.W_3).hidden())
-                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4));
+                ModelAssert.W_3, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4), Map.entry("W_8", 5));
     }
 
     /**
@@ -214,7 +214,8 @@ class MzMLConversionTest {
         assertThat(List.of(b.toMzPeak.spectra(), b.toMzPeak.wavelengthSpectra(), b.toMzPeak.chromatograms()))
                 .containsExactly(48L, 0L, 1L);
         assertThat(Files.isDirectory(b.mzpeak)).isTrue();
-        assertThat(ModelAssert.assertEqual("small B", model(small), model(b.mzml), STRICT).hidden()).isEmpty();
+        assertThat(ModelAssert.assertEqual("small B", model(small), model(b.mzml), STRICT, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("W_8", 5));
     }
 
     // ---- (b) smoke round trips A: mzPeak -> mzML -> mzPeak -------------------------------------------------------
@@ -276,7 +277,8 @@ class MzMLConversionTest {
 
     /**
      * Wavelength spectra and chromatograms go both ways; a dataset without file description and run, whose spectra use
-     * a CV that no cv list declares, is written with that CV completed as the prefix with URI 'unknown'.
+     * a CV that no cv list declares, is written with that CV completed as the prefix with URI 'unknown'. That entry
+     * identifies no release, so the mzML converts back only once the entry names one (W8).
      */
     @Test
     void aDatasetWithoutFileMetadataAndWithWavelengthSpectraAndAnUndeclaredCvGoesBothWays() throws IOException {
@@ -307,8 +309,17 @@ class MzMLConversionTest {
         assertThat(model(mzml).cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1),
                 new CvEntry("XX", "XX", "unknown", null));
 
+        // The completed XX has no version, so it cannot identify a fixed release, and a spectrum uses it (W8).
+        assertConversionFails(mzml, "mzML " + mzml + ": spectrum scan=2 uses XX:0000001, but the cv list entry of XX"
+                + " (URI unknown, version null) does not identify a fixed release of XX, as conformance.md requires of"
+                + " metadata.cv_list: it has no version");
+        Path released = Files.writeString(dir.resolve("released.mzML"), replaceOnce(Files.readString(mzml,
+                StandardCharsets.UTF_8), "URI=\"unknown\"", "URI=\"https://example.org/xx/1/xx.obo\" version=\"1\""),
+                StandardCharsets.UTF_8);
+
         Path back = dir.resolve("back");
-        MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, true, MzPeakWriter.Options.defaults());
+        MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(released, back, true,
+                MzPeakWriter.Options.defaults());
         assertThat(List.of(toMzPeak.spectra(), toMzPeak.wavelengthSpectra(), toMzPeak.chromatograms()))
                 .containsExactly(2L, 1L, 1L);
         try (MzPeakReader reader = MzPeakReader.open(back)) {
@@ -318,6 +329,8 @@ class MzMLConversionTest {
             assertThat(w.intensity()).containsExactly(0.5, 0.25);
             assertThat(reader.chromatograms().get(0).intensity()).containsExactly(3, 4);
             assertThat(reader.metadataAt(1).parameters()).contains(new Param("custom term", "XX:0000001", 1.5, null));
+            assertThat(reader.manifest().cvList()).contains(new CvEntry("XX", "XX", "https://example.org/xx/1/xx.obo",
+                    "1"));
         }
     }
 
@@ -339,7 +352,8 @@ class MzMLConversionTest {
                 .get(0);
         assertThat(written.getExternalSpectrumID()).isEqualTo("scan=19");
         assertThat(written.getSpectrumRef()).isNull();
-        ModelAssert.assertEqual("external precursor", m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
+        ModelAssert.assertEqual("external precursor", m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
     }
 
     @Test
@@ -355,7 +369,8 @@ class MzMLConversionTest {
         Scan scan = jmzmlSpectra(b.mzml).get(1).getScanList().getScan().get(0);
         assertThat(scan.getSpectrumRef()).isEqualTo("scan=19");
         assertThat(scan.getExternalSpectrumID()).isNull();
-        ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
+        ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
     }
 
     /**
@@ -407,7 +422,8 @@ class MzMLConversionTest {
             assertThat(Param.find(reader.fileMetadata().fileDescription().contents(), "MS:1000127").orElseThrow()
                     .value()).isEqualTo("Infinity");
         }
-        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
+        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
         assertThat(result.paths()).containsExactly("fileMetadata.fileDescription.contents[MS:1000127]");
     }
 
@@ -429,7 +445,8 @@ class MzMLConversionTest {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::intensityUnit).containsExactly(null, null);
         }
-        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
+        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
         assertThat(result.paths()).containsExactly("chromatogram[0].intensityUnit");
     }
 
@@ -450,7 +467,7 @@ class MzMLConversionTest {
         }
         Model m3 = model(b.mzml);
         assertThat(m3.spectrumList().get(0).arrays()).isEmpty();
-        assertThat(ModelAssert.compare(m1, m3, STRICT, ModelAssert.A_26, ModelAssert.W_3).paths())
+        assertThat(ModelAssert.compare(m1, m3, STRICT, ModelAssert.A_26, ModelAssert.W_3, ModelAssert.W_8).paths())
                 .containsExactly("spectrum[0].arrays[" + SN + "]");
     }
 
@@ -491,8 +508,8 @@ class MzMLConversionTest {
         Model m3 = model(b.mzml);
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2005-07-20T19:44:22.123Z");
         assertThat(ModelAssert.assertEqual("A-26", model(file), m3, STRICT, ModelAssert.A_26,
-                ModelAssert.W_3).hidden())
-                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4));
+                ModelAssert.W_3, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4), Map.entry("W_8", 5));
     }
 
     /**
@@ -517,7 +534,8 @@ class MzMLConversionTest {
         String mzml = Files.readString(b.mzml, StandardCharsets.UTF_8);
         assertThat(mzml).doesNotContain("<sourceFile", "defaultSourceFileRef", "mzpeakj_source");
         assertThat(b.toMzML.warnings()).containsExactlyElementsOf(writerLimits(TINY_A_26));
-        ModelAssert.assertEqual("without source files", m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3);
+        ModelAssert.assertEqual("without source files", m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
     }
 
     /**
@@ -757,6 +775,113 @@ class MzMLConversionTest {
             assertThat(precursors).extracting(Precursor::precursorIndex).containsExactly(0L, 2L, 0L);
             assertThat(precursors).extracting(p -> p.selectedIons().size()).containsExactly(1, 1, 0);
         }
+    }
+
+    // ---- (c) branch documents: the mzML cv list (W8, D13-15) ------------------------------------------------------
+
+    /**
+     * tiny declares MS and UO at their SourceForge CVS checkouts and small on GitHub master branches, none a fixed
+     * release: the mzPeak declares MS and UO exactly as CvEntry.known() does.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {MzMLFixtures.TINY, MzMLFixtures.SMALL})
+    void theFixturesMsAndUoAreDeclaredAsKnownCvsDeclaresThem(String fixture) throws IOException {
+        Path mzml = MzMLFixtures.extract(fixture, dir);
+        Path mzpeak = dir.resolve("cv.mzpeak");
+        List<CvEntry> given = new MzMLReader(mzml).header().cvList();
+        assertThat(given).extracting(CvEntry::id).containsExactly("MS", "UO");
+        assertThat(given).extracting(CvEntry::uri).allSatisfy(uri -> assertThat(uri)
+                .containsAnyOf("*checkout*", "/master/"));
+
+        MzMLConversion.toMzPeak(mzml, mzpeak, false, MzPeakWriter.Options.defaults());
+
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.manifest().cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1));
+        }
+    }
+
+    /** An unknown CV at a moving URI that nothing uses is left out of the cv list, with one warning. */
+    @Test
+    void anUnusedUnknownCvAtAMovingUriIsLeftOutWithAWarning() throws IOException {
+        Path file = tinyWith(s -> withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\" version=\"1.0\""
+                + " URI=\"https://example.org/xyz/master/xyz.obo\"/>"));
+        Path mzpeak = dir.resolve("xyz.mzpeak");
+
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(file, mzpeak, true, MzPeakWriter.Options.defaults());
+
+        assertThat(result.warnings()).last().isEqualTo("the mzML cv XYZ is not declared in metadata.cv_list, which"
+                + " no written CURIE needs, since the cv list entry of XYZ"
+                + " (URI https://example.org/xyz/master/xyz.obo, version 1.0) does not identify a fixed release of XYZ, as conformance.md requires of"
+                + " metadata.cv_list: its URI has the path segment master, which names a moving branch or a"
+                + " version-control view");
+        assertThat(result.warnings()).filteredOn(w -> w.contains("XYZ")).hasSize(1);
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.manifest().cvList()).extracting(CvEntry::id).containsExactly("MS", "UO");
+        }
+    }
+
+    /**
+     * An unknown CV of a fixed release is declared as the mzML gives it; a rejected entry of an id that a later entry
+     * declares acceptably is no failure and no warning.
+     */
+    @Test
+    void anUsedUnknownCvOfAFixedReleaseIsDeclared() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(withCv(withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\""
+                        + " URI=\"https://example.org/xyz/master/xyz.obo\"/>"), "<cv id=\"XYZ\" fullName=\"XYZ"
+                        + " ontology\" version=\"1.0\" URI=\"https://example.org/xyz/1.0/xyz.obo\"/>"), SCAN_19,
+                "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
+                "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>\n"
+                        + "          <cvParam cvRef=\"XYZ\" accession=\"XYZ:0000001\" name=\"odd\" value=\"\"/>"));
+        Path mzpeak = dir.resolve("xyz.mzpeak");
+
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(file, mzpeak, true, MzPeakWriter.Options.defaults());
+
+        assertThat(result.warnings()).noneMatch(w -> w.contains("XYZ"));
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.manifest().cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1),
+                    new CvEntry("XYZ", "XYZ ontology", "https://example.org/xyz/1.0/xyz.obo", "1.0"));
+        }
+    }
+
+    static Stream<Arguments> usesOfARejectedCv() {
+        return Stream.of(
+                arguments("the file metadata or scan settings", "<fileContent>",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000580\" name=\"MSn spectrum\" value=\"\"/>",
+                        "XYZ:0000001", "<cvParam cvRef=\"XYZ\" accession=\"XYZ:0000001\" name=\"odd\" value=\"\"/>"),
+                arguments("spectrum scan=19", SCAN_19,
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
+                        "XYZ:0000002",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>\n"
+                                + "<cvParam cvRef=\"MS\" accession=\"MS:1000004\" name=\"sample mass\" value=\"1.5\""
+                                + " unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000002\" unitName=\"odd\"/>"),
+                arguments("chromatogram tic", "id=\"tic\"",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000235\" name=\"total ion current chromatogram\""
+                                + " value=\"\"/>", "XYZ:0000003",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000235\" name=\"total ion current chromatogram\""
+                                + " value=\"\"/>\n<cvParam cvRef=\"XYZ\" accession=\"XYZ:0000003\" name=\"odd\""
+                                + " value=\"\"/>"));
+    }
+
+    /**
+     * A CURIE with the prefix of an unknown CV that has no version fails the conversion with the writer's message,
+     * naming the mzML, the entity and the CURIE, and leaves no target; the header before the target is created.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("usesOfARejectedCv")
+    void aUseOfAnUnknownCvWithoutVersionFailsTheConversion(String what, String anchor, String target, String curie,
+                                                           String replacement) throws IOException {
+        Path file = tinyWith(s -> replaceAfter(withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\""
+                + " URI=\"https://example.org/xyz/1.0/xyz.obo\"/>"), anchor, target, replacement));
+
+        assertConversionFails(file, "mzML " + file + ": " + what + " uses " + curie + ", but the cv list entry of"
+                + " XYZ (URI https://example.org/xyz/1.0/xyz.obo, version null) does not identify a fixed release of"
+                + " XYZ, as conformance.md requires of metadata.cv_list: it has no version");
+    }
+
+    /** {@code mzml} with {@code cv} appended to its cv list. */
+    private static String withCv(String mzml, String cv) {
+        int at = mzml.indexOf("</cvList>");
+        return mzml.substring(0, at) + "  " + cv + "\n    " + mzml.substring(at);
     }
 
     // ---- (d) failures ---------------------------------------------------------------------------------------------

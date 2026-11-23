@@ -807,6 +807,32 @@ class ModelAssertTest {
                 .containsExactly("chromatogram[0].timeUnit");
     }
 
+    /**
+     * W_8: tiny's MS entry in expected and the known MS in actual, its URI and version; not the other way round, not
+     * when actual is no known entry, and not when it is the known entry of another id.
+     */
+    @Test
+    void w8HidesAnEntryReplacedByTheKnownEntryOfItsId() {
+        List<MzPeakManifest.CvEntry> known = MzPeakManifest.CvEntry.known();
+        assertThat(small.cvList()).containsExactly(known.get(0), known.get(1));
+        MzPeakManifest.CvEntry tinyMs = new MzPeakManifest.CvEntry("MS", known.get(0).fullName(),
+                "http://psidev.cvs.sourceforge.net/*checkout*/psidev/psi/psi-ms/mzML/controlledVocabulary/psi-ms.obo",
+                "2.26.0");
+        Model tiny = with(small, "cvList", replace(small.cvList(), 0, c -> tinyMs));
+        assertThat(ModelAssert.assertEqual("W_8", tiny, small, STRICT, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("W_8", 2));
+
+        Result back = ModelAssert.compare(small, tiny, STRICT, ModelAssert.W_8);
+        assertThat(back.paths()).containsExactly("cvList[0].uri", "cvList[0].version");
+        assertThat(back.stale()).containsExactly("W_8");
+        Model unknown = with(small, "cvList", replace(small.cvList(), 0, c -> with(tinyMs, "version", "4.1.249")));
+        assertThat(ModelAssert.compare(tiny, unknown, STRICT, ModelAssert.W_8).paths())
+                .containsExactly("cvList[0].version");
+        Model uo = with(small, "cvList", List.of(known.get(1), known.get(1)));
+        assertThat(ModelAssert.compare(tiny, uo, STRICT, ModelAssert.W_8).paths()).containsExactly("cvList[0].id",
+                "cvList[0].fullName", "cvList[0].uri", "cvList[0].version");
+    }
+
     // ---- negative controls: each exclusion hides only what design 6.1 and 6.2 define ------------------------------
 
     @Test
@@ -963,7 +989,7 @@ class ModelAssertTest {
     @Test
     void exclusionsHaveTheirDesignIdsAndCannotBePassedTwice() {
         assertThat(ModelAssert.EXCLUSIONS).extracting(Exclusion::id).containsExactly("A_1", "A_2", "A_7", "A_8",
-                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34", "W_3");
+                "A_9", "A_16", "A_17", "A_18", "A_26", "B_22", "B_34", "W_3", "W_8");
         assertThat(ModelAssert.EXCLUSIONS).allSatisfy(e -> {
             assertThat(e.description()).startsWith(e.id().replace('_', '-') + ": ");
             assertThat(e).hasToString(e.id());
