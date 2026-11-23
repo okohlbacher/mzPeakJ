@@ -415,10 +415,10 @@ class ChromatogramPrecursorTest {
                                 .optional(PrimitiveTypeName.DOUBLE).named("MS_1000827_isolation_window_target_mz")
                                 .optional(PrimitiveTypeName.DOUBLE).named("MS_1000828_isolation_window_lower_offset")
                                 .optional(PrimitiveTypeName.DOUBLE).named("MS_1000829_isolation_window_upper_offset")
-                                .addField(ParquetOutput.paramListField())
+                                .addField(ParquetOutput.paramListField(false))
                                 .named("isolation_window"))
                         .addField(Types.optionalGroup()
-                                .addField(ParquetOutput.paramListField())
+                                .addField(ParquetOutput.paramListField(false))
                                 .named("activation"))
                         .named("precursor"))
                 .addField(Types.optionalGroup()
@@ -429,7 +429,7 @@ class ChromatogramPrecursorTest {
                         .optional(PrimitiveTypeName.DOUBLE).named("MS_1000744_selected_ion_mz_unit_MS_1000040")
                         .optional(PrimitiveTypeName.INT32).named("MS_1000041_charge_state")
                         .optional(PrimitiveTypeName.DOUBLE).named("MS_1000042_intensity_unit_MS_1000131")
-                        .addField(ParquetOutput.paramListField())
+                        .addField(ParquetOutput.paramListField(false))
                         .named("selected_ion"))
                 .named("arrow_schema");
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);

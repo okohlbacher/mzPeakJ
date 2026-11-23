@@ -152,7 +152,9 @@ final class ArrowSchemaHint {
      * {@code auxiliary_arrays} as the reference's has_uv types it: {@code large_list<item: struct<data:
      * large_list<item: uint8 not null>, name: param, data_type: string, compression: string, items: uint64, unit:
      * string, parameters: large_list<item: param>, data_processing_id: large_string>>}, every field nullable but the
-     * bytes of {@code data}.
+     * bytes of {@code data}. The split writer declares the fields auxiliary-arrays.md requires required (W14);
+     * arrow-rs takes a field's nullability from the Parquet field, not from the hint (parquet 57,
+     * {@code arrow/schema/complex.rs}), so the hint keeps the reference's.
      */
     private static ArrowField auxiliaryArrays() {
         ArrowField data = new ArrowField("data", true, LARGE_LIST,

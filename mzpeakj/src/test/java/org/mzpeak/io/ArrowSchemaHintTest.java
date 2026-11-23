@@ -120,7 +120,7 @@ class ArrowSchemaHintTest {
                 .optional(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(32, false)).named("count")
                 .optional(PrimitiveTypeName.DOUBLE).named("time")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("m");
         ArrowField value = new ArrowField("value", true, STRUCT, List.of(leaf("integer", INT64),
                 leaf("float", DOUBLE), leaf("string", UTF8), leaf("boolean", BOOL)));

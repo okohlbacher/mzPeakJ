@@ -157,6 +157,18 @@ decisions cause.
   instrument configuration 1 while only 0 exists, are now written only with that configuration added. *Why:*
   `conformance.md` requires every CV prefix used to be declared (l.24-25) and every non-null foreign key to resolve
   (§Validation); a stub or an undeclared prefix wrote a file that fails both.
+- **The split layout declares the spec-required item fields of `parameters` and `auxiliary_arrays` required**
+  (2026-11-23, X-37, D13-27, W14; until then every one was optional): in every `parameters` list of a metadata table
+  the item group, its `value` group and its `name`; in each auxiliary array its `name` group, that group's `name`,
+  `data_type`, `compression` and `items` (still UINT64). The `parameters` list inside an auxiliary array keeps the
+  optional item fields auxiliary-arrays.md gives it, although metadata-tables.md requires them in every `parameters`
+  list: the two spec documents disagree, and mzPeakJ follows the one about auxiliary arrays. The auxiliary array's
+  `data`, which auxiliary-arrays.md also marks required, stays optional (not part of W14). The packed layout keeps
+  every item field optional (frozen dialect, D13-11). The planner refuses a parameter with neither name nor
+  accession before anything is written; the split writer refuses one too, naming the metadata row. Reading is
+  unchanged, and the Rust reference reader (rdump) and the HEAD Python reader read the new files as before. *Why:*
+  metadata-tables.md §The parameters list (l.96-117) gives the item, `value` and `name` without `optional`, and
+  auxiliary-arrays.md (l.16-58) marks the auxiliary-array fields `required`.
 - **Chromatogram times are written in minutes** (2026-11-22, X-20, X-21, D13-1; replaces the writer half of D-12,
   which wrote the given unit and refused chromatograms of different units). Second, millisecond and hour are
   converted once; any other unit is refused, and the message lists the supported ones. The reader still returns the

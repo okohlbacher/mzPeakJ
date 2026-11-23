@@ -1,10 +1,15 @@
 package org.mzpeak.io;
 
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.SimpleGroupFactory;
 import org.apache.parquet.io.LocalInputFile;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Type.Repetition;
+import org.apache.parquet.schema.Types;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -33,6 +38,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The repetition of the {@code parameters} item fields and the {@code auxiliary_arrays} item fields mzPeakJ writes
@@ -65,7 +71,8 @@ class ParamItemSchemaTest {
 
     /**
      * Split output: the item group, its {@code value} group and its {@code name} of every {@code parameters} list of a
-     * metadata table are OPTIONAL, as are those of the {@code parameters} list inside an auxiliary array.
+     * metadata table are REQUIRED (metadata-tables.md, W14); those of the {@code parameters} list inside an auxiliary
+     * array stay OPTIONAL, as auxiliary-arrays.md gives them (D13-27). Until X-37 every one was OPTIONAL.
      */
     @ParameterizedTest
     @ValueSource(strings = {"small.mzpeak", "has_uv.mzpeak", "diaPASEF.ref.mzpeak"})
@@ -81,13 +88,16 @@ class ParamItemSchemaTest {
         assertThat(lists).anyMatch(l -> l.contains("auxiliary_arrays"));
         assertThat(lists).anyMatch(l -> !l.contains("auxiliary_arrays"));
         for (String list : lists) {
-            assertThat(list).endsWith("item=OPTIONAL value=OPTIONAL name=OPTIONAL");
+            assertThat(list).endsWith(list.contains("(auxiliary_arrays)")
+                    ? "item=OPTIONAL value=OPTIONAL name=OPTIONAL"
+                    : "item=REQUIRED value=REQUIRED name=REQUIRED");
         }
     }
 
     /**
      * Split output: the auxiliary-array item's {@code name} group, its {@code name}, {@code data_type},
-     * {@code compression} and {@code items} (UINT64) are OPTIONAL in every member with auxiliary arrays.
+     * {@code compression} and {@code items} (UINT64) are REQUIRED in every member with auxiliary arrays
+     * (auxiliary-arrays.md, W14), the name's {@code value} group stays OPTIONAL. Until X-37 they were OPTIONAL.
      */
     @ParameterizedTest
     @ValueSource(strings = {"small.mzpeak", "has_uv.mzpeak", "diaPASEF.ref.mzpeak"})
@@ -103,12 +113,14 @@ class ParamItemSchemaTest {
             GroupType item = schema.getType("auxiliary_arrays").asGroupType().getType(0).asGroupType()
                     .getType(0).asGroupType();
             String where = member.getFileName().toString();
-            assertThat(item.getType("name").getRepetition()).as(where).isEqualTo(Repetition.OPTIONAL);
+            assertThat(item.getType("name").getRepetition()).as(where).isEqualTo(Repetition.REQUIRED);
             assertThat(item.getType("name").asGroupType().getType("name").getRepetition()).as(where)
+                    .isEqualTo(Repetition.REQUIRED);
+            assertThat(item.getType("name").asGroupType().getType("value").getRepetition()).as(where)
                     .isEqualTo(Repetition.OPTIONAL);
-            assertThat(item.getType("data_type").getRepetition()).as(where).isEqualTo(Repetition.OPTIONAL);
-            assertThat(item.getType("compression").getRepetition()).as(where).isEqualTo(Repetition.OPTIONAL);
-            assertThat(item.getType("items").getRepetition()).as(where).isEqualTo(Repetition.OPTIONAL);
+            assertThat(item.getType("data_type").getRepetition()).as(where).isEqualTo(Repetition.REQUIRED);
+            assertThat(item.getType("compression").getRepetition()).as(where).isEqualTo(Repetition.REQUIRED);
+            assertThat(item.getType("items").getRepetition()).as(where).isEqualTo(Repetition.REQUIRED);
             assertThat(item.getType("items").getLogicalTypeAnnotation()).as(where)
                     .isEqualTo(LogicalTypeAnnotation.intType(64, false));
         }
@@ -143,6 +155,27 @@ class ParamItemSchemaTest {
         }
         assertThat(text).contains("params array", "note", "signal to noise array");
         assertThat(sha256(text)).as(fixture).isEqualTo(READ_BACK.get(fixture));
+    }
+
+    /**
+     * The split writer's guard of the required item {@code name}: a Param with neither name nor accession, which the
+     * planner refuses before anything is written, is refused with a message naming the entity by its metadata row;
+     * a Param with only an accession gets a name, one with a name is kept.
+     */
+    @Test
+    void theSplitWriterRefusesAParameterItemWithoutAName() {
+        Group row = new SimpleGroupFactory(Types.buildMessage()
+                .required(PrimitiveTypeName.INT64).as(ParquetOutput.UINT64).named("source_index")
+                .named("spectra_metadata_precursors")).newGroup();
+        row.add("source_index", 7L);
+        Param nameless = new Param(null, null, 1.5, null);
+        assertThatThrownBy(() -> SplitMetadataWriter.named(nameless, row)).isInstanceOf(MzPeakException.class)
+                .hasMessage("spectra_metadata_precursors source_index 7: a parameter has neither a name nor an"
+                        + " accession, but the name of a parameters item is a required field: " + nameless);
+        assertThat(SplitMetadataWriter.named(new Param(null, "MS:1000786", "x", null), row))
+                .isEqualTo(new Param("MS:1000786", "MS:1000786", "x", null));
+        Param named = new Param("comment", null, "note", null);
+        assertThat(SplitMetadataWriter.named(named, row)).isSameAs(named);
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------------

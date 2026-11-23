@@ -314,7 +314,7 @@ class WavelengthParamsTest {
                 .optional(PrimitiveTypeName.DOUBLE).named("bpi_a")
                 .optional(PrimitiveTypeName.DOUBLE).named("bpi_b")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("comment")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("arrow_schema");
         Param user = new Param("operator", null, "x", null);
         Param lowest = new Param("lowest observed wavelength", "MS:1000619", 190.0, "UO:0000018");

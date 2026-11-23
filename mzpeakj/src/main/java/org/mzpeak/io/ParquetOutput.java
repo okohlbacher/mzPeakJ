@@ -43,9 +43,14 @@ final class ParquetOutput {
     private ParquetOutput() {
     }
 
-    /** A reusable {@code parameters: large_list<item: struct<value-union, accession, name, unit>>} field schema. */
-    static Type paramListField() {
-        return paramListField("parameters");
+    /**
+     * A reusable {@code parameters: large_list<item: struct<value-union, accession, name, unit>>} field schema: with
+     * {@code requiredItem} the item group, its {@code value} group and its {@code name} are required, as
+     * docs/layouts/metadata-tables.md §The parameters list declares them for every metadata table (the split writer,
+     * W14, D13-27); without, every item field is optional, as the frozen PACKED dialect writes them (D13-11).
+     */
+    static Type paramListField(boolean requiredItem) {
+        return paramListField("parameters", requiredItem ? Type.Repetition.REQUIRED : Type.Repetition.OPTIONAL);
     }
 
     /**
@@ -53,7 +58,10 @@ final class ParquetOutput {
      * data_processing_id>>} as the reference writes it in {@code spectra_metadata} and
      * {@code wavelength_spectra_metadata}, also written to {@code chromatograms_metadata}: each entity's
      * {@code AuxiliaryArray}s, an empty list for an entity without any. The Rust reader projects it for every
-     * wavelength spectrum and fails when the column is missing.
+     * wavelength spectrum and fails when the column is missing. The item's {@code name} group and its {@code name},
+     * {@code data_type}, {@code compression} and {@code items} are required, as docs/layouts/auxiliary-arrays.md
+     * declares them (W14, D13-27); its {@code parameters} list keeps the optional item fields that document gives it,
+     * although metadata-tables.md requires them in every {@code parameters} list (a spec inconsistency).
      */
     static Type auxiliaryArrayListField() {
         GroupType itemType = Types.buildGroup(Type.Repetition.OPTIONAL)
@@ -63,12 +71,13 @@ final class ParquetOutput {
                                 .named("item")
                                 .named("list"))
                         .named("data"))
-                .addField(paramItem("name"))
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_type")
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("compression")
-                .optional(PrimitiveTypeName.INT64).as(UINT64).named("items")
+                .addField(paramItem("name", Type.Repetition.REQUIRED, Type.Repetition.OPTIONAL,
+                        Type.Repetition.REQUIRED))
+                .required(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_type")
+                .required(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("compression")
+                .required(PrimitiveTypeName.INT64).as(UINT64).named("items")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
-                .addField(paramListField("parameters"))
+                .addField(paramListField("parameters", Type.Repetition.OPTIONAL))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_processing_id")
                 .named("item");
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
@@ -76,22 +85,28 @@ final class ParquetOutput {
                 .named("auxiliary_arrays");
     }
 
-    private static Type paramListField(String name) {
+    /** A {@code parameters} list {@code name} whose item group, {@code value} and {@code name} are {@code item}. */
+    private static Type paramListField(String name, Type.Repetition item) {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
-                .addField(Types.repeatedGroup().addField(paramItem("item")).named("list"))
+                .addField(Types.repeatedGroup().addField(paramItem("item", item, item, item)).named("list"))
                 .named(name);
     }
 
-    private static GroupType paramItem(String name) {
-        return Types.buildGroup(Type.Repetition.OPTIONAL)
-                .addField(Types.optionalGroup()
+    /**
+     * A param struct {@code name} of repetition {@code repetition}, its {@code value} union of {@code value} and its
+     * {@code name} of {@code paramName}; {@code accession}, {@code unit} and the value slots are optional.
+     */
+    private static GroupType paramItem(String name, Type.Repetition repetition, Type.Repetition value,
+                                       Type.Repetition paramName) {
+        return Types.buildGroup(repetition)
+                .addField(Types.buildGroup(value)
                         .optional(PrimitiveTypeName.INT64).named("integer")
                         .optional(PrimitiveTypeName.DOUBLE).named("float")
                         .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("string")
                         .optional(PrimitiveTypeName.BOOLEAN).named("boolean")
                         .named("value"))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("accession")
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("name")
+                .primitive(PrimitiveTypeName.BINARY, paramName).as(LogicalTypeAnnotation.stringType()).named("name")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
                 .named(name);
     }
