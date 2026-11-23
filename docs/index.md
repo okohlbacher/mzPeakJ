@@ -45,8 +45,8 @@ Java demonstrator; an official Java implementation is planned by the HUPO-PSI.
   coordinate-grid `chunk` (draft; linear, square-root and provisional timsTOF grid models).
 - **Spectra** (MS1 + MSn): profile and centroid, with metadata in the current split layout and the legacy
   packed layout, precursor, activation params (CID/HCD/ETD + collision energy), isolation window,
-  per-spectrum/scan CV param lists, secondary centroid peaks, extra arrays such as per-peak ion mobility, and
-  polynomial profile reconstruction from the stored m/z delta model.
+  per-spectrum/scan CV param lists, secondary centroid peaks, extra arrays such as per-peak ion mobility, auxiliary
+  arrays, intensity units, and profile reconstruction of null-marked points by the spec's null-pair rule.
 - **Chromatograms** (TIC, DAD/absorption, …) with their per-point extra arrays, and **UV/DAD wavelength
   spectra**.
 - **Reader API**: profile/centroid signal modes, range queries by time or index with m/z, ion-mobility and
@@ -157,9 +157,9 @@ compatibility layout (`MetadataLayout.PACKED`); by default it writes the split l
 Current version: **0.12.0** ([release notes](releases/0.12.0.md); see [releases](https://github.com/okohlbacher/mzPeakJ/releases)).
 
 **Implemented** — all four container/layout variants; streaming row-group reader; file/run metadata
-read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; exact delta-model reconstruction;
-tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion mobility + imaging position
-from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
+read+write; CV param write-back; Numpress linear+SLOF+PIC read/write; profile reconstruction of null-marked
+points by the spec's null-pair rule; tolerance-based centroid peak search; vendor-agnostic scan-number lookup; ion
+mobility + imaging position from dedicated scan columns; scan settings from manifest; OpenMS-FileInfo-style summary tool.
 
 **Known deferred** — chunk/delta write, page-level pushdown, Maven Central publication. Metadata-only access,
 which the Rust reader offers as a detail level, is covered by `select()` with a `SignalQuery`.

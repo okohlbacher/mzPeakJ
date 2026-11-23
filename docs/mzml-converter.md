@@ -305,7 +305,11 @@ So does, by the writer's W12 checks (D13-6, D13-9), a term whose CV prefix the m
 (nor `CvEntry.known()`), and a reference that names nothing of the header: a spectrum's or chromatogram's
 `dataProcessingRef`, the `softwareRef` of a processing method or instrument configuration, a scan setting's
 `sourceFileRef`, or the run's `defaultSourceFileRef` or the spectrum list's `defaultDataProcessingRef`. An unknown
-`instrumentConfigurationRef` is still dropped (B-39).
+`instrumentConfigurationRef` is still dropped (B-39). In the default `split` layout so does, by D13-28 (X-40), a
+cvParam of a spectrum, scan, precursor, selected ion, chromatogram or wavelength spectrum whose accession or unit
+accession is not `PREFIX:number` with a number up to 4294967295, such as an NCIT term (`NCIT:C25330`), on which the
+Rust reference reader panics; `--layout packed` writes it as given in the param lists that layout writes (it drops
+chromatogram and wavelength-spectrum Params and wavelength scans with a WARNING).
 Every write through jmzML's `MzMLMarshaller` also sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`; it changes no output.
 
@@ -416,8 +420,10 @@ dangling `referenceableParamGroupRef`; m/z, intensity, wavelength and time array
 model cannot carry; main arrays of different declared or decoded lengths; a non-standard data array named with an
 array-type accession; the combined Numpress terms; data types and compressions jmzML cannot decode; an MS-Numpress
 payload too short for its header; PIC counts of 2^31 and above. With mzPeak Numpress output, values the Numpress
-encoder cannot encode fail the conversion. Every exception of jmzML, JAXB or the model is wrapped, with the original
-as its cause; a failed conversion leaves no output.
+encoder cannot encode fail the conversion, and the mzPeak writer's checks of the [limits](#limits) (NaN values,
+undeclared CV prefixes, dangling references, in the split layout params that are not `PREFIX:number`) fail it too.
+Every exception of jmzML, JAXB or the model is wrapped, with the original as its cause; a failed conversion leaves
+no output.
 
 ## Memory
 

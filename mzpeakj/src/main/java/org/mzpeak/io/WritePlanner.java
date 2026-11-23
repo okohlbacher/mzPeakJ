@@ -93,9 +93,8 @@ final class WritePlanner {
      * the order of their message: the terms the Rust reference reader maps (mzdata's {@code
      * ArrayType::from_accession}), MS:1000786 (non-standard data array) included, whose value is the array's name; it
      * panics on a name without an accession or with any other (R1, upstream-issues.md R-15). Refusing the others is
-     * the provisional decision D13-28, which deviates from D13-19 (the writer writes an array unchanged) and waits for
-     * the maintainer's approval; so do {@link #AUXILIARY_DATA_TYPES}, {@link #AUXILIARY_COMPRESSIONS} and
-     * {@link #RUST_CURIE}.
+     * the maintainer's default D13-28, which deviates from D13-19 (the writer writes an array unchanged); so do
+     * {@link #AUXILIARY_DATA_TYPES}, {@link #AUXILIARY_COMPRESSIONS} and {@link #RUST_CURIE}.
      */
     private static final List<String> AUXILIARY_ARRAY_TYPES = List.of("MS:1000514", "MS:1000515", "MS:1000516",
             "MS:1000517", "MS:1000595", "MS:1000617", "MS:1002893", "MS:1002816", "MS:1002477", "MS:1003006",
@@ -1633,8 +1632,8 @@ final class WritePlanner {
          * The checks of each of {@code arrays}, the auxiliary arrays of {@code owner} (R1): the accession of its name
          * one of {@link #AUXILIARY_ARRAY_TYPES}, its data type one of {@link #AUXILIARY_DATA_TYPES} and its
          * compression one of {@link #AUXILIARY_COMPRESSIONS}, the values the Rust reference reader accepts
-         * (auxiliary-arrays.md requires CV terms; that reader panics on others; the provisional decision D13-28, which
-         * deviates from D13-19 and D13-26 and waits for the maintainer's approval); its bytes its items, when it is
+         * (auxiliary-arrays.md requires CV terms; that reader panics on others; the maintainer's default D13-28, which
+         * deviates from D13-19 and D13-26); its bytes its items, when it is
          * uncompressed and of a fixed-width data type ({@link #requireItems}); its unit, the unit of its name and
          * the accession and unit of each of its params null or a CURIE that reader parses ({@link #requireRustCurie});
          * the accession and unit of its name and of its params, and its unit, each with a declared prefix; its data
