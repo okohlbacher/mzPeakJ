@@ -839,8 +839,8 @@ and the memory rule are in [docs/mzml-converter.md](docs/mzml-converter.md).
 `MzPeakWriter`'s public overloads delegate to one pipeline, whose settings are `MzPeakWriter.Options` (signal
 encoding, Numpress intensity, row-group size, metadata layout). `WritePlanner` validates the input before any
 I/O (non-negative, unique indices; in the split layout, no selected ions that readers would attach to another
-precursor; chromatograms of one time unit; for Numpress, values the codecs can encode), numbers each entity 0..n-1
-in index order and remaps `precursor_index`, routes the spectra
+precursor; chromatogram times in a unit it converts to minutes; for Numpress, values the codecs can encode),
+numbers each entity 0..n-1 in index order and remaps `precursor_index`, routes the spectra
 (CENTROID peak copies to `spectra_peaks` only, other arrays to `spectra_data`, peak lists to `spectra_peaks`),
 re-sorts a main axis that is not ascending (by `Double.compare`, so rows with a NaN move to the end) and decides
 which members are written. A CENTROID spectrum with a non-finite m/z keeps both files, a deviation from §11.5:
@@ -890,11 +890,13 @@ zone too.
 
 Both layouts get format version 0.9.0, the `cv_list`, a SHA-512 checksum and an empty `parameters` list per
 manifest entry, the array index and the entity and data-point counts in every signal footer, and the file-level
-documents in both the manifest and the `spectra_metadata.parquet` footer. Chromatogram times are written as given,
-with their `timeUnit` declared on the time column, so they read back in that unit; `chromatograms_data` declares one
-time unit, so chromatograms of different units are refused before anything is written (`chromatograms 0
-(UO:0000031) and 2 (UO:0000010) have different time units; convert one with Chromatogram.withTimeUnit before
-writing`; a session refuses at `addChromatogram`). Up to 0.11 the writer declared minutes.
+documents in both the manifest and the `spectra_metadata.parquet` footer. Chromatogram times are written in minutes
+(UO:0000031, `chromatograms.md`: "the units MUST be minutes"; W3, D13-1): a chromatogram in second, millisecond or
+hour is converted once with `Chromatogram.withTimeUnit`, by the batch plan and by a session's `addChromatogram`, and
+any other unit is refused before anything of it is written (`chromatogram 3: time unit UO:0000099 cannot be converted
+to minutes; the supported time units are minute (UO:0000031), second (UO:0000010), millisecond (UO:0000028) and hour
+(UO:0000032)`). Chromatograms of different units may be written together. In 0.12.0 the writer wrote the given unit
+and refused mixed units; up to 0.11 it declared minutes for values in any unit.
 
 **Imaging** (D-14). Imaging output keeps following the Rust reference, unchanged in 0.12.0: the IMS CV entry with the
 URI of the imzML master branch (`KnownCvs`), the positions in `opt_IMS_1000050_position_x` and

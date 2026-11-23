@@ -386,9 +386,10 @@ Writer notes:
   in another unit, naming the spectrum and the declared units. The Rust reference reader's range read
   (`extract_signal`) reads only the first intensity column (R-11 in
   [docs/upstream-issues.md](docs/upstream-issues.md)).
-- Chromatogram times are written as given, with their `timeUnit` declared, and read back in that unit.
-  Chromatograms of different time units in one dataset are refused before anything is written; convert them first
-  with `Chromatogram.withTimeUnit`.
+- Chromatogram times are written in minutes (UO:0000031), as `chromatograms.md` requires: times in second,
+  millisecond or hour are converted once, the caller's chromatogram is not modified, and chromatograms of different
+  units may be written together (W3, D13-1). Any other unit is refused before anything is written, with a message
+  that lists the supported ones. They read back in minutes.
 - In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
   one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
   scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), and
@@ -698,7 +699,9 @@ every Parquet codec. Rather than using parquet-java's default Hadoop-based codec
 LZ4, LZ4_RAW and LZO through aircompressor and BROTLI through `org.brotli:dec`, all of them but zstd-jni pure Java;
 it writes ZSTD (and UNCOMPRESSED). No Hadoop FileSystem, Configuration, Hadoop native libraries, or cluster setup is
 ever used. On JDK 24 and later, the first SNAPPY, LZ4, LZ4_RAW or LZO page read makes the JVM print its one-time
-`sun.misc.Unsafe` warning about aircompressor; `--sun-misc-unsafe-memory-access=allow` turns it off. A single self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
+`sun.misc.Unsafe` warning about aircompressor 2.0.3; `--sun-misc-unsafe-memory-access=allow` turns it off.
+aircompressor 3.x, which no longer uses `sun.misc.Unsafe`, needs Java 22, so mzPeakJ (Java 17) stays on 2.x. A single
+self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
 classes statically reference Hadoop types — but it is never actually invoked.
 
 ## Format notes
