@@ -147,9 +147,15 @@ class NoNaNInWrittenColumnsTest {
             Path out = tmp.resolve("out.mzpeak");
             assertThatThrownBy(() -> write(out, true, spectra, chromatograms, wavelengthSpectra, options))
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessageStartingWith(message + NAN_MESSAGE);
+                    .hasMessageStartingWith(message + NAN_MESSAGE)
+                    // the opt-in corpus round trip reports it as a known limitation, not as a failed write
+                    .matches(e -> ForwardBackwardCorpusTest.isNaNRefusal((Exception) e));
             assertThat(out).doesNotExist();
         }
+        assertThat(ForwardBackwardCorpusTest.isNaNRefusal(new MzPeakException("spectrum 0: not sorted"))).isFalse();
+        assertThat(ForwardBackwardCorpusTest.isNaNRefusal(new MzPeakException(null))).isFalse();
+        assertThat(ForwardBackwardCorpusTest.isNaNRefusal(new IllegalStateException(message + NAN_MESSAGE)))
+                .isFalse();
     }
 
     /**
