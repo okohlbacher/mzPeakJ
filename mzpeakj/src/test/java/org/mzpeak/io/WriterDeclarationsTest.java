@@ -166,36 +166,36 @@ class WriterDeclarationsTest {
                         "spectrum 3: scan 0 instrument_configuration_id 42 names no instrument configuration"
                                 + " (declared: 0, 1)"),
                 new Rejected("spectrum data processing", small.withSpectrum(3, s -> withDataProcessing(s, "dpX")),
-                        At.ADD, "spectrum 3: data_processing_id dpX names no data processing (declared: "
+                        At.ADD, "spectrum 3: data_processing_id \"dpX\" names no data processing (declared: "
                         + processingIds(small) + ")"),
                 new Rejected("chromdp", small.withChromatogram(0, c -> withDataProcessing(c, "dpX")), At.ADD,
-                        "chromatogram 0: data_processing_id dpX names no data processing (declared: "
+                        "chromatogram 0: data_processing_id \"dpX\" names no data processing (declared: "
                                 + processingIds(small) + ")"),
                 new Rejected("ssref", small.withScanSettings(List.of(new ScanSettings("ss", List.of(),
                         List.of("sfX"), List.of()))), At.OPEN,
-                        "scan settings 0 (ss): source file reference sfX names no source file (declared: "
+                        "scan settings 0 (ss): source file reference \"sfX\" names no source file (declared: "
                                 + sourceFileIds(small) + ")"),
                 new Rejected("runrefs instrument", small.withFileMetadata(m -> withRun(m, 7, null, null)), At.OPEN,
                         "file metadata: run: default_instrument_configuration_id 7 names no instrument configuration"
                                 + " (declared: 0, 1)" + RUN_INSTRUMENT_FIX),
                 new Rejected("runrefs data processing", small.withFileMetadata(m -> withRun(m, null, "dpX", null)),
-                        At.OPEN, "file metadata: run: default_data_processing_id dpX names no data processing"
+                        At.OPEN, "file metadata: run: default_data_processing_id \"dpX\" names no data processing"
                         + " (declared: " + processingIds(small) + ")" + RUN_PROCESSING_FIX),
                 new Rejected("runrefs source file", small.withFileMetadata(m -> withRun(m, null, null, "sfX")),
-                        At.OPEN, "file metadata: run: default_source_file_id sfX names no source file (declared: "
+                        At.OPEN, "file metadata: run: default_source_file_id \"sfX\" names no source file (declared: "
                         + sourceFileIds(small) + ")" + RUN_SOURCE_FIX),
                 new Rejected("runrefs without file description", small.withFileMetadata(m -> withRun(
                         new FileMetadata(null, m.instrumentConfigurations(), m.dataProcessingMethods(), m.samples(),
                                 m.software(), m.run()), null, null, "sfX")), At.OPEN,
-                        "file metadata: run: default_source_file_id sfX names no source file (declared: none)"
+                        "file metadata: run: default_source_file_id \"sfX\" names no source file (declared: none)"
                                 + RUN_SOURCE_FIX),
                 new Rejected("icsw", small.withFileMetadata(m -> withConfigurationSoftware(m, "swX")), At.OPEN,
-                        "file metadata: instrument configuration 0: software_reference swX names no software"
+                        "file metadata: instrument configuration 0: software_reference \"swX\" names no software"
                                 + " (declared: " + softwareIds(small) + ")"),
                 new Rejected("processing method software", small.withFileMetadata(m -> withMethodSoftware(m, "swX")),
                         At.OPEN, "file metadata: data processing " + small.fileMetadata().dataProcessingMethods()
                         .get(0).id() + " method " + small.fileMetadata().dataProcessingMethods().get(0).methods()
-                        .get(0).order() + ": software_reference swX names no software (declared: "
+                        .get(0).order() + ": software_reference \"swX\" names no software (declared: "
                         + softwareIds(small) + ")"),
                 new Rejected("cvFOO", small.withSpectrum(3, s -> withParam(s, FOO)), At.ADD,
                         "spectrum 3: " + FOO + " uses FOO:0000001" + UNDECLARED),
@@ -357,7 +357,7 @@ class WriterDeclarationsTest {
                 dpX.spectrumArrays(), dpX.options())) {
             assertThatThrownBy(() -> dpX.spectra().forEach(session::addSpectrum))
                     .isInstanceOf(MzPeakException.class)
-                    .hasMessage("spectrum 3: data_processing_id dpX names no data processing (declared: none)");
+                    .hasMessage("spectrum 3: data_processing_id \"dpX\" names no data processing (declared: none)");
         }
         assertThat(entries(tmp)).isEmpty();
 
@@ -423,6 +423,109 @@ class WriterDeclarationsTest {
             assertThat(run.defaultDataProcessingId()).isEqualTo(given.dataProcessingMethods().get(0).id());
             assertThat(run.defaultSourceFileId()).isEqualTo(given.fileDescription().sourceFiles().get(0).id());
         }
+    }
+
+    /**
+     * U4: mzpeak-convert 0.17.2 writes an empty {@code software_reference}; a blank String reference counts as absent,
+     * so small with an empty and a blank software reference (instrument configuration, processing method) and a blank
+     * default data processing rewrites, in both layouts and in a session, and reads back as given. 43 corpus files
+     * failed to rewrite on it.
+     */
+    @Test
+    void aBlankReferenceIsWrittenAsGiven(@TempDir Path tmp) {
+        Write w = small().withFileMetadata(m -> withMethodSoftware(withConfigurationSoftware(m, ""), " "));
+        for (MzPeakWriter.Options options : List.of(w.options(),
+                w.options().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED))) {
+            Path out = tmp.resolve(options.metadataLayout() + ".mzpeak");
+            MzPeakWriter.writeDirectory(out, w.spectra(), w.chromatograms(), w.wavelengthSpectra(), w.scanSettings(),
+                    w.fileMetadata(), options);
+            try (MzPeakReader reader = MzPeakReader.open(out)) {
+                FileMetadata back = reader.fileMetadata();
+                assertThat(back.instrumentConfigurations().get(0).softwareReference()).as("%s", out).isEmpty();
+                assertThat(back.dataProcessingMethods().get(0).methods().get(0).softwareReference()).as("%s", out)
+                        .isEqualTo(" ");
+            }
+        }
+        Path session = tmp.resolve("session.mzpeak");
+        try (MzPeakWriter.Session s = MzPeakWriter.openDirectory(session, w.fileMetadata(), w.scanSettings(),
+                w.spectrumArrays(), w.options())) {
+            w.spectra().forEach(s::addSpectrum);
+            s.finish();
+        }
+        try (MzPeakReader reader = MzPeakReader.open(session)) {
+            assertThat(reader.fileMetadata().instrumentConfigurations().get(0).softwareReference()).isEmpty();
+        }
+    }
+
+    /** The message quotes a String reference, so leading or trailing blanks show. */
+    @Test
+    void aStringReferenceIsQuotedInTheMessage(@TempDir Path tmp) {
+        Write w = small().withFileMetadata(m -> withConfigurationSoftware(m, " swX"));
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(tmp.resolve("out.mzpeak"), w.spectra(),
+                w.chromatograms(), w.wavelengthSpectra(), w.scanSettings(), w.fileMetadata(), w.options()))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("file metadata: instrument configuration 0: software_reference \" swX\""
+                        + " names no software (declared: ");
+    }
+
+    /**
+     * U4: the manifest and the footer write the params of the scan settings and the file metadata as JSON, and the
+     * current dialect's schema/param.json requires a name; in the split layout a nameless one is refused before
+     * anything is written, naming its owner and the param, by a batch write and when a session opens. The packed
+     * layout's pin-era dialect writes it as given, without the name key. A param list that is {@code null} has none.
+     */
+    @Test
+    void aNamelessParamOfTheJsonMetadataIsRefused(@TempDir Path tmp) throws IOException {
+        Param nameless = new Param(null, "MS:1000031", null, null);
+        Write w = small();
+        List<ScanSettings> settings = List.of(new ScanSettings("ss", List.of(new Param("x", null, null, null)),
+                List.of(), List.of(List.of(nameless))));
+        Map<String, Write> cases = new LinkedHashMap<>();
+        cases.put("scan settings 0 (ss): target 0", w.withScanSettings(settings));
+        cases.put("scan settings 0 (ss)", w.withScanSettings(List.of(new ScanSettings("ss", List.of(nameless)))));
+        cases.put("file metadata: software " + w.fileMetadata().software().get(0).id(),
+                w.withFileMetadata(m -> withSoftwareParam(m, nameless)));
+        cases.put("file metadata: run", w.withFileMetadata(m -> new FileMetadata(m.fileDescription(),
+                m.instrumentConfigurations(), m.dataProcessingMethods(), m.samples(), m.software(),
+                new MsRun(m.run().id(), m.run().defaultInstrumentId(), m.run().defaultDataProcessingId(),
+                        m.run().defaultSourceFileId(), m.run().startTime(), List.of(nameless)))));
+        cases.put("file metadata: file description", w.withFileMetadata(m -> new FileMetadata(
+                new FileDescription(List.of(nameless), m.fileDescription().sourceFiles()),
+                m.instrumentConfigurations(), m.dataProcessingMethods(), m.samples(), m.software(), m.run())));
+        Path out = tmp.resolve("out.mzpeak");
+        for (Map.Entry<String, Write> c : cases.entrySet()) {
+            Write write = c.getValue();
+            String message = c.getKey() + ": the parameter " + nameless + " has no name, which param.json requires"
+                    + " of a parameter of the JSON metadata; give it the name of its term";
+            assertThatThrownBy(() -> MzPeakWriter.writeDirectory(out, write.spectra(), write.chromatograms(),
+                    write.wavelengthSpectra(), write.scanSettings(), write.fileMetadata(), write.options()))
+                    .as(c.getKey()).isInstanceOf(MzPeakException.class).hasMessage(message);
+            assertThatThrownBy(() -> MzPeakWriter.openDirectory(out, write.fileMetadata(), write.scanSettings(),
+                    write.spectrumArrays(), write.options()).close())
+                    .as(c.getKey()).isInstanceOf(MzPeakException.class).hasMessage(message);
+            assertThat(entries(tmp)).as(c.getKey()).isEmpty();
+        }
+        Path packed = tmp.resolve("packed.mzpeak");
+        Write first = cases.values().iterator().next();
+        MzPeakWriter.writeDirectory(packed, first.spectra(), first.chromatograms(), first.wavelengthSpectra(),
+                first.scanSettings(), first.fileMetadata(),
+                first.options().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
+        try (MzPeakReader reader = MzPeakReader.open(packed)) {
+            assertThat(reader.scanSettings().get(0).targets()).containsExactly(List.of(nameless));
+        }
+        // a null param list has no nameless param
+        Write nulls = w.withFileMetadata(m -> withSoftwareParams(m, null));
+        MzPeakWriter.writeDirectory(out, nulls.spectra(), nulls.chromatograms(), nulls.wavelengthSpectra(),
+                nulls.scanSettings(), nulls.fileMetadata(), nulls.options());
+        assertThat(out).isDirectory();
+    }
+
+    private static FileMetadata withSoftwareParams(FileMetadata m, List<Param> params) {
+        List<Software> software = new ArrayList<>(m.software());
+        Software s = software.get(0);
+        software.set(0, new Software(s.id(), s.version(), params));
+        return new FileMetadata(m.fileDescription(), m.instrumentConfigurations(), m.dataProcessingMethods(),
+                m.samples(), software, m.run());
     }
 
     private static List<Path> entries(Path dir) throws IOException {

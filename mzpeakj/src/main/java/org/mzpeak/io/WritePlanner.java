@@ -1464,6 +1464,24 @@ final class WritePlanner {
         }
     }
 
+    /**
+     * Throws {@link MzPeakException} naming {@code owner} and the param when a Param of {@code params}, which may be
+     * {@code null}, has no name: the split layout writes the params of the scan settings and the file metadata as
+     * JSON in the current dialect, whose schema/param.json requires the name of a param (a string). Names are not
+     * looked up from the accession; no CV table is bundled. The packed layout's pin-era dialect writes them as given.
+     */
+    private static void requireNamedParams(String owner, List<Param> params) {
+        if (params == null) {
+            return;
+        }
+        for (Param p : params) {
+            if (p.name() == null) {
+                throw new MzPeakException(owner + ": the parameter " + p + " has no name, which param.json requires"
+                        + " of a parameter of the JSON metadata; give it the name of its term");
+            }
+        }
+    }
+
     /** {@code kind index}, followed by {@code (id)} when the entity has an id. */
     private static String owner(String kind, long index, String id) {
         return kind + " " + index + (id == null ? "" : " (" + id + ")");
@@ -1779,6 +1797,17 @@ final class WritePlanner {
             }
         }
 
+        /**
+         * {@link #requireParams} of {@code params}, which the JSON metadata holds, after, in the split layout,
+         * {@link #requireNamedParams}: each needs a name.
+         */
+        private void requireJsonParams(String owner, List<Param> params) {
+            if (split) {
+                requireNamedParams(owner, params);
+            }
+            requireParams(owner, params);
+        }
+
         /** The checks of the accession and unit of each of {@code params} of {@code owner}; {@code null} has none. */
         private void requireParams(String owner, List<Param> params) {
             for (Param p : params == null ? List.<Param>of() : params) {
@@ -1835,7 +1864,8 @@ final class WritePlanner {
         /**
          * Throws {@link MzPeakException} when {@code reference}, the {@code what} of {@code owner}, is not
          * {@code null} and none of {@code declared}, the {@code kind}s the file metadata declares (none without file
-         * metadata).
+         * metadata). A blank String reference, such as the empty {@code software_reference} mzpeak-convert 0.17.2
+         * writes, counts as absent and is written as given; the message quotes a String reference.
          */
         private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind) {
             requireNamed(owner, what, reference, declared, kind, "");
@@ -1844,8 +1874,12 @@ final class WritePlanner {
         /** {@link #requireNamed(String, String, Object, List, String)} with {@code fix}, how to fix it, appended. */
         private <T> void requireNamed(String owner, String what, T reference, List<T> declared, String kind,
                                       String fix) {
+            if (reference instanceof String s && s.isBlank()) {
+                return;
+            }
             if (reference != null && !declared.contains(reference)) {
-                throw new MzPeakException(owner + ": " + what + " " + reference + " names no " + kind
+                throw new MzPeakException(owner + ": " + what + " "
+                        + (reference instanceof String ? "\"" + reference + "\"" : reference) + " names no " + kind
                         + " (declared: " + (declared.isEmpty() ? "none" : joinedIds(declared)) + ")" + fix);
             }
         }
@@ -1854,7 +1888,8 @@ final class WritePlanner {
     /**
      * The {@link Declarations} of a write of {@code fileMetadata}, which may be {@code null}, and {@code scanSettings},
      * which may be {@code null}, with {@code options}, after checking them: the accession and unit of every param of
-     * the file metadata and of the scan settings (their own and their targets') have a declared prefix; the software
+     * the file metadata and of the scan settings (their own and their targets') have a declared prefix, and in the
+     * split layout a name ({@link #requireNamedParams}); the software
      * reference of every instrument configuration and processing method, the run's default instrument configuration,
      * data processing and source file, and every source file reference of the scan settings name, when not
      * {@code null}, an entry the file metadata declares. Called by {@link #plan} and when a session opens.
@@ -1870,9 +1905,9 @@ final class WritePlanner {
             for (int i = 0; i < scanSettings.size(); i++) {
                 ScanSettings s = scanSettings.get(i);
                 String owner = owner("scan settings", i, s.id());
-                declared.requireParams(owner, s.parameters());
+                declared.requireJsonParams(owner, s.parameters());
                 for (int j = 0; j < s.targets().size(); j++) {
-                    declared.requireParams(owner + ": target " + j, s.targets().get(j));
+                    declared.requireJsonParams(owner + ": target " + j, s.targets().get(j));
                 }
                 for (String ref : s.sourceFileRefs()) {
                     declared.requireNamed(owner, "source file reference", ref, declared.sourceFiles, "source file");
@@ -1889,38 +1924,38 @@ final class WritePlanner {
         String owner = "file metadata";
         FileDescription description = meta.fileDescription();
         if (description != null) {
-            declared.requireParams(owner + ": file description", description.contents());
+            declared.requireJsonParams(owner + ": file description", description.contents());
             for (SourceFile sf : description.sourceFiles()) {
-                declared.requireParams(owner + ": source file " + sf.id(), sf.parameters());
+                declared.requireJsonParams(owner + ": source file " + sf.id(), sf.parameters());
             }
             for (int i = 0; i < description.contacts().size(); i++) {
-                declared.requireParams(owner + ": contact " + i, description.contacts().get(i).parameters());
+                declared.requireJsonParams(owner + ": contact " + i, description.contacts().get(i).parameters());
             }
         }
         for (InstrumentConfiguration ic : meta.instrumentConfigurations()) {
             String configuration = owner + ": instrument configuration " + ic.id();
-            declared.requireParams(configuration, ic.parameters());
+            declared.requireJsonParams(configuration, ic.parameters());
             for (Component c : ic.components()) {
-                declared.requireParams(configuration + " component " + c.order(), c.parameters());
+                declared.requireJsonParams(configuration + " component " + c.order(), c.parameters());
             }
             declared.requireNamed(configuration, "software_reference", ic.softwareReference(), software, "software");
         }
         for (Software s : meta.software()) {
-            declared.requireParams(owner + ": software " + s.id(), s.parameters());
+            declared.requireJsonParams(owner + ": software " + s.id(), s.parameters());
         }
         for (DataProcessing dp : meta.dataProcessingMethods()) {
             for (ProcessingMethod m : dp.methods()) {
                 String method = owner + ": data processing " + dp.id() + " method " + m.order();
-                declared.requireParams(method, m.parameters());
+                declared.requireJsonParams(method, m.parameters());
                 declared.requireNamed(method, "software_reference", m.softwareReference(), software, "software");
             }
         }
         for (Sample s : meta.samples()) {
-            declared.requireParams(owner + ": sample " + s.id(), s.parameters());
+            declared.requireJsonParams(owner + ": sample " + s.id(), s.parameters());
         }
         MsRun run = meta.run();
         if (run != null) {
-            declared.requireParams(owner + ": run", run.parameters());
+            declared.requireJsonParams(owner + ": run", run.parameters());
             declared.requireNamed(owner + ": run", "default_instrument_configuration_id", run.defaultInstrumentId(),
                     declared.configurations, "instrument configuration", "; declare the configuration in"
                             + " FileMetadata.instrumentConfigurations or set MsRun.defaultInstrumentId to a declared"

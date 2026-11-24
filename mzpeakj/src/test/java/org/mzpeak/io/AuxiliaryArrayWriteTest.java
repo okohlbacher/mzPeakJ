@@ -239,7 +239,7 @@ class AuxiliaryArrayWriteTest {
         assertRefused(array(PLAIN.name(), FLOAT64, NONE, null, List.of(new Param("p", "FOO:0005", null, null)),
                 null), "spectrum 0: auxiliary array 1: ");
         assertRefused(array(PLAIN.name(), FLOAT64, NONE, null, List.of(), "nope"),
-                "spectrum 0: auxiliary array 1 data_processing_id nope names no data processing");
+                "spectrum 0: auxiliary array 1 data_processing_id \"nope\" names no data processing");
         assertRefused(array(new Param(null, null, "v", null), FLOAT64, NONE, null, List.of(), null),
                 "spectrum 0 (" + ForwardBackwardCorpusTest.readSource(SMALL).spectra.get(0).description().id()
                         + "): a parameter needs a name or an accession");

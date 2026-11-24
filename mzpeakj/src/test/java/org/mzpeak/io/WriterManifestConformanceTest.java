@@ -381,6 +381,24 @@ class WriterManifestConformanceTest {
         assertThat(problems).as("%s via %s", fixture, form).isEmpty();
     }
 
+    /**
+     * U4: the JSON params the split layout writes conform to schema/param.json, which requires a name: those of the
+     * scan settings of Example_Processed.img in the manifest against {@code scan_settings_list.json}, and those of
+     * the file metadata documents of the manifest and every footer against their schemas.
+     */
+    @Test
+    void theWrittenJsonParamsConformToParamJson(@TempDir Path tmp) throws IOException {
+        Path out = write(Fixtures.current("Example_Processed.img.mzpeak"), Form.WRITE_DIRECTORY_SPLIT, tmp);
+        JsonNode settings = index(out).path("metadata").path("scan_settings_list");
+        assertThat(settings.findValues("parameters")).isNotEmpty();
+        assertThat(settings.path(0).path("parameters")).isNotEmpty();
+        assertThat(SpecSchemaCheck.violations("scan_settings_list", "scan_settings_list.json", settings.toString()))
+                .isEmpty();
+        Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
+        assertThat(places).isNotEmpty();
+        places.forEach((place, documents) -> assertThat(SpecSchemaCheck.violations(documents)).as(place).isEmpty());
+    }
+
     /** W1 (D13-11): the packed (pin-era) dialect keeps {@code default_instrument_id} and does not write the new key. */
     @ParameterizedTest(name = "{0} via {1}")
     @MethodSource("packedCases")
