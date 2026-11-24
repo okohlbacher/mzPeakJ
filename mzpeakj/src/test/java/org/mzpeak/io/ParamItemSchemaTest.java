@@ -95,9 +95,10 @@ class ParamItemSchemaTest {
     }
 
     /**
-     * Split output: the auxiliary-array item's {@code name} group, its {@code name}, {@code data_type},
-     * {@code compression} and {@code items} (UINT64) are REQUIRED in every member with auxiliary arrays
-     * (auxiliary-arrays.md, W14), the name's {@code value} group stays OPTIONAL. Until X-37 they were OPTIONAL.
+     * Split output: the auxiliary-array item's {@code data} list (U5), {@code name} group, its {@code name},
+     * {@code data_type}, {@code compression} and {@code items} (UINT64) are REQUIRED in every member with auxiliary
+     * arrays (auxiliary-arrays.md, W14), the name's {@code value} group stays OPTIONAL. Until X-37 they were OPTIONAL,
+     * {@code data} until U5.
      */
     @ParameterizedTest
     @ValueSource(strings = {"small.mzpeak", "has_uv.mzpeak", "diaPASEF.ref.mzpeak"})
@@ -113,6 +114,9 @@ class ParamItemSchemaTest {
             GroupType item = schema.getType("auxiliary_arrays").asGroupType().getType(0).asGroupType()
                     .getType(0).asGroupType();
             String where = member.getFileName().toString();
+            assertThat(item.getType("data").getRepetition()).as(where).isEqualTo(Repetition.REQUIRED);
+            assertThat(item.getType("data").getLogicalTypeAnnotation()).as(where)
+                    .isEqualTo(LogicalTypeAnnotation.listType());
             assertThat(item.getType("name").getRepetition()).as(where).isEqualTo(Repetition.REQUIRED);
             assertThat(item.getType("name").asGroupType().getType("name").getRepetition()).as(where)
                     .isEqualTo(Repetition.REQUIRED);

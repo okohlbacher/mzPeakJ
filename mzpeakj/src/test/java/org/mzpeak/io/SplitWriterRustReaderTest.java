@@ -410,13 +410,14 @@ class SplitWriterRustReaderTest {
     }
 
     /**
-     * {@code auxiliaryArrays}, the reference's {@code auxiliary_arrays} as text, with the item's {@code name} group,
-     * its {@code name}, {@code data_type}, {@code compression} and {@code items} required, as auxiliary-arrays.md
-     * declares them and the writer writes them (W14, X-37); the reference writes them optional.
+     * {@code auxiliaryArrays}, the reference's {@code auxiliary_arrays} as text, with the item's {@code data} list,
+     * {@code name} group, its {@code name}, {@code data_type}, {@code compression} and {@code items} required, as
+     * auxiliary-arrays.md declares them and the writer writes them (W14, X-37, U5); the reference writes them
+     * optional.
      */
     private static String withRequiredFields(String auxiliaryArrays) {
         String out = auxiliaryArrays;
-        for (String field : List.of("group name {", "binary data_type (", "binary compression (", "int64 items (",
+        for (String field : List.of("group data (", "group name {", "binary data_type (", "binary compression (", "int64 items (",
                 "\n        optional binary name (")) {
             String optional = field.startsWith("\n") ? field : "optional " + field;
             String required = optional.replace("optional", "required");

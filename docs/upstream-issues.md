@@ -99,6 +99,10 @@ How the test sees them on mzPeakJ's own output:
   SignalToNoiseArray  [1.0, 2.0, 3.0]
   ```
 
+  The HEAD Python reader does not decode a zlib-compressed auxiliary array either: it hands the list of bytes
+  pyarrow gives it to `zlib.decompress` (`reader.py:196`), which raises `TypeError: a bytes-like object is required,
+  not 'list'`, so its read of spectrum 0 fails; it decodes the uncompressed array (`UpstreamInteropTest`).
+
 - R-14 shows on small.unpacked written with Numpress chunks and a 1 KiB row-group size, spectra 0 and 8 each given
   the uncompressed array: spectrum 8's chunks span row groups 0 and 1, and rdump reads its m/z and intensity without
   the array, while it reads spectrum 0's (all its chunks in row group 0; parquet-java checks the row-group size
@@ -145,6 +149,11 @@ small.unpacked with `ms_level` 0, scan start time 0, scan windows 0-0 and every 
 type does not match the number of bytes available in the buffer, or the conversion is unsupported"); the same file
 with each `></cvParam>` rewritten to `/>` reads with MS levels 1 and 2 and its arrays. mzML allows both forms. This
 predates 0.13.0 (the converter has always written mzML through jmzML) and was not recorded before.
+
+A difference without effect: the `ARROW:schema` footer entry mzPeakJ writes for `auxiliary_arrays`
+(`ArrowSchemaHint`) keeps the reference's types, every field nullable but the bytes of `data`, while the split
+layout's Parquet fields that auxiliary-arrays.md requires are REQUIRED (W14, U5); both reference readers take a
+field's nullability from the Parquet schema, not from the hint, and read the files as before.
 
 A latent difference, not seen by the test: the reference's `ScanSettings` struct still uses the pin-era names,
 `source_file_refs` and targets as bare param arrays, while the spec's `schema/scan_settings_list.json` names the

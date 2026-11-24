@@ -415,8 +415,9 @@ Writer notes:
   and `chromatograms_metadata` carries `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
   them. The wavelength representation column is `opt_spectrum_representation` (the spec's wavelength table does not
   name it); the reader also reads the reference's `spectrum_representation`.
-- Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written,
-  naming the entity: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
+- Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written
+  (in a session: before that entity is written; spectra added earlier may already be on disk), naming the entity:
+  a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
   of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
   name an entry of the file metadata (without file metadata nothing is declared, so any such reference is
   rejected), and the prefix of every CURIE (param
@@ -426,10 +427,13 @@ Writer notes:
   written as given in the file metadata, the scan settings and the params of the `PACKED` layout, except as an
   intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array unit of the array index and
   must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else
-  a stub entity with one WARNING.
+  a stub entity with one WARNING. A blank String reference, such as the empty `software_reference` mzpeak-convert
+  0.17.2 writes, counts as absent and is written as given. In the `SPLIT` layout every param of the scan settings and
+  of the file metadata, which are written as JSON, needs a name (`schema/param.json`); the `PACKED` layout writes a
+  nameless one as given.
 - The `SPLIT` layout declares the fields the spec requires as required (W14): the item, `value` and `name` of every
-  `parameters` list of a metadata table, and the `name`, `name.name`, `data_type`, `compression` and `items` of each
-  auxiliary array; the `parameters` list inside an auxiliary array keeps optional item fields, as
+  `parameters` list of a metadata table, and the `data`, `name`, `name.name`, `data_type`, `compression` and `items`
+  of each auxiliary array; the `parameters` list inside an auxiliary array keeps optional item fields, as
   auxiliary-arrays.md gives it (metadata-tables.md disagrees). The `PACKED` layout keeps them all optional.
 - In the `SPLIT` layout the accession and unit of every param of a spectrum, its scans and precursors (isolation
   window, activation, selected ions), a chromatogram and its precursors, a wavelength spectrum and its scans must be

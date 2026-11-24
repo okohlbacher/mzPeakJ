@@ -41,7 +41,8 @@ import java.util.function.Supplier;
  * <p>{@link #toMzPeak} reads the mzML through {@link MzMLReader}: its header and survey first, so that what the model
  * cannot carry is rejected before the target is created, then every spectrum, wavelength spectrum and chromatogram
  * into a {@link MzPeakWriter.Session} opened with the header's file metadata, scan settings and cv list, the survey's
- * extra array keys and, as its spectrum intensity units, the intensity units of the MS spectra the survey found (R5).
+ * extra array keys and, as its spectrum intensity units, the intensity units of the MS spectra with points the survey
+ * found (R5).
  * Before a spectrum is added, the selected ions of each of its precursors that shares its precursor index (its parent)
  * with an earlier precursor of the spectrum are moved to the first of them, which keeps its own first; every isolation
  * window and activation stays (design 5.6, B-19). Each chromatogram is added in its own
@@ -52,7 +53,9 @@ import java.util.function.Supplier;
  * {@code -Infinity} or {@code NaN} (B-35); chromatograms without points, whose intensity unit it drops, and spectra
  * without points in an intensity unit other than MS:1000131, whose unit it drops too (B-36); and what
  * the mzPeak writer adds (B-24): a spectrum type to spectra without one, the five summary params to spectra with
- * points and none of them, a scan to spectra without scans, and a run default source file when the run names none. A
+ * points and none of them, a scan to spectra without scans, and a run default source file when the run names none;
+ * in the split layout also the precursors of the MSn chain (W7) and a scan holding the time of each wavelength
+ * spectrum without scans. A
  * NaN m/z, time, wavelength or intensity fails the conversion with the writer's message, which names the spectrum,
  * chromatogram or wavelength spectrum and the position (W10). The mzML cv list goes to the session as far as
  * {@link MzPeakWriter.Options#withCvList} accepts it (W8, D13-15): it rejects an entry of a CV {@link CvEntry#known()}
@@ -83,6 +86,10 @@ public final class MzMLConversion {
     static final String B_24_SUMMARY = "B-24 summary params (m/z range, base peak, total ion current) added by the"
             + " mzPeak writer to spectra with points and none of the five";
     static final String B_24_SCAN = "B-24 scans added by the mzPeak writer to spectra without scans";
+    static final String B_24_WAVELENGTH_SCAN = "B-24 scans holding the time added by the mzPeak writer to wavelength"
+            + " spectra without scans";
+    static final String B_24_PRECURSOR = "B-24 precursors of the MSn chain added by the mzPeak writer from the"
+            + " precursors of the parent spectra (W7)";
     static final String B_24_SOURCE = "B-24 run defaultSourceFileRef added by the mzPeak writer (the first source"
             + " file, else a stub source file)";
     static final String B_26 = "B-26 extra arrays without a value other than NaN, which the mzPeak read drops";
@@ -164,8 +171,10 @@ public final class MzMLConversion {
                 survey.spectrumArrays(), withCvList)
                 : MzPeakWriter.openArchive(target, header.fileMetadata(), header.scanSettings(),
                 survey.spectrumArrays(), withCvList)) {
-            adding = new Adding(session, losses, cvs);
+            adding = new Adding(session, losses, cvs,
+                    withCvList.metadataLayout() == MzPeakWriter.MetadataLayout.SPLIT);
             reader.read(adding);
+            losses.note(B_24_PRECURSOR, adding.chainedPrecursors());
             session.finish();
         }
         List<String> warnings = new ArrayList<>(reader.warnings());
@@ -232,14 +241,46 @@ public final class MzMLConversion {
         private final MzPeakWriter.Session session;
         private final Losses losses;
         private final Cvs cvs;
+        /** Whether the session writes the split layout, which replicates the MSn chain and writes wavelength scans. */
+        private final boolean split;
+        /** In the split layout, the precursor_index of each precursor of every spectrum added, by its index (W7). */
+        private final List<List<Long>> precursorKeys = new ArrayList<>();
         long spectra;
         long wavelengthSpectra;
         long chromatograms;
 
-        Adding(MzPeakWriter.Session session, Losses losses, Cvs cvs) {
+        Adding(MzPeakWriter.Session session, Losses losses, Cvs cvs, boolean split) {
             this.session = session;
             this.losses = losses;
             this.cvs = cvs;
+            this.split = split;
+        }
+
+        /**
+         * The number of precursors the mzPeak writer appends to the spectra added (W7, B-24): in the split layout,
+         * to each spectrum, for each of its precursors in turn, those it appends included, the precursors of the
+         * spectrum its precursor_index names whose precursor_index (null equal to null) the list does not hold yet, as
+         * {@link MzPeakWriter} documents the chain; none in the packed layout, which writes the primary precursor
+         * only. The session refuses a precursor_index that names no spectrum, which the reader never gives.
+         */
+        long chainedPrecursors() {
+            long added = 0;
+            for (List<Long> own : precursorKeys) {
+                List<Long> all = new ArrayList<>(own);
+                for (int i = 0; i < all.size(); i++) {
+                    Long parent = all.get(i);
+                    if (parent == null) {
+                        continue;
+                    }
+                    for (Long key : precursorKeys.get(Math.toIntExact(parent))) {
+                        if (!all.contains(key)) {
+                            all.add(key);
+                            added++;
+                        }
+                    }
+                }
+            }
+            return added;
         }
 
         @Override
@@ -256,6 +297,9 @@ public final class MzMLConversion {
             losses.note(B_24_SCAN, d.scans().isEmpty() ? 1 : 0);
             losses.note(B_36_SPECTRUM, spectrum.mz().length == 0 && !COUNTS.equals(spectrum.intensityUnit()) ? 1 : 0);
             session.addSpectrum(sharedParentsMoved(spectrum));
+            if (split) {
+                precursorKeys.add(d.precursors().stream().map(Precursor::precursorIndex).toList());
+            }
             spectra++;
         }
 
@@ -264,6 +308,7 @@ public final class MzMLConversion {
             List<List<Param>> params = new ArrayList<>(List.of(spectrum.parameters()));
             spectrum.scans().forEach(scan -> params.add(scan.parameters()));
             cvs.check("wavelength spectrum " + spectrum.id(), params, auxiliaryCuries(spectrum.auxiliaryArrays()));
+            losses.note(B_24_WAVELENGTH_SCAN, split && spectrum.scans().isEmpty() ? 1 : 0);
             session.addWavelengthSpectrum(spectrum);
             wavelengthSpectra++;
         }

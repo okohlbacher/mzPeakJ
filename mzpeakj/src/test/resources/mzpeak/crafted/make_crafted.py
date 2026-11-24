@@ -12,7 +12,10 @@ listed in ``CASES``; each writes one file named ``<fixture>.<member>.<case>.parq
 
 import argparse
 import pathlib
+import struct
+import zlib
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -78,6 +81,61 @@ def split_empty_data(fixtures, out):
     return target
 
 
+def aux_without_items(fixtures, out):
+    """small.unpacked's chromatograms_metadata.parquet with auxiliary arrays that lack ``items`` (mzPeakJ U1).
+
+    mzpeak-convert 0.17.2 writes the ``auxiliary_arrays`` struct without its ``items`` field. The struct here drops
+    ``items`` from the source's type, and chromatogram 0 (the only row) gets two arrays: MS:1000786 (non-standard
+    data array, value ``ms level``, unit UO:0000186) of the 64-bit integers 1, 2 and 1, stored as is (MS:1000576),
+    the form of the corpus; and MS:1000517 (signal to noise array) of the 64-bit floats 1.5, 2.5, 3.5 and 4.5,
+    zlib-compressed (MS:1000574). ``number_of_auxiliary_arrays`` becomes 2. Every other column, the codec (ZSTD) and
+    the footer key-values (pyarrow writes its own ``ARROW:schema``) are kept.
+    """
+    source = fixtures / "small.unpacked.mzpeak" / "chromatograms_metadata.parquet"
+    table = source_table(source)
+    assert table.num_rows == 1, table.num_rows
+    list_type = table.schema.field("auxiliary_arrays").type
+    item_type = list_type.value_type
+    struct_type = pa.struct([f for f in item_type if f.name != "items"])
+    assert struct_type.num_fields == item_type.num_fields - 1
+    arrays_type = pa.large_list(pa.field(list_type.value_field.name, struct_type, list_type.value_field.nullable))
+
+    def param(accession, name, string=None):
+        value = {"integer": None, "float": None, "string": string, "boolean": None}
+        return {"value": value, "accession": accession, "name": name, "unit": None}
+
+    ms_level = param("MS:1000786", "non-standard data array", "ms level")
+    ms_level["unit"] = "UO:0000186"
+    arrays = [
+        {"data": list(struct.pack("<3q", 1, 2, 1)), "name": ms_level, "data_type": "MS:1000522",
+         "compression": "MS:1000576", "unit": "UO:0000186", "parameters": [], "data_processing_id": None},
+        {"data": list(zlib.compress(struct.pack("<4d", 1.5, 2.5, 3.5, 4.5), 9)),
+         "name": param("MS:1000517", "signal to noise array"), "data_type": "MS:1000523",
+         "compression": "MS:1000574", "unit": None, "parameters": [], "data_processing_id": None},
+    ]
+    column = table.schema.get_field_index("auxiliary_arrays")
+    table = table.set_column(column, pa.field("auxiliary_arrays", arrays_type),
+                             pa.array([arrays], type=arrays_type))
+    count = table.schema.get_field_index("number_of_auxiliary_arrays")
+    table = table.set_column(count, table.schema.field(count), pa.array([2], type=table.schema.field(count).type))
+    target = out / "small.chromatograms_metadata.aux-without-items.parquet"
+    pq.write_table(table, target, compression="ZSTD", use_compliant_nested_type=False)
+    metadata = pq.ParquetFile(target).metadata
+    codecs = {
+        metadata.row_group(g).column(c).compression
+        for g in range(metadata.num_row_groups)
+        for c in range(metadata.num_columns)
+    }
+    assert codecs == {"ZSTD"}, codecs
+    assert pq.read_table(target).equals(table)
+    removed = [line for line in parquet_schema(source) if line not in parquet_schema(target)]
+    assert len(removed) == 1 and " items" in removed[0], removed
+    written = dict(metadata.metadata)
+    assert written.pop(b"ARROW:schema", None) is not None
+    assert written == table.schema.metadata
+    return target
+
+
 def source_table(source):
     """The rows of ``source`` with its footer key-values but pyarrow's ``ARROW:schema`` as schema metadata."""
     key_values = pq.ParquetFile(source).metadata.metadata
@@ -118,7 +176,7 @@ def parquet_schema(path):
     return str(pq.ParquetFile(path).schema).splitlines()[2:]
 
 
-CASES = [brotli_metadata, empty_rowgroup_peaks, split_empty_data]
+CASES = [brotli_metadata, empty_rowgroup_peaks, split_empty_data, aux_without_items]
 
 
 def main():

@@ -217,7 +217,9 @@ public final class MzPeakWriter {
      * instrument configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
      * run default is filled with the first entry of its list, else with a stub entry and a WARNING. Without file
      * metadata ({@code null} or {@link FileMetadata#EMPTY}) nothing is declared, so every non-null reference is
-     * rejected.
+     * rejected. A blank String reference counts as absent and is written as given.
+     * In the {@link MetadataLayout#SPLIT} layout every param of the scan settings and of the file metadata, which are
+     * written as JSON, must have a name, as schema/param.json requires.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}

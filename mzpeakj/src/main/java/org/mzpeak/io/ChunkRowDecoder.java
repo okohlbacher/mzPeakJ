@@ -233,6 +233,14 @@ final class ChunkRowDecoder {
         int extra = chunkIntensity.length - decoded.length;
         double[] axis;
         if (extra == 1) {
+            if (storedStart == null) {
+                // only an absolute chunk gets here; its first point is the chunk start, which 0 would invent
+                throw new MzPeakException("chunk row of " + si + " has one intensity more than " + entity.axisName()
+                        + " values, whose first point is the " + entity.axisName() + " chunk start, but "
+                        + (start == null ? "its signal plan has no " + entity.axisName() + " chunk start column"
+                        : "its " + entity.axisName() + " chunk start is null") + "; reading it as 0 would invent "
+                        + entity.axisName() + " values");
+            }
             axis = new double[chunkIntensity.length];
             axis[0] = axisStart;
             System.arraycopy(decoded, 0, axis, 1, decoded.length);

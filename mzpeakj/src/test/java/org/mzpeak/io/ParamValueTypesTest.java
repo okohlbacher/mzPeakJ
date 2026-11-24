@@ -141,7 +141,8 @@ class ParamValueTypesTest {
         Spectrum s0 = small.spectra.get(0);
         String owner = "spectrum 0 (" + s0.description().id() + ")";
         List<Software> software = new ArrayList<>(small.fileMetadata.software());
-        software.add(new Software("w2", "1", List.of(new Param(null, "MS:1000000", at, null))));
+        // a nameless param of the file metadata is refused for its name first in the split layout (U4)
+        software.add(new Software("w2", "1", List.of(param("w2 software time", at))));
         return Stream.of(
                 Arguments.of("spectrum", spectra(small, withParams(s0, List.of(param("w2 time", at)))),
                         small.chromatograms, small.scanSettings, small.fileMetadata,
@@ -158,7 +159,10 @@ class ParamValueTypesTest {
                                 + "): the value of the parameter \"w2 time\" is a java.time.Instant"),
                 Arguments.of("software", small.spectra, small.chromatograms, small.scanSettings,
                         withSoftware(small.fileMetadata, software),
-                        "software w2: the value of the parameter MS:1000000 is a java.time.Instant"),
+                        "software w2: the value of the parameter \"w2 software time\" is a java.time.Instant"),
+                Arguments.of("accession only", spectra(small, withParams(s0, List.of(new Param(null, "MS:1000000",
+                                at, null)))), small.chromatograms, small.scanSettings, small.fileMetadata,
+                        owner + ": the value of the parameter MS:1000000 is a java.time.Instant"),
                 Arguments.of("scan settings", small.spectra, small.chromatograms,
                         List.of(new ScanSettings("w2 settings", List.of(param("w2 time", at)))), small.fileMetadata,
                         "scan settings 0 (w2 settings): the value of the parameter \"w2 time\" is a"
@@ -167,7 +171,8 @@ class ParamValueTypesTest {
 
     /**
      * A value of another type, given to a spectrum, inside a list, as a {@code char[]}, to a chromatogram, to a
-     * software or to scan settings, is refused before the target exists, naming the entity and the param.
+     * software, to scan settings or to a spectrum param without a name, is refused before the target exists, naming
+     * the entity and the param (by its accession when it has no name).
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("refusals")

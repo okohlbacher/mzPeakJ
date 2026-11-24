@@ -801,6 +801,31 @@ class MzMLWriterSpectraTest {
                         new double[]{200}, new double[]{1}, List.of(bto)), "BTO:0000142"));
     }
 
+    /**
+     * U6: the intensity unit of a spectrum is written with its cvRef, but the contents announce no intensity units: a
+     * unit of a CV the cv list lacks, as a third-party file may hold, is rejected naming the prefix, where it threw a
+     * NullPointerException before; the next spectrum is written.
+     */
+    @Test
+    void aSpectrumIntensityUnitOfAnUndeclaredCvIsRejected() {
+        SpectrumDescription d = description("scan=1", 1, List.of(scan(1.0)), List.of(), List.of());
+        Spectrum bad = new Spectrum(d, new double[]{100}, new double[]{1}, null, Map.of(), Map.of(), "BTO:0000142",
+                null);
+        Contents contents = new Contents(metadata(), List.of(), List.of(known("MS"), known("UO")), List.of("scan=1"),
+                List.of(), List.of());
+        Path target = dir.resolve("unit.mzML");
+
+        try (MzMLWriter writer = MzMLWriter.open(target, contents, true)) {
+            assertThatThrownBy(() -> writer.write(bad)).isInstanceOf(MzPeakException.class)
+                    .hasMessageContaining("spectrum #0 (scan=1)")
+                    .hasMessageContaining("the CV prefix 'BTO' of BTO:0000142 is not in the cv list");
+            writer.write(spectrum(d));
+            writer.finish();
+        }
+        MzMLAssert.valid(target);
+        assertThat(read(target).spectra()).hasSize(1);
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("undeclaredPrefixes")
     void aSpectrumThatUsesAnUndeclaredCvPrefixIsRejectedAndNothingOfItIsKept(String name, SpectrumDescription bad,
