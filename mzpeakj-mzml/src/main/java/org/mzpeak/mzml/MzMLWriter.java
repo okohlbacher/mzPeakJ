@@ -405,8 +405,8 @@ public final class MzMLWriter implements AutoCloseable {
      *
      * @throws IllegalStateException if its id is not the next of {@link Contents#spectrumIds()}, all of which were
      *                               written already, or the writer is finished or closed
-     * @throws MzPeakException       naming the prefix, if an accession or unit of its params has a CV prefix the cv
-     *                               list does not declare (design 5.11)
+     * @throws MzPeakException       naming the prefix, if an accession or unit of its params, or its intensity unit,
+     *                               has a CV prefix the cv list does not declare (design 5.11)
      * @throws NullPointerException  if {@code spectrum} or its description is null
      */
     public void write(Spectrum spectrum) {
@@ -422,6 +422,8 @@ public final class MzMLWriter implements AutoCloseable {
         declared(name, d.parameters());
         d.scans().forEach(scan -> declared(name, scan.parameters()));
         d.precursors().forEach(p -> precursorParams(p, params -> declared(name, params)));
+        // the intensity unit is written with its cvRef too; the contents do not announce it (U6)
+        declared(name, List.of(new Param(null, null, null, spectrum.intensityUnit())));
 
         uk.ac.ebi.jmzml.model.mzml.Spectrum x = spectrum(i, spectrumIds.get(i), spectrum.mz().length);
         String processing = ref(dataProcessingIds, d.dataProcessingRef(), "spectrum dataProcessingRef dropped");

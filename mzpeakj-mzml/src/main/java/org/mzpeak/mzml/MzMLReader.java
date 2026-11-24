@@ -289,8 +289,10 @@ public final class MzMLReader {
     private Map<String, Long> msOrdinals = Collections.emptyMap();
     /** The ids of the wavelength spectra; filled by {@link #survey()}. */
     private Set<String> wavelengthIds = Collections.emptySet();
-    /** The intensity units of the MS spectra, first seen first; filled by {@link #survey()}. */
+    /** The intensity units of the MS spectra with points, first seen first; filled by {@link #survey()}. */
     private Set<String> spectrumIntensityUnits = Collections.emptySet();
+    /** The intensity units {@link #survey()} collects into {@link #spectrumIntensityUnits}. */
+    private final Set<String> surveyedIntensityUnits = new LinkedHashSet<>();
     /** True while {@link #survey()} runs the mapping: arrays are not decoded. */
     private boolean surveying;
     /**
@@ -355,7 +357,7 @@ public final class MzMLReader {
             }
             msOrdinals = ordinals;
             wavelengthIds = new HashSet<>(collector.wavelengthIds);
-            spectrumIntensityUnits = Collections.unmodifiableSet(collector.intensityUnits);
+            spectrumIntensityUnits = Collections.unmodifiableSet(surveyedIntensityUnits);
             survey = new Survey(List.copyOf(collector.spectrumIds), List.copyOf(collector.wavelengthIds),
                     Collections.unmodifiableSet(collector.arrays), collector.chromatograms);
         }
@@ -364,8 +366,9 @@ public final class MzMLReader {
 
     /**
      * The intensity units of the MS spectra, first seen first: the {@link Spectrum#intensityUnit()} of every spectrum
-     * {@link #read(Visitor)} gives (R5, D13-20), found by {@link #survey()}, which runs first if it has not; empty for
-     * a run without MS spectra. {@link MzMLConversion} declares them to the mzPeak session. Unmodifiable.
+     * that {@link #read(Visitor)} gives with an intensity array of a declared length above 0 (R5, D13-20, U6), found
+     * by {@link #survey()}, which decodes no array and runs first if it has not; empty for a run without such MS
+     * spectra. {@link MzMLConversion} declares them to the mzPeak session. Unmodifiable.
      *
      * @throws MzPeakException as {@link #survey()} does
      */
@@ -863,6 +866,11 @@ public final class MzMLReader {
                 centroid ? n : 0, scans, precursors, params,
                 Objects.equals(s.getDataProcessingRef(), spectrumListDefault) ? null : s.getDataProcessingRef());
         String intensityUnit = signal.intensity() == null ? null : signal.intensity().array().unit();
+        if (surveying && signal.intensity() != null && signal.intensity().array().length() > 0) {
+            // only a spectrum with intensity points declares its unit: a spectrum without points, the one of a
+            // missing or dropped intensity array included, would otherwise take the primary intensity column (U6)
+            surveyedIntensityUnits.add(Objects.requireNonNullElse(intensityUnit, COUNTS));
+        }
         return new Spectrum(description, mz, values(signal.intensity()), null, values(signal.extras()), null,
                 Objects.requireNonNullElse(intensityUnit, COUNTS), null, auxiliary(signal.auxiliary()));
     }
@@ -1356,14 +1364,12 @@ public final class MzMLReader {
         final List<String> spectrumIds = new ArrayList<>();
         final List<String> wavelengthIds = new ArrayList<>();
         final Set<String> arrays = new LinkedHashSet<>();
-        final Set<String> intensityUnits = new LinkedHashSet<>();
         int chromatograms;
 
         @Override
         public void spectrum(Spectrum spectrum) {
             spectrumIds.add(spectrum.description().id());
             arrays.addAll(spectrum.arrays().keySet());
-            intensityUnits.add(spectrum.intensityUnit());
         }
 
         @Override

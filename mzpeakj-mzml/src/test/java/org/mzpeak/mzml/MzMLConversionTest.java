@@ -783,6 +783,120 @@ class MzMLConversionTest {
     }
 
     /**
+     * U6 (W7, B-24): tiny's scan=21 made an MS3 spectrum with one precursor, scan=20, whose own precursor is scan=19.
+     * The split mzPeak writer appends scan=20's precursor to it, so the MS3 spectrum comes back with two precursors;
+     * the conversion counts the one added. The last spectrum, made an MS3 spectrum that lists both, gets none. The
+     * packed layout writes the primary precursor only and counts none.
+     */
+    @Test
+    void theMsnPrecursorsTheWriterReplicatesAreCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            String ms3 = replaceAfter(replaceAfter(s, SCAN_21, "name=\"ms level\" value=\"1\"",
+                    "name=\"ms level\" value=\"3\""), SCAN_21, "<binaryDataArrayList",
+                    precursors("scan=20") + "<binaryDataArrayList");
+            return replaceAfter(ms3, "id=\"sample=1 period=1 cycle=22", "<binaryDataArrayList",
+                    precursors("scan=20", "scan=19") + "<binaryDataArrayList");
+        });
+        assertThat(model(file).spectrumList().get(2).description().precursors())
+                .extracting(Precursor::precursorIndex).containsExactly(1L);
+        assertThat(model(file).spectrumList().get(3).description().precursors())
+                .extracting(Precursor::precursorIndex).containsExactly(1L, 0L);
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_PRECURSOR + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadataAt(2).precursors()).extracting(Precursor::precursorIndex)
+                    .containsExactly(1L, 0L);
+            assertThat(reader.metadataAt(3).precursors()).extracting(Precursor::precursorIndex)
+                    .containsExactly(1L, 0L);
+        }
+        assertThat(jmzmlSpectra(b.mzml).get(2).getPrecursorList().getCount()).isEqualTo(2);
+
+        Path packed = dir.resolve("packed.mzpeak");
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(file, packed, true, MzPeakWriter.Options.defaults()
+                .withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
+        assertThat(result.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_24_PRECURSOR));
+    }
+
+    /** A precursorList with one precursor of the spectrum {@code ref} for each of {@code refs}, one ion each. */
+    private static String precursors(String... refs) {
+        StringBuilder out = new StringBuilder("<precursorList count=\"" + refs.length + "\">\n");
+        for (String ref : refs) {
+            out.append("<precursor spectrumRef=\"").append(ref).append("\">\n<selectedIonList count=\"1\">\n")
+                    .append("<selectedIon>\n").append(cv("MS:1000744", "selected ion m/z", "300.5", "MS:1000040"))
+                    .append("\n</selectedIon>\n</selectedIonList>\n<activation>\n")
+                    .append(cv("MS:1000133", "collision-induced dissociation", "", null))
+                    .append("\n</activation>\n</precursor>\n");
+        }
+        return out.append("</precursorList>\n").toString();
+    }
+
+    /**
+     * U6 (B-24): tiny's scan=21 made an electromagnetic radiation spectrum without a scanList: the split mzPeak writer
+     * writes it with one scan holding its time, which the conversion counts; the packed layout writes no wavelength
+     * scans and counts none.
+     */
+    @Test
+    void theScanTheWriterAddsToAWavelengthSpectrumWithoutScansIsCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            String uv = replaceAfter(s, SCAN_21, TINY_MZ_UNIT, TINY_WAVELENGTH_UNIT);
+            int at = uv.indexOf(SCAN_21);
+            return uv.substring(0, at) + cut(uv.substring(at), "<scanList", "</scanList>");
+        });
+        assertThat(model(file).wavelengthSpectra()).singleElement()
+                .satisfies(w -> assertThat(w.scans()).isEmpty());
+
+        B b = b(file, true);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_WAVELENGTH_SCAN + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.wavelengthSpectra()).singleElement()
+                    .satisfies(w -> assertThat(w.scans()).hasSize(1));
+        }
+        MzMLConversion.Result packed = MzMLConversion.toMzPeak(file, dir.resolve("packed.mzpeak"), true,
+                MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
+        assertThat(packed.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_24_WAVELENGTH_SCAN));
+    }
+
+    /**
+     * U6 (R5): tiny with scan=19's intensity array removed and the others' in percent of base peak: scan=19, which
+     * MzMLReader gives no points in detector counts, declares no unit, so MS:1000132 is the only spectrum intensity
+     * unit and the primary intensity column; before, counts came first and every real percent intensity went to
+     * {@code intensity_MS_1000132}, which the Rust range read does not load.
+     */
+    @Test
+    void aSpectrumWithoutIntensitiesDeclaresNoIntensityUnit() throws IOException {
+        Path file = tinyWith(s -> {
+            int chromatograms = s.indexOf("<chromatogramList");
+            String percent = s.substring(0, chromatograms).replace(TINY_COUNTS, TINY_PERCENT)
+                    + s.substring(chromatograms);
+            String scan19 = region(percent, SCAN_19, "</spectrum>");
+            String intensity = region(scan19, "<binaryDataArray encodedLength", "</binaryDataArray>");
+            intensity = region(scan19.substring(scan19.indexOf(intensity) + intensity.length()),
+                    "<binaryDataArray encodedLength", "</binaryDataArray>");
+            assertThat(intensity).contains("MS:1000515");
+            String edited = scan19.replace(intensity, "").replace("<binaryDataArrayList count=\"2\">",
+                    "<binaryDataArrayList count=\"1\">");
+            return percent.replace(scan19, edited);
+        });
+        Model m1 = model(file);
+        assertThat(m1.spectrumList().get(0).intensity()).isEmpty();
+        assertThat(m1.spectrumList()).extracting(Spectrum::intensityUnit)
+                .containsExactly(COUNTS, PERCENT, PERCENT, PERCENT);
+
+        B b = b(file, true);
+
+        assertThat(Files.readString(b.mzpeak.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .doesNotContain("intensity_MS_1000132").doesNotContain(COUNTS);
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo(PERCENT);
+            assertThat(reader.getSpectrumAt(1).intensity()).hasSize(10);
+            assertThat(reader.getSpectrumAt(0).intensity()).isEmpty();
+        }
+    }
+
+    /**
      * A spectrum with points, its userParam and none of the summary params (B-24): the userParam's null accession is
      * no summary param, and the spectrum is counted once.
      */
