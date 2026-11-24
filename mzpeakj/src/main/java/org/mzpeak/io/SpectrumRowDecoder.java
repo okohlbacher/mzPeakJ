@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.apache.parquet.example.data.Group;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.SignalContinuity;
@@ -23,6 +24,8 @@ final class SpectrumRowDecoder {
     private static final String REPRESENTATION = "MS:1000525";
     private static final String N_POINTS = "MS:1003060";
     private static final String N_PEAKS = "MS:1003059";
+    private static final String F_DATA_PROCESSING_ID = "data_processing_id";
+    private static final String F_DATA_PROCESSING_REF = "data_processing_ref";
 
     // m/z delta model, most current first
     private static final String POLYNOMIAL_DELTA_INTERPOLATION = "MS:1003821";
@@ -39,7 +42,10 @@ final class SpectrumRowDecoder {
      * {@code parameters} list, then the row's leftovers ({@link ColumnResolver#leftoversInBothLayouts}, in the packed
      * layout too): its scalar columns that none of the fields below is read from, such as the summary columns and the
      * {@code spectrum_type} term marker. A column wins over a list entry of the same accession: such an entry is
-     * dropped, as {@link PrecursorRowDecoder} does for the activation.
+     * dropped, as {@link PrecursorRowDecoder} does for the activation. Its data processing reference is its
+     * {@code data_processing_id} cell, else its {@code data_processing_ref} cell, or {@code null}; neither column, a
+     * structural one ({@link ColumnTable#structural}), gives a Param. Its auxiliary arrays are read by
+     * {@link AuxiliaryArrayDecoder}.
      */
     static SpectrumHead decode(FacetRow spectrum, long idx) {
         ColumnResolver columns = spectrum.columns();
@@ -59,8 +65,13 @@ final class SpectrumRowDecoder {
         b.numberOfDataPoints = nPts == null ? 0 : nPts;
         Long nPeaks = columns.longValue(g, consume(consumed, columns.resolve(N_PEAKS)));
         b.numberOfPeaks = nPeaks == null ? 0 : nPeaks;
+        b.dataProcessingRef = columns.stringValue(g, columns.resolveName(F_DATA_PROCESSING_ID));
+        if (b.dataProcessingRef == null) {
+            b.dataProcessingRef = columns.stringValue(g, columns.resolveName(F_DATA_PROCESSING_REF));
+        }
         b.spectrumParams = columns.params(g);
         b.mzDeltaModel = deltaModel(columns, g, consumed);
+        b.auxiliaryArrays = AuxiliaryArrayDecoder.decode(g, columns.member(), "spectrum " + idx);
         List<Param> leftovers = columns.leftoversInBothLayouts(g, consumed);
         if (!leftovers.isEmpty()) {
             Set<String> columnAccessions = new HashSet<>();
@@ -107,8 +118,8 @@ final class SpectrumRowDecoder {
     }
 
     /**
-     * Mutable assembly holder for one spectrum's core fields, plus its m/z delta model polynomial coefficients
-     * (empty when the row has none).
+     * Mutable assembly holder for one spectrum's core fields and data processing reference, plus its m/z delta model
+     * polynomial coefficients (empty when the row has none) and its auxiliary arrays.
      */
     static final class SpectrumHead {
         long index;
@@ -120,6 +131,8 @@ final class SpectrumRowDecoder {
         long numberOfDataPoints;
         long numberOfPeaks;
         List<Param> spectrumParams = List.of();
+        String dataProcessingRef;
         double[] mzDeltaModel;
+        List<AuxiliaryArray> auxiliaryArrays = List.of();
     }
 }

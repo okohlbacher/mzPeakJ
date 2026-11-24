@@ -19,7 +19,7 @@ import org.apache.parquet.schema.Types;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -144,6 +144,7 @@ class SpectrumArrayStoreCharacterizationTest {
         List<Group> rows = List.of(
                 point(POINT_SCHEMA, 2L, p[0][0], p[0][1]),
                 point(POINT_SCHEMA, 2L, null, null),
+                point(POINT_SCHEMA, 2L, null, null),
                 point(POINT_SCHEMA, 2L, p[2][0], null),
                 point(POINT_SCHEMA, 2L, p[3][0], p[3][1]));
         Path file = writePoints(POINT_SCHEMA, rows, 100, true);
@@ -152,10 +153,13 @@ class SpectrumArrayStoreCharacterizationTest {
         assertExact("dropped m/z", new double[] {p[0][0], p[2][0], p[3][0]}, dropped.mz());
         assertExact("dropped intensity", new double[] {p[0][1], 0.0, p[3][1]}, dropped.intensity());
 
+        // R2 (X-8): the null pair steps from each side by the spacing p[3] - p[2], the only one stored (0.12.0 filled
+        // an interior single null linearly; the spec rejects one)
         SpectrumArrayStore.Arrays filled = read(file, 2, true);
-        double between = p[0][0] + (p[2][0] - p[0][0]) * 1 / 2; // linear interpolation of the single gap
-        assertExact("filled m/z", new double[] {p[0][0], between, p[2][0], p[3][0]}, filled.mz());
-        assertExact("filled intensity", new double[] {p[0][1], 0.0, 0.0, p[3][1]}, filled.intensity());
+        double spacing = p[3][0] - p[2][0];
+        assertExact("filled m/z", new double[] {p[0][0], p[0][0] + spacing, p[2][0] - spacing, p[2][0], p[3][0]},
+                filled.mz());
+        assertExact("filled intensity", new double[] {p[0][1], 0.0, 0.0, 0.0, p[3][1]}, filled.intensity());
     }
 
     @Test
@@ -222,17 +226,63 @@ class SpectrumArrayStoreCharacterizationTest {
 
     // ---- chunk rows ---------------------------------------------------------------------------------------------
 
+    /**
+     * chunked-layout.md requires the chunk start: a delta chunk without one is refused, naming the spectrum (until the
+     * final fix-up of 0.13.0 it stepped from m/z 0, which invented the m/z values).
+     */
     @Test
-    void aDeltaChunkWithoutChunkStartStepsFromZero() {
+    void aDeltaChunkWithoutChunkStartIsRefused() {
         Row0 r = Row0.INSTANCE;
         ChunkRow row = new ChunkRow();
         row.encoding = "MS:1003089";
         row.values = new double[] {r.mz[1] - r.mz[0], r.mz[2] - r.mz[1]};
         row.intensity = new double[] {r.intensity[0], r.intensity[1], r.intensity[2]};
-        SpectrumArrayStore.Arrays arrays = read(writeChunk(row), 0, false);
-        double first = 0.0 + row.values[0];
-        assertExact("m/z", new double[] {0.0, first, first + row.values[1]}, arrays.mz());
-        assertExact("intensity", row.intensity, arrays.intensity());
+        Path file = writeChunk(row);
+        assertThatThrownBy(() -> read(file, 0, false))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of spectrum_index 0 has a null m/z chunk start, which chunked-layout.md"
+                        + " requires of a chunk whose values are not absolute; decoding it from 0 would invent m/z"
+                        + " values");
+    }
+
+    /**
+     * A chunk row that cannot be decoded fails only its own spectrum: spectra 2, 3 and 4 in one row group, the first
+     * chunk row of spectrum 3 a delta chunk without chunk start and its later rows valid; spectra 2 and 4 read their
+     * points, before and after spectrum 3 is asked for, and spectrum 3 throws the message of its own row (until the
+     * final fix-up of 0.13.0 the row group failed as a whole, so spectra 2 and 4 threw the message of spectrum 3).
+     */
+    @Test
+    void aChunkRowThatCannotBeDecodedFailsOnlyItsSpectrum() {
+        List<Group> rows = new ArrayList<>();
+        for (long index : new long[] {2, 3, 4}) {
+            double[][] p = Peaks.points(index);
+            int n = SPANNING.get(index);
+            for (int i = 0; i < n; i++) {
+                rows.add(chunkPoint(index, p[i][0], (float) p[i][1]));
+            }
+        }
+        Group bad = new SimpleGroupFactory(CHUNK_SCHEMA).newGroup();
+        Group chunk = bad.addGroup("chunk");
+        chunk.add("spectrum_index", 3L);
+        addDoubles(chunk, "mz_chunk_values", new double[] {0.5});
+        chunk.add("chunk_encoding", "MS:1003089");
+        addDoubles(chunk, "intensity", new double[] {1, 2});
+        rows.add(SPANNING.get(2L), bad);
+        Path file = write(CHUNK_SCHEMA, rows, 100, true);
+        assertThat(rowGroups(file)).isEqualTo(1);
+        try (SpectrumArrayStore store = SpectrumArrayStore.load(new LocalInputFile(file), false, Map.of())) {
+            assertPeaks(store.get(2), 2);
+            assertPeaks(store.get(4), 4);
+            for (int attempt = 0; attempt < 2; attempt++) {
+                assertThatThrownBy(() -> store.get(3))
+                        .isInstanceOf(MzPeakException.class)
+                        .hasMessage("chunk row of spectrum_index 3 has a null m/z chunk start, which chunked-layout.md"
+                                + " requires of a chunk whose values are not absolute; decoding it from 0 would invent"
+                                + " m/z values");
+            }
+            assertPeaks(store.get(2), 2);
+            assertPeaks(store.get(4), 4);
+        }
     }
 
     @Test
@@ -599,7 +649,7 @@ class SpectrumArrayStoreCharacterizationTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withRowGroupRowCountLimit(rowGroupRows)
                 .withStatisticsEnabled(statistics)

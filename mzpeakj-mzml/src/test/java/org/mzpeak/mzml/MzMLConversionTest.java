@@ -20,6 +20,7 @@ import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.SignalContinuity;
 import org.mzpeak.model.Spectrum;
@@ -56,6 +57,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
 
@@ -65,11 +67,15 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * before and after mzML -> mzPeak -> mzML, equal up to A-26 for tiny, every output valid and the warnings pinned.
  * (b) Smoke round trips A: small.mzpeak, Example_Processed and legacy small.mzpeak through mzML and back, equal up to
  * the A exclusions of design 12.4, with the toMzML warnings and the cv lists pinned (A-17). (c) Branch documents derived from tiny, and mzPeak inputs written with {@link MzPeakWriter}: refs whose
- * kind is kept or changes (B-33), the losses the conversion counts (B-19, B-26, B-34, B-35, B-36), A-26, and the
- * removal of the mzPeak writer's stubs. (d) Failures: the clean-up after a failed conversion, the early target check of
- * {@code toMzML} and gzip input.
+ * kind is kept or changes (B-33), the losses the conversion counts (B-19, B-26, B-35, B-36), A-26, and the
+ * removal of the mzPeak writer's stubs. (d) Failures: the clean-up after a failed conversion, a NaN m/z or intensity
+ * (W10), the early target check of {@code toMzML} and gzip input.
  */
 class MzMLConversionTest {
+
+    /** The end of the mzPeak writer's error for a NaN m/z or intensity (W10). */
+    private static final String NAN = " is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, since a"
+            + " Parquet page holding a NaN gets no column index (conformance.md requires a page index for every column)";
 
     private static final String SCAN_19 = "id=\"scan=19\"";
     private static final String SCAN_20 = "id=\"scan=20\"";
@@ -83,6 +89,17 @@ class MzMLConversionTest {
     private static final String MZ_TYPE = cv("MS:1000514", "m/z array", "", "MS:1000040");
     private static final String INTENSITY_TYPE = cv("MS:1000515", "intensity array", "", "MS:1000131");
     private static final String SN = "MS:1000517";
+    private static final String COUNTS = "MS:1000131";
+    private static final String PERCENT = "MS:1000132";
+    private static final String NANOMETER = "UO:0000018";
+    private static final String TINY_COUNTS = "accession=\"MS:1000515\" name=\"intensity array\" value=\"\""
+            + " unitCvRef=\"MS\" unitAccession=\"MS:1000131\" unitName=\"number of counts\"";
+    private static final String TINY_PERCENT = "accession=\"MS:1000515\" name=\"intensity array\" value=\"\""
+            + " unitCvRef=\"MS\" unitAccession=\"MS:1000132\" unitName=\"percent of base peak\"";
+    private static final String TINY_MZ_UNIT = "accession=\"MS:1000514\" name=\"m/z array\" value=\"\""
+            + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"";
+    private static final String TINY_WAVELENGTH_UNIT = "accession=\"MS:1000617\" name=\"wavelength array\""
+            + " value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000018\" unitName=\"nanometer\"";
     private static final String SN_TYPE = cv(SN, "signal to noise array", "", null);
     /** The loss lines of tiny's read() as JZ-4 pinned them (MzMLReaderRunTest.tinyIsReadInFull). */
     private static final List<String> TINY_LOSSES = List.of(
@@ -135,36 +152,47 @@ class MzMLConversionTest {
         assertThat(Files.isRegularFile(b.mzpeak)).isTrue();
         Model m3 = model(b.mzml);
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2007-06-27T15:23:45Z");
-        assertThat(ModelAssert.assertEqual("tiny B", model(tiny), m3, STRICT, ModelAssert.A_26).hidden())
-                .containsExactly(Map.entry("A_26", 1));
+        assertThat(ModelAssert.assertEqual("tiny B", model(tiny), m3, STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4), Map.entry("W_8", 5));
     }
 
     /**
-     * D-12c (V-23): tiny's two chromatograms, whose time arrays are in seconds, keep their unit and values both ways:
-     * the mzPeak dataset reads {@code timeUnit} UO:0000010 with the mzML's values, and the mzML written from it holds
-     * time arrays with {@code unitAccession="UO:0000010"} whose values are bit-identical to the source's, both as
-     * jmzML decodes them.
+     * W3 (D13-1): tiny's two chromatograms, whose time arrays are in seconds, are stored in minutes: the mzPeak
+     * dataset reads {@code timeUnit} UO:0000031 with the mzML's values divided by 60, and the mzML written from it
+     * holds time arrays with {@code unitAccession="UO:0000031"} and those minutes, both as jmzML decodes them. Until
+     * W3 they kept their unit and values both ways (D-12c, V-23).
      */
     @Test
-    void tinysChromatogramTimesKeepTheirUnitAndValuesBothWays() throws IOException {
+    void tinysChromatogramTimesAreStoredInMinutes() throws IOException {
         Path tiny = MzMLFixtures.extract(MzMLFixtures.TINY, dir);
         List<List<Object>> source = jmzmlTimeArrays(tiny);
         assertThat(source).hasSize(2).allSatisfy(a -> assertThat(a.get(0)).isEqualTo("UO:0000010"));
         assertThat(source).extracting(List::size).containsExactly(16, 11);
+        List<List<Object>> minutes = new ArrayList<>();
+        for (List<Object> array : source) {
+            List<Object> converted = new ArrayList<>(List.of("UO:0000031"));
+            for (Object bits : array.subList(1, array.size())) {
+                converted.add(Double.doubleToRawLongBits(Double.longBitsToDouble((Long) bits) / 60));
+            }
+            minutes.add(converted);
+        }
 
         B b = b(tiny, false);
 
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Chromatogram> chromatograms = reader.chromatograms();
-            assertThat(chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000010");
+            assertThat(chromatograms).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
             for (int c = 0; c < 2; c++) {
                 assertThat(Arrays.stream(chromatograms.get(c).time()).mapToObj(Double::doubleToRawLongBits)
-                        .toList()).as("chromatogram %d", c).isEqualTo(source.get(c).subList(1, source.get(c).size()));
+                        .toList()).as("chromatogram %d", c)
+                        .isEqualTo(minutes.get(c).subList(1, minutes.get(c).size()));
             }
         }
-        assertThat(jmzmlTimeArrays(b.mzml)).isEqualTo(source);
+        assertThat(jmzmlTimeArrays(b.mzml)).isEqualTo(minutes);
         assertThat(Files.readString(b.mzml, StandardCharsets.UTF_8))
-                .contains("accession=\"MS:1000595\" name=\"time array\" unitAccession=\"UO:0000010\"");
+                .contains("accession=\"MS:1000595\" name=\"time array\" unitAccession=\"UO:0000031\"")
+                .doesNotContain("name=\"time array\" unitAccession=\"UO:0000010\"");
     }
 
     /**
@@ -198,7 +226,8 @@ class MzMLConversionTest {
         assertThat(List.of(b.toMzPeak.spectra(), b.toMzPeak.wavelengthSpectra(), b.toMzPeak.chromatograms()))
                 .containsExactly(48L, 0L, 1L);
         assertThat(Files.isDirectory(b.mzpeak)).isTrue();
-        assertThat(ModelAssert.assertEqual("small B", model(small), model(b.mzml), STRICT).hidden()).isEmpty();
+        assertThat(ModelAssert.assertEqual("small B", model(small), model(b.mzml), STRICT, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("W_8", 5));
     }
 
     // ---- (b) smoke round trips A: mzPeak -> mzML -> mzPeak -------------------------------------------------------
@@ -260,7 +289,10 @@ class MzMLConversionTest {
 
     /**
      * Wavelength spectra and chromatograms go both ways; a dataset without file description and run, whose spectra use
-     * a CV that no cv list declares, is written with that CV completed as the prefix with URI 'unknown'.
+     * a CV that no cv list declares, is written with that CV completed as the prefix with URI 'unknown'. That entry
+     * identifies no release, so the mzML converts back only once the entry names one (W8). The dataset is unpacked and
+     * its cv list entry of the CV removed after the write ({@link #withoutCvs}), since mzPeakJ refuses to write a
+     * CV it does not declare (W12).
      */
     @Test
     void aDatasetWithoutFileMetadataAndWithWavelengthSpectraAndAnUndeclaredCvGoesBothWays() throws IOException {
@@ -273,8 +305,9 @@ class MzMLConversionTest {
                 new double[] {0.5, 0.25}, List.of(new Param("absorption spectrum", "MS:1000806", null, null)));
         Chromatogram tic = new Chromatogram(0, "tic", "MS:1000235", new double[] {1, 2}, new double[] {3, 4},
                 "MS:1000131", Map.of());
-        MzPeakWriter.writeArchive(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of(tic),
-                List.of(uv), List.of(), FileMetadata.EMPTY);
+        MzPeakWriter.writeDirectory(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2),
+                List.of(tic), List.of(uv), List.of(), FileMetadata.EMPTY, withCvs("XX"));
+        withoutCvs(input, "XX");
         try (MzPeakReader reader = MzPeakReader.open(input)) {
             assertThat(reader.fileMetadata().fileDescription()).isNull();
             assertThat(reader.fileMetadata().run()).isNull();
@@ -291,8 +324,17 @@ class MzMLConversionTest {
         assertThat(model(mzml).cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1),
                 new CvEntry("XX", "XX", "unknown", null));
 
+        // The completed XX has no version, so it cannot identify a fixed release, and a spectrum uses it (W8).
+        assertConversionFails(mzml, "mzML " + mzml + ": spectrum scan=2 uses XX:0000001, but the cv list entry of XX"
+                + " (URI unknown, version null) does not identify a fixed release of XX, as conformance.md requires of"
+                + " metadata.cv_list: it has no version");
+        Path released = Files.writeString(dir.resolve("released.mzML"), replaceOnce(Files.readString(mzml,
+                StandardCharsets.UTF_8), "URI=\"unknown\"", "URI=\"https://example.org/xx/1/xx.obo\" version=\"1\""),
+                StandardCharsets.UTF_8);
+
         Path back = dir.resolve("back");
-        MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(mzml, back, true, MzPeakWriter.Options.defaults());
+        MzMLConversion.Result toMzPeak = MzMLConversion.toMzPeak(released, back, true,
+                MzPeakWriter.Options.defaults());
         assertThat(List.of(toMzPeak.spectra(), toMzPeak.wavelengthSpectra(), toMzPeak.chromatograms()))
                 .containsExactly(2L, 1L, 1L);
         try (MzPeakReader reader = MzPeakReader.open(back)) {
@@ -302,6 +344,8 @@ class MzMLConversionTest {
             assertThat(w.intensity()).containsExactly(0.5, 0.25);
             assertThat(reader.chromatograms().get(0).intensity()).containsExactly(3, 4);
             assertThat(reader.metadataAt(1).parameters()).contains(new Param("custom term", "XX:0000001", 1.5, null));
+            assertThat(reader.manifest().cvList()).contains(new CvEntry("XX", "XX", "https://example.org/xx/1/xx.obo",
+                    "1"));
         }
     }
 
@@ -323,7 +367,8 @@ class MzMLConversionTest {
                 .get(0);
         assertThat(written.getExternalSpectrumID()).isEqualTo("scan=19");
         assertThat(written.getSpectrumRef()).isNull();
-        ModelAssert.assertEqual("external precursor", m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        ModelAssert.assertEqual("external precursor", m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
     }
 
     @Test
@@ -339,29 +384,41 @@ class MzMLConversionTest {
         Scan scan = jmzmlSpectra(b.mzml).get(1).getScanList().getScan().get(0);
         assertThat(scan.getSpectrumRef()).isEqualTo("scan=19");
         assertThat(scan.getExternalSpectrumID()).isNull();
-        ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        ModelAssert.assertEqual("scan external id", m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
     }
 
+    /**
+     * W10: an mzML spectrum with intensities {@code [1, NaN]}, and one with a NaN m/z, fail the conversion with the
+     * mzPeak writer's message, which names the spectrum and the position, and leave no target, as an archive and as a
+     * directory.
+     */
     @Test
-    void aNaNMzIsCountedAndInterpolatedBetweenItsNeighbours() throws IOException {
+    void aNaNIntensityOrMzFailsTheConversionNamingTheSpectrum() throws IOException {
+        Path intensity = tinyWith(s -> spectrum19With(s, 2, array(MZ_TYPE, 100, 200),
+                array(INTENSITY_TYPE, 1, Double.NaN)));
+        assertThat(model(intensity).spectrumList().get(0).intensity()[1]).isNaN();
+        assertConversionFails(intensity, "spectrum 0: the intensity at position 1" + NAN);
+
         double[] mz = new double[15];
         for (int i = 0; i < mz.length; i++) {
             mz[i] = i;
         }
         mz[5] = Double.NaN;
-        Path file = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
-        Model m1 = model(file);
-        assertThat(m1.spectrumList().get(0).mz()[5]).isNaN();
+        Path nanMz = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_MZ_BINARY, floats(mz)));
+        assertThat(model(nanMz).spectrumList().get(0).mz()[5]).isNaN();
+        assertConversionFails(nanMz, "spectrum 0: the m/z at position 5" + NAN);
+    }
 
-        B b = b(file, false);
-
-        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES,
-                MzMLConversion.B_34 + " (1)"));
-        Model m3 = model(b.mzml);
-        double filled = m3.spectrumList().get(0).mz()[5];
-        assertThat(filled).isBetween(4.0, 6.0);
-        assertThat(ModelAssert.assertEqual("NaN m/z", m1, m3, STRICT, ModelAssert.A_26, ModelAssert.B_34).hidden())
-                .containsExactly(Map.entry("A_26", 1), Map.entry("B_34", 1));
+    /** Converting {@code mzml} as an archive and as a directory fails with {@code message} and leaves no target. */
+    private void assertConversionFails(Path mzml, String message) {
+        for (boolean directory : new boolean[] {false, true}) {
+            Path target = dir.resolve("failed-" + directory + ".mzpeak");
+            assertThatThrownBy(() -> MzMLConversion.toMzPeak(mzml, target, directory,
+                    MzPeakWriter.Options.defaults()))
+                    .isExactlyInstanceOf(MzPeakException.class).hasMessage(message);
+            assertThat(target).doesNotExist();
+        }
     }
 
     @Test
@@ -380,7 +437,8 @@ class MzMLConversionTest {
             assertThat(Param.find(reader.fileMetadata().fileDescription().contents(), "MS:1000127").orElseThrow()
                     .value()).isEqualTo("Infinity");
         }
-        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
         assertThat(result.paths()).containsExactly("fileMetadata.fileDescription.contents[MS:1000127]");
     }
 
@@ -402,7 +460,8 @@ class MzMLConversionTest {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::intensityUnit).containsExactly(null, null);
         }
-        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        Result result = ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
         assertThat(result.paths()).containsExactly("chromatogram[0].intensityUnit");
     }
 
@@ -423,8 +482,205 @@ class MzMLConversionTest {
         }
         Model m3 = model(b.mzml);
         assertThat(m3.spectrumList().get(0).arrays()).isEmpty();
-        assertThat(ModelAssert.compare(m1, m3, STRICT, ModelAssert.A_26).paths())
+        assertThat(ModelAssert.compare(m1, m3, STRICT, ModelAssert.A_26, ModelAssert.W_3, ModelAssert.W_8).paths())
                 .containsExactly("spectrum[0].arrays[" + SN + "]");
+    }
+
+    /**
+     * R1: scan=19 with 3 points and a signal to noise array of 2 values keeps that array as an auxiliary array
+     * (64-bit float, no compression, its type and unit kept) and writes it back as a binaryDataArray with
+     * {@code arrayLength="2"} and the same values.
+     */
+    @Test
+    void anArrayOfAnotherLengthBecomesAnAuxiliaryArrayAndComesBack() throws IOException {
+        String sn = sized(2, cv(SN, "signal to noise array", "", "UO:0000186"), 7.5, 8.25);
+        Path file = tinyWith(s -> spectrum19With(s, 3, array(MZ_TYPE, 100, 200, 300), array(INTENSITY_TYPE, 1, 2, 3),
+                sn));
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("declared length"));
+        try (MzPeakReader mzpeak = MzPeakReader.open(b.mzpeak)) {
+            Spectrum spectrum = mzpeak.getSpectrumAt(0);
+            assertThat(spectrum.mz()).containsExactly(100, 200, 300);
+            assertThat(spectrum.arrays()).isEmpty();
+            assertThat(spectrum.auxiliaryArrays()).singleElement().satisfies(a -> {
+                assertThat(a.name().accession()).isEqualTo(SN);
+                assertThat(a.dataType()).isEqualTo("MS:1000523");
+                assertThat(a.compression()).isEqualTo("MS:1000576");
+                assertThat(a.items()).isEqualTo(2);
+                assertThat(a.unit()).isEqualTo("UO:0000186");
+                assertThat(a.doubles()).containsExactly(7.5, 8.25);
+            });
+        }
+        uk.ac.ebi.jmzml.model.mzml.BinaryDataArray written = jmzmlSpectra(b.mzml).get(0).getBinaryDataArrayList()
+                .getBinaryDataArray().stream()
+                .filter(a -> a.getCvParam().stream().anyMatch(p -> SN.equals(p.getAccession())))
+                .findFirst().orElseThrow();
+        assertThat(written.getArrayLength()).isEqualTo(2);
+        assertThat(written.getBinaryDataAsNumberArray()).containsExactly(7.5, 8.25);
+        assertThat(written.getCvParam()).filteredOn(p -> SN.equals(p.getAccession()))
+                .extracting(uk.ac.ebi.jmzml.model.mzml.CVParam::getUnitAccession).containsExactly("UO:0000186");
+        assertThat(model(b.mzml).spectrumList().get(0).auxiliaryArrays()).singleElement()
+                .satisfies(a -> assertThat(a.doubles()).containsExactly(7.5, 8.25));
+    }
+
+    /**
+     * R5 (D13-20): tiny with the intensity arrays of all four spectra in percent of base peak (MS:1000132) converts
+     * with that unit, which the session declares as its only spectrum intensity unit, and comes back with it, except
+     * on scan=21, which has no points (B-36); the chromatograms keep theirs.
+     */
+    @Test
+    void aPercentOfBasePeakIntensityArrayKeepsItsUnitBothWays() throws IOException {
+        Path file = tinyWith(s -> {
+            int chromatograms = s.indexOf("<chromatogramList");
+            return s.substring(0, chromatograms).replace(TINY_COUNTS, TINY_PERCENT) + s.substring(chromatograms);
+        });
+        Model m1 = model(file);
+        assertThat(m1.spectrumList()).extracting(Spectrum::intensityUnit).containsOnly(PERCENT);
+
+        B b = b(file, false);
+
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            Spectrum spectrum = reader.getSpectrumAt(0);
+            assertThat(spectrum.intensityUnit()).isEqualTo(PERCENT);
+            assertThat(spectrum.intensity()).containsExactly(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo(PERCENT);
+            assertThat(reader.getSpectrumAt(2).intensityUnit()).isNull();
+        }
+        // scan=21 has no points, so no intensity column holds its unit: it comes back in detector counts (B-36)
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_36_SPECTRUM + " (1)");
+        assertThat(intensityUnits(b.mzml)).containsExactly(PERCENT, PERCENT, COUNTS, PERCENT);
+        assertThat(ModelAssert.compare(m1, model(b.mzml), STRICT, ModelAssert.A_26, ModelAssert.W_3, ModelAssert.W_8)
+                .paths()).containsExactly("spectrum[2].intensityUnit");
+    }
+
+    /**
+     * R5: tiny with scan=19's intensity array in percent of base peak and the others' in detector counts converts
+     * without a refusal: the survey declares both units to the session (counts first, as the column
+     * {@code intensity}), each spectrum reads its own and the mzML written back has both.
+     */
+    @Test
+    void twoIntensityUnitsAcrossSpectraConvertWithBothDeclared() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(s, SCAN_19, TINY_COUNTS, TINY_PERCENT));
+        assertThat(model(file).spectrumList()).extracting(Spectrum::intensityUnit)
+                .containsExactly(PERCENT, COUNTS, COUNTS, COUNTS);
+
+        B b = b(file, true);
+
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.getSpectrumAt(0).intensityUnit()).isEqualTo(PERCENT);
+            assertThat(reader.getSpectrumAt(0).intensity()).hasSize(15).startsWith(15, 14);
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo(COUNTS);
+            assertThat(reader.getSpectrumAt(1).intensity()).hasSize(10);
+        }
+        assertThat(Files.readString(b.mzpeak.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .contains("intensity_MS_1000132");
+        assertThat(intensityUnits(b.mzml)).containsExactly(PERCENT, COUNTS, COUNTS, COUNTS);
+    }
+
+    /**
+     * R5: the intensity units the survey finds replace those of the caller's options, so tiny converts with options
+     * that declare only counts per second (MS:1000814); a run without MS spectra keeps the options' units, which the
+     * array index of its empty spectra_data names.
+     */
+    @Test
+    void theSurveyedIntensityUnitsReplaceThoseOfTheOptions() throws IOException {
+        MzPeakWriter.Options perSecond = MzPeakWriter.Options.defaults().withSpectrumIntensityUnits("MS:1000814");
+        Path tiny = MzMLFixtures.extract(MzMLFixtures.TINY, dir);
+        Path all = dir.resolve("all.mzpeak");
+
+        assertThat(MzMLConversion.toMzPeak(tiny, all, true, perSecond).spectra()).isEqualTo(4);
+        try (MzPeakReader reader = MzPeakReader.open(all)) {
+            assertThat(reader.getSpectrumAt(0).intensityUnit()).isEqualTo(COUNTS);
+        }
+        assertThat(Files.readString(all.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .doesNotContain("MS:1000814");
+
+        Path withoutSpectra = tinyWith(s -> cut(s, "<spectrumList", "</spectrumList>"));
+        Path none = dir.resolve("none.mzpeak");
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(withoutSpectra, none, true, perSecond);
+        assertThat(List.of(result.spectra(), result.chromatograms())).containsExactly(0L, 2L);
+        assertThat(Files.readString(none.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .contains("MS:1000814");
+    }
+
+    /**
+     * R8 (D13-24): tiny's scan=21 made an electromagnetic radiation spectrum whose scan has a start time, an
+     * instrument configuration and a 200-400 nm scan window: the wavelength spectrum gets that scan with the window
+     * in nm, the mzPeak dataset stores it (float32, unit UO:0000018) and reads it back, and the mzML written back
+     * has the scan with the window limits in UO:0000018.
+     */
+    @Test
+    void anEmrSpectrumsScanWindowInNanometersGoesBothWays() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(replaceAfter(s, SCAN_21, TINY_MZ_UNIT, TINY_WAVELENGTH_UNIT), SCAN_21,
+                "<scan>\n            </scan>", "<scan instrumentConfigurationRef=\"LCQ_x0020_Deca\">\n"
+                        + cv("MS:1000016", "scan start time", "6.5", "UO:0000031") + "\n<scanWindowList count=\"1\">"
+                        + "\n<scanWindow>\n" + cv("MS:1000501", "scan window lower limit", "200", NANOMETER) + "\n"
+                        + cv("MS:1000500", "scan window upper limit", "400", NANOMETER)
+                        + "\n</scanWindow>\n</scanWindowList>\n</scan>"));
+        ScanEvent scan = new ScanEvent(6.5, null, null, null, 0, null, List.of(new ScanWindow(200, 400)), List.of());
+        Model m1 = model(file);
+        assertThat(m1.wavelengthSpectra()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo("scan=21");
+            assertThat(w.time()).isEqualTo(6.5);
+            assertThat(w.scans()).containsExactly(scan);
+        });
+
+        B b = b(file, true);
+
+        assertThat(b.toMzPeak.wavelengthSpectra()).isEqualTo(1);
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.wavelengthSpectra()).singleElement()
+                    .satisfies(w -> assertThat(w.scans()).containsExactly(scan));
+        }
+        Scan written = jmzmlSpectra(b.mzml).get(3).getScanList().getScan().get(0);
+        assertThat(written.getScanWindowList().getScanWindow().get(0).getCvParam())
+                .extracting(p -> p.getAccession() + "=" + p.getValue() + " " + p.getUnitAccession())
+                .containsExactly("MS:1000501=200.0 " + NANOMETER, "MS:1000500=400.0 " + NANOMETER);
+        assertThat(model(b.mzml).wavelengthSpectra()).singleElement()
+                .satisfies(w -> assertThat(w.scans()).containsExactly(scan));
+    }
+
+    /**
+     * R8: an mzPeak wavelength spectrum with two scans goes to mzML with both, their windows in nm; its time, which
+     * is not the first scan's start time, is lost (A-9). The one without scans has the one holding its time that the
+     * mzPeak writer wrote, so the mzML writer adds none (A-8).
+     */
+    @Test
+    void theScansOfAnMzPeakWavelengthSpectrumGoToMzML() throws IOException {
+        Path input = dir.resolve("in.mzpeak");
+        List<ScanEvent> scans = List.of(
+                new ScanEvent(2.0, null, null, null, null, null, List.of(new ScanWindow(200, 400)), List.of()),
+                new ScanEvent(2.5, 5.0, null, null, null, null, List.of(), List.of()));
+        WavelengthSpectrum uv = new WavelengthSpectrum(0, "uv=1", 1.5, null, new double[] {200, 210},
+                new double[] {0.5, 0.25}, List.of(new Param("absorption spectrum", "MS:1000806", null, null)), scans,
+                List.of());
+        WavelengthSpectrum bare = new WavelengthSpectrum(1, "uv=2", 3.0, null, new double[] {200},
+                new double[] {0.75}, List.of(new Param("absorption spectrum", "MS:1000806", null, null)));
+        MzPeakWriter.writeDirectory(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of())), List.of(),
+                List.of(uv, bare), List.of(), FileMetadata.EMPTY, MzPeakWriter.Options.defaults());
+
+        Path mzml = dir.resolve("out.mzML");
+        MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, false);
+
+        MzMLAssert.valid(mzml);
+        assertThat(toMzML.warnings()).contains(MzMLWriter.A_9 + " (1)")
+                .noneMatch(w -> w.contains("scan holding the time of a wavelength spectrum"));
+        List<WavelengthSpectrum> read = model(mzml).wavelengthSpectra();
+        assertThat(read.get(0).time()).isEqualTo(2.0);
+        assertThat(read.get(0).scans()).containsExactlyElementsOf(scans);
+        assertThat(read.get(1).scans()).containsExactly(
+                new ScanEvent(3.0, null, null, null, null, null, List.of(), List.of()));
+        assertThat(jmzmlSpectra(mzml).get(1).getScanList().getScan().get(0).getScanWindowList().getScanWindow()
+                .get(0).getCvParam()).extracting(p -> p.getUnitAccession()).containsExactly(NANOMETER, NANOMETER);
+    }
+
+    /** The unit accession of the intensity array of each spectrum of {@code file}, as jmzML reads it. */
+    private static List<String> intensityUnits(Path file) {
+        return jmzmlSpectra(file).stream().map(s -> s.getBinaryDataArrayList().getBinaryDataArray().stream()
+                .flatMap(a -> a.getCvParam().stream()).filter(p -> "MS:1000515".equals(p.getAccession()))
+                .findFirst().orElseThrow().getUnitAccession()).toList();
     }
 
     /**
@@ -463,8 +719,9 @@ class MzMLConversionTest {
                 "2005-07-20T19:44:22.1234Z", "2005-07-20T19:44:22.123Z") + " (1)"));
         Model m3 = model(b.mzml);
         assertThat(m3.fileMetadata().run().startTime()).isEqualTo("2005-07-20T19:44:22.123Z");
-        assertThat(ModelAssert.assertEqual("A-26", model(file), m3, STRICT, ModelAssert.A_26).hidden())
-                .containsExactly(Map.entry("A_26", 1));
+        assertThat(ModelAssert.assertEqual("A-26", model(file), m3, STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4), Map.entry("W_8", 5));
     }
 
     /**
@@ -489,7 +746,8 @@ class MzMLConversionTest {
         String mzml = Files.readString(b.mzml, StandardCharsets.UTF_8);
         assertThat(mzml).doesNotContain("<sourceFile", "defaultSourceFileRef", "mzpeakj_source");
         assertThat(b.toMzML.warnings()).containsExactlyElementsOf(writerLimits(TINY_A_26));
-        ModelAssert.assertEqual("without source files", m1, model(b.mzml), STRICT, ModelAssert.A_26);
+        ModelAssert.assertEqual("without source files", m1, model(b.mzml), STRICT, ModelAssert.A_26,
+                ModelAssert.W_3, ModelAssert.W_8);
     }
 
     /**
@@ -521,6 +779,120 @@ class MzMLConversionTest {
             assertThat(reader.fileMetadata().run().defaultSourceFileId()).isEqualTo("tiny1.yep");
             assertThat(reader.metadata().get(0).index()).isZero();
             assertThat(reader.metadata().get(2).scans()).hasSize(1);
+        }
+    }
+
+    /**
+     * U6 (W7, B-24): tiny's scan=21 made an MS3 spectrum with one precursor, scan=20, whose own precursor is scan=19.
+     * The split mzPeak writer appends scan=20's precursor to it, so the MS3 spectrum comes back with two precursors;
+     * the conversion counts the one added. The last spectrum, made an MS3 spectrum that lists both, gets none. The
+     * packed layout writes the primary precursor only and counts none.
+     */
+    @Test
+    void theMsnPrecursorsTheWriterReplicatesAreCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            String ms3 = replaceAfter(replaceAfter(s, SCAN_21, "name=\"ms level\" value=\"1\"",
+                    "name=\"ms level\" value=\"3\""), SCAN_21, "<binaryDataArrayList",
+                    precursors("scan=20") + "<binaryDataArrayList");
+            return replaceAfter(ms3, "id=\"sample=1 period=1 cycle=22", "<binaryDataArrayList",
+                    precursors("scan=20", "scan=19") + "<binaryDataArrayList");
+        });
+        assertThat(model(file).spectrumList().get(2).description().precursors())
+                .extracting(Precursor::precursorIndex).containsExactly(1L);
+        assertThat(model(file).spectrumList().get(3).description().precursors())
+                .extracting(Precursor::precursorIndex).containsExactly(1L, 0L);
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_PRECURSOR + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadataAt(2).precursors()).extracting(Precursor::precursorIndex)
+                    .containsExactly(1L, 0L);
+            assertThat(reader.metadataAt(3).precursors()).extracting(Precursor::precursorIndex)
+                    .containsExactly(1L, 0L);
+        }
+        assertThat(jmzmlSpectra(b.mzml).get(2).getPrecursorList().getCount()).isEqualTo(2);
+
+        Path packed = dir.resolve("packed.mzpeak");
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(file, packed, true, MzPeakWriter.Options.defaults()
+                .withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
+        assertThat(result.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_24_PRECURSOR));
+    }
+
+    /** A precursorList with one precursor of the spectrum {@code ref} for each of {@code refs}, one ion each. */
+    private static String precursors(String... refs) {
+        StringBuilder out = new StringBuilder("<precursorList count=\"" + refs.length + "\">\n");
+        for (String ref : refs) {
+            out.append("<precursor spectrumRef=\"").append(ref).append("\">\n<selectedIonList count=\"1\">\n")
+                    .append("<selectedIon>\n").append(cv("MS:1000744", "selected ion m/z", "300.5", "MS:1000040"))
+                    .append("\n</selectedIon>\n</selectedIonList>\n<activation>\n")
+                    .append(cv("MS:1000133", "collision-induced dissociation", "", null))
+                    .append("\n</activation>\n</precursor>\n");
+        }
+        return out.append("</precursorList>\n").toString();
+    }
+
+    /**
+     * U6 (B-24): tiny's scan=21 made an electromagnetic radiation spectrum without a scanList: the split mzPeak writer
+     * writes it with one scan holding its time, which the conversion counts; the packed layout writes no wavelength
+     * scans and counts none.
+     */
+    @Test
+    void theScanTheWriterAddsToAWavelengthSpectrumWithoutScansIsCounted() throws IOException {
+        Path file = tinyWith(s -> {
+            String uv = replaceAfter(s, SCAN_21, TINY_MZ_UNIT, TINY_WAVELENGTH_UNIT);
+            int at = uv.indexOf(SCAN_21);
+            return uv.substring(0, at) + cut(uv.substring(at), "<scanList", "</scanList>");
+        });
+        assertThat(model(file).wavelengthSpectra()).singleElement()
+                .satisfies(w -> assertThat(w.scans()).isEmpty());
+
+        B b = b(file, true);
+
+        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_24_WAVELENGTH_SCAN + " (1)");
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.wavelengthSpectra()).singleElement()
+                    .satisfies(w -> assertThat(w.scans()).hasSize(1));
+        }
+        MzMLConversion.Result packed = MzMLConversion.toMzPeak(file, dir.resolve("packed.mzpeak"), true,
+                MzPeakWriter.Options.defaults().withMetadataLayout(MzPeakWriter.MetadataLayout.PACKED));
+        assertThat(packed.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_24_WAVELENGTH_SCAN));
+    }
+
+    /**
+     * U6 (R5): tiny with scan=19's intensity array removed and the others' in percent of base peak: scan=19, which
+     * MzMLReader gives no points in detector counts, declares no unit, so MS:1000132 is the only spectrum intensity
+     * unit and the primary intensity column; before, counts came first and every real percent intensity went to
+     * {@code intensity_MS_1000132}, which the Rust range read does not load.
+     */
+    @Test
+    void aSpectrumWithoutIntensitiesDeclaresNoIntensityUnit() throws IOException {
+        Path file = tinyWith(s -> {
+            int chromatograms = s.indexOf("<chromatogramList");
+            String percent = s.substring(0, chromatograms).replace(TINY_COUNTS, TINY_PERCENT)
+                    + s.substring(chromatograms);
+            String scan19 = region(percent, SCAN_19, "</spectrum>");
+            String intensity = region(scan19, "<binaryDataArray encodedLength", "</binaryDataArray>");
+            intensity = region(scan19.substring(scan19.indexOf(intensity) + intensity.length()),
+                    "<binaryDataArray encodedLength", "</binaryDataArray>");
+            assertThat(intensity).contains("MS:1000515");
+            String edited = scan19.replace(intensity, "").replace("<binaryDataArrayList count=\"2\">",
+                    "<binaryDataArrayList count=\"1\">");
+            return percent.replace(scan19, edited);
+        });
+        Model m1 = model(file);
+        assertThat(m1.spectrumList().get(0).intensity()).isEmpty();
+        assertThat(m1.spectrumList()).extracting(Spectrum::intensityUnit)
+                .containsExactly(COUNTS, PERCENT, PERCENT, PERCENT);
+
+        B b = b(file, true);
+
+        assertThat(Files.readString(b.mzpeak.resolve("spectra_data.parquet"), StandardCharsets.ISO_8859_1))
+                .doesNotContain("intensity_MS_1000132").doesNotContain(COUNTS);
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo(PERCENT);
+            assertThat(reader.getSpectrumAt(1).intensity()).hasSize(10);
+            assertThat(reader.getSpectrumAt(0).intensity()).isEmpty();
         }
     }
 
@@ -582,8 +954,9 @@ class MzMLConversionTest {
 
     /**
      * The CV prefixes the spectra use only as the unit of a scan param (XYZ) or as the accession of an activation
-     * param (ABC), which the mzPeak writer leaves undeclared, are announced to the mzML writer: it declares both
-     * (A-17) instead of rejecting the spectrum.
+     * param (ABC), which the dataset's cv list does not declare, are announced to the mzML writer: it declares both
+     * (A-17) instead of rejecting the spectrum. The dataset is unpacked and its cv list entries of the two removed
+     * after the write ({@link #withoutCvs}), since mzPeakJ refuses to write a CV it does not declare (W12).
      */
     @Test
     void theCvPrefixesOfScanParamUnitsAndActivationParamsAreDeclared() throws IOException {
@@ -597,7 +970,9 @@ class MzMLConversionTest {
         Spectrum ms2 = new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
                 d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), List.of(scan),
                 d.precursors(), d.parameters()), s.mz(), s.intensity(), s.peaks());
-        MzPeakWriter.writeArchive(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of());
+        MzPeakWriter.writeDirectory(input, List.of(spectrum(0, "scan=1", 1, List.of(), List.of()), ms2), List.of(),
+                List.of(), List.of(), FileMetadata.EMPTY, withCvs("XYZ", "ABC"));
+        withoutCvs(input, "XYZ", "ABC");
         try (MzPeakReader reader = MzPeakReader.open(input)) {
             assertThat(reader.manifest().cvList()).extracting(CvEntry::id).doesNotContain("XYZ", "ABC");
         }
@@ -660,7 +1035,9 @@ class MzMLConversionTest {
         Path file = tinyWith(s -> {
             String precursor = region(s, "<precursor spectrumRef=\"scan=19\">", "</precursor>");
             String second = precursor.replace("value=\"445.33999999999997\"", "value=\"446.5\"");
-            return replaceOnce(replaceOnce(s, "<precursorList count=\"1\">", "<precursorList count=\"2\">"),
+            String moved = replaceOnce(s, SCAN_20 + " defaultArrayLength=\"10\"",
+                    SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"CompassXtract_x0020_processing\"");
+            return replaceOnce(replaceOnce(moved, "<precursorList count=\"1\">", "<precursorList count=\"2\">"),
                     precursor, precursor + "\n" + second);
         });
         List<Precursor> given = model(file).spectrumList().get(1).description().precursors();
@@ -679,7 +1056,65 @@ class MzMLConversionTest {
             assertThat(precursors).extracting(p -> p.isolationWindow().targetMz()).containsExactly(445.3, 445.3);
             assertThat(precursors).allSatisfy(p -> assertThat(p.activation().parameters()).extracting(Param::accession)
                     .contains("MS:1000133", "MS:1000045"));
+            assertThat(reader.metadataAt(1).dataProcessingRef()).isEqualTo("CompassXtract_x0020_processing");
         }
+        assertThat(model(b.mzml).spectrumList().get(1).description().dataProcessingRef())
+                .isEqualTo("CompassXtract_x0020_processing");
+    }
+
+    /**
+     * R7 (D13-22): scan=20's selected ion without its m/z cvParam goes to mzPeak with m/z NaN, its charge and
+     * intensity kept and nothing counted, and comes back to mzML without an m/z cvParam.
+     */
+    @Test
+    void aSelectedIonWithoutMzGoesBothWays() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(s, SCAN_20, "<cvParam cvRef=\"MS\" accession=\"MS:1000744\" name=\""
+                + "selected ion m/z\" value=\"445.33999999999997\" unitCvRef=\"MS\" unitAccession=\"MS:1000040\""
+                + " unitName=\"m/z\"/>", ""));
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(tinyLosses(4)));
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadataAt(1).precursors()).singleElement()
+                    .satisfies(p -> assertThat(p.selectedIons()).singleElement().satisfies(ion -> {
+                        assertThat(ion.mz()).isNaN();
+                        assertThat(ion.charge()).isEqualTo(2);
+                        assertThat(ion.intensity()).isEqualTo(120053.0);
+                    }));
+        }
+        SelectedIon back = model(b.mzml).spectrumList().get(1).description().primaryPrecursor().primaryIon();
+        assertThat(back.mz()).isNaN();
+        assertThat(back.charge()).isEqualTo(2);
+        assertThat(back.intensity()).isEqualTo(120053.0);
+        assertThat(back.parameters()).extracting(Param::accession).doesNotContain("MS:1000744");
+    }
+
+    /**
+     * X-25 (R6): scan=19's dataProcessingRef, which differs from the spectrumList's default, goes to mzPeak as the
+     * spectrum's {@code data_processing_id} and comes back to mzML as its dataProcessingRef; scan=20's, equal to the
+     * default, is null in mzPeak and absent from the mzML written. Nothing is counted for either.
+     */
+    @Test
+    void aSpectrumDataProcessingGoesBothWays() throws IOException {
+        Path file = tinyWith(s -> replaceOnce(replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
+                        SCAN_19 + " defaultArrayLength=\"15\" dataProcessingRef=\"CompassXtract_x0020_processing\""),
+                SCAN_20 + " defaultArrayLength=\"10\"",
+                SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"pwiz_processing\""));
+
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).containsExactlyElementsOf(withLimits(TINY_LOSSES));
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            assertThat(reader.metadata()).extracting(SpectrumDescription::dataProcessingRef)
+                    .containsExactly("CompassXtract_x0020_processing", null, null, null);
+        }
+        Model back = model(b.mzml);
+        assertThat(back.spectrumList()).extracting(s -> s.description().dataProcessingRef())
+                .containsExactly("CompassXtract_x0020_processing", null, null, null);
+        assertThat(ModelAssert.assertEqual("tiny with a spectrum data processing", model(file), back, STRICT,
+                ModelAssert.A_26, ModelAssert.W_3, ModelAssert.W_8).hidden())
+                .containsExactly(Map.entry("A_26", 1), Map.entry("W_3", 4), Map.entry("W_8", 5));
     }
 
     /** Precursors with other parents, and a later one with the same parent but without ions, move nothing. */
@@ -701,6 +1136,171 @@ class MzMLConversionTest {
             assertThat(precursors).extracting(Precursor::precursorIndex).containsExactly(0L, 2L, 0L);
             assertThat(precursors).extracting(p -> p.selectedIons().size()).containsExactly(1, 1, 0);
         }
+    }
+
+    // ---- (c) branch documents: the mzML cv list (W8, D13-15) ------------------------------------------------------
+
+    /**
+     * tiny declares MS and UO at their SourceForge CVS checkouts and small on GitHub master branches, none a fixed
+     * release: the mzPeak declares MS and UO exactly as CvEntry.known() does.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {MzMLFixtures.TINY, MzMLFixtures.SMALL})
+    void theFixturesMsAndUoAreDeclaredAsKnownCvsDeclaresThem(String fixture) throws IOException {
+        Path mzml = MzMLFixtures.extract(fixture, dir);
+        Path mzpeak = dir.resolve("cv.mzpeak");
+        List<CvEntry> given = new MzMLReader(mzml).header().cvList();
+        assertThat(given).extracting(CvEntry::id).containsExactly("MS", "UO");
+        assertThat(given).extracting(CvEntry::uri).allSatisfy(uri -> assertThat(uri)
+                .containsAnyOf("*checkout*", "/master/"));
+
+        MzMLConversion.toMzPeak(mzml, mzpeak, false, MzPeakWriter.Options.defaults());
+
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.manifest().cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1));
+        }
+    }
+
+    /** An unknown CV at a moving URI that nothing uses is left out of the cv list, with one warning. */
+    @Test
+    void anUnusedUnknownCvAtAMovingUriIsLeftOutWithAWarning() throws IOException {
+        Path file = tinyWith(s -> withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\" version=\"1.0\""
+                + " URI=\"https://example.org/xyz/master/xyz.obo\"/>"));
+        Path mzpeak = dir.resolve("xyz.mzpeak");
+
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(file, mzpeak, true, MzPeakWriter.Options.defaults());
+
+        assertThat(result.warnings()).last().isEqualTo("the mzML cv XYZ is not declared in metadata.cv_list, which"
+                + " no written CURIE needs, since the cv list entry of XYZ"
+                + " (URI https://example.org/xyz/master/xyz.obo, version 1.0) does not identify a fixed release of XYZ, as conformance.md requires of"
+                + " metadata.cv_list: its URI has the path segment master, which names a moving branch or a"
+                + " version-control view");
+        assertThat(result.warnings()).filteredOn(w -> w.contains("XYZ")).hasSize(1);
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.manifest().cvList()).extracting(CvEntry::id).containsExactly("MS", "UO");
+        }
+    }
+
+    /**
+     * An unknown CV of a fixed release is declared as the mzML gives it; a rejected entry of an id that a later entry
+     * declares acceptably is no failure and no warning.
+     */
+    @Test
+    void anUsedUnknownCvOfAFixedReleaseIsDeclared() throws IOException {
+        Path file = tinyWith(s -> replaceAfter(withCv(withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\""
+                        + " URI=\"https://example.org/xyz/master/xyz.obo\"/>"), "<cv id=\"XYZ\" fullName=\"XYZ"
+                        + " ontology\" version=\"1.0\" URI=\"https://example.org/xyz/1.0/xyz.obo\"/>"), SCAN_19,
+                "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
+                "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>\n"
+                        + "          <cvParam cvRef=\"XYZ\" accession=\"XYZ:0000001\" name=\"odd\" value=\"\"/>"));
+        Path mzpeak = dir.resolve("xyz.mzpeak");
+
+        MzMLConversion.Result result = MzMLConversion.toMzPeak(file, mzpeak, true, MzPeakWriter.Options.defaults());
+
+        assertThat(result.warnings()).noneMatch(w -> w.contains("XYZ"));
+        try (MzPeakReader reader = MzPeakReader.open(mzpeak)) {
+            assertThat(reader.manifest().cvList()).containsExactly(CvEntry.known().get(0), CvEntry.known().get(1),
+                    new CvEntry("XYZ", "XYZ ontology", "https://example.org/xyz/1.0/xyz.obo", "1.0"));
+        }
+    }
+
+    /**
+     * Each source of a CURIE handed to the writer that an mzML can fill with a term of an unknown CV: the file
+     * metadata; a spectrum's params, param units, array keys, scans and precursors (isolation window, selected ion,
+     * activation); a wavelength spectrum's params; a chromatogram's params, array keys, intensity unit and precursor
+     * (isolation window, activation). The mzML reader fills a spectrum's intensity units and peak arrays and a
+     * chromatogram's type and time unit with terms of known CVs only.
+     */
+    static Stream<Arguments> usesOfARejectedCv() {
+        return Stream.of(
+                arguments("the file metadata or scan settings", "XYZ:0000001", edit(s -> replaceAfter(s,
+                        "<fileContent>", "<cvParam cvRef=\"MS\" accession=\"MS:1000580\" name=\"MSn spectrum\""
+                                + " value=\"\"/>", xyz("XYZ:0000001")))),
+                arguments("spectrum scan=19", "XYZ:0000002", edit(s -> withParam(s, SCAN_19,
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000004\" name=\"sample mass\" value=\"1.5\""
+                                + " unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000002\" unitName=\"odd\"/>"))),
+                // Checked before the session opens, which refuses an undeclared CV of the spectrum arrays (W12).
+                arguments("a spectrum array", "XYZ:0000004", edit(s -> withArray(s, SCAN_19,
+                        array(cv("MS:1000786", "non-standard data array", "XYZ:0000004", null), ramp(15))))),
+                arguments("spectrum scan=19", "XYZ:0000005", edit(s -> withParam(s, SCAN_19,
+                        "<scan instrumentConfigurationRef=\"LCQ_x0020_Deca\">", xyz("XYZ:0000005")))),
+                arguments("spectrum scan=20", "XYZ:0000006", edit(s ->
+                        withParam(s, SCAN_20, "<isolationWindow>", xyz("XYZ:0000006")))),
+                arguments("spectrum scan=20", "XYZ:0000007", edit(s ->
+                        withParam(s, SCAN_20, "<selectedIon>", xyz("XYZ:0000007")))),
+                arguments("spectrum scan=20", "XYZ:0000008", edit(s ->
+                        withParam(s, SCAN_20, "<activation>", xyz("XYZ:0000008")))),
+                // scan=21 has empty arrays: with a wavelength array for its m/z array it is a wavelength spectrum
+                arguments("wavelength spectrum scan=21", "XYZ:0000009", edit(s -> replaceAfter(withParam(s, SCAN_21,
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000511\" name=\"ms level\" value=\"1\"/>",
+                        xyz("XYZ:0000009")), SCAN_21, "accession=\"MS:1000514\" name=\"m/z array\" value=\"\""
+                                + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"",
+                        "accession=\"MS:1000617\" name=\"wavelength array\" value=\"\" unitCvRef=\"UO\""
+                                + " unitAccession=\"UO:0000018\" unitName=\"nanometer\""))),
+                // R8: a param of a wavelength spectrum's scan
+                arguments("wavelength spectrum scan=21", "XYZ:0000023", edit(s -> replaceAfter(withParam(s, SCAN_21,
+                        "<scan>", xyz("XYZ:0000023")), SCAN_21, TINY_MZ_UNIT, TINY_WAVELENGTH_UNIT))),
+                // R1: the unit of an array of another length, kept as an auxiliary array
+                arguments("spectrum scan=19", "XYZ:0000020", edit(s -> withArray(s, SCAN_19,
+                        sized(2, cv(SN, "signal to noise array", "", "XYZ:0000020"), 1, 2)))),
+                arguments("wavelength spectrum scan=21", "XYZ:0000021", edit(s -> withArray(replaceAfter(s, SCAN_21,
+                        "accession=\"MS:1000514\" name=\"m/z array\" value=\"\""
+                                + " unitCvRef=\"MS\" unitAccession=\"MS:1000040\" unitName=\"m/z\"",
+                        "accession=\"MS:1000617\" name=\"wavelength array\" value=\"\" unitCvRef=\"UO\""
+                                + " unitAccession=\"UO:0000018\" unitName=\"nanometer\""), SCAN_21,
+                        sized(2, cv(SN, "signal to noise array", "", "XYZ:0000021"), 1, 2)))),
+                arguments("chromatogram tic", "XYZ:0000022", edit(s -> withArray(s, "id=\"tic\"",
+                        sized(2, cv(SN, "signal to noise array", "", "XYZ:0000022"), 1, 2)))),
+                arguments("chromatogram tic", "XYZ:0000003", edit(s -> withParam(s, "id=\"tic\"",
+                        "<cvParam cvRef=\"MS\" accession=\"MS:1000235\" name=\"total ion current chromatogram\""
+                                + " value=\"\"/>", xyz("XYZ:0000003")))),
+                arguments("chromatogram tic", "XYZ:0000010", edit(s -> withArray(s, "id=\"tic\"",
+                        array(cv("MS:1000786", "non-standard data array", "XYZ:0000010", null), ramp(15))))),
+                arguments("chromatogram tic", "XYZ:0000011", edit(s -> replaceAfter(s, "id=\"tic\"",
+                        "unitCvRef=\"MS\" unitAccession=\"MS:1000131\" unitName=\"number of counts\"",
+                        "unitCvRef=\"XYZ\" unitAccession=\"XYZ:0000011\" unitName=\"odd\""))),
+                arguments("chromatogram sic", "XYZ:0000012", edit(s ->
+                        withParam(s, "id=\"sic\"", "<isolationWindow>", xyz("XYZ:0000012")))),
+                arguments("chromatogram sic", "XYZ:0000013", edit(s ->
+                        withParam(s, "id=\"sic\"", "<activation>", xyz("XYZ:0000013")))));
+    }
+
+    /** {@code edit} as a test argument. */
+    private static UnaryOperator<String> edit(UnaryOperator<String> edit) {
+        return edit;
+    }
+
+    /** A cvParam of the term {@code accession} of XYZ. */
+    private static String xyz(String accession) {
+        return "<cvParam cvRef=\"XYZ\" accession=\"" + accession + "\" name=\"odd\" value=\"\"/>";
+    }
+
+    /** {@code s} with {@code param} after the first {@code element} after {@code anchor}. */
+    private static String withParam(String s, String anchor, String element, String param) {
+        return replaceAfter(s, anchor, element, element + "\n" + param);
+    }
+
+    /**
+     * A CURIE with the prefix of an unknown CV that has no version fails the conversion with the writer's message,
+     * naming the mzML, the entity and the CURIE, and leaves no target; the header before the target is created.
+     */
+    @ParameterizedTest(name = "{0} {1}")
+    @MethodSource("usesOfARejectedCv")
+    void aUseOfAnUnknownCvWithoutVersionFailsTheConversion(String what, String curie, UnaryOperator<String> edit)
+            throws IOException {
+        Path file = tinyWith(s -> edit.apply(withCv(s, "<cv id=\"XYZ\" fullName=\"XYZ\""
+                + " URI=\"https://example.org/xyz/1.0/xyz.obo\"/>")));
+
+        assertConversionFails(file, "mzML " + file + ": " + what + " uses " + curie + ", but the cv list entry of"
+                + " XYZ (URI https://example.org/xyz/1.0/xyz.obo, version null) does not identify a fixed release of"
+                + " XYZ, as conformance.md requires of metadata.cv_list: it has no version");
+    }
+
+    /** {@code mzml} with {@code cv} appended to its cv list. */
+    private static String withCv(String mzml, String cv) {
+        int at = mzml.indexOf("</cvList>");
+        return mzml.substring(0, at) + "  " + cv + "\n    " + mzml.substring(at);
     }
 
     // ---- (d) failures ---------------------------------------------------------------------------------------------
@@ -728,36 +1328,62 @@ class MzMLConversionTest {
     }
 
     /**
-     * D-12c: the mzPeak writer refuses chromatograms of different time units (D-12b), so the converter converts the
-     * times of every chromatogram whose unit differs from the first chromatogram's into that unit and counts them
-     * (B-15): an mzML whose sic is in minutes and whose tic is in seconds converts as it did at v0.11.1, the sic's
-     * times in seconds.
+     * W3 (D13-1): the converter hands each chromatogram over in its own mzML time unit and the mzPeak writer stores
+     * every one in minutes, converting it once: an mzML whose sic is in minutes and whose tic is in seconds writes the
+     * tic's seconds divided by 60 and the sic's minutes as read, bit for bit, and no chromatogram times line. Until
+     * W3 the converter converted the sic into the tic's seconds first and counted it (B-15, D-12c). The sic's times,
+     * such as 0.015 min, are not all exact after times 60 divided by 60, so a conversion through seconds would show.
      */
     @Test
-    void chromatogramsOfDifferentTimeUnitsAreConvertedToTheFirstChromatogramsUnit() throws IOException {
-        Path file = tinyWith(s -> replaceAfter(s, "id=\"sic\"", "unitAccession=\"UO:0000010\" unitName=\"second\"",
-                "unitAccession=\"UO:0000031\" unitName=\"minute\""));
+    void chromatogramsOfDifferentTimeUnitsAreEachStoredInMinutes() throws IOException {
+        double[] minutes = {0.015, 0.03, 0.031, 0.059, 0.06, 0.061, 0.062, 0.118, 0.12, 0.122};
+        Path file = tinyWith(s -> {
+            String inMinutes = replaceAfter(s, "id=\"sic\"", "unitAccession=\"UO:0000010\" unitName=\"second\"",
+                    "unitAccession=\"UO:0000031\" unitName=\"minute\"");
+            String stored = "<binary>" + floats(0, 1, 2, 3, 4, 5, 6, 7, 8, 9) + "</binary>";
+            return replaceAfter(inMinutes, "id=\"sic\"", stored, "<binary>" + floats(minutes) + "</binary>");
+        });
         List<Chromatogram> read = model(file).chromatograms();
         assertThat(read).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000031");
-        double[] sicInSeconds = Arrays.stream(read.get(1).time()).map(t -> t * 60.0).toArray();
+        assertThat(read.get(1).time()).containsExactly(minutes);
+        assertThat(Arrays.stream(minutes).filter(t -> t * 60 / 60 != t).toArray()).as("times changed by a round"
+                + " trip through seconds").isNotEmpty();
 
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).contains(MzMLConversion.B_15_CHROMATOGRAM_TIMES + " (1)");
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("chromatogram times"));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             List<Chromatogram> written = reader.chromatograms();
-            assertThat(written).extracting(Chromatogram::timeUnit).containsExactly("UO:0000010", "UO:0000010");
-            assertThat(written.get(0).time()).containsExactly(read.get(0).time());
-            assertThat(written.get(1).time()).containsExactly(sicInSeconds);
+            assertThat(written).extracting(Chromatogram::timeUnit).containsExactly("UO:0000031", "UO:0000031");
+            assertThat(written.get(0).time())
+                    .containsExactly(Arrays.stream(read.get(0).time()).map(t -> t / 60).toArray());
+            assertThat(Arrays.stream(written.get(1).time()).mapToLong(Double::doubleToRawLongBits).toArray())
+                    .containsExactly(Arrays.stream(read.get(1).time()).mapToLong(Double::doubleToRawLongBits)
+                            .toArray());
         }
     }
 
-    /** D-12c: chromatograms of one time unit are not converted, and the B-15 line of the converter is absent. */
+    /**
+     * W3 (D13-1): diaPASEF.mzML's chromatograms, whose time arrays are in seconds, are written in minutes: the TIC's
+     * last time, about 3866.7 s, is stored as about 64.4 min, and the converter adds no chromatogram times line.
+     */
     @Test
-    void chromatogramsOfOneTimeUnitAreNotConverted() throws IOException {
-        B b = b(MzMLFixtures.extract(MzMLFixtures.TINY, dir), false);
+    void diaPasefsChromatogramsInSecondsAreWrittenInMinutes() throws IOException {
+        Path file = MzMLFixtures.extract(MzMLFixtures.DIAPASEF, dir);
+        List<Chromatogram> read = model(file).chromatograms();
+        assertThat(read).extracting(Chromatogram::timeUnit).containsOnly("UO:0000010");
+        double[] seconds = read.get(0).time();
+        assertThat(Arrays.stream(seconds).max().orElseThrow()).isCloseTo(3866.7, within(0.1));
 
-        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_15_CHROMATOGRAM_TIMES));
+        B b = b(file, false);
+
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("chromatogram times"));
+        try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
+            List<Chromatogram> written = reader.chromatograms();
+            assertThat(written).extracting(Chromatogram::timeUnit).containsOnly("UO:0000031");
+            assertThat(written.get(0).time()).containsExactly(Arrays.stream(seconds).map(t -> t / 60).toArray());
+            assertThat(Arrays.stream(written.get(0).time()).max().orElseThrow()).isCloseTo(64.4, within(0.1));
+        }
     }
 
     /**
@@ -782,7 +1408,8 @@ class MzMLConversionTest {
 
     /**
      * D-12c (V-23): a later chromatogram without arrays, the sic, takes the time unit the first chromatogram, the
-     * tic, declares: the run's unit is the first declared one, not the last chromatogram's (none).
+     * tic, declares: the run's unit is the first declared one, not the last chromatogram's (none). The mzPeak writer
+     * stores both in minutes (W3).
      */
     @Test
     void aLaterChromatogramWithoutArraysTakesTheFirstDeclaredTimeUnit() throws IOException {
@@ -796,17 +1423,17 @@ class MzMLConversionTest {
                 .containsExactly("UO:0000010", "UO:0000010");
         B b = b(file, false);
 
-        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLConversion.B_15_CHROMATOGRAM_TIMES));
+        assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.contains("chromatogram times"));
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(15, 0);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
-                    .containsExactly("UO:0000010", "UO:0000010");
+                    .containsExactly("UO:0000031", "UO:0000031");
         }
     }
 
     /**
      * D-12c (V-23 review): the tic without its intensity array loses its time array too (B-9) but keeps the time
-     * array's unit, seconds as the sic's, so the conversion succeeds and the empty tic reads back in seconds.
+     * array's unit, seconds as the sic's, so the conversion succeeds; the empty tic reads back in minutes (W3).
      */
     @Test
     void aTimeOnlyChromatogramConvertsWithItsTimeArraysUnit() throws IOException {
@@ -823,16 +1450,16 @@ class MzMLConversionTest {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(0, 10);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
-                    .containsExactly("UO:0000010", "UO:0000010");
+                    .containsExactly("UO:0000031", "UO:0000031");
         }
         assertThat(model(b.mzml).chromatograms()).extracting(Chromatogram::timeUnit)
-                .containsExactly("UO:0000010", "UO:0000010");
+                .containsExactly("UO:0000031", "UO:0000031");
     }
 
     /**
      * D-12c (V-23 review): the tic without its time array loses its intensity array too (B-9) and, without times,
-     * takes the run's chromatogram time unit, the sic's seconds, so the conversion succeeds and the empty tic reads
-     * back in seconds.
+     * takes the run's chromatogram time unit, the sic's seconds, so the conversion succeeds; the empty tic reads
+     * back in minutes (W3).
      */
     @Test
     void anIntensityOnlyChromatogramConvertsWithTheRunsTimeUnit() throws IOException {
@@ -845,13 +1472,13 @@ class MzMLConversionTest {
         B b = b(file, false);
 
         assertThat(b.toMzPeak.warnings()).contains(MzMLReader.B_9 + " (1)");
-        assertEmptyTicInSeconds(b);
+        assertEmptyTicInMinutes(b);
     }
 
     /**
      * D-12c (V-23 review): the tic without binaryDataArrayList has no arrays to lose and, without times, takes the
-     * run's chromatogram time unit, the sic's seconds, so the conversion succeeds and the empty tic reads back in
-     * seconds.
+     * run's chromatogram time unit, the sic's seconds, so the conversion succeeds; the empty tic reads back in
+     * minutes (W3).
      */
     @Test
     void aChromatogramWithoutArraysConvertsWithTheRunsTimeUnit() throws IOException {
@@ -864,17 +1491,17 @@ class MzMLConversionTest {
         B b = b(file, false);
 
         assertThat(b.toMzPeak.warnings()).noneMatch(w -> w.startsWith(MzMLReader.B_9));
-        assertEmptyTicInSeconds(b);
+        assertEmptyTicInMinutes(b);
     }
 
-    private static void assertEmptyTicInSeconds(B b) throws IOException {
+    private static void assertEmptyTicInMinutes(B b) throws IOException {
         try (MzPeakReader reader = MzPeakReader.open(b.mzpeak)) {
             assertThat(reader.chromatograms()).extracting(Chromatogram::size).containsExactly(0, 10);
             assertThat(reader.chromatograms()).extracting(Chromatogram::timeUnit)
-                    .containsExactly("UO:0000010", "UO:0000010");
+                    .containsExactly("UO:0000031", "UO:0000031");
         }
         assertThat(model(b.mzml).chromatograms()).extracting(Chromatogram::timeUnit)
-                .containsExactly("UO:0000010", "UO:0000010");
+                .containsExactly("UO:0000031", "UO:0000031");
     }
 
     @Test
@@ -1032,7 +1659,7 @@ class MzMLConversionTest {
         return lines;
     }
 
-    /** The limit lines and the A-13 and A-14 lines every writer notes, then {@code losses}. */
+    /** The limit lines and the A-13 line every writer notes, then {@code losses}. */
     private static List<String> writerLimits(String... losses) {
         List<String> lines = new ArrayList<>(MzMLWriter.LIMITS);
         lines.addAll(MzMLWriter.NOT_VISIBLE);
@@ -1071,6 +1698,31 @@ class MzMLConversionTest {
         String edited = edit.apply(original);
         assertThat(edited).as("the edit changes the document").isNotEqualTo(original);
         return Files.writeString(dir.resolve("tiny-edited.mzML"), edited, StandardCharsets.ISO_8859_1);
+    }
+
+    /** The writer's options with a cv list entry of each of {@code ids}, CVs mzPeakJ does not know, in a release. */
+    private static MzPeakWriter.Options withCvs(String... ids) {
+        List<CvEntry> cvs = new ArrayList<>();
+        for (String id : ids) {
+            cvs.add(new CvEntry(id, id + " ontology", "https://example.org/" + id + "/1/" + id + ".obo", "1"));
+        }
+        return MzPeakWriter.Options.defaults().withCvList(cvs);
+    }
+
+    /**
+     * Removes the {@code metadata.cv_list} entry of each of {@code ids} from the manifest of the unpacked dataset
+     * {@code dataset}, which the writer wrote with them ({@link #withCvs}): a dataset that uses CVs it does not
+     * declare, as another producer may write one. The manifest has no checksum of its own.
+     */
+    private static void withoutCvs(Path dataset, String... ids) throws IOException {
+        Path index = dataset.resolve("mzpeak_index.json");
+        String json = Files.readString(index, StandardCharsets.UTF_8);
+        for (String id : ids) {
+            String stripped = json.replaceFirst(",\\s*\\{\\s*\"id\"\\s*:\\s*\"" + id + "\"[^{}]*}", "");
+            assertThat(stripped).as("the cv_list entry of %s is removed", id).isNotEqualTo(json);
+            json = stripped;
+        }
+        Files.writeString(index, json, StandardCharsets.UTF_8);
     }
 
     /** {@code s} with its single occurrence of {@code target} replaced. */
@@ -1144,6 +1796,14 @@ class MzMLConversionTest {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /**
+     * A binaryDataArray of 64-bit floats without compression, with the array type term {@code type} and the declared
+     * length {@code length}.
+     */
+    private static String sized(int length, String type, double... values) {
+        return array(type, values).replace("<binaryDataArray ", "<binaryDataArray arrayLength=\"" + length + "\" ");
     }
 
     /** An intensity array of 64-bit floats holding {@code counts} as an MS-Numpress PIC payload (MS:1002313). */

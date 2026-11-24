@@ -29,7 +29,7 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
      *                         grid_type that is not text, a parameters or indices list that is not numeric), or when
      *                         an index is null, not an integer or outside 0..2^32-1
      */
-    static GridChunk read(Group chunk, String field, long si) {
+    static GridChunk read(Group chunk, String field, SignalEntity.Ref ref) {
         Group grid;
         String gridType;
         double[] parameters;
@@ -47,7 +47,7 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
                     && leaf(grid.getType(), "indices") == PrimitiveTypeName.INT32;
         } catch (RuntimeException e) {
             throw new MzPeakException("grid " + field + " cannot be read as {grid_type, parameters, indices} ("
-                    + e.getMessage() + ") for spectrum_index " + si, e);
+                    + e.getMessage() + ") for " + ref, e);
         }
         long[] indices = new long[stored.length];
         for (int i = 0; i < stored.length; i++) {
@@ -55,14 +55,14 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
             long index = (long) v;
             if (index != v) {
                 throw new MzPeakException("grid " + field + " has the index " + v + " at position " + i
-                        + ", not an unsigned 32-bit integer, for spectrum_index " + si);
+                        + ", not an unsigned 32-bit integer, for " + ref);
             }
             if (int32 && index < 0) {
                 index += 1L << 32;
             }
             if (index < 0 || index > MAX_INDEX) {
                 throw new MzPeakException("grid " + field + " has the index " + index + " at position " + i
-                        + ", outside 0.." + MAX_INDEX + ", for spectrum_index " + si);
+                        + ", outside 0.." + MAX_INDEX + ", for " + ref);
             }
             indices[i] = index;
         }
@@ -87,14 +87,14 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
      *
      * @throws MzPeakException when a sum leaves 0..2^32-1
      */
-    long[] cumulativeIndices(long si) {
+    long[] cumulativeIndices(SignalEntity.Ref ref) {
         long[] out = new long[indices.length];
         long sum = 0;
         for (int i = 0; i < indices.length; i++) {
             sum += indices[i];
             if (sum > MAX_INDEX) {
                 throw new MzPeakException("grid " + field + " indices sum to " + sum + " at position " + i
-                        + ", beyond the largest index " + MAX_INDEX + ", for spectrum_index " + si);
+                        + ", beyond the largest index " + MAX_INDEX + ", for " + ref);
             }
             out[i] = sum;
         }
@@ -106,7 +106,7 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
      *
      * @throws MzPeakException when the number of parameters does not fit the model
      */
-    GridModels.Model model(long si) {
+    GridModels.Model model(SignalEntity.Ref ref) {
         GridModels.Kind kind = GridModels.kind(gridType);
         if (kind == null) {
             return null;
@@ -114,7 +114,7 @@ record GridChunk(String field, String gridType, double[] parameters, long[] indi
         try {
             return kind.model(parameters);
         } catch (IllegalArgumentException e) {
-            throw new MzPeakException("grid " + field + ": " + e.getMessage() + ", for spectrum_index " + si);
+            throw new MzPeakException("grid " + field + ": " + e.getMessage() + ", for " + ref);
         }
     }
 }

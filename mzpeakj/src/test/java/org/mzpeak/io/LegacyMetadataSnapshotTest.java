@@ -4,9 +4,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mzpeak.model.Activation;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.Product;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
@@ -130,6 +132,29 @@ class LegacyMetadataSnapshotTest {
         }
     }
 
+    /** R6: a data processing reference is appended, so lines without one read as before. */
+    @Test
+    void aDataProcessingReferenceIsAppended() {
+        SpectrumDescription plain = new SpectrumDescription(0, "s", 1, 1.0, null, null, 0, 0, null, null, null);
+        SpectrumDescription withRef = new SpectrumDescription(0, "s", 1, 1.0, null, null, 0, 0, null, null, null,
+                "dp1");
+        assertThat(Canonical.describe(plain)).isEqualTo("0|s|1|1.0|null|null|0|0|[]|[]|[]");
+        assertThat(Canonical.describe(withRef)).isEqualTo("0|s|1|1.0|null|null|0|0|[]|[]|[]|dp=dp1");
+    }
+
+    /** R6: products and a precursor's MS level are appended, so lines without them read as before. */
+    @Test
+    void productsAndPrecursorMsLevelAreAppended() {
+        Precursor precursor = new Precursor(4L, null, null, null, null, 2);
+        Product product = new Product(4L, 0, new IsolationWindow(500.0, 1.0, 1.0), null);
+        SpectrumDescription d = new SpectrumDescription(5, "s", 2, 1.0, null, null, 0, 0, null, List.of(precursor),
+                null, null, List.of(product));
+        assertThat(Canonical.describe(d)).isEqualTo("5|s|2|1.0|null|null|0|0|[]|[(4|\u2400|null|[]|([])|ms=2)]|[]"
+                + "|products=[(4|0|(500.0|1.0|1.0|[])|[])]");
+        assertThat(Canonical.precursor(new Precursor(4L, null, null, null, null)))
+                .isEqualTo("(4|\u2400|null|[]|([]))");
+    }
+
     @Test
     void paramLineCarriesTheValueClass() {
         assertThat(Canonical.param(new Param("n", "MS:1", 5L, null))).isEqualTo("(n|MS:1|Long:5|␀)");
@@ -171,13 +196,15 @@ class LegacyMetadataSnapshotTest {
     void canonicalFormCoversEveryRecordComponent() {
         assertThat(components(SpectrumDescription.class)).containsExactly("index", "id", "msLevel", "retentionTime",
                 "polarity", "signalContinuity", "numberOfDataPoints", "numberOfPeaks", "scans", "precursors",
-                "parameters");
+                "parameters", "dataProcessingRef", "products");
         assertThat(components(ScanEvent.class)).containsExactly("startTime", "injectionTime", "filterString",
                 "presetScanConfiguration", "instrumentConfigurationRef", "spectrumReference", "scanWindows",
                 "parameters");
         assertThat(components(ScanWindow.class)).containsExactly("lowerLimit", "upperLimit");
         assertThat(components(Precursor.class)).containsExactly("precursorIndex", "precursorId", "isolationWindow",
-                "selectedIons", "activation");
+                "selectedIons", "activation", "msLevel");
+        assertThat(components(Product.class)).containsExactly("precursorIndex", "productIndex", "isolationWindow",
+                "parameters");
         assertThat(components(IsolationWindow.class)).containsExactly("targetMz", "lowerOffset", "upperOffset",
                 "parameters");
         assertThat(components(SelectedIon.class)).containsExactly("mz", "charge", "intensity", "parameters");
@@ -185,7 +212,9 @@ class LegacyMetadataSnapshotTest {
         assertThat(components(Param.class)).containsExactly("name", "accession", "value", "unit");
         // The wavelength line writes the arrays as their length.
         assertThat(components(WavelengthSpectrum.class)).containsExactly("index", "id", "time", "lambdaMax",
-                "wavelength", "intensity", "parameters");
+                "wavelength", "intensity", "parameters", "scans", "auxiliaryArrays");
+        assertThat(components(AuxiliaryArray.class)).containsExactly("name", "data", "dataType", "compression",
+                "items", "unit", "parameters", "dataProcessingId");
     }
 
     private static List<String> components(Class<? extends Record> type) {

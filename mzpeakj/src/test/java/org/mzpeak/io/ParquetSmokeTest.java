@@ -37,7 +37,7 @@ class ParquetSmokeTest {
         try (ParquetFileReader reader =
                      ParquetFileReader.open(new LocalInputFile(DATA),
                              ParquetReadOptions.builder(new PlainParquetConfiguration())
-                                     .withCodecFactory(new org.mzpeak.io.parquet.ZstdCompressionCodecFactory())
+                                     .withCodecFactory(new org.mzpeak.io.parquet.PureJavaCodecFactory())
                                      .build())) {
             MessageType schema = reader.getFooter().getFileMetaData().getSchema();
             ColumnIOFactory factory = new ColumnIOFactory();

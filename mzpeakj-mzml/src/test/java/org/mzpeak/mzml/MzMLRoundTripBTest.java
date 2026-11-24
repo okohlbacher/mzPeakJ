@@ -60,22 +60,29 @@ class MzMLRoundTripBTest {
      * toMzML after the writer's.
      * <ul>
      *   <li>tiny: A_26, its run start time 2007-06-27T15:23:45.00035 (no zone) written as 2007-06-27T15:23:45Z under
-     *       UTC; the sic's product is dropped by MzMLReader already (B-27, a warning), so M1 has none;
-     *   <li>small and TOFsulfas: none (TOFsulfas loses the scan window params other than the limits, B-17, in M1
-     *       already);
+     *       UTC; W_3, the time arrays and time units of its two chromatograms (4 differences), in seconds in the mzML
+     *       and stored in minutes by the mzPeak writer (W3); the sic's product is dropped by MzMLReader already
+     *       (B-27, a warning), so M1 has none;
+     *   <li>small and TOFsulfas: none but W_8 (TOFsulfas loses the scan window params other than the limits, B-17, in
+     *       M1 already);
      *   <li>diaPASEF: B_22, the m/z, intensity and ion mobility arrays of its 9 spectra (27 differences), which pwiz
-     *       wrote in scan order and the mzPeak writer sorts by m/z; its 18 userParam units are lost in M1 already
-     *       (L-4). Its B-14 line counts 18 unitless summary params and 8 unitless collision energies.
+     *       wrote in scan order and the mzPeak writer sorts by m/z, and W_3 as for tiny; its 18 userParam units are
+     *       lost in M1 already (L-4). Its B-14 line counts 18 unitless summary params and 8 unitless collision
+     *       energies;
+     *   <li>every fixture: W_8, the URI and version of MS and the full name, URI and version of UO (5 differences):
+     *       none of the four mzMLs gives a fixed-release URI for them, so the mzPeak writer declares its own entries
+     *       (W8).
      * </ul>
-     * B-15 counts converted scan start times and drift time arrays only: chromatogram time arrays keep their unit
-     * (D-12c), so tiny's line counts scan=21's start time in seconds, no longer its two chromatograms' time arrays in
-     * seconds (3 before V-23), and diaPASEF's its 9 scan start times in seconds, no longer its two chromatograms' time
-     * arrays (11 before V-23).
+     * B-15 counts converted scan start times and drift time arrays only: the converter keeps the chromatogram time
+     * arrays' unit (D-12c; the mzPeak writer then stores minutes, W3), so tiny's line counts scan=21's start time in
+     * seconds, no longer its two chromatograms' time arrays in seconds (3 before V-23), and diaPASEF's its 9 scan
+     * start times in seconds, no longer its two chromatograms' time arrays (11 before V-23).
      */
     static Stream<Arguments> fixtures() {
         String b3 = MzMLReader.B_3 + " (1)";
         return Stream.of(
-                arguments(MzMLFixtures.TINY, Map.of(ModelAssert.A_26, 1), List.of(4L, 0L, 2L),
+                arguments(MzMLFixtures.TINY, Map.of(ModelAssert.A_26, 1, ModelAssert.W_3, 4, ModelAssert.W_8, 5),
+                        List.of(4L, 0L, 2L),
                         List.of(b3, MzMLReader.B_1 + " (2)",
                                 String.format(MzMLReader.B_5, "[LCQ_x0020_Deca]") + " (1)",
                                 MzMLReader.B_7 + " (1)",
@@ -87,12 +94,14 @@ class MzMLRoundTripBTest {
                                 MzMLReader.B_27 + " (1)"),
                         List.of(String.format(MzMLWriter.A_26, "2007-06-27T15:23:45.00035", "2007-06-27T15:23:45Z")
                                 + " (1)")),
-                arguments(MzMLFixtures.SMALL, Map.of(), List.of(48L, 0L, 1L),
+                arguments(MzMLFixtures.SMALL, Map.of(ModelAssert.W_8, 5), List.of(48L, 0L, 1L),
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_14_UNIT + " (48)"), List.of()),
-                arguments(MzMLFixtures.TOFSULFAS, Map.of(), List.of(212L, 520L, 2L),
+                arguments(MzMLFixtures.TOFSULFAS, Map.of(ModelAssert.W_8, 5), List.of(212L, 520L, 2L),
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_17_PARAMS + " (212)",
                                 MzMLReader.B_11_INDEX + " (520)"), List.of()),
-                arguments(MzMLFixtures.DIAPASEF, Map.of(ModelAssert.B_22, 3 * 9), List.of(9L, 0L, 2L),
+                arguments(MzMLFixtures.DIAPASEF,
+                        Map.of(ModelAssert.B_22, 3 * 9, ModelAssert.W_3, 4, ModelAssert.W_8, 5),
+                        List.of(9L, 0L, 2L),
                         List.of(b3, MzMLReader.B_1 + " (1)", MzMLReader.B_15 + " (9)",
                                 MzMLReader.B_14_UNIT + " (26)"), List.of()));
     }

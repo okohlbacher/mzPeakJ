@@ -563,6 +563,18 @@ class MzMLWriterTest {
 
     // ---- (j) the other rules of the mapping -------------------------------------------------------------------
 
+    /**
+     * The fixed line A-13 says that the converter does not use the array units yet; the library reads them since
+     * 0.13.0 (it said it did not). A-14 is withdrawn: auxiliary arrays are written (R1).
+     */
+    @Test
+    void theFixedLineSaysTheConverterDoesNotUseArrayUnitsYet() {
+        assertThat(MzMLWriter.NOT_VISIBLE).containsExactly(
+                "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every"
+                        + " array is written as 64-bit floats in the default unit of its key, or without unit, a"
+                        + " spectrum's intensity in its intensity unit");
+    }
+
     @Test
     void whatMzMLRequiresAndTheModelLacksIsSynthesized() throws IOException {
         for (Written w : write("empty", contents(FileMetadata.EMPTY))) {
@@ -579,7 +591,7 @@ class MzMLWriterTest {
                     List.of()));
             assertThat(back.fileDescription()).isEqualTo(new FileDescription(List.of(), List.of(), List.of()));
             assertThat(w.warnings()).containsExactly(MzMLWriter.LIMITS.get(0), MzMLWriter.LIMITS.get(1),
-                    MzMLWriter.NOT_VISIBLE.get(0), MzMLWriter.NOT_VISIBLE.get(1),
+                    MzMLWriter.NOT_VISIBLE.get(0),
                     String.format(MzMLWriter.A_8, "instrument configuration IC1") + " (1)",
                     MzMLWriter.A_17 + " (2)",
                     String.format(MzMLWriter.A_8, "software mzPeakJ") + " (1)",

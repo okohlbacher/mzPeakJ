@@ -16,7 +16,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
 import org.mzpeak.io.MzPeakWriter.Options;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Param;
 
 import java.io.Closeable;
@@ -43,31 +43,41 @@ final class ParquetOutput {
     private ParquetOutput() {
     }
 
-    /** A reusable {@code parameters: large_list<item: struct<value-union, accession, name, unit>>} field schema. */
-    static Type paramListField() {
-        return paramListField("parameters");
+    /**
+     * A reusable {@code parameters: large_list<item: struct<value-union, accession, name, unit>>} field schema: with
+     * {@code requiredItem} the item group, its {@code value} group and its {@code name} are required, as
+     * docs/layouts/metadata-tables.md §The parameters list declares them for every metadata table (the split writer,
+     * W14, D13-27); without, every item field is optional, as the frozen PACKED dialect writes them (D13-11).
+     */
+    static Type paramListField(boolean requiredItem) {
+        return paramListField("parameters", requiredItem ? Type.Repetition.REQUIRED : Type.Repetition.OPTIONAL);
     }
 
     /**
      * {@code auxiliary_arrays: list<struct<data, name, data_type, compression, items, unit, parameters,
      * data_processing_id>>} as the reference writes it in {@code spectra_metadata} and
-     * {@code wavelength_spectra_metadata}. mzPeakJ writes it empty; the Rust reader projects it for every wavelength
-     * spectrum and fails when the column is missing.
+     * {@code wavelength_spectra_metadata}, also written to {@code chromatograms_metadata}: each entity's
+     * {@code AuxiliaryArray}s, an empty list for an entity without any. The Rust reader projects it for every
+     * wavelength spectrum and fails when the column is missing. The item's {@code data} list, its {@code name} group
+     * and its {@code name}, {@code data_type}, {@code compression} and {@code items} are required, as
+     * docs/layouts/auxiliary-arrays.md declares them (W14, D13-27, U5); its {@code parameters} list keeps the optional item fields that document gives it,
+     * although metadata-tables.md requires them in every {@code parameters} list (a spec inconsistency).
      */
     static Type auxiliaryArrayListField() {
         GroupType itemType = Types.buildGroup(Type.Repetition.OPTIONAL)
-                .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .addField(Types.requiredGroup().as(LogicalTypeAnnotation.listType())
                         .addField(Types.repeatedGroup()
                                 .required(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(8, false))
                                 .named("item")
                                 .named("list"))
                         .named("data"))
-                .addField(paramItem("name"))
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_type")
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("compression")
-                .optional(PrimitiveTypeName.INT64).as(UINT64).named("items")
+                .addField(paramItem("name", Type.Repetition.REQUIRED, Type.Repetition.OPTIONAL,
+                        Type.Repetition.REQUIRED))
+                .required(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_type")
+                .required(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("compression")
+                .required(PrimitiveTypeName.INT64).as(UINT64).named("items")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
-                .addField(paramListField("parameters"))
+                .addField(paramListField("parameters", Type.Repetition.OPTIONAL))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("data_processing_id")
                 .named("item");
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
@@ -75,22 +85,28 @@ final class ParquetOutput {
                 .named("auxiliary_arrays");
     }
 
-    private static Type paramListField(String name) {
+    /** A {@code parameters} list {@code name} whose item group, {@code value} and {@code name} are {@code item}. */
+    private static Type paramListField(String name, Type.Repetition item) {
         return Types.optionalGroup().as(LogicalTypeAnnotation.listType())
-                .addField(Types.repeatedGroup().addField(paramItem("item")).named("list"))
+                .addField(Types.repeatedGroup().addField(paramItem("item", item, item, item)).named("list"))
                 .named(name);
     }
 
-    private static GroupType paramItem(String name) {
-        return Types.buildGroup(Type.Repetition.OPTIONAL)
-                .addField(Types.optionalGroup()
+    /**
+     * A param struct {@code name} of repetition {@code repetition}, its {@code value} union of {@code value} and its
+     * {@code name} of {@code paramName}; {@code accession}, {@code unit} and the value slots are optional.
+     */
+    private static GroupType paramItem(String name, Type.Repetition repetition, Type.Repetition value,
+                                       Type.Repetition paramName) {
+        return Types.buildGroup(repetition)
+                .addField(Types.buildGroup(value)
                         .optional(PrimitiveTypeName.INT64).named("integer")
                         .optional(PrimitiveTypeName.DOUBLE).named("float")
                         .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("string")
                         .optional(PrimitiveTypeName.BOOLEAN).named("boolean")
                         .named("value"))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("accession")
-                .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("name")
+                .primitive(PrimitiveTypeName.BINARY, paramName).as(LogicalTypeAnnotation.stringType()).named("name")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("unit")
                 .named(name);
     }
@@ -132,7 +148,7 @@ final class ParquetOutput {
         conf.set(SCHEMA_PROPERTY, typeDefinedOrder(schema).toString());
         var builder = new GroupWriterBuilder(new LocalOutputFile(file), writeSupport)
                 .withConf(conf)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withStatisticsEnabled(true)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE);
@@ -243,7 +259,11 @@ final class ParquetOutput {
 
     /**
      * Write a {@code List<Param>} into a {@code parameters: large_list<item: struct<value-union,...>>} group.
-     * Symmetric to {@link org.mzpeak.io.parquet.ParquetGroups#readParams}.
+     * Symmetric to {@link org.mzpeak.io.parquet.ParquetGroups#readParams}, but for a NaN value, which is written as
+     * no value, since parquet-java writes no column index for a page holding a NaN (W10), and for the value types
+     * that read back as another: an {@code Integer}, {@code Short} or {@code Byte} in the integer slot, a
+     * {@code Float} in the float slot, and a collection or array as its compact JSON text in the string slot (W2,
+     * {@link ParamValues}; the planner has refused every other type).
      */
     static void writeParams(Group owner, List<Param> params) {
         if (params.isEmpty()) {
@@ -252,17 +272,28 @@ final class ParquetOutput {
         Group wrapper = owner.addGroup("parameters");
         for (Param p : params) {
             Group slot = wrapper.addGroup("list");
-            Group item = slot.addGroup("item");
-            // value union
-            Group valueGroup = item.addGroup("value");
-            Object v = p.value();
-            if (v instanceof Long l)    { valueGroup.add("integer", l); }
-            else if (v instanceof Double d) { valueGroup.add("float", d); }
-            else if (v instanceof String s) { valueGroup.add("string", s); }
-            else if (v instanceof Boolean b) { valueGroup.add("boolean", b); }
-            if (p.accession() != null) { item.add("accession", p.accession()); }
-            if (p.name() != null)      { item.add("name", p.name()); }
-            if (p.unit() != null)      { item.add("unit", p.unit()); }
+            writeParam(slot.addGroup("item"), p);
         }
+    }
+
+    /**
+     * Writes {@code p} into {@code item}, a param struct ({@code value} union, {@code accession}, {@code name},
+     * {@code unit}) as {@link #writeParams} writes each item of a {@code parameters} list.
+     */
+    static void writeParam(Group item, Param p) {
+        // value union
+        Group valueGroup = item.addGroup("value");
+        Object v = p.value();
+        if (ParamValues.isInteger(v)) { valueGroup.add("integer", ((Number) v).longValue()); }
+        else if (v instanceof Double || v instanceof Float) {
+            double d = ((Number) v).doubleValue();
+            if (!Double.isNaN(d)) { valueGroup.add("float", d); }
+        }
+        else if (v instanceof String s) { valueGroup.add("string", s); }
+        else if (v instanceof Boolean b) { valueGroup.add("boolean", b); }
+        else if (v != null) { valueGroup.add("string", ParamValues.json(v).toString()); } // collection, array
+        if (p.accession() != null) { item.add("accession", p.accession()); }
+        if (p.name() != null)      { item.add("name", p.name()); }
+        if (p.unit() != null)      { item.add("unit", p.unit()); }
     }
 }

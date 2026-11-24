@@ -44,10 +44,11 @@ import static org.mzpeak.io.SplitMetadataWriter.termOf;
  * Writes the packed metadata layout of {@link MzPeakWriter}: one spectra_metadata row per spectrum with its
  * spectrum, primary scan, primary precursor and primary selected-ion facets, and one chromatograms_metadata and
  * wavelength_spectra_metadata row per chromatogram and wavelength spectrum. Its members are listed in the pin-era
- * dialect, {@link Dialect#PIN_29E59B2}. The wavelength schema is frozen without a {@code parameters} list, so the
- * Params of wavelength spectra are not written; the chromatogram schema is frozen with its index, id, type and point
- * count only, so the polarity, data processing reference, Params and precursors of chromatograms are not written
- * either. {@link WritePlanner} warns about both.
+ * dialect, {@link Dialect#PIN_29E59B2}. The spectrum schema is frozen without a {@code data_processing_id} column,
+ * so the data processing references of spectra are not written; the wavelength schema is frozen without a
+ * {@code parameters} list and has no scans member, so the Params and scans of wavelength spectra are not written; the
+ * chromatogram schema is frozen with its index, id, type and point count only, so the polarity, data processing
+ * reference, Params and precursors of chromatograms are not written either. {@link WritePlanner} warns about each.
  */
 final class PackedMetadataWriter implements MetadataTablesWriter {
 
@@ -72,7 +73,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000285_total_ion_current_unit_MS_1000131")
                     .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003060_number_of_data_points")
                     .optional(PrimitiveTypeName.INT64).as(UINT64).named("MS_1003059_number_of_peaks")
-                    .addField(paramListField())
+                    .addField(paramListField(false))
                     .named("spectrum"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
@@ -88,7 +89,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                     .optional(PrimitiveTypeName.INT32).named("IMS_1000050_position_x")
                     .optional(PrimitiveTypeName.INT32).named("IMS_1000051_position_y")
                     .addField(scanWindowListField())
-                    .addField(paramListField())
+                    .addField(paramListField(false))
                     .named("scan"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
@@ -98,16 +99,16 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000827_isolation_window_target_mz")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000828_isolation_window_lower_offset")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000829_isolation_window_upper_offset")
-                    .addField(paramListField())
+                    .addField(paramListField(false))
                     .named("isolation_window")
-                    .addField(Types.optionalGroup().addField(paramListField()).named("activation"))
+                    .addField(Types.optionalGroup().addField(paramListField(false)).named("activation"))
                     .named("precursor"))
             .addField(Types.optionalGroup()
                     .required(PrimitiveTypeName.INT64).as(UINT64).named("source_index")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000744_selected_ion_mz_unit_MS_1000040")
                     .optional(PrimitiveTypeName.INT32).named("MS_1000041_charge_state")
                     .optional(PrimitiveTypeName.DOUBLE).named("MS_1000042_intensity_unit_MS_1000131")
-                    .addField(paramListField())
+                    .addField(paramListField(false))
                     .named("selected_ion"))
             .named("spectrum_metadata");
 
@@ -239,9 +240,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         if (se == null) {
             return;
         }
-        if (se.injectionTime() != null) {
-            scan.add("MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
-        }
+        addIfPresent(scan, "MS_1000927_ion_injection_time_unit_UO_0000028", se.injectionTime());
         if (se.filterString() != null) {
             scan.add("MS_1000512_filter_string", se.filterString());
         }
@@ -280,8 +279,8 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
         Group wrapper = scan.addGroup("scan_windows");
         for (ScanWindow w : windows) {
             Group item = wrapper.addGroup("list").addGroup("item");
-            item.add("MS_1000501_scan_window_lower_limit_unit_MS_1000040", w.lowerLimit());
-            item.add("MS_1000500_scan_window_upper_limit_unit_MS_1000040", w.upperLimit());
+            addIfPresent(item, "MS_1000501_scan_window_lower_limit_unit_MS_1000040", w.lowerLimit());
+            addIfPresent(item, "MS_1000500_scan_window_upper_limit_unit_MS_1000040", w.upperLimit());
         }
     }
 
@@ -321,7 +320,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
     /** Populate a {@code selected_ion} facet group. */
     private static void writeSelectedIon(Group si, long sourceIndex, SelectedIon ion) {
         si.add("source_index", sourceIndex);
-        si.add("MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
+        addIfPresent(si, "MS_1000744_selected_ion_mz_unit_MS_1000040", ion.mz());
         if (ion.charge() != null) {
             si.add("MS_1000041_charge_state", ion.charge());
         }
@@ -363,9 +362,7 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 if (Double.isFinite(w.time())) {
                     s.add("time", w.time());
                 }
-                if (w.lambdaMax() != null) {
-                    s.add("MS_1003812_lambda_max_unit_UO:0000018", w.lambdaMax());
-                }
+                addIfPresent(s, "MS_1003812_lambda_max_unit_UO:0000018", w.lambdaMax());
                 s.add("MS_1003060_number_of_data_points", (long) w.size());
                 writer.write(row);
             }
@@ -379,8 +376,12 @@ final class PackedMetadataWriter implements MetadataTablesWriter {
                 || !p.isolationWindow().parameters().isEmpty();
     }
 
+    /**
+     * Sets {@code field} of {@code group} to {@code value} unless it is null or NaN: a NaN is written as null, since
+     * parquet-java writes no column index for a page holding a NaN (W10).
+     */
     private static void addIfPresent(Group group, String field, Double value) {
-        if (value != null) {
+        if (value != null && !value.isNaN()) {
             group.add(field, value);
         }
     }

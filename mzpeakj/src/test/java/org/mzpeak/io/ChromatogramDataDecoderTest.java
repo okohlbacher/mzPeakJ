@@ -15,7 +15,7 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.MessageTypeParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -29,10 +29,11 @@ import java.util.logging.LogRecord;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * {@link ChromatogramDataDecoder#decode} on chunk members that no fixture has and {@link ChromatogramArraysTest} does
- * not construct: a time axis stored in a chunk transform, plans without the chunk start or without the chunk values
+ * not construct: a time axis stored as Numpress linear time or in a chunk transform that is not decoded, plans without the chunk start or without the chunk values
  * of the time axis, and a chunk extra list that is not numeric. Each member is constructed with an array index
  * footer; the plan is built from it as {@link ChromatogramStore} builds it.
  */
@@ -52,6 +53,9 @@ class ChromatogramDataDecoderTest {
                 optional group time_numpress_linear_bytes (LIST) {
                   repeated group list { required int32 item (INTEGER(8,false)); }
                 }
+                optional group time_shuffle_bytes (LIST) {
+                  repeated group list { required int32 item (INTEGER(8,false)); }
+                }
                 optional group intensity (LIST) { repeated group list { optional float item; } }
                 optional group ms_level (LIST) { repeated group list { optional int64 item; } }
                 optional group label (LIST) { repeated group list { optional binary item (STRING); } }
@@ -69,11 +73,13 @@ class ChromatogramDataDecoderTest {
     private int written;
 
     /**
-     * A chunk whose time axis transform column (Numpress linear time) carries a value fails, naming the index, the
-     * transform and the column; chunks whose transform column is null decode before it.
+     * A chunk whose time axis is stored as Numpress linear time is decoded, as the m/z of a spectrum chunk row, and
+     * pairs one-to-one with its intensities; the chunk before it is delta-decoded. C4: before, the Numpress chunk
+     * threw "chromatogram_index 1 stores its time axis with the chunk transform MS:1002312 (column
+     * time_numpress_linear_bytes), which is not decoded for chromatograms".
      */
     @Test
-    void aTimeAxisChunkTransformThatCarriesAValueFails() {
+    void aNumpressLinearTimeAxisIsDecoded() {
         String index = index(INDEX_ENTRY, START, VALUES, LIST,
                 entry("chunk.time_numpress_linear_bytes", "chunk_transform", TIME, null,
                         MSNumpress.ACC_NUMPRESS_LINEAR, null));
@@ -84,18 +90,56 @@ class ChromatogramDataDecoderTest {
         assertThat(plan.axis().transformFields())
                 .containsExactly(Map.entry(MSNumpress.ACC_NUMPRESS_LINEAR, "time_numpress_linear_bytes"));
 
-        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(data, MEMBER, plan))
-                .isInstanceOf(MzPeakException.class)
-                .hasMessage("chromatogram_index 1 stores its time axis with the chunk transform MS:1002312 (column"
-                        + " time_numpress_linear_bytes), which is not decoded for chromatograms");
+        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(data, MEMBER, plan, true);
+
+        assertThat(decoded.get(0L).time()).containsExactly(0.0, 1.0);
+        assertThat(decoded.get(0L).intensity()).containsExactly(1.0, 2.0);
+        assertThat(decoded.get(1L).time()).hasSize(2);
+        assertThat(decoded.get(1L).time()[0]).isCloseTo(0.0, within(1e-6));
+        assertThat(decoded.get(1L).time()[1]).isCloseTo(1.0, within(1e-6));
+        assertThat(decoded.get(1L).intensity()).containsExactly(3.0, 4.0);
     }
 
     /**
-     * A plan without a chunk start column skips every chunk, as a chunk without a start is skipped; the same rows
-     * decode with the plan inferred from the column names, which has the start.
+     * A chunk whose time axis is stored in a chunk transform other than Numpress linear or the grid (here a made-up
+     * CURIE) throws when its column carries a value, naming the index, the transform and the column, rather than
+     * reading the chunk start as a point or failing on the intensity length; the chunk before it, whose transform column
+     * is null, decodes. The chunk row decoder (C4) decodes only those two time axis transforms, so the check is the
+     * chromatogram decoder's, as before C4.
      */
     @Test
-    void aPlanWithoutTheChunkStartSkipsEveryChunk() {
+    void aTimeAxisChunkTransformThatIsNotDecodedFails() {
+        String index = index(INDEX_ENTRY, START, VALUES, LIST,
+                entry("chunk.time_shuffle_bytes", "chunk_transform", TIME, null, "MS:4000000", null));
+        Group transformed = row(1, 2.0, null, null, List.of(3f), null, null);
+        Group bytes = transformed.getGroup("chunk", 0).addGroup("time_shuffle_bytes");
+        bytes.addGroup("list").append("item", 7);
+        InputFile data = write(index,
+                row(0, 0.0, List.of(1.0), null, List.of(1f, 2f), null, null),
+                transformed);
+        SignalPlan plan = footerPlan(data);
+        assertThat(plan.axis().transformFields()).containsExactly(Map.entry("MS:4000000", "time_shuffle_bytes"));
+
+        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(data, MEMBER, plan, true))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chromatogram_index 1 stores its time axis with the chunk transform MS:4000000 (column"
+                        + " time_shuffle_bytes), which is not decoded for chromatograms");
+
+        InputFile first = write(index, row(0, 0.0, List.of(1.0), null, List.of(1f, 2f), null, null));
+        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(first, MEMBER,
+                footerPlan(first), true);
+        assertThat(decoded.get(0L).time()).containsExactly(0.0, 1.0);
+        assertThat(decoded.get(0L).intensity()).containsExactly(1.0, 2.0);
+    }
+
+    /**
+     * A plan without a chunk start column cannot decode the deltas of a chunk, which chunked-layout.md requires to
+     * have a start: the read fails naming the chromatogram (until the final fix-up of 0.13.0 the deltas were decoded
+     * from time 0, which invented times; before C4 every chunk was skipped). The same rows decode from their start
+     * with the plan inferred from the column names, which has the start.
+     */
+    @Test
+    void aPlanWithoutTheChunkStartIsRefused() {
         InputFile data = write(index(INDEX_ENTRY, VALUES, LIST),
                 row(0, 10.0, List.of(1.0, 1.0), null, List.of(1f, 2f, 3f), null, null),
                 row(1, 5.0, List.of(0.5), null, List.of(4f, 5f), null, null));
@@ -103,10 +147,13 @@ class ChromatogramDataDecoderTest {
         assertThat(plan.layout()).isEqualTo(SignalPlan.Layout.CHUNK);
         assertThat(plan.axis().start()).isNull();
 
-        assertThat(ChromatogramDataDecoder.decode(data, MEMBER, plan)).isEmpty();
+        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(data, MEMBER, plan, true))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageContaining("chunk row of chromatogram_index 0 has no time chunk start column in its signal"
+                        + " plan, which chunked-layout.md requires of a chunk whose values are not absolute");
 
         Map<Long, ChromatogramDataDecoder.Decoded> inferred =
-                ChromatogramDataDecoder.decode(data, MEMBER, inferredPlan(data));
+                ChromatogramDataDecoder.decode(data, MEMBER, inferredPlan(data), true);
         assertThat(inferred.keySet()).containsExactly(0L, 1L);
         assertThat(inferred.get(0L).time()).containsExactly(10.0, 11.0, 12.0);
         assertThat(inferred.get(0L).intensity()).containsExactly(1.0, 2.0, 3.0);
@@ -114,25 +161,54 @@ class ChromatogramDataDecoderTest {
     }
 
     /**
-     * A plan without a chunk values column of the time axis reads each chunk as its start alone, paired with the
-     * first intensity; the surplus intensities are dropped, as for every chunk.
+     * A plan without a chunk values column of the time axis reads a chunk of one intensity as its start alone; a
+     * chunk of more intensities throws, naming the chromatogram (C4: before, it read as its start paired with the first
+     * intensity, the surplus intensities dropped).
      */
     @Test
-    void aPlanWithoutTheChunkValuesReadsOnePointPerChunk() {
+    void aPlanWithoutTheChunkValuesReadsOnlyTheStart() {
         InputFile data = write(index(INDEX_ENTRY, START, LIST),
-                row(0, 10.0, List.of(1.0, 1.0), null, List.of(1f, 2f, 3f), null, null),
                 row(0, 20.0, null, null, List.of(4f), null, null),
-                row(1, 5.0, null, null, List.of(7f, 8f), null, null));
+                row(1, 5.0, null, null, List.of(7f), null, null));
         SignalPlan plan = footerPlan(data);
         assertThat(plan.axis().values()).isNull();
 
-        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(data, MEMBER, plan);
+        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(data, MEMBER, plan, true);
 
         assertThat(decoded.keySet()).containsExactly(0L, 1L);
-        assertThat(decoded.get(0L).time()).containsExactly(10.0, 20.0);
-        assertThat(decoded.get(0L).intensity()).containsExactly(1.0, 4.0);
+        assertThat(decoded.get(0L).time()).containsExactly(20.0);
+        assertThat(decoded.get(0L).intensity()).containsExactly(4.0);
         assertThat(decoded.get(1L).time()).containsExactly(5.0);
         assertThat(decoded.get(1L).intensity()).containsExactly(7.0);
+
+        InputFile surplus = write(index(INDEX_ENTRY, START, LIST),
+                row(0, 10.0, List.of(1.0, 1.0), null, List.of(1f, 2f, 3f), null, null));
+        assertThatThrownBy(() -> ChromatogramDataDecoder.decode(surplus, MEMBER, footerPlan(surplus), true))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk intensity length (3) must equal time values (0) or values+1, for"
+                        + " chromatogram_index 0");
+    }
+
+    /**
+     * A chunk row with a start and neither time values nor any intensity column adds no point and supplies no
+     * intensity unit (C4); a chromatogram of only such rows reads as empty arrays.
+     */
+    @Test
+    void aChunkWithoutTimesOrIntensitiesAddsNoPoint() {
+        InputFile data = write(index(INDEX_ENTRY, START, VALUES, LIST),
+                row(0, 1.0, List.of(1.0), null, List.of(1f, 2f), null, null),
+                row(0, 5.0, null, null, null, null, null),
+                row(1, 3.0, null, null, null, null, null));
+
+        Map<Long, ChromatogramDataDecoder.Decoded> decoded = ChromatogramDataDecoder.decode(data, MEMBER,
+                footerPlan(data), true);
+
+        assertThat(decoded.keySet()).containsExactly(0L, 1L);
+        assertThat(decoded.get(0L).time()).containsExactly(1.0, 2.0);
+        assertThat(decoded.get(0L).intensity()).containsExactly(1.0, 2.0);
+        assertThat(decoded.get(1L).time()).isEmpty();
+        assertThat(decoded.get(1L).intensity()).isEmpty();
+        assertThat(decoded.get(1L).intensityUnit()).isNull();
     }
 
     /**
@@ -152,7 +228,7 @@ class ChromatogramDataDecoderTest {
 
         Map<Long, ChromatogramDataDecoder.Decoded> decoded = new LinkedHashMap<>();
         List<LogRecord> records = ArrayIndexTest.captureLog(ChromatogramDataDecoder.class,
-                () -> decoded.putAll(ChromatogramDataDecoder.decode(data, MEMBER, plan)));
+                () -> decoded.putAll(ChromatogramDataDecoder.decode(data, MEMBER, plan, true)));
 
         assertThat(decoded.keySet()).containsExactly(0L, 1L);
         assertThat(decoded.get(0L).time()).containsExactly(0.0, 1.0);
@@ -247,7 +323,7 @@ class ChromatogramDataDecoderTest {
                 .withConf(new PlainParquetConfiguration())
                 .withType(CHUNK)
                 .withExtraMetaData(Map.of(SignalEntity.CHROMATOGRAM.arrayIndexKey(), json))
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

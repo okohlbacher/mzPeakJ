@@ -27,7 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * intensity encoding writes SLOF.
  *
  * <p>Outputs are compared with {@link WriterSnapshotTest#snapshot}, member digests plus the ZIP entry order of an
- * archive, on the legacy {@code small.unpacked} fixture read with {@link ForwardBackwardCorpusTest#readSource}.
+ * archive, on the legacy {@code small.unpacked} fixture read with
+ * {@link ForwardBackwardCorpusTest#readSourceWithoutReferences}, so that the overloads without file metadata write it.
  */
 class WriterOverloadsCharacterizationTest {
 
@@ -97,7 +98,7 @@ class WriterOverloadsCharacterizationTest {
     @MethodSource("shortOverloads")
     void aShortOverloadWritesWhatItsFullFormWrites(String label, boolean archive, BiConsumer<Path, Source> shortForm,
                                                     BiConsumer<Path, Source> fullForm, @TempDir Path tmp) {
-        Source s = ForwardBackwardCorpusTest.readSource(SMALL);
+        Source s = ForwardBackwardCorpusTest.readSourceWithoutReferences(SMALL);
 
         Snapshot expected = snapshot(tmp.resolve("full"), archive, fullForm, s);
         Snapshot actual = snapshot(tmp.resolve("short"), archive, shortForm, s);
@@ -110,7 +111,7 @@ class WriterOverloadsCharacterizationTest {
     /** The defaults the short overloads fill in each change the output of {@code small.unpacked}. */
     @Test
     void eachFilledInDefaultChangesTheOutput(@TempDir Path tmp) {
-        Source s = ForwardBackwardCorpusTest.readSource(SMALL);
+        Source s = ForwardBackwardCorpusTest.readSourceWithoutReferences(SMALL);
 
         Snapshot point = snapshot(tmp.resolve("point"), false, (out, x) -> MzPeakWriter.writeDirectory(out,
                 x.spectra, x.chromatograms, List.of(), List.of(), x.fileMetadata), s);

@@ -24,7 +24,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
@@ -291,7 +291,8 @@ class ChromatogramArraysTest {
         }
         assertThat(chromatograms.get(0).arrays()).containsOnlyKeys("ms level");
         Path archive = tmp.resolve("written.mzpeak");
-        MzPeakWriter.writeArchive(archive, spectra, chromatograms, wavelength, List.of(), FileMetadata.EMPTY);
+        MzPeakWriter.writeArchive(archive, Fixtures.withoutReferences(spectra),
+                Fixtures.chromatogramsWithoutReferences(chromatograms), wavelength, List.of(), FileMetadata.EMPTY);
 
         try (MzPeakSource source = MzPeakSource.open(archive)) {
             assertThat(ChromatogramStore.load(source, MzPeakManifest.fromSource(source)).plan().source())
@@ -458,10 +459,10 @@ class ChromatogramArraysTest {
 
     /**
      * Chunk rows: an extra list aligns 1:1 with the time values its chunk decodes to, a null list reads as NaN
-     * cells, and the chunks of one index are appended in row order; a skipped chunk (no start) adds no cells. A list
-     * of another length drops that key for that chromatogram with one WARNING. The unit is that of the intensity
-     * list or the SLOF entry that supplied the chunk; mixed units give null with one WARNING. An extra stored only
-     * as a chunk transform is not decoded: it is dropped with one WARNING.
+     * cells, and the chunks of one index are appended in row order.
+     * A list of another length drops that key for that chromatogram with one WARNING. The unit is that of the
+     * intensity list or the SLOF entry that supplied the chunk; mixed units give null with one WARNING. An extra
+     * stored only as a chunk transform is not decoded: it is dropped with one WARNING.
      */
     @Test
     void chunkMemberExtrasAndUnits() {
@@ -586,7 +587,7 @@ class ChromatogramArraysTest {
 
     /**
      * The chromatograms 0 to 3 of the chunk member: 0 has two chunks of the intensity list (the second without
-     * 'ms level' cells) and a chunk without a start; 1 has an 'ms level' list one short in its first chunk; 2 has
+     * 'ms level' cells); 1 has an 'ms level' list one short in its first chunk; 2 has
      * SLOF intensity and null 'ms level' cells; 3 has one list chunk and one SLOF chunk. The SLOF intensity entry
      * carries another unit than the list.
      */
@@ -614,8 +615,6 @@ class ChromatogramArraysTest {
                         List.of(1), "intensity", List.of(4, 5)),
                 row(rows, "chunk", "chromatogram_index", 1L, "time_chunk_start", 5, "time_chunk_values",
                         List.of(1), "intensity", List.of(1, 1), "ms_level", List.of(2, 2)),
-                row(rows, "chunk", "chromatogram_index", 0L, "time_chunk_values", List.of(), "intensity",
-                        List.of(9), "ms_level", List.of(9)),
                 row(rows, "chunk", "chromatogram_index", 2L, "time_chunk_start", 0, "time_chunk_values",
                         List.of(0.5), "intensity_numpress_slof_bytes", slof, "ms_level", Arrays.asList(null, null),
                         "ms_level_slof", slof),
@@ -756,7 +755,7 @@ class ChromatogramArraysTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .withExtraMetaData(footer)

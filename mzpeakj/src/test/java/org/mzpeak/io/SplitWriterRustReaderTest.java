@@ -35,6 +35,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,9 +50,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code number_of_auxiliary_arrays}, typed as in the reference's has_uv, an empty list and 0 per row, and an
  *       {@code ARROW:schema} footer entry that gives the Arrow reader the reference's 64-bit-offset types for them
  *       (ArrowSchemaHintTest); the Rust reader projects both for every wavelength spectrum and panics without them;
- *   <li>the wavelength columns of the reference: the representation, base peak intensity and TIC move to their
- *       columns, the spectrum type and the observed wavelength range are copied to theirs and stay in the list,
- *       where the Rust reader takes them from, so a read, write and read of has_uv keeps every Param in its order;
+ *   <li>the wavelength columns of the reference: the spectrum type, representation, observed wavelength range, base
+ *       peak intensity and TIC move to their columns and leave the list (W11: the reference also keeps the type and
+ *       the range in the list, which metadata-tables.md forbids, and the Rust reader gives them twice);
  *   <li>no {@code parameters} item lacks a name (Rust unwraps every name and panics): a nameless Param that stays in
  *       a list is written with its term's name, or its accession where the writer does not know the term, and a
  *       Param with neither name nor accession is refused, in both layouts, before anything is written.
@@ -80,7 +82,8 @@ class SplitWriterRustReaderTest {
 
     /**
      * Both members end with {@code parameters}, {@code auxiliary_arrays} and {@code number_of_auxiliary_arrays}, the
-     * last two typed exactly as in the reference's has_uv, and every row has an empty list and a count of 0.
+     * last two typed exactly as in the reference's has_uv but for the fields auxiliary-arrays.md requires, which are
+     * required ({@link #withRequiredFields}, W14), and every row has an empty list and a count of 0.
      */
     @Test
     void bothMetadataMembersCarryEmptyAuxiliaryArraysTypedAsTheReference() {
@@ -97,7 +100,8 @@ class SplitWriterRustReaderTest {
             }
             assertThat(names.subList(names.size() - 3, names.size())).as(member)
                     .containsExactly("parameters", AUXILIARY_ARRAYS, AUXILIARY_COUNT);
-            assertThat(written.getType(AUXILIARY_ARRAYS)).as(member).isEqualTo(reference.getType(AUXILIARY_ARRAYS));
+            assertThat(written.getType(AUXILIARY_ARRAYS)).as(member).hasToString(
+                    withRequiredFields(reference.getType(AUXILIARY_ARRAYS).toString()));
             assertThat(written.getType(AUXILIARY_COUNT)).as(member).isEqualTo(reference.getType(AUXILIARY_COUNT));
             assertThat(footer(out, member)).as(member).containsEntry(ArrowSchemaHint.KEY,
                     ArrowSchemaHint.encode(written));
@@ -116,12 +120,13 @@ class SplitWriterRustReaderTest {
     // ---- wavelength representation, base peak intensity and TIC -------------------------------------------------
 
     /**
-     * Legacy and current has_uv, read, written split and read again, give every wavelength spectrum exactly the
-     * Params read from the fixture, in the same order.
+     * Legacy and current has_uv, read, written split and read again, give every wavelength spectrum the Params read
+     * from the fixture, the column terms after the list in column order, the type without its name (W11,
+     * {@link WavelengthColumnsTest#readBack}).
      */
     @ParameterizedTest
     @MethodSource("hasUv")
-    void hasUvWavelengthParamsSurviveAWriteInOrder(Path fixture) {
+    void hasUvWavelengthParamsReadBackFromTheirColumns(Path fixture) {
         Source source = ForwardBackwardCorpusTest.readSource(fixture);
         Path out = write(source.wavelengthSpectra, source, tmp.resolve("out.mzpeak"));
         List<WavelengthSpectrum> back = ForwardBackwardCorpusTest.readSource(out).wavelengthSpectra;
@@ -130,7 +135,8 @@ class SplitWriterRustReaderTest {
             List<Param> expected = source.wavelengthSpectra.get(i).parameters();
             assertThat(expected).as("spectrum %d", i).extracting(Param::accession).containsExactly("MS:1000804",
                     "MS:1000619", "MS:1000618", "MS:1000796", "MS:1000128", "MS:1000505", "MS:1000285");
-            assertThat(back.get(i).parameters()).as("spectrum %d", i).isEqualTo(expected);
+            assertThat(back.get(i).parameters()).as("spectrum %d", i)
+                    .isEqualTo(WavelengthColumnsTest.readBack(expected));
         }
     }
 
@@ -139,13 +145,12 @@ class SplitWriterRustReaderTest {
     }
 
     /**
-     * Constructed wavelength spectra. A nameless or named representation moves to its column (the name is not
-     * written, as for every term-marker column); a finite base peak intensity and TIC in counts move to theirs. A
-     * spectrum type and a wavelength range in nanometres are copied to their columns and stay in the list. A
-     * representation with a value, a base peak intensity without unit, a non-finite TIC and a wavelength in another
-     * unit stay in the list only. Every nameless Param left in a list is written with a name: its term's (spectrum
-     * type, representation, dissociation method), else its accession. Reading back gives the list, then the columns
-     * whose accession the list does not repeat.
+     * Constructed wavelength spectra. A nameless or named representation or spectrum type moves to its column (the
+     * name is not written, as for every term-marker column); a finite base peak intensity and TIC in counts and a
+     * wavelength range in nanometres move to theirs. A representation with a value, a base peak intensity without
+     * unit, a non-finite TIC and a wavelength in another unit stay in the list only. Every nameless Param left in a
+     * list is written with a name: its term's (representation, dissociation method), else its accession. Reading
+     * back gives the list, then the columns whose accession the list does not repeat.
      */
     @Test
     void theWavelengthColumnsTakeWhatTheReferenceWritesThereAndNoListItemIsNameless() throws IOException {
@@ -155,7 +160,7 @@ class SplitWriterRustReaderTest {
         Param tic = new Param("total ion current", "MS:1000285", 7.0, COUNTS);
         Param valuedRepresentation = new Param(null, "MS:1000128", "x", null);
         Param unitlessBpi = new Param("base peak intensity", "MS:1000505", 2.5, null);
-        Param nanTic = new Param("total ion current", "MS:1000285", Double.NaN, COUNTS);
+        Param infiniteTic = new Param("total ion current", "MS:1000285", Double.POSITIVE_INFINITY, COUNTS);
         Param namelessType = new Param(null, "MS:1000804", null, null);
         Param lowest = new Param("lowest observed wavelength", "MS:1000619", 190.0, NANOMETRE);
         Param highest = new Param("highest observed wavelength", "MS:1000618", 400.0, NANOMETRE);
@@ -165,13 +170,12 @@ class SplitWriterRustReaderTest {
         List<WavelengthSpectrum> waves = List.of(
                 wave(0, List.of(centroid, TITLE)),
                 wave(1, List.of(tic, profile, bpi)),
-                wave(2, List.of(valuedRepresentation, unitlessBpi, nanTic, namelessType)),
+                wave(2, List.of(valuedRepresentation, unitlessBpi, infiniteTic, namelessType)),
                 wave(3, List.of(unknownTerm, lowest, namelessCid, highest)),
                 wave(4, List.of(lowestInMetres)));
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Path out = write(waves, source, tmp.resolve("out.mzpeak"));
 
-        Param namedType = new Param("electromagnetic radiation spectrum", "MS:1000804", null, null);
         Param namedValuedRepresentation = new Param("profile spectrum", "MS:1000128", "x", null);
         Param namedUnknown = new Param("MS:4999999", "MS:4999999", 1L, null);
         Param namedCid = new Param("collision-induced dissociation", "MS:1000133", null, null);
@@ -180,32 +184,32 @@ class SplitWriterRustReaderTest {
         assertRow(rows.get(0), null, "MS:1000127", null, null, null, null, List.of(TITLE));
         assertRow(rows.get(1), null, "MS:1000128", null, null, 2.5, 7.0, List.of());
         assertRow(rows.get(2), "MS:1000804", null, null, null, null, null,
-                List.of(namedValuedRepresentation, unitlessBpi, nanTic, namedType));
-        assertRow(rows.get(3), null, null, 190.0, 400.0, null, null, List.of(namedUnknown, lowest, namedCid, highest));
+                List.of(namedValuedRepresentation, unitlessBpi, infiniteTic));
+        assertRow(rows.get(3), null, null, 190.0, 400.0, null, null, List.of(namedUnknown, namedCid));
         assertRow(rows.get(4), null, null, null, null, null, null, List.of(lowestInMetres));
         assertThat(nameless(out)).isEmpty();
 
         List<WavelengthSpectrum> back = ForwardBackwardCorpusTest.readSource(out).wavelengthSpectra;
         assertThat(back.get(0).parameters()).containsExactly(TITLE, centroid);
         assertThat(back.get(1).parameters()).containsExactly(new Param(null, "MS:1000128", null, null), bpi, tic);
-        assertThat(back.get(2).parameters()).containsExactly(namedValuedRepresentation, unitlessBpi, nanTic,
-                namedType);
-        assertThat(back.get(3).parameters()).containsExactly(namedUnknown, lowest, namedCid, highest);
+        assertThat(back.get(2).parameters()).containsExactly(namedValuedRepresentation, unitlessBpi, infiniteTic,
+                namelessType);
+        assertThat(back.get(3).parameters()).containsExactly(namedUnknown, namedCid, lowest, highest);
         assertThat(back.get(4).parameters()).containsExactly(lowestInMetres);
     }
 
     /**
      * Read, write and read where the spectrum type is only a column: the reader gives it as
-     * {@code Param(null, MS:1000804)} after the list; the writer copies it to the spectrum type column and writes it,
-     * named, to the list, where it reads back; a second write gives the same row.
+     * {@code Param(null, MS:1000804)} after the list; the writer moves it to the spectrum type column only (W11),
+     * where it reads back as it was read; a second write gives the same row.
      */
     @Test
-    void aTypeThatIsOnlyAColumnReadsBackNamedFromTheList() throws IOException {
+    void aTypeThatIsOnlyAColumnStaysAColumn() throws IOException {
         MessageType schema = Types.buildMessage()
                 .required(PrimitiveTypeName.INT64).as(LogicalTypeAnnotation.intType(64, false)).named("index")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("id")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("spectrum_type")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("wavelength_spectra_metadata");
         Group row = new SimpleGroupFactory(schema).newGroup().append("index", 0L).append("id", "w0")
                 .append("spectrum_type", "MS:1000804");
@@ -225,17 +229,17 @@ class SplitWriterRustReaderTest {
 
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Path first = write(List.of(wave(0, read)), source, tmp.resolve("first.mzpeak"));
-        Param named = new Param("electromagnetic radiation spectrum", "MS:1000804", null, null);
         Group written = rows(first.resolve(WAVELENGTH)).get(0);
         assertThat(ParquetGroups.optString(written, "spectrum_type")).isEqualTo("MS:1000804");
-        assertThat(ParquetGroups.readParams(written, "parameters")).containsExactly(TITLE, named);
+        assertThat(ParquetGroups.readParams(written, "parameters")).containsExactly(TITLE);
         assertThat(nameless(first)).isEmpty();
         List<Param> back = ForwardBackwardCorpusTest.readSource(first).wavelengthSpectra.get(0).parameters();
-        assertThat(back).containsExactly(TITLE, named);
+        assertThat(back).isEqualTo(read);
 
         Path second = write(List.of(wave(0, back)), source, tmp.resolve("second.mzpeak"));
-        assertThat(ParquetGroups.readParams(rows(second.resolve(WAVELENGTH)).get(0), "parameters"))
-                .containsExactly(TITLE, named);
+        Group again = rows(second.resolve(WAVELENGTH)).get(0);
+        assertThat(ParquetGroups.optString(again, "spectrum_type")).isEqualTo("MS:1000804");
+        assertThat(ParquetGroups.readParams(again, "parameters")).containsExactly(TITLE);
         assertThat(ForwardBackwardCorpusTest.readSource(second).wavelengthSpectra.get(0).parameters())
                 .isEqualTo(back);
     }
@@ -324,7 +328,7 @@ class SplitWriterRustReaderTest {
     private static void assertRow(Group row, String type, String representation, Double lowest, Double highest,
                                   Double bpi, Double tic, List<Param> params) {
         assertThat(ParquetGroups.optString(row, "spectrum_type")).isEqualTo(type);
-        assertThat(ParquetGroups.optString(row, "spectrum_representation")).isEqualTo(representation);
+        assertThat(ParquetGroups.optString(row, "opt_spectrum_representation")).isEqualTo(representation);
         assertThat(ParquetGroups.optDouble(row, "lowest_observed_wavelength")).isEqualTo(lowest);
         assertThat(ParquetGroups.optDouble(row, "highest_observed_wavelength")).isEqualTo(highest);
         assertThat(ParquetGroups.optDouble(row, "base_peak_intensity")).isEqualTo(bpi);
@@ -402,6 +406,24 @@ class SplitWriterRustReaderTest {
     /** Writes the spectra and chromatograms of {@code s} with {@code waves} as a split directory. */
     private static Path write(List<WavelengthSpectrum> waves, Source s, Path out) {
         MzPeakWriter.writeDirectory(out, s.spectra, s.chromatograms, waves, s.scanSettings, s.fileMetadata, SPLIT);
+        return out;
+    }
+
+    /**
+     * {@code auxiliaryArrays}, the reference's {@code auxiliary_arrays} as text, with the item's {@code data} list,
+     * {@code name} group, its {@code name}, {@code data_type}, {@code compression} and {@code items} required, as
+     * auxiliary-arrays.md declares them and the writer writes them (W14, X-37, U5); the reference writes them
+     * optional.
+     */
+    private static String withRequiredFields(String auxiliaryArrays) {
+        String out = auxiliaryArrays;
+        for (String field : List.of("group data (", "group name {", "binary data_type (", "binary compression (", "int64 items (",
+                "\n        optional binary name (")) {
+            String optional = field.startsWith("\n") ? field : "optional " + field;
+            String required = optional.replace("optional", "required");
+            assertThat(out).contains(optional);
+            out = out.replaceFirst(Pattern.quote(optional), Matcher.quoteReplacement(required));
+        }
         return out;
     }
 

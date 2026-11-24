@@ -2,6 +2,7 @@ package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumSignal;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Spectrum;
@@ -40,18 +41,22 @@ import java.util.stream.Stream;
  *
  * <p>Per-spectrum/scan/selected-ion CV/user {@code parameters} lists round-trip through both writer and reader.
  * The writer also emits the reference schema's richer metadata: derived spectrum columns (observed m/z range,
- * base peak, total ion current, spectrum type), scan windows, precursor activation, typed ion-mobility and
+ * base peak, total ion current, spectrum type; the base peak intensity and total ion current, whose columns are in
+ * MS:1000131, only of a payload in MS:1000131 or without intensity unit), scan windows, precursor activation, typed ion-mobility and
  * imaging-position columns, scan settings, and wavelength facets. The extra signal arrays of spectra,
  * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} (such as the ion mobility of a diaPASEF spectrum), are
  * written as extra columns of spectra_data and spectra_peaks, in both signal encodings, and those of chromatograms,
  * {@link Chromatogram#arrays()} (such as the {@code ms level} array of a TIC), as extra columns of chromatograms_data,
  * which holds the intensities of the chromatograms of each {@link Chromatogram#intensityUnit()} in a column of their
- * own. A read &rarr; write cycle keeps everything {@link MzPeakReader} exposes, except the intensity unit of a
- * chromatogram without points: the reader takes a chromatogram's unit from the column that holds its values, so such
- * a chromatogram reads back without one. Chromatogram times are written as given and declared in their
- * {@link Chromatogram#timeUnit()}, so they read back in that unit. chromatograms_data declares one time unit:
- * chromatograms of different time units are refused with an {@link MzPeakException} before anything is written;
- * {@link Chromatogram#withTimeUnit} converts one beforehand.
+ * own. The auxiliary arrays of spectra, chromatograms and wavelength spectra ({@link Spectrum#auxiliaryArrays()})
+ * are written to the {@code auxiliary_arrays} of their metadata rows with their bytes and compression as given; the
+ * packed layout does not write them and logs one WARNING, but checks them, as it checks the wavelength scans it
+ * drops, and declares their CV prefixes in {@code metadata.cv_list}. A read &rarr; write cycle keeps everything
+ * {@link MzPeakReader} exposes, except the intensity unit of a chromatogram without points: the reader takes a
+ * chromatogram's unit from the column that holds its values, so such a chromatogram reads back without one. Chromatogram times are written in minutes (UO:0000031), the unit the
+ * format requires: times in seconds, milliseconds or hours ({@link Chromatogram#timeUnit()}) are converted once
+ * with {@link Chromatogram#withTimeUnit}, so such a chromatogram reads back in minutes, and a chromatogram of any
+ * other time unit is refused with an {@link MzPeakException} before anything of it is written.
  *
  * <p>The two full forms, {@link #writeDirectory(Path, List, List, List, List, FileMetadata, Options)} and
  * {@link #writeArchive(Path, List, List, List, List, FileMetadata, Options)}, take every setting as {@link Options}.
@@ -126,12 +131,14 @@ public final class MzPeakWriter {
      * written as the new index of the spectrum it names, or as null when that spectrum is not written; the
      * precursor_id is kept. The caller's lists and objects are not modified.
      * A spectrum without scans is written, in both metadata layouts, with one scan that holds only its retention
-     * time, and reads back with that scan. In the split metadata layout, a scan setting without an id is written with
+     * time, and reads back with that scan. The split metadata layout writes the scans of a wavelength spectrum as
+     * given, their scan windows as float32 in nanometers, and one scan holding only its time for one without scans;
+     * the packed layout writes none of them. In the split metadata layout, a scan setting without an id is written with
      * the id {@code scan_settings_<position>}, made unique, and a WARNING is logged, since the current manifest needs
      * one; the packed layout leaves the id out.
      * An m/z, chromatogram time or wavelength array whose finite values are not ascending is written re-sorted, its
      * intensities and extra arrays with it, and a WARNING is logged for that entity (the caller's arrays are not
-     * modified). The sort orders the rows by {@link Double#compare}, so rows with a NaN move to the end.
+     * modified). The sort orders the rows by {@link Double#compare}, so -Infinity comes first and +Infinity last.
      * A CENTROID spectrum whose arrays are its peak list, peak arrays included, is written to spectra_peaks only,
      * unless one of its m/z is not finite: then its arrays go to spectra_data and its peak list to spectra_peaks, since
      * spectra_peaks would read such a row back as an invented peak.
@@ -146,6 +153,13 @@ public final class MzPeakWriter {
      * (MS:1000786) with the key as its name. A key MS:1000514 or MS:1000515 is rejected, since a spectrum holds those
      * arrays in {@code mz()} and {@code intensity()}, and so is a peak whose {@code index()} is not a position of its
      * spectrum's peak arrays when those are written.
+     * spectra_data and spectra_peaks have one intensity column for each unit of the intensities the spectra write,
+     * {@link Spectrum#intensityUnit()} for {@code intensity()}, {@link Spectrum#peakIntensityUnit()} for
+     * {@code peaks()}, MS:1000131 (number of detector counts) for a spectrum without one, named and declared as those
+     * of chromatograms_data below ({@code intensity}, {@code intensity_MS_1000132}; in the Numpress encoding the
+     * transform columns {@code intensity_numpress_slof_bytes}, {@code intensity_MS_1000132_numpress_slof_bytes}); a
+     * spectrum's rows hold their intensity in the column of their unit and null in the others. A CENTROID spectrum
+     * whose arrays and peak list differ in intensity unit is no peak copy and writes both files.
      * Every key of the chromatograms' {@link Chromatogram#arrays()} becomes one extra column of chromatograms_data in
      * the same way, a chromatogram without the key writing null cells; a key MS:1000595 or MS:1000515 is rejected,
      * since a chromatogram holds those arrays in {@code time()} and {@code intensity()}. chromatograms_data has one
@@ -154,8 +168,9 @@ public final class MzPeakWriter {
      * other one {@code intensity_} followed by the unit with each character other than an ASCII letter or digit as
      * {@code _} ({@code intensity_UO_0000269}), or {@code intensity_unitless} for chromatograms without a unit, made
      * unique. A chromatogram's row holds its intensity in the column of its unit and null in the others.
-     * chromatograms_data declares its time column in the {@link Chromatogram#timeUnit()} of the chromatograms, which
-     * must all have the same one, and holds their times as given.
+     * chromatograms_data declares its time column in minutes (UO:0000031) and holds each chromatogram's times
+     * converted to minutes from its {@link Chromatogram#timeUnit()}, which must be minute, second (UO:0000010),
+     * millisecond (UO:0000028) or hour (UO:0000032).
      * Spectrum, chromatogram and wavelength-spectrum indices must be unique and non-negative, and so must every
      * precursor_index that is written (the packed metadata layout writes only the primary precursor's); several
      * spectra may share one. In the split metadata layout, which writes every precursor, precursors of one spectrum
@@ -164,8 +179,47 @@ public final class MzPeakWriter {
      * its key, whatever the row order. The typical violation is a spectrum with several precursors written without
      * its parent spectra; writing the parents as well avoids it. The selected ions of a spectrum are written in the
      * order of their precursor's precursor_index, null first, which the Rust reference reader also needs.
+     * The split layout also replicates the MSn selected-ion chain the spec requires: a spectrum whose precursor names a
+     * written spectrum with precursors of its own is written with those precursors (its precursor_index, isolation
+     * window, selected ions and activation) after its own, recursively, except one whose precursor_index the spectrum
+     * already lists; an MS3 spectrum from an MS2 spectrum from an MS1 spectrum is written with its own precursor and
+     * then the MS2 spectrum's.
+     * No m/z, chromatogram time, wavelength or intensity (of arrays and peak lists) may be NaN, in any encoding:
+     * parquet-java writes no column index for a page holding a NaN, and the spec requires a page index for every
+     * column. A NaN in an extra array, and a NaN optional metadata double (an injection time, a scan window limit, an
+     * isolation window value, a selected-ion m/z or intensity, a lambda max, a Param value), is written as null; an
+     * extra array cell reads back as NaN, the others as absent.
      * With {@link SignalEncoding#NUMPRESS}, every m/z and intensity written must be in the range that encoding
      * documents.
+     * A {@link org.mzpeak.model.Param} value is {@code null}, a {@code Long}, {@code Integer}, {@code Short} or
+     * {@code Byte} (read back as a {@code Long}), a {@code Double} or {@code Float} (read back as a {@code Double}), a
+     * {@code String}, a {@code Boolean}, or a {@code java.util.Collection} or Java array of these, written as a JSON
+     * array (a JSON string of it in a Parquet {@code parameters} list) and read back as its compact JSON text
+     * ({@code "[1,2]"}).
+     * Every CURIE written must have a CV prefix that {@code metadata.cv_list} declares, as conformance.md requires:
+     * one of {@link CvEntry#known()} or one the {@link Options#withCvList cv list} of {@code options} gives with all
+     * four fields. Checked are the accession and unit of every param (of the entities, their scans, precursors and
+     * selected ions, the scan settings and the file metadata), every array key that is a CURIE, the intensity and
+     * peak intensity unit of every spectrum, the type and intensity unit of every chromatogram, and the name, the
+     * params, the data type, the compression and the unit of every auxiliary array; a value without a colon, such as
+     * the unit {@code seconds}, is no CURIE and is written as given, except as an intensity unit of a spectrum, its
+     * peaks or a chromatogram, which must be a CURIE (array_index.json), and as the unit of an auxiliary array, of its
+     * name or of one of its params, or the accession of one of its params, which must be null or a CURIE the Rust
+     * reference reader parses, {@code PREFIX:number} with a number that fits u32; in the
+     * {@link MetadataLayout#SPLIT} layout so must the accession and unit of every param of an entity, its scans and
+     * its precursors (their isolation windows, activations and selected ions), which that layout writes to the
+     * {@code parameters} lists that reader parses. The name accession, the data type
+     * and the compression of an auxiliary array must be terms that reader maps. These Rust-reader rules are the
+     * decision D13-28 (docs/releases/0.13.0.md), which deviates from D13-19 and, in the split layout, D13-26. Every
+     * explicit reference must
+     * name an entry of {@code fileMetadata}: a scan's
+     * instrument configuration, a spectrum's, chromatogram's or auxiliary array's data processing, the software of an
+     * instrument configuration or a processing method, a scan setting's source file and each non-null default of the run. A null
+     * run default is filled with the first entry of its list, else with a stub entry and a WARNING. Without file
+     * metadata ({@code null} or {@link FileMetadata#EMPTY}) nothing is declared, so every non-null reference is
+     * rejected. A blank String reference counts as absent and is written as given.
+     * In the {@link MetadataLayout#SPLIT} layout every param of the scan settings and of the file metadata, which are
+     * written as JSON, must have a name, as schema/param.json requires.
      * Input that breaks these rules is rejected with an {@link MzPeakException} before anything is written.
      *
      * @throws NullPointerException if {@code options} is {@code null}
@@ -348,8 +402,13 @@ public final class MzPeakWriter {
      * @param options        the settings of the write
      * @return the open session
      * @throws MzPeakException      when {@code target} exists and is not an empty directory, when it cannot be read,
-     *                              created or written, or when a key of {@code spectrumArrays} is MS:1000514 or
-     *                              MS:1000515, which a spectrum holds in {@code mz()} and {@code intensity()}
+     *                              created or written, when a key of {@code spectrumArrays} is MS:1000514 or
+     *                              MS:1000515, which a spectrum holds in {@code mz()} and {@code intensity()}, or when
+     *                              a Param of {@code fileMetadata} or {@code scanSettings} has a value of a type
+     *                              {@code writeDirectory} does not write, or when a CURIE of {@code fileMetadata},
+     *                              {@code scanSettings} or {@code spectrumArrays} has a CV prefix that
+     *                              {@code metadata.cv_list} would not declare or a reference of {@code fileMetadata}
+     *                              or {@code scanSettings} names nothing, as {@code writeDirectory} states
      * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
      */
     public static Session openDirectory(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
@@ -372,7 +431,10 @@ public final class MzPeakWriter {
      * @param options        the settings of the write
      * @return the open session
      * @throws MzPeakException      when {@code target} exists, when the temp directory cannot be created or written,
-     *                              or when a key of {@code spectrumArrays} is MS:1000514 or MS:1000515
+     *                              when a key of {@code spectrumArrays} is MS:1000514 or MS:1000515, or when a Param of
+     *                              {@code fileMetadata} or {@code scanSettings} has a value of a type
+     *                              {@code writeDirectory} does not write, or when a CURIE or reference of them breaks
+     *                              a rule {@code openDirectory} names
      * @throws NullPointerException when an argument, a scan setting or a key is {@code null}
      */
     public static Session openArchive(Path target, FileMetadata fileMetadata, List<ScanSettings> scanSettings,
@@ -428,7 +490,7 @@ public final class MzPeakWriter {
          * m/z up to 21474.83 always do. Intensities must be in the range of the {@link NumpressIntensityEncoding}
          * (finite and at least 0; with PIC, rounding to at most 2147483647). A write with another value throws
          * {@link MzPeakException} naming the spectrum index, the array and the value before anything is written;
-         * {@link #POINT} writes such values (a NaN m/z reads back interpolated, as a null in the point layout does).
+         * {@link #POINT} writes such values, but for a NaN, which no encoding writes.
          */
         NUMPRESS
     }
@@ -449,26 +511,29 @@ public final class MzPeakWriter {
     public static final class Options {
 
         private static final Options DEFAULTS = new Options(SignalEncoding.POINT, NumpressIntensityEncoding.SLOF,
-                OptionalLong.empty(), MetadataLayout.SPLIT, List.of());
+                OptionalLong.empty(), MetadataLayout.SPLIT, List.of(), List.of(ArrayIndex.COUNTS_UNIT));
 
         private final SignalEncoding signalEncoding;
         private final NumpressIntensityEncoding numpressIntensity;
         private final OptionalLong rowGroupSize;
         private final MetadataLayout metadataLayout;
         private final List<CvEntry> cvList;
+        private final List<String> spectrumIntensityUnits;
 
         private Options(SignalEncoding signalEncoding, NumpressIntensityEncoding numpressIntensity,
-                        OptionalLong rowGroupSize, MetadataLayout metadataLayout, List<CvEntry> cvList) {
+                        OptionalLong rowGroupSize, MetadataLayout metadataLayout, List<CvEntry> cvList,
+                        List<String> spectrumIntensityUnits) {
             this.signalEncoding = signalEncoding;
             this.numpressIntensity = numpressIntensity;
             this.rowGroupSize = rowGroupSize;
             this.metadataLayout = metadataLayout;
             this.cvList = cvList;
+            this.spectrumIntensityUnits = spectrumIntensityUnits;
         }
 
         /**
-         * Point layout, SLOF Numpress intensity, no row-group size, the split metadata layout and no cv list of the
-         * caller's: what the plain overloads write.
+         * Point layout, SLOF Numpress intensity, no row-group size, the split metadata layout, no cv list of the
+         * caller's and the spectrum intensity unit MS:1000131: what the plain overloads write.
          */
         public static Options defaults() {
             return DEFAULTS;
@@ -510,13 +575,21 @@ public final class MzPeakWriter {
         }
 
         /**
+         * The intensity units the spectra of a {@link Session} may have ({@link #withSpectrumIntensityUnits}), in the
+         * order given, without repeats; MS:1000131 by default. Unmodifiable.
+         */
+        List<String> spectrumIntensityUnits() {
+            return spectrumIntensityUnits;
+        }
+
+        /**
          * These options with {@code encoding} for spectra_data and spectra_peaks.
          *
          * @throws NullPointerException if {@code encoding} is {@code null}
          */
         public Options withSignalEncoding(SignalEncoding encoding) {
             return new Options(Objects.requireNonNull(encoding, "encoding"), numpressIntensity, rowGroupSize,
-                    metadataLayout, cvList);
+                    metadataLayout, cvList, spectrumIntensityUnits);
         }
 
         /**
@@ -527,7 +600,7 @@ public final class MzPeakWriter {
          */
         public Options withNumpressIntensity(NumpressIntensityEncoding encoding) {
             return new Options(signalEncoding, Objects.requireNonNull(encoding, "encoding"), rowGroupSize,
-                    metadataLayout, cvList);
+                    metadataLayout, cvList, spectrumIntensityUnits);
         }
 
         /**
@@ -541,7 +614,8 @@ public final class MzPeakWriter {
             if (bytes <= 0) {
                 throw new IllegalArgumentException("row-group size must be positive: " + bytes);
             }
-            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout, cvList);
+            return new Options(signalEncoding, numpressIntensity, OptionalLong.of(bytes), metadataLayout, cvList,
+                    spectrumIntensityUnits);
         }
 
         /**
@@ -552,26 +626,69 @@ public final class MzPeakWriter {
          */
         public Options withMetadataLayout(MetadataLayout layout) {
             return new Options(signalEncoding, numpressIntensity, rowGroupSize,
-                    Objects.requireNonNull(layout, "layout"), cvList);
+                    Objects.requireNonNull(layout, "layout"), cvList, spectrumIntensityUnits);
         }
 
         /**
          * These options with the caller's controlled vocabularies, such as the cv list of an mzML source, so that
-         * {@code metadata.cv_list} keeps their versions and URIs. The writer still declares only MS, UO and the CVs
-         * the dataset uses, in the order of {@link CvEntry#known()}, but a CV the list holds is declared with the
-         * list's entry, the first one when the list holds its id more than once, its missing fields filled: each
-         * {@code null} full name, URI or version takes the value of {@link CvEntry#known()}, with a warning naming
-         * the fields. A CV in use that {@link CvEntry#known()} lacks and the list holds is declared after the known
-         * ones, in the list's order, without the warning that such a CV otherwise gets, if the list's entry has all
-         * fields; else it is not declared, and the warning names the missing fields. An entry without an id is not
-         * declared, with a warning; nor is an entry for a CV the dataset does not use. So every
-         * {@code metadata.cv_list} entry has an id, full name, URI and version. The list is copied.
+         * {@code metadata.cv_list} keeps their versions and URIs where they identify a fixed release, as
+         * conformance.md requires. The writer still declares only MS, UO and the CVs the dataset uses, in the order
+         * of {@link CvEntry#known()}. A CV of {@link CvEntry#known()} the list holds is declared with the list's
+         * entry, the first one when the list holds its id more than once, if that entry has the URI and version of
+         * {@link CvEntry#known()} or shows its release: a URI on {@code purl.obolibrary.org} or
+         * {@code www.ebi.ac.uk} with a path segment equal to the version (or {@code v} and the version), or a
+         * {@code raw.githubusercontent.com} URI whose ref is a 40-hex commit hash; a {@code null} full name takes the
+         * value of {@link CvEntry#known()}, with a warning. Otherwise the entry of {@link CvEntry#known()} is
+         * declared, with a warning naming the CV and the list's URI and version. A CV in use that
+         * {@link CvEntry#known()} lacks and the list holds is declared after the known ones, in the list's order,
+         * without the warning that such a CV otherwise gets, if the list's entry has all fields; else it is not
+         * declared, and the warning names the missing fields. An entry without an id is not declared, with a
+         * warning; nor is an entry for a CV the dataset does not use. So every {@code metadata.cv_list} entry has an
+         * id, full name, URI and version. The list is copied.
          *
-         * @throws NullPointerException if {@code cvList} or one of its entries is {@code null}
+         * @throws NullPointerException     if {@code cvList} or one of its entries is {@code null}
+         * @throws IllegalArgumentException if an entry of a CV {@link CvEntry#known()} lacks cannot identify a fixed
+         *                                  release: it has no version, or its URI has a path segment {@code master},
+         *                                  {@code main}, {@code HEAD}, {@code trunk}, {@code heads}, {@code cvs},
+         *                                  {@code viewvc} or {@code svn} (in any case), a host ending in
+         *                                  {@code .cvs.sourceforge.net} or {@code *checkout*} in it; the message
+         *                                  names the CV, the URI and the version
          */
         public Options withCvList(List<CvEntry> cvList) {
-            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout,
-                    List.copyOf(Objects.requireNonNull(cvList, "cvList")));
+            List<CvEntry> copy = List.copyOf(Objects.requireNonNull(cvList, "cvList"));
+            KnownCvs.requireFixedReleases(copy);
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, copy,
+                    spectrumIntensityUnits);
+        }
+
+        /**
+         * These options with {@code units} as the intensity units of the spectra of a {@link Session}, such as
+         * MS:1000131 (number of detector counts, the default) and MS:1000132 (percent of base peak). Parquet needs
+         * every column before the first row is written (signal-data.md), so a session gives spectra_data and
+         * spectra_peaks one intensity column for each of these units when it opens, and refuses a spectrum whose
+         * {@link Spectrum#intensityUnit()} or {@link Spectrum#peakIntensityUnit()} is another unit with an
+         * {@link MzPeakException} naming the spectrum and these units; a spectrum without a unit is written in
+         * MS:1000131. The batch overloads ignore this setting: they give the spectrum signal files one intensity
+         * column for each unit of the spectra written. The column of MS:1000131, else of the first unit, is named
+         * {@code intensity}; every other one {@code intensity_} followed by the unit with each character other than an
+         * ASCII letter or digit as {@code _} ({@code intensity_MS_1000132}), made unique, and its array-index entry
+         * has buffer priority secondary. A repeated unit counts once. Each unit must be a CURIE
+         * ({@code PREFIX:local}, as array_index.json requires of the unit of an array) with a CV prefix that
+         * {@code metadata.cv_list} declares, which the session checks when it opens.
+         *
+         * @throws NullPointerException     if {@code units} or one of them is {@code null}
+         * @throws IllegalArgumentException if {@code units} is empty
+         */
+        public Options withSpectrumIntensityUnits(String... units) {
+            Set<String> distinct = new LinkedHashSet<>();
+            for (String unit : Objects.requireNonNull(units, "units")) {
+                distinct.add(Objects.requireNonNull(unit, "spectrum intensity unit"));
+            }
+            if (distinct.isEmpty()) {
+                throw new IllegalArgumentException("at least one spectrum intensity unit is needed");
+            }
+            return new Options(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList,
+                    List.copyOf(distinct));
         }
 
         @Override
@@ -581,19 +698,21 @@ public final class MzPeakWriter {
             }
             return o instanceof Options other && signalEncoding == other.signalEncoding
                     && numpressIntensity == other.numpressIntensity && rowGroupSize.equals(other.rowGroupSize)
-                    && metadataLayout == other.metadataLayout && cvList.equals(other.cvList);
+                    && metadataLayout == other.metadataLayout && cvList.equals(other.cvList)
+                    && spectrumIntensityUnits.equals(other.spectrumIntensityUnits);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList);
+            return Objects.hash(signalEncoding, numpressIntensity, rowGroupSize, metadataLayout, cvList,
+                    spectrumIntensityUnits);
         }
 
         @Override
         public String toString() {
             return "Options[signalEncoding=" + signalEncoding + ", numpressIntensity=" + numpressIntensity
                     + ", rowGroupSize=" + rowGroupSize + ", metadataLayout=" + metadataLayout + ", cvList=" + cvList
-                    + "]";
+                    + ", spectrumIntensityUnits=" + spectrumIntensityUnits + "]";
         }
     }
 
@@ -618,8 +737,12 @@ public final class MzPeakWriter {
      * {@link Spectrum#index()} is not the number of spectra added so far is refused. Each spectrum is written as given,
      * with its index and every precursor_index, which must name a spectrum of the dataset: when the session finishes,
      * each precursor_index the metadata layout writes must be less than the number of spectra (the parent may come
-     * after the spectrum that names it). Every key of a spectrum's {@link Spectrum#arrays()} and
-     * {@link Spectrum#peakArrays()} must be one of the spectrum arrays the session was opened with. The other rules are
+     * after the spectrum that names it). In the split layout, the finish appends the MSn selected-ion chain as
+     * {@code writeDirectory} does, from the precursors of every spectrum added. Every key of a spectrum's
+     * {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()} must be one of the spectrum arrays the session was
+     * opened with, and the unit of every intensity it writes, {@link Spectrum#intensityUnit()} or
+     * {@link Spectrum#peakIntensityUnit()} (MS:1000131 when null), one of the spectrum intensity units of its options
+     * ({@link Options#withSpectrumIntensityUnits}, MS:1000131 by default). The other rules are
      * those of {@link MzPeakWriter#writeDirectory(Path, List, List, List, List, FileMetadata, Options) writeDirectory}:
      * each precursor_index the layout writes is non-negative; in the split layout, precursors of a spectrum that share
      * their precursor_index carry no selected ions after the first of them; a peak's index is a position of the peak
@@ -628,7 +751,13 @@ public final class MzPeakWriter {
      * spectrum. A main axis that is not ascending is written re-sorted, with a WARNING. Chromatograms and wavelength
      * spectra are held until the finish and written then as {@code writeDirectory} writes them: in the order of their
      * indices, which must be unique and non-negative, numbered 0..n-1, each precursor_index of a chromatogram as the
-     * new index of the chromatogram it names, or null; a violation fails the finish.
+     * new index of the chromatogram it names, or null; a violation of these index rules fails the finish. A spectrum,
+     * chromatogram or wavelength spectrum with a CURIE whose CV prefix {@code metadata.cv_list} would not declare,
+     * with a reference that names nothing of the file metadata, or, in the split layout, with a param accession or
+     * unit that is no CURIE the Rust reference reader parses (rules of {@code writeDirectory}), is refused when it
+     * is added, and nothing of it is added; so is a chromatogram or wavelength spectrum that breaks one of its own
+     * rules of {@code writeDirectory} (its Params, NaN values, a negative precursor_index or a wavelength scan
+     * spectrum reference in the split layout).
      *
      * <p><b>Targets.</b> {@link MzPeakWriter#openDirectory openDirectory} writes the members into the directory as the
      * session goes; the directory must not exist (it is then created) or be empty. {@link MzPeakWriter#openArchive
@@ -648,7 +777,8 @@ public final class MzPeakWriter {
      * throws {@link IllegalStateException}, and closing does nothing. A session is not safe for use by several threads.
      *
      * <p><b>Memory.</b> A session holds about 2 KB per spectrum added (its description with its precursors, five
-     * summary values and its row counts), the chromatograms and wavelength spectra added, and the open row groups of
+     * summary values and its row counts) and its auxiliary arrays, in the packed layout too, which does not write
+     * them, the chromatograms and wavelength spectra added, and the open row groups of
      * spectra_data and spectra_peaks, up to the row-group size each (parquet-java's default of 128 MiB, which
      * {@link Options#withRowGroupSize} lowers); never the signal of a spectrum once {@link #addSpectrum} has returned.
      * Packing an archive needs disk space for about twice its size.
@@ -667,15 +797,26 @@ public final class MzPeakWriter {
         private final Path directory;
         private final Options options;
         private final Set<String> spectrumArrays;
+        private final List<IntensityColumn> intensities;
         private final List<ExtraColumn> extras;
         private final List<ScanSettings> scanSettings;
         private final Map<String, String> footer;
         private final WriteReport report;
+        /** What the entities added may name (W12); {@code null} in replace mode, whose plan checked its entities. */
+        private final WritePlanner.Declarations declarations;
         private final DatasetWriter dataset;
         private final List<Chromatogram> chromatograms = new ArrayList<>();
         private final List<WavelengthSpectrum> wavelengthSpectra = new ArrayList<>();
-        /** What the packed layout does not write of the spectra added: later scans, precursors, selected ions. */
-        private final int[] packedDrops = new int[3];
+        /**
+         * What the packed layout does not write of the spectra added: later scans, precursors, selected ions, data
+         * processing references.
+         */
+        private final int[] packedDrops = new int[4];
+        /**
+         * What the writer does not write yet of the spectra added ({@link WritePlanner#countUnwritten(Spectrum,
+         * int[])}): products, precursor MS levels.
+         */
+        private final int[] unwritten = new int[WritePlanner.UNWRITTEN_KINDS];
         private State state = State.OPEN;
 
         /**
@@ -683,8 +824,9 @@ public final class MzPeakWriter {
          * members, creating that directory if need be. A failure there leaves what {@link #close()} leaves.
          */
         private Session(Path target, boolean archive, boolean replace, boolean createdDirectory, Options options,
-                        List<ExtraColumn> extras, boolean writesSpectraData, List<ScanSettings> scanSettings,
-                        Map<String, String> footer, WriteReport report) {
+                        List<IntensityColumn> intensities, List<ExtraColumn> extras, boolean writesSpectraData,
+                        List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report,
+                        WritePlanner.Declarations declarations) {
             this.target = target;
             this.archive = archive;
             this.replace = replace;
@@ -694,12 +836,14 @@ public final class MzPeakWriter {
             for (ExtraColumn extra : extras) {
                 spectrumArrays.add(extra.key());
             }
+            this.intensities = intensities;
             this.extras = extras;
             this.scanSettings = scanSettings;
             this.footer = footer;
             this.report = report;
+            this.declarations = declarations;
             this.directory = archive ? ArchivePacker.stagingDirectory(target) : target;
-            this.dataset = new DatasetWriter(directory, options, extras, writesSpectraData);
+            this.dataset = new DatasetWriter(directory, options, intensities, extras, writesSpectraData);
             try (Step step = new Step()) {
                 dataset.open();
                 step.done();
@@ -712,12 +856,17 @@ public final class MzPeakWriter {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(fileMetadata, "fileMetadata");
             List<ScanSettings> settings = List.copyOf(Objects.requireNonNull(scanSettings, "scanSettings"));
+            WritePlanner.requireWritableScanSettings(settings);
             Set<String> keys = new LinkedHashSet<>();
             for (String key : Objects.requireNonNull(spectrumArrays, "spectrumArrays")) {
                 keys.add(Objects.requireNonNull(key, "spectrumArrays key"));
             }
             Objects.requireNonNull(options, "options");
-            List<ExtraColumn> extras = WritePlanner.spectrumExtras(keys);
+            List<IntensityColumn> intensities = WritePlanner.spectrumIntensities(options.spectrumIntensityUnits());
+            List<ExtraColumn> extras = WritePlanner.spectrumExtras(keys, intensities);
+            WritePlanner.Declarations declarations = WritePlanner.declarations(fileMetadata, settings, options);
+            declarations.requireArrayKeys("spectrumArrays", keys);
+            declarations.requireIntensityUnits("spectrumIntensityUnits", options.spectrumIntensityUnits());
             boolean exists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
             if (exists && (archive || !isEmptyDirectory(target))) {
                 throw new MzPeakException(archive
@@ -725,8 +874,9 @@ public final class MzPeakWriter {
                         : "mzPeak session target " + target + " exists and is not an empty directory; openDirectory"
                         + " writes only into a new or empty directory");
             }
-            return new Session(target, archive, false, !archive && !exists, options, extras, true, settings,
-                    FooterMetadataWriter.serialize(fileMetadata), new WriteReport());
+            return new Session(target, archive, false, !archive && !exists, options, intensities, extras, true,
+                    settings, FooterMetadataWriter.serialize(fileMetadata, options.metadataLayout()),
+                    new WriteReport(), declarations);
         }
 
         /**
@@ -735,11 +885,13 @@ public final class MzPeakWriter {
          * files of their names and other files left alone; closing the session without a finish deletes only the temp
          * files of an archive. Its spectrum signal files get the plan's extra columns, the union of the keys of the
          * planned spectra in first-seen order. The plan's spectrum signals are added with {@link #append} and the
-         * session finishes with {@link #finish(WritePlan)}.
+         * session finishes with {@link #finish(WritePlan)}. They get the plan's intensity columns too, one for each
+         * intensity unit of the planned spectra.
          */
         static Session replacing(Path target, boolean archive, WritePlan plan) {
-            return new Session(target, archive, true, false, plan.options(), plan.spectrumExtras(),
-                    plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report());
+            return new Session(target, archive, true, false, plan.options(), plan.spectrumIntensities(),
+                    plan.spectrumExtras(), plan.writesSpectraData(), plan.scanSettings(), plan.footer(), plan.report(),
+                    null);
         }
 
         /** Whether {@code target}, which exists, is a directory without an entry. */
@@ -769,28 +921,36 @@ public final class MzPeakWriter {
             if (spectrum.index() != expected) {
                 throw new MzPeakException("expected spectrum index " + expected + ", got " + spectrum.index());
             }
+            declarations.require(spectrum);
             WriteReport warnings = new WriteReport();
-            append(WritePlanner.sessionSignal(spectrum, spectrumArrays, options, warnings, packedDrops));
+            append(WritePlanner.sessionSignal(spectrum, spectrumArrays, intensities, options, warnings, packedDrops));
+            WritePlanner.countUnwritten(spectrum, unwritten);
             for (String warning : warnings.warnings()) {
                 report.warn(warning);
             }
         }
 
         /**
-         * Adds {@code chromatogram}, which is written at the finish.
+         * Adds {@code chromatogram}, which is written at the finish, its times in minutes ({@link MzPeakWriter}).
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code chromatogram} is {@code null}
-         * @throws MzPeakException       if its {@link Chromatogram#timeUnit()} differs from that of the first
-         *                               chromatogram added; it is not added
+         * @throws MzPeakException       if its {@link Chromatogram#timeUnit()} cannot be converted to minutes (it is
+         *                               not minute, second, millisecond or hour), if a CURIE of it has an undeclared
+         *                               CV prefix or its data processing or that of an auxiliary array names nothing,
+         *                               or, in the split layout, a param accession or unit of it or its precursors is
+         *                               no CURIE the Rust reference reader parses (see the class documentation), if a Param of it, its precursors or its
+         *                               auxiliary arrays has neither name nor accession or a value of a type mzPeak
+         *                               cannot write, if a time or intensity is NaN, or if, in the split layout, a
+         *                               precursor_index is negative; it is not added
          */
         public void addChromatogram(Chromatogram chromatogram) {
             requireOpen();
             Objects.requireNonNull(chromatogram, "chromatogram");
-            if (!chromatograms.isEmpty()) {
-                WritePlanner.requireSameTimeUnit(chromatograms.get(0), chromatogram);
-            }
-            chromatograms.add(chromatogram);
+            Chromatogram inMinutes = WritePlanner.inMinutes(chromatogram);
+            declarations.require(inMinutes);
+            WritePlanner.requireWritable(inMinutes, options.metadataLayout());
+            chromatograms.add(inMinutes);
         }
 
         /**
@@ -798,10 +958,21 @@ public final class MzPeakWriter {
          *
          * @throws IllegalStateException after {@link #finish()} or {@link #close()}
          * @throws NullPointerException  if {@code spectrum} is {@code null}
+         * @throws MzPeakException       if the accession or unit of a param of it or of its scans, or a CURIE of one of
+         *                               its auxiliary arrays, has an undeclared CV prefix, if the instrument
+         *                               configuration of a scan or the data processing of an auxiliary array names
+         *                               nothing, or, in the split layout, a param accession or unit of it or its
+         *                               scans is no CURIE the Rust reference reader parses (see the class
+         *                               documentation), if a Param of it, its scans or its
+         *                               auxiliary arrays has neither name nor accession or a value of a type mzPeak
+         *                               cannot write, if a wavelength or intensity is NaN, or if, in the split
+         *                               layout, a scan has a spectrum reference (D13-12); it is not added
          */
         public void addWavelengthSpectrum(WavelengthSpectrum spectrum) {
             requireOpen();
-            wavelengthSpectra.add(Objects.requireNonNull(spectrum, "spectrum"));
+            declarations.require(Objects.requireNonNull(spectrum, "spectrum"));
+            WritePlanner.requireWritable(spectrum, options.metadataLayout());
+            wavelengthSpectra.add(spectrum);
         }
 
         /**
@@ -816,8 +987,8 @@ public final class MzPeakWriter {
         public void finish() {
             finish(() -> {
                 WritePlanner.warnPackedDrops(packedDrops, report);
-                return WritePlanner.planFinish(options, dataset.entries(), extras, chromatograms, wavelengthSpectra,
-                        scanSettings, footer, report);
+                return WritePlanner.planFinish(options, dataset.entries(), intensities, extras, chromatograms,
+                        wavelengthSpectra, scanSettings, footer, unwritten, report);
             });
         }
 

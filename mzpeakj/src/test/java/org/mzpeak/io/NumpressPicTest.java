@@ -29,7 +29,7 @@ class NumpressPicTest {
         }
 
         Path out = tmp.resolve("pic.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(out, spectra, List.of(),
+        MzPeakWriter.writeDirectoryNumpress(out, Fixtures.withoutReferences(spectra), List.of(),
                 org.mzpeak.model.meta.FileMetadata.EMPTY,
                 MzPeakWriter.NumpressIntensityEncoding.PIC);
 
@@ -75,9 +75,9 @@ class NumpressPicTest {
         }
         Path slof = tmp.resolve("slof.mzpeak");
         Path pic  = tmp.resolve("pic.mzpeak");
-        MzPeakWriter.writeDirectoryNumpress(slof, spectra, List.of(),
+        MzPeakWriter.writeDirectoryNumpress(slof, Fixtures.withoutReferences(spectra), List.of(),
                 org.mzpeak.model.meta.FileMetadata.EMPTY, MzPeakWriter.NumpressIntensityEncoding.SLOF);
-        MzPeakWriter.writeDirectoryNumpress(pic, spectra, List.of(),
+        MzPeakWriter.writeDirectoryNumpress(pic, Fixtures.withoutReferences(spectra), List.of(),
                 org.mzpeak.model.meta.FileMetadata.EMPTY, MzPeakWriter.NumpressIntensityEncoding.PIC);
 
         // Both must be readable and produce the same spectrum count

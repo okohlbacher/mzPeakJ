@@ -14,6 +14,7 @@ import org.mzpeak.io.WritePlan.Entry;
 import org.mzpeak.io.WritePlan.ExtraColumn;
 import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumEntry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -68,9 +69,10 @@ final class ManifestWriter {
         PIN_29E59B2,
         /**
          * The current spec's spellings, {@link EntityType#canonical()} and {@link DataKind#canonical()}. Scan settings
-         * are written as the reference serialises them: every entry with its {@code id}, {@code source_file_refs},
-         * {@code targets} and {@code parameters}, and every param with {@code name}, {@code accession},
-         * {@code value} and {@code unit}, absent values as {@code null}. Written with the split metadata layout.
+         * are written in the shape of the spec's {@code schema/scan_settings_list.json}: every entry with its
+         * {@code id}, {@code source_file_references}, {@code targets} (each an object holding its {@code parameters})
+         * and {@code parameters}, and every param with {@code name}, {@code accession}, {@code value} and
+         * {@code unit}, absent values as {@code null}. Written with the split metadata layout.
          */
         CURRENT;
 
@@ -99,7 +101,8 @@ final class ManifestWriter {
      * this manifest, that is of a column mapping, a scan-settings param or a file-metadata document; then every other
      * CV in use that the caller's cv list of the plan's options holds, in that list's order. A CV the caller's list
      * holds is declared with the list's entry ({@link KnownCvs#declare}). A prefix neither {@link KnownCvs} nor the
-     * caller's list knows is not declared and gets one warning in the plan's report.
+     * caller's list knows is not declared and gets one warning in the plan's report; {@link MzPeakWriter} rejects such
+     * a prefix before it writes anything ({@link WritePlanner#declarations}, W12).
      */
     static void writeManifest(Path directory, List<WrittenMember> members, WritePlan plan, Dialect dialect)
             throws IOException {
@@ -143,7 +146,9 @@ final class ManifestWriter {
                 n.put("id", ss.id());
             }
             if (current || !ss.sourceFileRefs().isEmpty()) {
-                ArrayNode refs = n.putArray("source_file_refs");
+                // The spec's schema/scan_settings_list.json names the references source_file_references; the pin
+                // dialect keeps the reference's source_file_refs.
+                ArrayNode refs = n.putArray(current ? "source_file_references" : "source_file_refs");
                 for (String ref : ss.sourceFileRefs()) {
                     refs.add(ref);
                 }
@@ -151,7 +156,9 @@ final class ManifestWriter {
             if (current || !ss.targets().isEmpty()) {
                 ArrayNode targets = n.putArray("targets");
                 for (List<Param> target : ss.targets()) {
-                    writeScanSettingsParams(targets.addArray(), target, current);
+                    // The spec's target is an object with its parameters; the pin's a bare array of them.
+                    ArrayNode params = current ? targets.addObject().putArray("parameters") : targets.addArray();
+                    writeScanSettingsParams(params, target, current);
                 }
             }
             writeScanSettingsParams(n.putArray("parameters"), ss.parameters(), current);
@@ -170,12 +177,10 @@ final class ManifestWriter {
                 if (p.name() != null) pn.put("name", p.name());
                 if (p.accession() != null) pn.put("accession", p.accession());
             }
-            Object v = p.value();
-            if (v instanceof Long l) pn.put("value", l);
-            else if (v instanceof Integer i) pn.put("value", i.longValue());
-            else if (v instanceof Double dd) pn.put("value", dd);
-            else if (v instanceof Boolean b) pn.put("value", b);
-            else if (v != null) pn.put("value", v.toString());
+            if (p.value() != null) {
+                // WritePlanner.requireWritableScanSettings refused the types ParamValues.json does not write.
+                pn.set("value", ParamValues.json(p.value()));
+            }
             if (current) {
                 pn.put("unit", p.unit());
             } else if (p.unit() != null) {
@@ -220,18 +225,22 @@ final class ManifestWriter {
     /**
      * Every CURIE prefix of the plan's spectra, chromatograms and wavelength spectra, mapped to the first CURIE that
      * uses it: the accession and unit of every param of a spectrum, of each of its scans, and of each precursor's
-     * isolation window, activation and selected ions; the array type and unit of every extra column of the spectrum
-     * signal files, that is every CURIE key of the written spectra's {@code arrays()} and {@code peakArrays()} (a key
-     * that is not a CURIE is written as MS:1000786); the chromatogram types, the accession and unit of every param
-     * of a chromatogram, and of each of its precursors' isolation window, activation and selected ions; the time unit
-     * of the chromatograms; the unit of every intensity column of chromatograms_data, that is every intensity unit
-     * of a chromatogram; the array type and unit of every extra column of chromatograms_data, that is every CURIE
-     * key of the chromatograms' {@code arrays()}; and the accession and unit of every param of a wavelength
-     * spectrum. The packed layout writes
+     * isolation window, activation and selected ions; the unit of every intensity column of the spectrum signal
+     * files, that is every intensity unit the spectra write; the array type and unit of every extra column of the
+     * spectrum signal files, that is every CURIE key of the written spectra's {@code arrays()} and
+     * {@code peakArrays()} (a key that is not a CURIE is written as MS:1000786); the chromatogram types, the
+     * accession and unit of every param
+     * of a chromatogram, and of each of its precursors' isolation window, activation and selected ions; minute
+     * (UO:0000031), the unit of the chromatograms_data time column; the unit of every intensity column of
+     * chromatograms_data, that is every intensity unit of a chromatogram; the array type and unit of every extra
+     * column of chromatograms_data, that is every CURIE key of the chromatograms' {@code arrays()}; and the accession
+     * and unit of every param of a wavelength spectrum and of each of its scans; and the accession and unit of the
+     * name and of every param, the data type, the compression and the unit of every auxiliary array of a spectrum,
+     * chromatogram or wavelength spectrum. The packed layout writes
      * only a spectrum's first scan and primary precursor and selected ion, and no chromatogram precursor or
-     * chromatogram or wavelength-spectrum param, but the prefixes of the others count too. The other CURIEs the
-     * writer puts into a member are MS and UO terms, and the IMS position columns, which only a scan's IMS params give
-     * rise to.
+     * chromatogram or wavelength-spectrum param or wavelength scan, but the prefixes of the others count too. The
+     * other CURIEs the writer puts into a member are MS and UO terms, and the IMS position columns, which only a
+     * scan's IMS params give rise to.
      */
     private static Map<String, String> prefixesOf(WritePlan plan) {
         Map<String, String> used = new LinkedHashMap<>();
@@ -242,6 +251,10 @@ final class ManifestWriter {
                 addParamPrefixes(scan.parameters(), used);
             }
             addPrecursorPrefixes(d.precursors(), used);
+            addAuxiliaryPrefixes(entry.auxiliaryArrays(), used);
+        }
+        for (IntensityColumn intensity : plan.spectrumIntensities()) {
+            addPrefix(intensity.unit(), used);
         }
         for (ExtraColumn extra : plan.spectrumExtras()) {
             addPrefix(extra.arrayType(), used);
@@ -251,9 +264,10 @@ final class ManifestWriter {
             addPrefix(entry.source().typeCurie(), used);
             addParamPrefixes(entry.source().parameters(), used);
             addPrecursorPrefixes(entry.source().precursors(), used);
+            addAuxiliaryPrefixes(entry.source().auxiliaryArrays(), used);
         }
         if (plan.writesChromatograms()) {
-            addPrefix(plan.chromatogramTimeUnit(), used);
+            addPrefix(ArrayIndex.MINUTE_UNIT, used);
         }
         for (IntensityColumn intensity : plan.chromatogramIntensities()) {
             addPrefix(intensity.unit(), used);
@@ -264,8 +278,23 @@ final class ManifestWriter {
         }
         for (Entry<WavelengthSpectrum> entry : plan.wavelengthSpectra()) {
             addParamPrefixes(entry.source().parameters(), used);
+            for (ScanEvent scan : entry.source().scans()) {
+                addParamPrefixes(scan.parameters(), used);
+            }
+            addAuxiliaryPrefixes(entry.source().auxiliaryArrays(), used);
         }
         return used;
+    }
+
+    /** Adds the prefixes of the name, params, data type, compression and unit of each of {@code arrays}. */
+    private static void addAuxiliaryPrefixes(List<AuxiliaryArray> arrays, Map<String, String> used) {
+        for (AuxiliaryArray a : arrays) {
+            addParamPrefixes(List.of(a.name()), used);
+            addPrefix(a.dataType(), used);
+            addPrefix(a.compression(), used);
+            addPrefix(a.unit(), used);
+            addParamPrefixes(a.parameters(), used);
+        }
     }
 
     /** Adds the prefixes of the params of each precursor's isolation window, activation and selected ions. */

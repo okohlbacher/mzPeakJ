@@ -6,7 +6,9 @@ import java.util.Optional;
 /**
  * A controlled-vocabulary or user parameter: a {@link #name}, an optional {@link #accession} CURIE
  * (e.g. {@code MS:1000045}), a typed {@link #value} (Long/Double/String/Boolean/null), and an optional
- * {@link #unit} CURIE (e.g. {@code UO:0000266}).
+ * {@link #unit} CURIE (e.g. {@code UO:0000266}). The reader gives a list value as its compact JSON text, a String;
+ * the writer also takes an Integer, Short or Byte (read back as a Long), a Float (read back as a Double), and a
+ * {@code java.util.Collection} or Java array of these types (read back as its JSON text), and refuses any other type.
  *
  * <p>Null {@code accession} means a user param. Shared by the spectrum-level inline param lists
  * (per-spectrum/scan/precursor/selected-ion {@code parameters} columns) and the file-level metadata

@@ -109,8 +109,9 @@ class SplitIonMobilityColumnsTest {
                 // a type the reader names "ion mobility value", without unit
                 params -> replace(params, p -> new Param("SelexION separation voltage", "MS:1003394", 2.0,
                         "UO:0000218")),
-                // a value that is not finite
-                params -> replace(params, p -> new Param(p.name(), p.accession(), Double.NaN, p.unit())),
+                // a value that is not finite (a NaN one is written as no value, W10)
+                params -> replace(params, p -> new Param(p.name(), p.accession(), Double.POSITIVE_INFINITY,
+                        p.unit())),
                 // a value that is not a number
                 params -> replace(params, p -> new Param(p.name(), p.accession(), "0.9", p.unit())));
         int i = 0;

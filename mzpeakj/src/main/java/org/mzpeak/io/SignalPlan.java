@@ -120,8 +120,9 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
      *       {@code schema} is skipped with a WARNING, unless it holds the entity's default axis or MS:1000515
      *       (intensity), in any buffer format: then the plan cannot be built. Only a footer can list such an entry;
      *       an INFERRED index is built from the schema.
-     *   <li>The first {@code index} entry names the index field; without one it is
-     *       {@link SignalEntity#indexField()}.
+     *   <li>The first {@code index} entry of array type MS:1003870 names the index field (the entity key); without
+     *       one it is {@link SignalEntity#indexField()}. Every other {@code index} entry, such as a parallel time
+     *       index (MS:1000595), is ignored with a DEBUG log.
      *   <li>The main axis is the array type with the lowest {@code sorting_rank} among the other entries (rank 1
      *       in current files, rank 0 in pin-era ones; the entity's default axis when no entry is ranked). It must be
      *       the entity's default axis. Its value-bearing entry is the values column, its chunk start, end and
@@ -170,8 +171,12 @@ record SignalPlan(SignalEntity entity, ArrayIndex.Source source, Layout layout, 
         Entry chunkEntry = null;
         for (Entry e : present) {
             if (e.format() == BufferFormat.INDEX) {
-                if (indexField == null) {
+                if (indexField == null && ArrayIndex.INDEX_ARRAY.equals(e.arrayType())) {
                     indexField = e.field();
+                } else {
+                    LOG.log(Level.DEBUG, () -> what + " lists the index entry " + e.path() + " (" + e.arrayType()
+                            + "), which is not the " + entity.key() + " key " + ArrayIndex.INDEX_ARRAY
+                            + "; it is ignored");
                 }
             } else {
                 arrays.add(e);

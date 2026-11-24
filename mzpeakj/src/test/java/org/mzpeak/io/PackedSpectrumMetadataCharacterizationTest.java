@@ -23,7 +23,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.IsolationWindow;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -366,21 +366,22 @@ class PackedSpectrumMetadataCharacterizationTest {
     }
 
     @Test
-    void aSelectedIonWithoutMzIsDropped() {
+    void aSelectedIonWithoutMzIsKeptWithMzNaN() {
         String mz = "MS_1000744_selected_ion_mz_unit_MS_1000040";
         Group withPrecursor = newRow();
         put(withPrecursor, SPECTRUM, fixtureStruct(SPECTRUM, 5));
         put(withPrecursor, PRECURSOR, fixtureStruct(PRECURSOR, 5));
         put(withPrecursor, SELECTED_ION, fixtureStruct(SELECTED_ION, 5), mz);
         assertThat(precursorLines(List.of(withPrecursor))).containsExactly(
-                "(1|controllerType=0 controllerNumber=1 scan=2|(558.8689575195312|1.0|1.0|[])|[]"
-                        + "|([(collision-induced dissociation|MS:1000133|null|␀)"
+                "(1|controllerType=0 controllerNumber=1 scan=2|(558.8689575195312|1.0|1.0|[])"
+                        + "|[(NaN|null|202177.84375|[])]|([(collision-induced dissociation|MS:1000133|null|␀)"
                         + ";(collision energy|MS:1000045|Double:35.0|UO:0000266)]))");
 
         Group withoutPrecursor = newRow();
         put(withoutPrecursor, SPECTRUM, fixtureStruct(SPECTRUM, 5));
         put(withoutPrecursor, SELECTED_ION, fixtureStruct(SELECTED_ION, 5), mz);
-        assertThat(precursorLines(List.of(withoutPrecursor))).containsExactly("(null|␀|null|[]|([]))");
+        assertThat(precursorLines(List.of(withoutPrecursor))).containsExactly(
+                "(null|␀|null|[(NaN|null|202177.84375|[])]|([]))");
     }
 
     /**
@@ -497,7 +498,7 @@ class PackedSpectrumMetadataCharacterizationTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

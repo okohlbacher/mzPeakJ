@@ -12,6 +12,7 @@ import org.mzpeak.io.MzPeakWriter.NumpressIntensityEncoding;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.ParquetOutput.SignalFile;
 import org.mzpeak.io.WritePlan.ExtraColumn;
+import org.mzpeak.io.WritePlan.IntensityColumn;
 import org.mzpeak.io.WritePlan.SpectrumSignal;
 import org.mzpeak.model.Spectrum;
 
@@ -27,16 +28,19 @@ import static org.mzpeak.io.ParquetOutput.UINT64;
  * spectrum at a time: chunks of up to 500 points, never a single-point chunk unless the spectrum has one point (501
  * points are written as 499 + 2, since the HEAD Python reader's pynumpress cannot decode the 12-byte linear payload
  * of a single value), m/z encoded with Numpress linear and intensity with Numpress SLOF or PIC, each as a
- * {@code list<uint8>} byte list. A file has the column of its own intensity encoding only, and every row an empty
+ * {@code list<uint8>} byte list. A file has the column of its own intensity encoding only, one for each of the plan's
+ * spectrum intensity columns ({@code intensity_numpress_slof_bytes}, {@code intensity_MS_1000132_numpress_slof_bytes}),
+ * a chunk's bytes in the column of its spectrum's unit and null in the others, and every row an empty
  * {@code mz_chunk_values} list. The plan's extra columns are {@code list<double>} chunk secondary columns, each sliced
- * with the chunk, and null in the rows of a spectrum that has no such array. {@code mz_chunk_start} and
- * {@code mz_chunk_end} are the chunk's first and last m/z, both inclusive, as the reference writes them. Each file's
+ * with the chunk, a NaN value as a null element (W10), and null in the rows of a spectrum that has no such array.
+ * {@code mz_chunk_start} and {@code mz_chunk_end} are the first and last m/z the chunk's linear payload decodes to,
+ * both inclusive, so they bound the values a reader gets rather than the input m/z Numpress rounds (W9). Each file's
  * footer holds the array index of its columns and the counts ({@link ParquetOutput.SignalFile}).
  */
 final class NumpressSignalWriter {
 
-    private static final String SLOF_COLUMN = "intensity_numpress_slof_bytes";
-    private static final String PIC_COLUMN = "intensity_numpress_pic_bytes";
+    private static final String SLOF_SUFFIX = "_numpress_slof_bytes";
+    private static final String PIC_SUFFIX = "_numpress_pic_bytes";
 
     /** Maximum number of m/z points per numpress chunk. */
     private static final int NUMPRESS_CHUNK_SIZE = 500;
@@ -54,13 +58,29 @@ final class NumpressSignalWriter {
     private NumpressSignalWriter() {
     }
 
+    /** The SLOF transform column of {@code intensity}: {@code <column>_numpress_slof_bytes}. */
+    static String slofColumn(IntensityColumn intensity) {
+        return intensity.column() + SLOF_SUFFIX;
+    }
+
+    /** The PIC transform column of {@code intensity}: {@code <column>_numpress_pic_bytes}. */
+    static String picColumn(IntensityColumn intensity) {
+        return intensity.column() + PIC_SUFFIX;
+    }
+
+    /** The transform column of {@code intensity} in the Numpress intensity encoding {@code pic} or SLOF names. */
+    private static String transformColumn(IntensityColumn intensity, boolean pic) {
+        return pic ? picColumn(intensity) : slofColumn(intensity);
+    }
+
     /**
-     * The chunk schema (read by the Numpress path of {@link ChunkRowDecoder}) with {@code intensityColumn} as the
-     * only intensity transform, followed by a {@code list<double>} column for each of {@code extras}.
+     * The chunk schema (read by the Numpress path of {@link ChunkRowDecoder}) with the transform column of each of
+     * {@code intensities} in the encoding {@code pic} names as the intensity transforms, followed by a
+     * {@code list<double>} column for each of {@code extras}.
      * {@code mz_chunk_values} is the spec's chunk values column, present once in every chunk layout; the m/z of a
      * Numpress row are in {@code mz_numpress_linear_bytes}, so it is written empty.
      */
-    private static MessageType chunkSchema(String intensityColumn, List<ExtraColumn> extras) {
+    private static MessageType chunkSchema(List<IntensityColumn> intensities, boolean pic, List<ExtraColumn> extras) {
         var chunk = Types.requiredGroup()
                 .required(PrimitiveTypeName.INT64).as(UINT64).named("spectrum_index")
                 .optional(PrimitiveTypeName.DOUBLE).named("mz_chunk_start")
@@ -68,8 +88,10 @@ final class NumpressSignalWriter {
                 .addField(doubleListField("mz_chunk_values"))
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType())
                 .named("chunk_encoding")
-                .addField(numpressByteListField("mz_numpress_linear_bytes"))
-                .addField(numpressByteListField(intensityColumn));
+                .addField(numpressByteListField("mz_numpress_linear_bytes"));
+        for (IntensityColumn intensity : intensities) {
+            chunk = chunk.addField(numpressByteListField(transformColumn(intensity, pic)));
+        }
         for (ExtraColumn extra : extras) {
             chunk = chunk.addField(doubleListField(extra.column()));
         }
@@ -78,11 +100,11 @@ final class NumpressSignalWriter {
 
     /**
      * The array index of {@link #chunkSchema}, one entry per column in schema order: the spectrum index; the m/z
-     * axis columns, chunk start, end, values and encoding, and the linear bytes as the MS:1002312 transform; the
-     * intensity, in detector counts, as {@code intensityTransform}; and each of {@code extras} as chunk secondary.
+     * axis columns, chunk start, end, values and encoding, and the linear bytes as the MS:1002312 transform; each of
+     * {@code intensities}, in its unit, as the PIC or SLOF transform ({@code pic}); and each of {@code extras} as chunk
+     * secondary.
      */
-    private static ArrayIndex chunkIndex(String intensityColumn, String intensityTransform,
-                                         List<ExtraColumn> extras) {
+    private static ArrayIndex chunkIndex(List<IntensityColumn> intensities, boolean pic, List<ExtraColumn> extras) {
         ArrayIndex.Builder builder = ArrayIndex.builder(ArrayIndex.CHUNK_PREFIX, SignalEntity.SPECTRUM)
                 .index("spectrum_index")
                 .axis("mz_chunk_start", BufferFormat.CHUNK_START, null, ArrayIndex.MZ_UNIT)
@@ -90,8 +112,11 @@ final class NumpressSignalWriter {
                 .axis("mz_chunk_values", BufferFormat.CHUNK_VALUES, null, ArrayIndex.MZ_UNIT)
                 .axis("chunk_encoding", BufferFormat.CHUNK_ENCODING, null, ArrayIndex.MZ_UNIT)
                 .axis("mz_numpress_linear_bytes", BufferFormat.CHUNK_TRANSFORM, MSNumpress.ACC_NUMPRESS_LINEAR,
-                        ArrayIndex.MZ_UNIT)
-                .intensity(intensityColumn, BufferFormat.CHUNK_TRANSFORM, intensityTransform, ArrayIndex.COUNTS_UNIT);
+                        ArrayIndex.MZ_UNIT);
+        for (IntensityColumn intensity : intensities) {
+            builder.intensity(transformColumn(intensity, pic), BufferFormat.CHUNK_TRANSFORM,
+                    pic ? MSNumpress.ACC_NUMPRESS_PIC : MSNumpress.ACC_NUMPRESS_SLOF, intensity.unit());
+        }
         for (ExtraColumn extra : extras) {
             builder.extra(extra.column(), extra.arrayType(), extra.arrayName(), extra.unit(),
                     BufferFormat.CHUNK_SECONDARY);
@@ -133,24 +158,26 @@ final class NumpressSignalWriter {
     }
 
     /**
-     * Opens spectra_data or spectra_peaks in the Numpress chunk layout, with the column of the Numpress intensity
-     * encoding of {@code options} and a column for each of {@code extras}, the plan's extra columns, for
-     * {@link #appendNumpressChunks}.
+     * Opens spectra_data or spectra_peaks in the Numpress chunk layout, with a column in the Numpress intensity
+     * encoding of {@code options} for each of {@code intensities}, the plan's spectrum intensity columns, and a column
+     * for each of {@code extras}, the plan's extra columns, for {@link #appendNumpressChunks}.
      */
-    static SignalFile openNumpressChunks(Path file, List<ExtraColumn> extras, Options options) throws IOException {
+    static SignalFile openNumpressChunks(Path file, List<IntensityColumn> intensities, List<ExtraColumn> extras,
+                                         Options options) throws IOException {
         boolean pic = options.numpressIntensity() == NumpressIntensityEncoding.PIC;
-        String intensityColumn = pic ? PIC_COLUMN : SLOF_COLUMN;
-        return new SignalFile(file, chunkSchema(intensityColumn, extras), chunkIndex(intensityColumn,
-                pic ? MSNumpress.ACC_NUMPRESS_PIC : MSNumpress.ACC_NUMPRESS_SLOF, extras), options);
+        return new SignalFile(file, chunkSchema(intensities, pic, extras), chunkIndex(intensities, pic, extras),
+                options);
     }
 
     /**
-     * Append to {@code file}, opened by {@link #openNumpressChunks} with {@code extras} and {@code intensityEncoding},
+     * Append to {@code file}, opened by {@link #openNumpressChunks} with {@code intensities}, {@code extras} and
+     * {@code intensityEncoding},
      * the MS-Numpress chunk rows {@code spectrum} writes to spectra_data ({@code mz()}/{@code intensity()}) or, for
      * {@code peaksFile}, to spectra_peaks ({@code mz()}/{@code intensity()} or {@code peaks()}, as its entry says),
      * and add its points to the file's. The spectrum is split into chunks of up to 500 points, the last two 499 + 2
      * where a single point would be left over; m/z is encoded with Numpress linear and intensity with
-     * {@code intensityEncoding}. The rows are read by the Numpress path of {@link ChunkRowDecoder}.
+     * {@code intensityEncoding} into the column of {@code intensities} of the unit of the intensities written
+     * ({@link SpectrumSignal#intensityUnit}). The rows are read by the Numpress path of {@link ChunkRowDecoder}.
      * {@code mz()}/{@code intensity()} are written in the order of the spectrum's {@link WritePlan.SignalArrays}, and
      * each extra column holds the chunk's slice of {@link SpectrumSignal#extraValues}. The codecs encode only the
      * values {@link WritePlanner#requireNumpressEncodable} lets into the plan: finite m/z of at least 0 up to
@@ -162,10 +189,14 @@ final class NumpressSignalWriter {
      *
      * @throws MzPeakException when a value cannot be encoded
      */
-    static void appendNumpressChunks(SignalFile file, SpectrumSignal spectrum, List<ExtraColumn> extras,
-                                     boolean peaksFile, NumpressIntensityEncoding intensityEncoding)
-            throws IOException {
+    static void appendNumpressChunks(SignalFile file, SpectrumSignal spectrum, List<IntensityColumn> intensities,
+                                     List<ExtraColumn> extras, boolean peaksFile,
+                                     NumpressIntensityEncoding intensityEncoding) throws IOException {
         Spectrum s = spectrum.source();
+        boolean pic = intensityEncoding == NumpressIntensityEncoding.PIC;
+        String unit = spectrum.intensityUnit(peaksFile);
+        String inColumn = transformColumn(new IntensityColumn(unit, WritePlan.intensityColumn(intensities, unit)),
+                pic);
         double[][] extraValues = spectrum.extraValues(extras, peaksFile);
         double[] mz;
         double[] intensity;
@@ -180,8 +211,7 @@ final class NumpressSignalWriter {
             mz = spectrum.arrays().x();
             intensity = spectrum.arrays().intensity();
         }
-        NumpressRange.check(s.index(), mz, intensity, peaksFile ? "spectra_peaks" : "spectra_data",
-                intensityEncoding == NumpressIntensityEncoding.PIC);
+        NumpressRange.check(s.index(), mz, intensity, peaksFile ? "spectra_peaks" : "spectra_data", pic);
         int n = mz.length;
         int pos = 0;
         while (pos < n) {
@@ -193,16 +223,18 @@ final class NumpressSignalWriter {
             // Encode m/z with Numpress linear; max output = 8 (header) + 5 bytes/value
             byte[] mzBuf = new byte[8 + chunkLen * 5];
             int mzLen = MSNumpress.encodeLinear(chunkMz, chunkLen, mzBuf, NUMPRESS_LINEAR_FIXED_POINT);
+            // The chunk is bounded by the m/z its payload decodes to, which Numpress rounds (W9); the decoder
+            // writes at most (mzLen - 8) * 2 values
+            double[] decodedMz = new double[(mzLen - 8) * 2];
+            MSNumpress.decodeLinear(mzBuf, mzLen, decodedMz);
 
             // Encode intensity with SLOF or PIC depending on the caller's choice.
             final byte[] inBuf;
             final int inLen;
-            final String inColumn;
-            if (intensityEncoding == NumpressIntensityEncoding.PIC) {
+            if (pic) {
                 // PIC: 8-byte header + variable bytes; max = 8 + 5*n (worst case)
                 inBuf = new byte[8 + chunkLen * 5];
                 inLen = MSNumpress.encodePic(chunkIn, chunkLen, inBuf);
-                inColumn = PIC_COLUMN;
             } else {
                 // SLOF: dynamic fixedPoint so log(max_in+1)*fp fits in uint16 (max 65535).
                 double maxIn = 0;
@@ -210,14 +242,13 @@ final class NumpressSignalWriter {
                 double slofFixed = maxIn <= 0 ? 1.0 : Math.floor(SLOF_MAX_SYMBOL / Math.log(maxIn + 1));
                 inBuf = new byte[8 + chunkLen * 2];
                 inLen = MSNumpress.encodeSlof(chunkIn, chunkLen, inBuf, slofFixed);
-                inColumn = SLOF_COLUMN;
             }
 
             Group row = file.newRow();
             Group chunk = row.addGroup("chunk");
             chunk.add("spectrum_index", spectrum.entry().sourceIndex());
-            chunk.add("mz_chunk_start", chunkMz[0]);
-            chunk.add("mz_chunk_end", chunkMz[chunkLen - 1]);
+            chunk.add("mz_chunk_start", decodedMz[0]);
+            chunk.add("mz_chunk_end", decodedMz[chunkLen - 1]);
             chunk.addGroup("mz_chunk_values"); // an empty list, not null
             chunk.add("chunk_encoding", MSNumpress.ACC_NUMPRESS_LINEAR);
 
@@ -227,18 +258,22 @@ final class NumpressSignalWriter {
                 mzBytesWrapper.addGroup("list").add("item", mzBuf[i] & 0xFF);
             }
 
-            // Write the chosen intensity column (SLOF or PIC)
+            // Write the intensity column (SLOF or PIC) of the spectrum's unit; the others stay null
             Group inBytesWrapper = chunk.addGroup(inColumn);
             for (int i = 0; i < inLen; i++) {
                 inBytesWrapper.addGroup("list").add("item", inBuf[i] & 0xFF);
             }
 
-            // Each extra array's slice of this chunk, as plain doubles (null when the spectrum has none)
+            // Each extra array's slice of this chunk, as plain doubles (null when the spectrum has none), a NaN as a
+            // null element: parquet-java writes no column index for a page holding a NaN (W10)
             for (int k = 0; k < extraValues.length; k++) {
                 if (extraValues[k] != null) {
                     Group values = chunk.addGroup(extras.get(k).column());
                     for (int i = pos; i < end; i++) {
-                        values.addGroup("list").add("item", extraValues[k][i]);
+                        Group element = values.addGroup("list");
+                        if (!Double.isNaN(extraValues[k][i])) {
+                            element.add("item", extraValues[k][i]);
+                        }
                     }
                 }
             }

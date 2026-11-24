@@ -42,7 +42,7 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  * {@link MzMLAssert#valid} and {@link MzMLMappingCheck}, converted back by {@link MzMLConversion#toMzPeak} (defaults,
  * archive) and read again; {@link ModelAssert} compares the two models strictly, arrays bit-exact, with exactly the
  * exclusions of the A table of design 12.4, each hiding the pinned number of differences. The warnings of both steps
- * are pinned: the limit lines (L-8 and L-9 and the A-13 and A-14 lines of the writer, L-1 to L-6 of the reader), the
+ * are pinned: the limit lines (L-8 and L-9 and the A-13 line of the writer, L-1 to L-6 of the reader), the
  * writer's loss lines per fixture, no A-25 to A-29 line, and the loss lines of the way back per fixture
  * ({@link #back}). Last, the array-key case of design 12.4: extra
  * arrays keyed outside {@link CvTerms#ARRAY_TYPES} go through A as MS:1000786 'non-standard data array'.
@@ -52,6 +52,8 @@ class MzMLRoundTripATest {
     private static final String NON_STANDARD_ARRAY = "MS:1000786";
     private static final String ZLIB = "MS:1000574";
     private static final String NO_COMPRESSION = "MS:1000576";
+    /** A CV mzPeakJ does not know, in a release. */
+    private static final CvEntry XX = new CvEntry("XX", "XX ontology", "https://example.org/xx/1/xx.obo", "1");
 
     @TempDir
     Path dir;
@@ -90,10 +92,12 @@ class MzMLRoundTripATest {
 
     /**
      * The 13 fixtures with the A table of design 12.4, keyed by display name. The hidden counts are differences, not
-     * spectra: A_1 hides two per peak list (peaks.size and numberOfPeaks; the 14 MS1 profile spectra of small.chunked
-     * carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_2, A_8,
-     * A_17 and A_18 one each. No fixture needs A_16 since V-17 (D-9a): the legacy spectra read with their stored
-     * spectrum type and five summary params (before, A_16 hid one type and five summary params per legacy spectrum).
+     * spectra: A_1 hides three per peak list (peaks.size, numberOfPeaks and peakIntensityUnit; the 14 MS1 profile
+     * spectra of small.chunked carry peaks that are not a row copy of their arrays, A-1); A_7 one per MS and wavelength spectrum; A_2, A_8,
+     * A_17 and A_18 one each; R_8 one per wavelength spectrum of legacy has_uv (its scan count: its packed layout keeps
+     * its scans in a member that is not read, and the writers add the one with its time, A-8). No fixture needs A_16
+     * since V-17 (D-9a):
+     * the legacy spectra read with their stored spectrum type and five summary params (before, A_16 hid one type and five summary params per legacy spectrum).
      *
      * <p>Mapping-rule violations (design 6.4, 12.4): none for the outputs of any fixture. diaPASEF.ref and .grid lack
      * nothing the six rules check (IC 0 holds the instrument model MS:1003005 timsTOF Pro, every spectrum a spectrum
@@ -110,10 +114,11 @@ class MzMLRoundTripATest {
                     List.of(a7(48)), msUo, List.of()));
         }
         f.put("current small.chunked.mzpeak", new Fixture(Fixtures.current("small.chunked.mzpeak"),
-                List.of(hides(ModelAssert.A_1, 2 * 14), hides(ModelAssert.A_7, 48)), List.of(a7(48), A_1_CHUNKED),
+                List.of(hides(ModelAssert.A_1, 3 * 14), hides(ModelAssert.A_7, 48)), List.of(a7(48), A_1_CHUNKED),
                 msUo, List.of()));
         f.put("current has_uv.mzpeak", new Fixture(Fixtures.current("has_uv.mzpeak"),
-                List.of(hides(ModelAssert.A_7, 212 + 520)), List.of(a7(212 + 520)), msUo, List.of()));
+                List.of(hides(ModelAssert.A_7, 212 + 520)), List.of(a7(212 + 520)),
+                msUo, List.of()));
         for (String name : List.of("diaPASEF.ref.mzpeak", "diaPASEF.grid.mzpeak")) {
             f.put("current " + name, new Fixture(Fixtures.current(name), List.of(hides(ModelAssert.A_2, 1),
                     hides(ModelAssert.A_7, 9), hides(ModelAssert.A_8, 1), hides(ModelAssert.A_18, 1)), A_DIAPASEF,
@@ -128,14 +133,16 @@ class MzMLRoundTripATest {
             f.put("legacy " + name, new Fixture(Fixtures.legacy(name), legacySmall, A_LEGACY_SMALL, msUo, List.of()));
         }
         List<Hides> legacyChunked = new ArrayList<>(legacySmall);
-        legacyChunked.add(hides(ModelAssert.A_1, 2 * 14));
+        legacyChunked.add(hides(ModelAssert.A_1, 3 * 14));
         List<String> legacyChunkedLosses = new ArrayList<>(A_LEGACY_SMALL);
         legacyChunkedLosses.add(A_1_CHUNKED);
         f.put("legacy small.chunked.mzpeak", new Fixture(Fixtures.legacy("small.chunked.mzpeak"), legacyChunked,
                 legacyChunkedLosses, msUo, List.of()));
         f.put("legacy has_uv.mzpeak", new Fixture(Fixtures.legacy("has_uv.mzpeak"), List.of(hides(ModelAssert.A_7,
-                212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_17, 1)),
-                List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_9 + " (211)", a7(212 + 520)), msUo, List.of()));
+                212 + 520), hides(ModelAssert.A_9, 211), hides(ModelAssert.A_17, 1), hides(ModelAssert.R_8, 520)),
+                List.of(MzMLWriter.A_17 + " (2)", MzMLWriter.A_9 + " (211)", a7(212 + 520),
+                        String.format(MzMLWriter.A_8, "scan holding the time of a wavelength spectrum without scans")
+                                + " (520)"), msUo, List.of()));
         return f;
     }
 
@@ -208,8 +215,10 @@ class MzMLRoundTripATest {
     /**
      * Current small.mzpeak with spectrum 0 given two extra arrays whose keys are no array type of
      * {@link CvTerms#ARRAY_TYPES}: 'MS:9999999' holding 0, 1, ..., n-1 and 'XX:0000001' their squares, n its point
-     * count. The mzML holds both as MS:1000786 with the key as value and declares no CV XX; back in mzPeak, spectrum 0
-     * has both keys with the values bit-exact, and the whole model equals the input up to A-7.
+     * count. The input declares the CV XX, which mzPeakJ does not know, by the writer's cv list (W12 refuses an
+     * undeclared one). The mzML holds both keys as MS:1000786 with the key as value, uses no XX term and declares XX
+     * as the input does; back in mzPeak, spectrum 0 has both keys with the values bit-exact, and the whole model
+     * equals the input up to A-7.
      */
     @Test
     void arrayKeysOutsideTheArrayTypesComeBackThroughNonStandardDataArrays() throws IOException {
@@ -238,9 +247,10 @@ class MzMLRoundTripATest {
             spectra.set(0, new Spectrum(first.description(), first.mz(), first.intensity(), first.peaks(), arrays,
                     first.peakArrays()));
             Set<String> keys = new LinkedHashSet<>(List.of(msKey, xxKey));
+            List<CvEntry> cvs = new ArrayList<>(reader.manifest().cvList());
+            cvs.add(XX);
             try (MzPeakWriter.Session session = MzPeakWriter.openArchive(input, reader.fileMetadata(),
-                    reader.scanSettings(), keys, MzPeakWriter.Options.defaults().withCvList(
-                            reader.manifest().cvList()))) {
+                    reader.scanSettings(), keys, MzPeakWriter.Options.defaults().withCvList(cvs))) {
                 spectra.forEach(session::addSpectrum);
                 reader.chromatograms().forEach(session::addChromatogram);
                 reader.wavelengthSpectra().forEach(session::addWavelengthSpectrum);
@@ -249,7 +259,7 @@ class MzMLRoundTripATest {
         }
         Model given = Model.load(input);
         assertThat(given.spectrumList().get(0).arrays()).containsOnlyKeys(msKey, xxKey);
-        assertThat(given.cvList()).extracting(CvEntry::id).containsExactly("MS", "UO");
+        assertThat(given.cvList()).extracting(CvEntry::id).containsExactly("MS", "UO", "XX");
 
         Path mzml = dir.resolve("keys.mzML");
         MzMLConversion.Result toMzML = MzMLConversion.toMzML(input, mzml, true);
@@ -266,7 +276,7 @@ class MzMLRoundTripATest {
         Xml xml = xml(mzml);
         // spectrum 0's two keys, then the 'ms level' array of the TIC
         assertThat(xml.nonStandardArrays()).containsExactly(msKey, xxKey, "ms level");
-        assertThat(xml.cvs()).containsExactly("MS", "UO");
+        assertThat(xml.cvs()).containsExactly("MS", "UO", "XX");
         assertThat(xml.prefixes()).doesNotContain("XX");
         try (MzPeakReader reader = MzPeakReader.open(back)) {
             Map<String, double[]> arrays = reader.getSpectrumAt(0).arrays();

@@ -3,6 +3,7 @@ package org.mzpeak.io;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.model.meta.FileMetadata;
 import org.mzpeak.model.meta.FileMetadata.Component;
 import org.mzpeak.model.meta.FileMetadata.Contact;
@@ -45,7 +46,18 @@ import java.util.Set;
  *       software, else the first software, else the stub software {@code mzpeakj_software};
  *   <li>a software without a version is written with the empty version.
  * </ul>
+ * In the current (split) layout's dialect the run names its default instrument with
+ * {@code default_instrument_configuration_id} (spec 963d64a, W1), a processing method without a software names the
+ * software an instrument configuration without one names, and a software or a data processing without an id is
+ * written with a fresh one ({@code mzpeakj_software_<i>}, {@code mzpeakj_processing_<i>} for the {@code i}-th entry of
+ * its list), as the specification requires these keys; the packed layout keeps the pin-era dialect, with
+ * {@code default_instrument_id} and those values left out.
  * Each stub is logged once as a WARNING naming its document, its id and the reference that names it.
+ *
+ * <p>{@link MzPeakWriter} rejects an explicit reference that names nothing before it serializes
+ * ({@link WritePlanner#declarations}, W12), so in a write a stub is added only for a null reference: a null run
+ * default without an entity of its list, or a configuration or processing method without software when no software
+ * has an id.
  */
 final class FooterMetadataWriter {
 
@@ -59,7 +71,15 @@ final class FooterMetadataWriter {
     private FooterMetadataWriter() {
     }
 
+    /** The documents in the dialect of the current (split) metadata layout. */
     static Map<String, String> serialize(FileMetadata meta) {
+        return serialize(meta, MetadataLayout.SPLIT);
+    }
+
+    /** The documents in the dialect of {@code layout}. */
+    static Map<String, String> serialize(FileMetadata meta, MetadataLayout layout) {
+        boolean current = layout == MetadataLayout.SPLIT;
+        String instrumentKey = current ? "default_instrument_configuration_id" : "default_instrument_id";
         Map<String, String> kv = new LinkedHashMap<>();
         if (meta == null) {
             return kv;
@@ -79,7 +99,7 @@ final class FooterMetadataWriter {
             if (configurations.stream().noneMatch(ic -> ic.id() == instrumentId)) {
                 configurations.add(new InstrumentConfiguration(instrumentId, List.of(), null, List.of()));
                 warnStub("instrument_configuration_list", "instrument configuration " + instrumentId,
-                        "run.default_instrument_id");
+                        "run." + instrumentKey);
             }
             // default_data_processing_id: required by mzPeak spec
             String dpId = run.defaultDataProcessingId();
@@ -110,11 +130,11 @@ final class FooterMetadataWriter {
             }
             runJson = MAPPER.createObjectNode();
             runJson.put("id", run.id() != null ? run.id() : RUN_ID);
-            runJson.put("default_instrument_id", instrumentId);
+            runJson.put(instrumentKey, instrumentId);
             runJson.put("default_data_processing_id", effectiveDpId);
             runJson.put("default_source_file_id", effectiveSfId);
             putText(runJson, "start_time", run.startTime());
-            putParams(runJson, run.parameters());
+            putParams(runJson, "run", run.parameters());
         }
         String defaultSoftware = defaultSoftware(meta);
         for (int i = 0; i < configurations.size(); i++) {
@@ -125,11 +145,16 @@ final class FooterMetadataWriter {
             configurations.set(i, new InstrumentConfiguration(ic.id(), ic.components(), reference, ic.parameters()));
         }
         for (int i = 0; i < processing.size(); i++) {
-            List<ProcessingMethod> methods = processing.get(i).methods();
+            List<ProcessingMethod> methods = new ArrayList<>(processing.get(i).methods());
             for (int j = 0; j < methods.size(); j++) {
-                requireSoftware(methods.get(j).softwareReference(), "data_processing_method_list[" + i + "].methods["
-                        + j + "].software_reference", software, softwareIds);
+                ProcessingMethod m = methods.get(j);
+                String reference = m.softwareReference() != null || !current ? m.softwareReference()
+                        : defaultSoftware;
+                requireSoftware(reference, "data_processing_method_list[" + i + "].methods[" + j
+                        + "].software_reference", software, softwareIds);
+                methods.set(j, new ProcessingMethod(m.order(), reference, m.parameters()));
             }
+            processing.set(i, new DataProcessing(processing.get(i).id(), methods));
         }
 
         if (runJson != null) {
@@ -137,11 +162,13 @@ final class FooterMetadataWriter {
         }
         if (!software.isEmpty()) {
             ArrayNode arr = MAPPER.createArrayNode();
-            for (Software s : software) {
+            for (int i = 0; i < software.size(); i++) {
+                Software s = software.get(i);
                 ObjectNode n = arr.addObject();
-                putText(n, "id", s.id());
+                String id = s.id() != null || !current ? s.id() : freshId("mzpeakj_software_" + i, softwareIds);
+                putText(n, "id", id);
                 n.put("version", s.version() != null ? s.version() : "");
-                putParams(n, s.parameters());
+                putParams(n, "software " + id, s.parameters());
             }
             kv.put("software_list", arr.toString());
         }
@@ -156,23 +183,28 @@ final class FooterMetadataWriter {
                     ObjectNode cn = comps.addObject();
                     cn.put("component_type", componentTypeJson(c.componentType()));
                     cn.put("order", c.order());
-                    putParams(cn, c.parameters());
+                    putParams(cn, "instrument configuration " + ic.id() + " component " + c.order(),
+                            c.parameters());
                 }
-                putParams(n, ic.parameters());
+                putParams(n, "instrument configuration " + ic.id(), ic.parameters());
             }
             kv.put("instrument_configuration_list", arr.toString());
         }
         if (!processing.isEmpty()) {
+            Set<String> processingIds = new HashSet<>();
+            processing.forEach(dp -> processingIds.add(dp.id()));
             ArrayNode arr = MAPPER.createArrayNode();
-            for (DataProcessing dp : processing) {
+            for (int i = 0; i < processing.size(); i++) {
+                DataProcessing dp = processing.get(i);
                 ObjectNode n = arr.addObject();
-                putText(n, "id", dp.id());
+                String id = dp.id() != null || !current ? dp.id() : freshId("mzpeakj_processing_" + i, processingIds);
+                putText(n, "id", id);
                 ArrayNode methods = n.putArray("methods");
                 for (ProcessingMethod m : dp.methods()) {
                     ObjectNode mn = methods.addObject();
                     mn.put("order", m.order());
                     putText(mn, "software_reference", m.softwareReference());
-                    putParams(mn, m.parameters());
+                    putParams(mn, "data processing " + id + " method " + m.order(), m.parameters());
                 }
             }
             kv.put("data_processing_method_list", arr.toString());
@@ -183,21 +215,21 @@ final class FooterMetadataWriter {
                 ObjectNode n = arr.addObject();
                 putText(n, "id", s.id());
                 putText(n, "name", s.name());
-                putParams(n, s.parameters());
+                putParams(n, "sample " + s.id(), s.parameters());
             }
             kv.put("sample_list", arr.toString());
         }
         // A run always names a source file, so without a file description one is written to declare its stub.
         if (description != null || !sources.isEmpty()) {
             ObjectNode fd = MAPPER.createObjectNode();
-            putParamsArray(fd, "contents", description == null ? null : description.contents());
+            putParamsArray(fd, "contents", "file description", description == null ? null : description.contents());
             ArrayNode sourceArray = fd.putArray("source_files");
             for (SourceFile sf : sources) {
                 ObjectNode sn = sourceArray.addObject();
                 putText(sn, "id", sf.id());
                 putText(sn, "name", sf.name());
                 putText(sn, "location", sf.location());
-                putParams(sn, sf.parameters());
+                putParams(sn, "source file " + sf.id(), sf.parameters());
             }
             // Left out when empty, as the reference serialises FileDescription.contacts (skip_serializing_if empty).
             if (description != null && !description.contacts().isEmpty()) {
@@ -206,7 +238,7 @@ final class FooterMetadataWriter {
                     ObjectNode cn = contacts.addObject();
                     putText(cn, "contact_name", c.name());
                     putText(cn, "contact_affiliation", c.affiliation());
-                    putParams(cn, c.parameters());
+                    putParams(cn, "contact " + c.name(), c.parameters());
                 }
             }
             kv.put("file_description", fd.toString());
@@ -240,38 +272,39 @@ final class FooterMetadataWriter {
         }
     }
 
+    /** {@code base}, or {@code base} with {@code _} appended until no id of {@code ids} is it; it is added to them. */
+    private static String freshId(String base, Set<String> ids) {
+        String id = base;
+        while (!ids.add(id)) {
+            id += "_";
+        }
+        return id;
+    }
+
     private static void warnStub(String document, String stub, String reference) {
         LOG.log(Level.WARNING, document + ": added the stub " + stub + ", which " + reference
                 + " names but the file metadata does not declare");
     }
 
-    private static void putParams(ObjectNode owner, List<Param> params) {
-        putParamsArray(owner, "parameters", params);
+    private static void putParams(ObjectNode owner, String entity, List<Param> params) {
+        putParamsArray(owner, "parameters", entity, params);
     }
 
-    private static void putParamsArray(ObjectNode owner, String field, List<Param> params) {
+    /**
+     * Adds {@code params} as the array {@code field} of {@code owner}, each value as {@link ParamValues#json} gives it;
+     * a value of a type the writer cannot write throws {@link MzPeakException} naming {@code entity} and the param.
+     */
+    private static void putParamsArray(ObjectNode owner, String field, String entity, List<Param> params) {
         ArrayNode arr = owner.putArray(field);
         if (params == null) {
             return;
         }
+        ParamValues.require(entity, params);
         for (Param p : params) {
             ObjectNode pn = arr.addObject();
             putText(pn, "name", p.name());
             putText(pn, "accession", p.accession());
-            Object v = p.value();
-            if (v == null) {
-                pn.putNull("value");
-            } else if (v instanceof Boolean b) {
-                pn.put("value", b);
-            } else if (v instanceof Long l) {
-                pn.put("value", l);
-            } else if (v instanceof Integer i) {
-                pn.put("value", i.longValue());
-            } else if (v instanceof Double d) {
-                pn.put("value", d);
-            } else {
-                pn.put("value", v.toString());
-            }
+            pn.set("value", ParamValues.json(p.value()));
             putText(pn, "unit", p.unit());
         }
     }

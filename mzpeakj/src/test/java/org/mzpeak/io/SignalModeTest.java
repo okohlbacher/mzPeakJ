@@ -47,15 +47,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SignalModeTest {
 
     /**
-     * Signal digests ({@link #signalDigest}) of the default read, recorded on the reader before AP-2. The current and
+     * Signal digests ({@link #signalDigest}) of the default read, recorded on the reader before AP-2 (those with
+     * null-marked profile points re-recorded with the spec's null fill, R2 in X-8). The current and
      * the legacy example of a kind decode alike, and so do small and small.unpacked. The intensities of small.numpress
      * are MS-Numpress SLOF and hashed rounded to float32, so that its digest holds on every platform
      * ({@link SignalSnapshotTest.SignalDigest#float32}); recorded so on aarch64 and checked on x86_64.
      */
     private static final String SMALL = "48 spectra, 243054 points, 25344 peaks, "
-            + "d72d003d9b327a498100a8827f883ed330db332f7455f080b63b9c89c68a4de2";
+            + "26fcae4a05b7ff6f60fbcc13a2b171e50ed662c4895323ef164135eb9a0c9e9f";
     private static final String CHUNKED = "48 spectra, 243054 points, 50247 peaks, "
-            + "8e97a663d7c26cae59f84bdfee88aa2bfb62edcf5e4d1e234b23cd9ec26a39bd";
+            + "6552abaf2287cdd0198e7bfb7cf658e81e733237eaa34e53328bade9ca87f58b";
     private static final String NUMPRESS = "48 spectra, 243054 points, 25344 peaks, "
             + "d5056aaecaef851cc799522699fea9a32c3b286e3988dd0ab10af37361606446";
     private static final String HAS_UV = "212 spectra, 24310 points, 24310 peaks, "
@@ -77,7 +78,7 @@ class SignalModeTest {
                 Arguments.of(Fixtures.current("diaPASEF.ref.mzpeak"), "9 spectra, 291453 points, 291453 peaks, "
                         + "9e238d5251dd0ce5025d6fb91938b28cce01f6a1467bbdb0b7a22488b532ea7b"),
                 Arguments.of(Fixtures.current("Example_Processed.img.mzpeak"), "9 spectra, 36856 points, 0 peaks, "
-                        + "b252bf67e9b20d28d7dcc749bf0a692b0dc4a2a385eb01f190ec0f19c7faa632"),
+                        + "a2d6c9437df9638eeb75e1f8c6e6ea50f14f36bf6a6ff09d7e5086edd8d5365a"),
                 Arguments.of(Fixtures.legacy("small.mzpeak"), SMALL),
                 Arguments.of(Fixtures.legacy("small.chunked.mzpeak"), CHUNKED),
                 Arguments.of(Fixtures.legacy("small.numpress.mzpeak"), NUMPRESS),

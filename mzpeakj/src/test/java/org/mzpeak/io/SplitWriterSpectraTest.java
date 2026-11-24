@@ -42,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The split metadata layout written by {@link SplitMetadataWriter} (WR-5a, design §11.4 and §11.8): spectra_metadata
@@ -222,7 +223,7 @@ class SplitWriterSpectraTest {
      * A scan's spectrum_reference and instrument configuration survive a round trip in both metadata layouts: of two
      * constructed spectra, the scan of spectrum 1 has both, and the raw cells of the scan row with its source_index
      * hold them (spectra_metadata_scans in the split layout, the scan struct of spectra_metadata in the packed one),
-     * while the scan of spectrum 0 has neither.
+     * while the scan of spectrum 0 has neither. The file metadata declares instrument configuration 3 (W12).
      */
     @ParameterizedTest
     @EnumSource(MetadataLayout.class)
@@ -231,7 +232,9 @@ class SplitWriterSpectraTest {
         ScanEvent referenced = new ScanEvent(1.0, 20.0, null, null, 3, "index=0", List.of(), List.of());
         List<Spectrum> spectra = List.of(profile(0, 0.5, List.of(plain)), profile(1, 1.0, List.of(referenced)));
         Path out = tmp.resolve(layout + ".mzpeak");
-        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), FileMetadata.EMPTY,
+        FileMetadata declaring = new FileMetadata(null, List.of(new FileMetadata.InstrumentConfiguration(3,
+                List.of(), null, List.of())), List.of(), List.of(), List.of(), null);
+        MzPeakWriter.writeDirectory(out, spectra, List.of(), List.of(), List.of(), declaring,
                 Options.defaults().withMetadataLayout(layout));
 
         Source back = ForwardBackwardCorpusTest.readSource(out);
@@ -329,7 +332,7 @@ class SplitWriterSpectraTest {
         JsonNode entry = settings.get(0);
         List<String> keys = new ArrayList<>();
         entry.fieldNames().forEachRemaining(keys::add);
-        assertThat(keys).containsExactly("id", "source_file_refs", "targets", "parameters");
+        assertThat(keys).containsExactly("id", "source_file_references", "targets", "parameters");
         assertThat(entry.path("id").asText()).isEqualTo("scansettings1");
         JsonNode pixelSize = null;
         for (JsonNode p : entry.path("parameters")) {
@@ -355,21 +358,31 @@ class SplitWriterSpectraTest {
     /**
      * A scan setting without an id or values keeps every key, and gets the id {@code scan_settings_<position>} with
      * one warning: the reference's ScanSettings.id is a String (param.rs:458-460), so the Rust reader rejects a
-     * manifest whose id is null. A nameless param's name stays null, as the reference writes its Option. The packed
-     * layout leaves the key out and warns about nothing.
+     * manifest whose id is null. A param without value keeps its null value and unit. The packed layout leaves the
+     * key out and warns about nothing. A nameless param, which param.json does not allow, is refused (U4; until then
+     * it was written with {@code "name": null}).
      */
     @Test
     void scanSettingsWithoutIdOrValuesKeepEveryKey(@TempDir Path tmp) throws IOException {
         Source source = source(Fixtures.legacy("small.unpacked.mzpeak"));
-        List<Param> params = List.of(new Param(null, "IMS:1000401", null, null));
+        List<Param> params = List.of(new Param("top down", "IMS:1000401", null, null));
         List<ScanSettings> settings = List.of(new ScanSettings(null, params));
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, List.of(), settings,
                 source.fileMetadata, SPLIT);
 
-        assertThat(scanSettingsList(out).toString()).isEqualTo("[{\"id\":\"scan_settings_0\",\"source_file_refs\":[],"
-                + "\"targets\":[],\"parameters\":[{\"name\":null,\"accession\":\"IMS:1000401\",\"value\":null,"
+        assertThat(scanSettingsList(out).toString()).isEqualTo("[{\"id\":\"scan_settings_0\",\"source_file_references\":[],"
+                + "\"targets\":[],\"parameters\":[{\"name\":\"top down\",\"accession\":\"IMS:1000401\",\"value\":null,"
                 + "\"unit\":null}]}]");
+        List<ScanSettings> nameless = List.of(new ScanSettings(null, List.of(new Param(null, "IMS:1000401", null,
+                null))));
+        Path refused = tmp.resolve("refused.mzpeak");
+        assertThatThrownBy(() -> MzPeakWriter.writeDirectory(refused, source.spectra, source.chromatograms,
+                List.of(), nameless, source.fileMetadata, SPLIT))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("scan settings 0: the parameter " + nameless.get(0).parameters().get(0)
+                        + " has no name");
+        assertThat(refused).doesNotExist();
         assertThat(scanSettingsWarnings(source, settings, SPLIT)).containsExactly(
                 "scan settings 0 has no id, which the current manifest requires; written as scan_settings_0");
         try (MzPeakReader reader = MzPeakReader.open(out)) {
@@ -436,9 +449,11 @@ class SplitWriterSpectraTest {
         assertThat(SPLIT.withSignalEncoding(SignalEncoding.NUMPRESS).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(SPLIT.withRowGroupSize(4096).metadataLayout()).isEqualTo(MetadataLayout.SPLIT);
         assertThat(Options.defaults()).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
-                + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[]]");
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=SPLIT, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
         assertThat(packed).hasToString("Options[signalEncoding=POINT, numpressIntensity=SLOF,"
-                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[]]");
+                + " rowGroupSize=OptionalLong.empty, metadataLayout=PACKED, cvList=[], "
+                + "spectrumIntensityUnits=[MS:1000131]]");
     }
 
     @Test

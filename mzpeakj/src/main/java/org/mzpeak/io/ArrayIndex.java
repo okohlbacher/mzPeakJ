@@ -11,10 +11,14 @@ import org.apache.parquet.schema.Type;
 
 import java.lang.System.Logger.Level;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * The array index of one signal member: the {@code <entity>_array_index} footer JSON, one {@link Entry} per Parquet
@@ -49,10 +53,14 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     static final String COUNTS_UNIT = "MS:1000131";
     /** MS:1000040, m/z: the unit of the m/z axis. */
     static final String MZ_UNIT = "MS:1000040";
+    /** UO:0000031, minute: the unit of the chromatogram time axis (chromatograms.md: "the units MUST be minutes"). */
+    static final String MINUTE_UNIT = "UO:0000031";
     /** UO:0000018, nanometer: the unit of the wavelength axis. */
     static final String NANOMETER_UNIT = "UO:0000018";
-    /** The {@code buffer_priority} of every entry the writer records but a secondary intensity's. */
+    /** The {@code buffer_priority} of the first logical array of each array type the writer records. */
     private static final String PRIMARY = "primary";
+    /** The {@code buffer_priority} of every further logical array of a type the writer records. */
+    private static final String SECONDARY = "secondary";
 
     ArrayIndex {
         entries = List.copyOf(entries);
@@ -214,9 +222,11 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
     /**
      * A builder of the index a writer records for one signal file whose columns live in the {@code prefix} struct
      * (design §11.7, WR-2). Entries are listed in the order they are added, which is the column order; each has the
-     * {@code context} entity's key as context, no data processing and, unless it is a
-     * {@link Builder#secondaryIntensity secondary intensity}, buffer priority primary. The built index has source
-     * {@link Source#FOOTER FOOTER}, as it reads back.
+     * {@code context} entity's key as context and no data processing. Buffer priority is assigned per logical array,
+     * an array type, name and unit (D13-25, signal-data.md "Buffer priority and naming"): the first logical array of
+     * each array type is primary, every further one secondary, and the chunk start, end, values, encoding and transform
+     * entries of one array share its priority. The built index has source {@link Source#FOOTER FOOTER}, as it reads
+     * back.
      */
     static Builder builder(String prefix, SignalEntity context) {
         return new Builder(prefix, context);
@@ -228,6 +238,12 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
         private final String prefix;
         private final SignalEntity context;
         private final List<Entry> entries = new ArrayList<>();
+        /** The array types that have a primary logical array. */
+        private final Set<String> primaryTypes = new HashSet<>();
+        /** The priority of each logical array identity (array type, name, unit), of the latest array with it. */
+        private final Map<List<String>, String> priorities = new HashMap<>();
+        /** The logical array identities that have a value-bearing entry. */
+        private final Set<List<String>> valued = new HashSet<>();
 
         private Builder(String prefix, SignalEntity context) {
             this.prefix = Objects.requireNonNull(prefix, "prefix");
@@ -236,13 +252,13 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
 
         /** The entity index column, at sorting rank 0: MS:1003870, a 64-bit integer without unit. */
         Builder index(String field) {
-            return add(field, INDEX_ARRAY, "index array", INT64_DATA, null, BufferFormat.INDEX, null, 0, PRIMARY);
+            return add(field, INDEX_ARRAY, "index array", INT64_DATA, null, BufferFormat.INDEX, null, 0);
         }
 
         /**
          * A column of the main axis, at sorting rank 1: the entity's axis as 64-bit floats in {@code unit}, m/z
-         * (MS:1000514) in {@link #MZ_UNIT}, time (MS:1000595) in the chromatograms' time unit
-         * ({@link WritePlan#chromatogramTimeUnit()}) or wavelength (MS:1000617) in {@link #NANOMETER_UNIT}.
+         * (MS:1000514) in {@link #MZ_UNIT}, time (MS:1000595) in {@link #MINUTE_UNIT} or wavelength (MS:1000617) in
+         * {@link #NANOMETER_UNIT}.
          */
         Builder axis(String field, BufferFormat format, String transform, String unit) {
             String name = switch (context) {
@@ -250,21 +266,16 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
                 case CHROMATOGRAM -> "time array";
                 case WAVELENGTH_SPECTRUM -> "wavelength array";
             };
-            return add(field, context.defaultAxis(), name, FLOAT64_DATA, unit, format, transform, 1, PRIMARY);
-        }
-
-        /** An intensity column, not sorted: MS:1000515 as 64-bit floats in {@code unit}, null when not known. */
-        Builder intensity(String field, BufferFormat format, String transform, String unit) {
-            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, transform, null, PRIMARY);
+            return add(field, context.defaultAxis(), name, FLOAT64_DATA, unit, format, transform, 1);
         }
 
         /**
-         * A further intensity column beside the {@link #intensity primary} one, not sorted, without a transform and
-         * without buffer priority (design §11.7, WR-11), as the reference writes has_uv's absorbance column:
-         * MS:1000515 as 64-bit floats in {@code unit}, null when not known.
+         * An intensity column, not sorted: MS:1000515 as 64-bit floats in {@code unit}, null when not known. A column
+         * in another unit than the first one's is a further logical array, secondary (design §11.7, WR-11; D13-25),
+         * such as has_uv's absorbance column.
          */
-        Builder secondaryIntensity(String field, BufferFormat format, String unit) {
-            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, null, null, null);
+        Builder intensity(String field, BufferFormat format, String transform, String unit) {
+            return add(field, INTENSITY_ARRAY, "intensity array", FLOAT64_DATA, unit, format, transform, null);
         }
 
         /**
@@ -272,14 +283,31 @@ record ArrayIndex(SignalEntity entity, String prefix, List<Entry> entries, Sourc
          * {@code arrayName} as 64-bit floats in {@code unit}, null when it has none.
          */
         Builder extra(String field, String arrayType, String arrayName, String unit, BufferFormat format) {
-            return add(field, arrayType, arrayName, FLOAT64_DATA, unit, format, null, null, PRIMARY);
+            return add(field, arrayType, arrayName, FLOAT64_DATA, unit, format, null, null);
         }
 
         private Builder add(String field, String arrayType, String arrayName, String dataType, String unit,
-                            BufferFormat format, String transform, Integer sortingRank, String bufferPriority) {
+                            BufferFormat format, String transform, Integer sortingRank) {
             entries.add(new Entry(prefix + "." + field, field, arrayType, dataType, unit, format, transform,
-                    sortingRank, bufferPriority, arrayName, context.key(), null));
+                    sortingRank, priority(arrayType, arrayName, unit, format), arrayName, context.key(), null));
             return this;
+        }
+
+        /**
+         * The buffer priority of an entry in {@code format} of the logical array {@code arrayType}, {@code arrayName},
+         * {@code unit}: the array's priority when it has an entry already, so that its companions share it; else, and
+         * for a further value-bearing entry with that identity, which holds another array, primary when no array of
+         * {@code arrayType} is primary yet, secondary otherwise.
+         */
+        private String priority(String arrayType, String arrayName, String unit, BufferFormat format) {
+            List<String> array = Arrays.asList(arrayType, arrayName, unit);
+            boolean another = format.valueBearing() && !valued.add(array);
+            String priority = priorities.get(array);
+            if (priority == null || another) {
+                priority = primaryTypes.add(arrayType) ? PRIMARY : SECONDARY;
+                priorities.put(array, priority);
+            }
+            return priority;
         }
 
         ArrayIndex build() {

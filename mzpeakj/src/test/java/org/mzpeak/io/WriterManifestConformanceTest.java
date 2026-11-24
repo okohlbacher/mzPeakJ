@@ -283,13 +283,22 @@ class WriterManifestConformanceTest {
                                     : List.of("name", "path", "accession", "unit"));
                     assertThat(row.path("name").asText()).isEqualTo(column.name());
                     assertThat(row.path("accession").asText()).isEqualTo(column.accession());
-                    assertThat(row.get("unit").isNull() ? null : row.get("unit").asText()).isEqualTo(column.unit());
+                    assertThat(row.get("unit").isNull() ? null : row.get("unit").asText())
+                            .isEqualTo(column.unit());
+                    // D13-12: the wavelength representation is opt_spectrum_representation, which the current
+                    // manifests map at its first fallback, spectrum_representation
+                    boolean renamed = path.equals("opt_spectrum_representation");
+                    // D13-24: the wavelength scan windows are mapped in nm, which has_uv maps in m/z
+                    boolean nmWindow = facet == Facet.WAVELENGTH_SCAN && path.startsWith("scan_windows.");
                     int matched = 0;
                     for (JsonNode current : currentManifests) {
-                        JsonNode currentRow = currentRow(current, entry, path);
+                        JsonNode currentRow = currentRow(current, entry, renamed ? column.fallbacks().get(0) : path);
                         if (currentRow != null) {
+                            JsonNode expectedRow = renamed
+                                    ? ((ObjectNode) currentRow.deepCopy()).put("path", path) : nmWindow
+                                    ? ((ObjectNode) currentRow.deepCopy()).put("unit", "UO:0000018") : currentRow;
                             assertThat(row).as("%s: %s against a current manifest", name, path)
-                                    .isEqualTo(currentRow);
+                                    .isEqualTo(expectedRow);
                             matched++;
                         }
                     }
@@ -328,6 +337,83 @@ class WriterManifestConformanceTest {
         List<String> expected = new ArrayList<>(new TreeSet<>(membersBesidesIndex(out, true)));
         expected.add(INDEX);
         assertThat(local).as("ZIP entries of %s via %s", fixture, form).containsExactlyElementsOf(expected);
+    }
+
+    // ---- run key (W1) -------------------------------------------------------------------------------------------
+
+    static Stream<Arguments> runKeyCases() {
+        List<Arguments> cases = new ArrayList<>();
+        for (Object[] fixture : new Object[][] {{Fixtures.legacy("small.unpacked.mzpeak"), 0},
+                {Fixtures.legacy("has_uv.mzpeak"), 0}, {Fixtures.current("diaPASEF.ref.mzpeak"), 1}}) {
+            for (Form form : List.of(Form.WRITE_DIRECTORY_SPLIT, Form.WRITE_ARCHIVE)) {
+                cases.add(Arguments.of(fixture[0], form, fixture[1]));
+            }
+        }
+        return cases.stream();
+    }
+
+    /**
+     * W1 (D13-11): in the current (split) dialect the run names its default instrument with
+     * {@code default_instrument_configuration_id} only (diaPASEF.ref's 1 by the configuration
+     * {@link Fixtures#withDeclaredDefaults} adds), and every file
+     * metadata document, the run's against {@code ms_run.json} of spec 963d64a, passes the schema check and resolves,
+     * in the manifest and in every footer that holds them.
+     */
+    @ParameterizedTest(name = "{0} via {1}")
+    @MethodSource("runKeyCases")
+    void theSplitDialectWritesDefaultInstrumentConfigurationId(Path fixture, Form form, int instrument,
+                                                               @TempDir Path tmp) throws IOException {
+        Path out = write(fixture, form, tmp);
+        JsonNode run = index(out).path("metadata").path("run");
+        assertThat(run.get("default_instrument_configuration_id")).as("run of %s via %s", fixture, form).isNotNull();
+        assertThat(run.get("default_instrument_configuration_id").isInt()).isTrue();
+        assertThat(run.get("default_instrument_configuration_id").asInt()).isEqualTo(instrument);
+        assertThat(run.has("default_instrument_id")).as("run of %s via %s", fixture, form).isFalse();
+
+        Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
+        assertThat(places.keySet()).containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(out));
+        List<String> problems = new ArrayList<>();
+        places.forEach((place, documents) -> {
+            assertThat(documents).as(place).containsKey("run").isEqualTo(places.get(INDEX));
+            SpecSchemaCheck.violations(documents).forEach(v -> problems.add(place + ": " + v));
+            SpecSchemaCheck.unresolved(documents).forEach(u -> problems.add(place + ": " + u));
+        });
+        assertThat(problems).as("%s via %s", fixture, form).isEmpty();
+    }
+
+    /**
+     * U4: the JSON params the split layout writes conform to schema/param.json, which requires a name: those of the
+     * scan settings of Example_Processed.img in the manifest against {@code scan_settings_list.json}, and those of
+     * the file metadata documents of the manifest and every footer against their schemas.
+     */
+    @Test
+    void theWrittenJsonParamsConformToParamJson(@TempDir Path tmp) throws IOException {
+        Path out = write(Fixtures.current("Example_Processed.img.mzpeak"), Form.WRITE_DIRECTORY_SPLIT, tmp);
+        JsonNode settings = index(out).path("metadata").path("scan_settings_list");
+        assertThat(settings.findValues("parameters")).isNotEmpty();
+        assertThat(settings.path(0).path("parameters")).isNotEmpty();
+        assertThat(SpecSchemaCheck.violations("scan_settings_list", "scan_settings_list.json", settings.toString()))
+                .isEmpty();
+        Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
+        assertThat(places).isNotEmpty();
+        places.forEach((place, documents) -> assertThat(SpecSchemaCheck.violations(documents)).as(place).isEmpty());
+    }
+
+    /** W1 (D13-11): the packed (pin-era) dialect keeps {@code default_instrument_id} and does not write the new key. */
+    @ParameterizedTest(name = "{0} via {1}")
+    @MethodSource("packedCases")
+    void thePackedDialectKeepsDefaultInstrumentId(String fixture, Form form, @TempDir Path tmp) throws IOException {
+        Path out = write(fixture, form, tmp);
+        Map<String, Map<String, String>> places = SpecSchemaCheck.documents(out);
+        assertThat(places).isNotEmpty();
+        for (Map.Entry<String, Map<String, String>> place : places.entrySet()) {
+            JsonNode run = MAPPER.readTree(place.getValue().get("run"));
+            assertThat(run.get("default_instrument_id")).as("%s via %s: %s", fixture, form, place.getKey())
+                    .isNotNull();
+            assertThat(run.get("default_instrument_id").asInt()).isZero();
+            assertThat(run.has("default_instrument_configuration_id")).isFalse();
+            assertThat(SpecSchemaCheck.unresolved(place.getValue())).isEmpty();
+        }
     }
 
     // ---- column mapping units -----------------------------------------------------------------------------------
@@ -456,7 +542,11 @@ class WriterManifestConformanceTest {
     }
 
     private static Path write(String fixture, Form form, Path tmp) {
-        Source source = SOURCES.computeIfAbsent(fixture, f -> ForwardBackwardCorpusTest.readSource(Fixtures.legacy(f)));
+        return write(Fixtures.legacy(fixture), form, tmp);
+    }
+
+    private static Path write(Path fixture, Form form, Path tmp) {
+        Source source = SOURCES.computeIfAbsent(fixture.toString(), f -> ForwardBackwardCorpusTest.readSource(fixture));
         Path out = tmp.resolve("out.mzpeak");
         form.write.accept(out, source);
         assertThat(form.archive ? Files.isRegularFile(out) : Files.isDirectory(out))

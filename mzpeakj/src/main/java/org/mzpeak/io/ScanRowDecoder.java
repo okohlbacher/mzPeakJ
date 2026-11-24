@@ -10,7 +10,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Decodes one scan row of the spectrum metadata into a {@link ScanEvent}; columns are resolved by accession. */
+/**
+ * Decodes one scan row of the spectrum or wavelength spectrum metadata into a {@link ScanEvent}; columns are resolved
+ * by accession.
+ */
 final class ScanRowDecoder {
 
     // scan facet
@@ -81,11 +84,18 @@ final class ScanRowDecoder {
         if (windowRows.isEmpty()) {
             return List.of();
         }
+        boolean wavelength = scan.facet() == Facet.WAVELENGTH_SCAN;
         List<ScanWindow> out = new ArrayList<>(windowRows.size());
         for (FacetRow w : windowRows) {
             ColumnResolver columns = w.columns();
-            Double lower = columns.doubleValue(w.group(), columns.resolve(WINDOW_LOWER));
-            Double upper = columns.doubleValue(w.group(), columns.resolve(WINDOW_UPPER));
+            String lowerField = columns.resolve(WINDOW_LOWER);
+            String upperField = columns.resolve(WINDOW_UPPER);
+            Double lower = columns.doubleValue(w.group(), lowerField);
+            Double upper = columns.doubleValue(w.group(), upperField);
+            if (wavelength) {
+                lower = inNanometers(columns, lowerField, lower);
+                upper = inNanometers(columns, upperField, upper);
+            }
             if (lower != null && upper != null) {
                 out.add(new ScanWindow(lower, upper));
             }
@@ -128,6 +138,39 @@ final class ScanRowDecoder {
             consumed.add(field);
         }
         return field;
+    }
+
+    /**
+     * The wavelength scan window limit {@code value} of {@code field} in nanometers, converted from the unit of its
+     * mapping (the column_mapping, else {@link ColumnTable}, which gives nanometers; D13-24): nanometer or no unit as
+     * is, micrometer, millimeter and meter converted. {@code null} when {@code value} is.
+     *
+     * @throws MzPeakException if the unit is any other (has_uv's m/z, MS:1000040, included), or is given per row by a
+     *                         unit column (not resolved yet)
+     */
+    private static Double inNanometers(ColumnResolver columns, String field, Double value) {
+        if (value == null) {
+            return null;
+        }
+        // a resolved field has a mapping: the column_mapping item or the ColumnTable column it was resolved through
+        MzPeakManifest.ColumnMapping mapping = columns.mapping(field).orElseThrow();
+        if (mapping.unitPath() != null) {
+            throw new MzPeakException(columns.member() + ": wavelength scan window column " + columns.path(field)
+                    + " takes its unit from the column " + mapping.unitPath() + ", which is not supported");
+        }
+        String unit = mapping.unit();
+        if (unit == null) {
+            return value;
+        }
+        return switch (unit) {
+            case "UO:0000018" -> value; // nanometer
+            case "UO:0000017" -> value * 1e3; // micrometer
+            case "UO:0000016" -> value * 1e6; // millimeter
+            case "UO:0000008" -> value * 1e9; // meter
+            default -> throw new MzPeakException(columns.member() + ": wavelength scan window column "
+                    + columns.path(field) + " has the unit " + unit + "; supported are nanometer (UO:0000018),"
+                    + " micrometer (UO:0000017), millimeter (UO:0000016) and meter (UO:0000008)");
+        };
     }
 
     /**

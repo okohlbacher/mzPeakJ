@@ -24,7 +24,7 @@ import org.mzpeak.io.ForwardBackwardCorpusTest.Source;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.IsolationWindow;
@@ -314,23 +314,24 @@ class ChromatogramPrecursorTest {
     /**
      * (e): BTO, which the small write uses nowhere else, as an activation param of a chromatogram precursor in a split
      * write is declared in metadata.cv_list; so are CVs used only by an isolation-window or a selected-ion param of
-     * one. A write without them declares none of them.
+     * one. A write without them declares none of them. The window param is an EFO term: an NCIT term such as
+     * NCIT:C25677 is no CURIE the Rust reference reader parses, which the split layout refuses (D13-28, X-40).
      */
     @Test
     void aCvUsedOnlyInAChromatogramPrecursorIsDeclared() throws IOException {
         Path plain = tmp.resolve("plain.mzpeak");
         writeSmall(plain, List.of(chromatogram(0, "sic", List.of(Q1))), SPLIT);
-        assertThat(cvIds(plain)).doesNotContain("BTO", "NCIT", "PRIDE");
+        assertThat(cvIds(plain)).doesNotContain("BTO", "EFO", "PRIDE");
 
         Param brain = new Param("brain", "BTO:0000142", null, null);
-        Param window = new Param("window", "NCIT:C25677", 1L, null);
+        Param window = new Param("window", "EFO:0000408", 1L, null);
         Param ion = new Param("ion", "PRIDE:0000001", null, null);
         Precursor precursor = new Precursor(null, "scan=19", new IsolationWindow(456.7, null, null, List.of(window)),
                 List.of(new SelectedIon(445.34, 2, null, List.of(ion))), new Activation(List.of(CID, brain)));
         Path out = tmp.resolve("bto.mzpeak");
         writeSmall(out, List.of(chromatogram(0, "sic", List.of(precursor))), SPLIT);
 
-        assertThat(cvIds(out)).contains("BTO", "NCIT", "PRIDE");
+        assertThat(cvIds(out)).contains("BTO", "EFO", "PRIDE");
         assertThat(WriterCvListTest.assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000142");
         assertThat(chromatograms(out).get(0).precursors()).containsExactly(precursor);
     }
@@ -415,10 +416,10 @@ class ChromatogramPrecursorTest {
                                 .optional(PrimitiveTypeName.DOUBLE).named("MS_1000827_isolation_window_target_mz")
                                 .optional(PrimitiveTypeName.DOUBLE).named("MS_1000828_isolation_window_lower_offset")
                                 .optional(PrimitiveTypeName.DOUBLE).named("MS_1000829_isolation_window_upper_offset")
-                                .addField(ParquetOutput.paramListField())
+                                .addField(ParquetOutput.paramListField(false))
                                 .named("isolation_window"))
                         .addField(Types.optionalGroup()
-                                .addField(ParquetOutput.paramListField())
+                                .addField(ParquetOutput.paramListField(false))
                                 .named("activation"))
                         .named("precursor"))
                 .addField(Types.optionalGroup()
@@ -429,7 +430,7 @@ class ChromatogramPrecursorTest {
                         .optional(PrimitiveTypeName.DOUBLE).named("MS_1000744_selected_ion_mz_unit_MS_1000040")
                         .optional(PrimitiveTypeName.INT32).named("MS_1000041_charge_state")
                         .optional(PrimitiveTypeName.DOUBLE).named("MS_1000042_intensity_unit_MS_1000131")
-                        .addField(ParquetOutput.paramListField())
+                        .addField(ParquetOutput.paramListField(false))
                         .named("selected_ion"))
                 .named("arrow_schema");
         SimpleGroupFactory factory = new SimpleGroupFactory(schema);
@@ -475,7 +476,7 @@ class ChromatogramPrecursorTest {
 
     /** Writes {@code chromatograms} with the first spectrum of current small, an MS1 spectrum, to {@code out}. */
     private static void writeSmall(Path out, List<Chromatogram> chromatograms, Options options) {
-        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.mzpeak"));
+        Source source = ForwardBackwardCorpusTest.readSourceWithoutReferences(Fixtures.current("small.mzpeak"));
         MzPeakWriter.writeDirectory(out, source.spectra.subList(0, 1), chromatograms, List.of(), List.of(),
                 FileMetadata.EMPTY, options);
     }
@@ -522,7 +523,7 @@ class ChromatogramPrecursorTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

@@ -52,7 +52,8 @@ final class SpectrumSummary {
 
     /**
      * The summary values derived from a spectrum's payload; each is {@code null} when it cannot be derived. The total
-     * ion current is the plain sum, present (possibly not finite) whenever the payload has a point.
+     * ion current is the plain sum, present (possibly not finite) whenever the payload has a point whose intensity is
+     * in detector counts.
      */
     record Values(Double lowestMz, Double highestMz, Double basePeakMz, Double basePeakIntensity, Double tic) {
     }
@@ -90,10 +91,15 @@ final class SpectrumSummary {
 
     /**
      * The summary values of {@code s}'s payload: its peaks for a centroid spectrum with peaks, else its arrays. An
-     * empty spectrum has none (no fabricated zeros).
+     * empty spectrum has none (no fabricated zeros). The base peak intensity and total ion current are written to
+     * columns in MS:1000131 (number of detector counts, {@link ColumnTable}), so they are derived only when the
+     * payload's intensity unit ({@link Spectrum#peakIntensityUnit()} of peaks, else {@link Spectrum#intensityUnit()})
+     * is MS:1000131 or not given, and are {@code null} for another unit; the m/z values are derived whatever the unit.
      */
     static Values derive(Spectrum s) {
         boolean centroid = isCentroid(s) && !s.peaks().isEmpty();
+        String unit = centroid ? s.peakIntensityUnit() : s.intensityUnit();
+        boolean counts = unit == null || ArrayIndex.COUNTS_UNIT.equals(unit);
         int n = centroid ? s.peaks().size() : s.mz().length;
         if (n == 0) {
             return NONE;
@@ -119,15 +125,20 @@ final class SpectrumSummary {
                 if (in[i] > basePeakIntensity) { basePeakIntensity = in[i]; basePeakMz = mz[i]; }
             }
         }
-        return new Values(finite(loMz), finite(hiMz), finite(basePeakMz), finite(basePeakIntensity), tic);
+        return new Values(finite(loMz), finite(hiMz), finite(basePeakMz),
+                counts ? finite(basePeakIntensity) : null, counts ? tic : null);
     }
 
     private static Double finite(double value) {
         return Double.isFinite(value) ? value : null;
     }
 
+    /**
+     * Sets {@code field} of {@code group} to {@code value} unless it is null or NaN (a TIC of +Infinity and -Infinity),
+     * which is written as null (W10).
+     */
     private static void addIfPresent(Group group, String field, Double value) {
-        if (value != null) {
+        if (value != null && !value.isNaN()) {
             group.add(field, value);
         }
     }

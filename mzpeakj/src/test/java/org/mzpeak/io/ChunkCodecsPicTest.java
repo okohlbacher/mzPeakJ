@@ -73,7 +73,7 @@ class ChunkCodecsPicTest {
     @Test
     void aTruncatedPayloadFailsNamingWhatAndTheSpectrum() {
         assertThatThrownBy(() -> ChunkCodecs.decodeNumpress(chunk(new byte[] {0x00}), FIELD,
-                MSNumpress.ACC_NUMPRESS_PIC, 7, "intensity"))
+                MSNumpress.ACC_NUMPRESS_PIC, SignalEntity.SPECTRUM.ref(7), "intensity"))
                 .isExactlyInstanceOf(MzPeakException.class)
                 .hasMessage("Failed to Numpress-decode intensity for spectrum_index 7")
                 .cause()
@@ -91,7 +91,8 @@ class ChunkCodecsPicTest {
     }
 
     private static double[] decode(byte[] payload) {
-        return ChunkCodecs.decodeNumpress(chunk(payload), FIELD, MSNumpress.ACC_NUMPRESS_PIC, 0, "intensity");
+        return ChunkCodecs.decodeNumpress(chunk(payload), FIELD, MSNumpress.ACC_NUMPRESS_PIC,
+                SignalEntity.SPECTRUM.ref(0), "intensity");
     }
 
     /** A chunk struct whose PIC column holds {@code payload}. */

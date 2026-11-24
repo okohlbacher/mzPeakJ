@@ -86,6 +86,11 @@ class ColumnTableTest {
             new Legacy(Facet.WAVELENGTH_SPECTRUM, "MS:1003812", "MS_1003812_lambda_max_unit_UO:0000018"),
             new Legacy(Facet.WAVELENGTH_SPECTRUM, "MS:1003060", "MS_1003060_number_of_data_points"));
 
+    /** The one canonical path that is not the current manifests' (D13-12). */
+    private static final String RENAMED = "opt_spectrum_representation";
+    /** The unit has_uv's manifest gives the wavelength scan windows, which the table maps in nm (D13-24). */
+    private static final String MZ = "MS:1000040";
+
     @Test
     void eachFacetHasTheUnionOfTheCurrentMappings() {
         Map<Facet, Integer> sizes = new EnumMap<>(Facet.class);
@@ -93,10 +98,14 @@ class ColumnTableTest {
             sizes.put(f, ColumnTable.columns(f).size());
         }
 
-        assertThat(sizes).isEqualTo(Map.of(
-                Facet.SPECTRUM, 12, Facet.SPECTRUM_SCAN, 8, Facet.SPECTRUM_PRECURSOR, 5,
-                Facet.SPECTRUM_SELECTED_ION, 3, Facet.CHROMATOGRAM, 3, Facet.CHROMATOGRAM_PRECURSOR, 5,
-                Facet.CHROMATOGRAM_SELECTED_ION, 3, Facet.WAVELENGTH_SPECTRUM, 8, Facet.WAVELENGTH_SCAN, 6));
+        // no current manifest maps a products member (R6)
+        assertThat(sizes).isEqualTo(Map.ofEntries(
+                Map.entry(Facet.SPECTRUM, 12), Map.entry(Facet.SPECTRUM_SCAN, 8),
+                Map.entry(Facet.SPECTRUM_PRECURSOR, 5), Map.entry(Facet.SPECTRUM_SELECTED_ION, 3),
+                Map.entry(Facet.SPECTRUM_PRODUCT, 0), Map.entry(Facet.CHROMATOGRAM, 3),
+                Map.entry(Facet.CHROMATOGRAM_PRECURSOR, 5), Map.entry(Facet.CHROMATOGRAM_SELECTED_ION, 3),
+                Map.entry(Facet.CHROMATOGRAM_PRODUCT, 0), Map.entry(Facet.WAVELENGTH_SPECTRUM, 8),
+                Map.entry(Facet.WAVELENGTH_SCAN, 6)));
     }
 
     @Test
@@ -118,13 +127,13 @@ class ColumnTableTest {
                 covered.add(e);
                 List<String> tableOrder = new ArrayList<>();
                 for (Column c : ColumnTable.columns(facet)) {
-                    Optional<ColumnMapping> m = e.columnAtPath(c.path());
+                    Optional<ColumnMapping> m = e.columnAtPath(manifestPath(c));
                     if (m.isEmpty()) {
                         continue;
                     }
                     compared++;
                     seen.add(c);
-                    tableOrder.add(c.path());
+                    tableOrder.add(manifestPath(c));
                     if (!sameIdentity(c, m.get())) {
                         conflicts.add(fixture + " " + facet + " " + c.path() + ": table " + identity(c)
                                 + ", manifest " + identity(m.get()));
@@ -132,7 +141,7 @@ class ColumnTableTest {
                 }
                 List<String> fileOrder = e.columnMapping().stream().map(ColumnMapping::path).toList();
                 for (String path : fileOrder) {
-                    if (ColumnTable.columns(facet).stream().noneMatch(c -> c.path().equals(path))) {
+                    if (ColumnTable.columns(facet).stream().noneMatch(c -> manifestPath(c).equals(path))) {
                         unknownMappings.add(fixture + " " + facet + " " + path);
                     }
                 }
@@ -182,6 +191,29 @@ class ColumnTableTest {
                 List.of("MS_1003812_lambda_max_unit_UO:0000018")));
         assertThat(ColumnTable.columns(Facet.SPECTRUM).stream().filter(Column::termMarker).map(Column::path))
                 .containsExactly("spectrum_representation", "spectrum_type");
+    }
+
+    /**
+     * R8 (D13-24): the wavelength scan windows have their own rows, in nanometers (wavelength-spectra.md), with the
+     * paths and pin-era fallbacks of the spectrum scan windows, which stay in m/z.
+     */
+    @Test
+    void wavelengthScanWindowsAreInNanometers() {
+        for (String accession : List.of("MS:1000501", "MS:1000500")) {
+            Column spectrum = ColumnTable.byAccession(Facet.SPECTRUM_SCAN, accession).orElseThrow();
+            Column wavelength = ColumnTable.byAccession(Facet.WAVELENGTH_SCAN, accession).orElseThrow();
+            assertThat(spectrum.unit()).isEqualTo(MZ);
+            assertThat(wavelength.unit()).isEqualTo("UO:0000018");
+            assertThat(wavelength).isEqualTo(new Column(Facet.WAVELENGTH_SCAN, spectrum.path(), accession,
+                    spectrum.name(), "UO:0000018", false, spectrum.fallbacks()));
+        }
+        for (Column c : ColumnTable.columns(Facet.WAVELENGTH_SCAN)) {
+            if (!c.path().startsWith("scan_windows.")) {
+                assertThat(c).isEqualTo(ColumnTable.byAccession(Facet.SPECTRUM_SCAN, c.accession()).map(s ->
+                        new Column(Facet.WAVELENGTH_SCAN, s.path(), s.accession(), s.name(), s.unit(),
+                                s.termMarker(), s.fallbacks())).orElseThrow());
+            }
+        }
     }
 
     @Test
@@ -338,11 +370,15 @@ class ColumnTableTest {
                 "source_index", "precursor_index");
         assertFacet(Facet.SPECTRUM_SELECTED_ION, "spectrum", "selected_ions", "selected_ion", false,
                 "source_index", "precursor_index", "selected_ion_index");
+        assertFacet(Facet.SPECTRUM_PRODUCT, "spectrum", "products", "product", false,
+                "source_index", "product_index");
         assertFacet(Facet.CHROMATOGRAM, "chromatogram", "metadata", "chromatogram", true, "index");
         assertFacet(Facet.CHROMATOGRAM_PRECURSOR, "chromatogram", "precursors", "precursor", false,
                 "source_index", "precursor_index");
         assertFacet(Facet.CHROMATOGRAM_SELECTED_ION, "chromatogram", "selected_ions", "selected_ion", false,
                 "source_index", "precursor_index", "selected_ion_index");
+        assertFacet(Facet.CHROMATOGRAM_PRODUCT, "chromatogram", "products", "product", false,
+                "source_index", "product_index");
         assertFacet(Facet.WAVELENGTH_SPECTRUM, "wavelength_spectrum", "metadata", "spectrum", true, "index");
         assertFacet(Facet.WAVELENGTH_SCAN, "wavelength_spectrum", "scans", "scan", false,
                 "source_index", "scan_index");
@@ -356,7 +392,7 @@ class ColumnTableTest {
             names.put(f, f.entry(hasUv).map(Entry::name).orElse(null));
         }
 
-        assertThat(names).isEqualTo(Map.of(
+        Map<Facet, String> expected = new EnumMap<>(Map.of(
                 Facet.SPECTRUM, "spectra_metadata.parquet",
                 Facet.SPECTRUM_SCAN, "spectra_metadata_scans.parquet",
                 Facet.SPECTRUM_PRECURSOR, "spectra_metadata_precursors.parquet",
@@ -366,6 +402,10 @@ class ColumnTableTest {
                 Facet.CHROMATOGRAM_SELECTED_ION, "chromatograms_metadata_selected_ions.parquet",
                 Facet.WAVELENGTH_SPECTRUM, "wavelength_spectra_metadata.parquet",
                 Facet.WAVELENGTH_SCAN, "wavelength_spectra_metadata_scans.parquet"));
+        // has_uv has no products members
+        expected.put(Facet.SPECTRUM_PRODUCT, null);
+        expected.put(Facet.CHROMATOGRAM_PRODUCT, null);
+        assertThat(names).isEqualTo(expected);
 
         MzPeakManifest legacy = manifest(Fixtures.legacy("small.unpacked.mzpeak"));
         assertThat(Facet.SPECTRUM.entry(legacy)).map(Entry::name).contains("spectra_metadata.parquet");
@@ -376,9 +416,26 @@ class ColumnTableTest {
 
     // ---- helpers ---------------------------------------------------------------------------
 
+    /**
+     * The path the current manifests map {@code c} at: its canonical path, but for the wavelength representation,
+     * which the table renames to {@code opt_spectrum_representation} (D13-12) and the manifests map at its first
+     * fallback, {@code spectrum_representation}.
+     */
+    private static String manifestPath(Column c) {
+        return c.path().equals(RENAMED) ? c.fallbacks().get(0) : c.path();
+    }
+
     private static boolean sameIdentity(Column c, ColumnMapping m) {
-        return c.path().equals(m.path()) && c.accession().equals(m.accession()) && c.name().equals(m.name())
-                && Objects.equals(c.unit(), m.unit()) && c.termMarker() == Boolean.TRUE.equals(m.termMarker());
+        return manifestPath(c).equals(m.path()) && c.accession().equals(m.accession()) && c.name().equals(m.name())
+                && Objects.equals(manifestUnit(c), m.unit()) && c.termMarker() == Boolean.TRUE.equals(m.termMarker());
+    }
+
+    /**
+     * The unit the current manifests give {@code c}: its own, but for the wavelength scan windows, which the
+     * reference maps in m/z while wavelength-spectra.md gives nanometers (D13-24).
+     */
+    private static String manifestUnit(Column c) {
+        return c.facet() == Facet.WAVELENGTH_SCAN && c.path().startsWith("scan_windows.") ? MZ : c.unit();
     }
 
     private static String identity(Column c) {

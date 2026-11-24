@@ -1,6 +1,6 @@
 # Design decisions
 
-The decisions of 2026-11-07 to 2026-11-11 that still shape mzPeakJ's code, each with its reason and date. "Maintainer"
+The decisions of 2026-11-07 to 2026-11-23 that still shape mzPeakJ's code, each with its reason and date. "Maintainer"
 marks a decision of the maintainer; the others are defaults the design rounds adopted and the maintainer did not
 overrule. Decisions that a later one replaced are listed only where the replacement is not obvious. How the format
 works and how mzPeakJ reads and writes it is described in [DESIGN.md](../DESIGN.md); the converter in
@@ -25,7 +25,7 @@ The upstream update to HUPO-PSI/mzPeak `2ee2589` (spec snapshot `0220201`, mzdat
   spec makes the array index authoritative and file names free.
 - **Null-pair fill keeps mzPeakJ's rule (Q-U4)**, a deliberate deviation from both reference readers, with 5e-5 Da as
   the golden tolerance for filled points. *Why:* Q-U4 is about 1e-6 Da from the only ground truth (small.numpress),
-  the reference rule up to 4.3e-5 Da.
+  the reference rule up to 4.3e-5 Da. Replaced on 2026-11-22 by D13-13 (R2, X-8): the spec's rule, per chunk row.
 - **Unknown encodings throw.** An unknown non-null `chunk_encoding` or main-axis `grid_type` throws; an unknown
   secondary grid drops that extra array with a warning. Grid models are one constant table with provisional
   accessions. *Why:* Rust and Python reject unknown encodings; decoding them as deltas gave wrong arrays silently.
@@ -55,10 +55,12 @@ The upstream update to HUPO-PSI/mzPeak `2ee2589` (spec snapshot `0220201`, mzdat
   matching precursor, unmatched ions to the first precursor, orphan ions form a precursor-less `Precursor`. *Why:*
   legacy-compatible and identical to the references on every fixture.
 - **Run key.** The reader takes `default_instrument_configuration_id`, else `default_instrument_id`; the writer writes
-  only `default_instrument_id`. *Why:* the spec's `ms_run.json` still requires `default_instrument_id`, and writing both
-  makes serde reject a duplicate field.
-- **Unknown CURIE prefixes.** The writer warns and never throws; the reader keeps the literal value without a warning.
-  *Why:* writes must not fail on user data, and the conformance text asks readers to keep unknown terms.
+  only `default_instrument_configuration_id` in the split layout and only `default_instrument_id` in the packed one.
+  *Why:* the spec's `ms_run.json` (963d64a) requires `default_instrument_configuration_id`, the packed layout keeps its
+  pin-era dialect, and writing both makes serde reject a duplicate field.
+- **Unknown CURIE prefixes.** The reader keeps the literal value without a warning. *Why:* the conformance text asks
+  readers to keep unknown terms. The writer's half (it warned and never threw) was replaced on 2026-11-23 (X-27): see
+  "undeclared CV prefixes and dangling references" below.
 - **Imaging.** `KnownCvs` is a verbatim copy of the reference's CV list (IMS on its master branch); the reader resolves
   every position spelling by accession; the writer writes `opt_IMS_1000050_position_x` and
   `opt_IMS_1000051_position_y`. *Why:* parity with the only producer seen; the draft imaging profile disagrees with
@@ -113,20 +115,77 @@ decisions cause.
   (2026-11-08). *Why:* mzML holds one representation per spectrum.
 - **Selected ions of precursors sharing a parent move to the first of them** (B-19) (2026-11-08). *Why:* that is where
   both reference readers attach them.
-- **Chromatogram products are not modelled** (B-27) (2026-11-08). *Why:* no reference writer writes them, the Rust
-  reader panics on them, and spec HEAD redefines them.
+- **Chromatogram products are not converted** (B-27) (2026-11-08; the model reads them since X-26). *Why:* no
+  reference writer writes them, the Rust reader panics on them, and spec HEAD redefines them.
 - **No array descriptor API; fixed default units per array key** (`CvTerms.DEFAULT_ARRAY_UNITS`); an array in a unit
   the model cannot carry is converted, dropped or rejected, never relabelled (2026-11-08). *Why:* never write a unit the
   data were not in.
-- **Spectrum intensity arrays outside MS:1000131 are rejected** (2026-11-08). *Why:* the model has no spectrum
-  intensity unit.
+- **Spectrum intensity arrays outside MS:1000131, MS:1000132 and MS:1000814 are rejected** (2026-11-08; the
+  converter keeps the unit since 0.13.0, X-36). *Why:* before 0.13.0 the model had no spectrum intensity unit; it has
+  `Spectrum.intensityUnit()` since X-29, and the converter declares the units its survey finds to the session.
 - **No overwriting**: the converter, the CLI, `MzMLWriter.open` and the public session API refuse an existing target;
   the batch `MzPeakWriter.write*` overloads keep replacing (2026-11-08). *Why:* a conversion must never destroy data;
   the batch overloads keep their published behaviour.
-- **The chromatogram data-processing column is written `data_processing_ref`**, read as that or Rust's
-  `data_processing_id` (2026-11-08). *Why:* the spec spelling.
-- **A NaN m/z in mzML input is warned (B-34), not rejected** (2026-11-08); with mzPeak Numpress output it is refused.
-  *Why:* it carries no information, and rejecting the whole file would fail conversions other tools accept.
+- **The chromatogram data-processing column is written `data_processing_id`**, read as that or the
+  `data_processing_ref` 0.12.0 wrote (2026-11-08, name changed 2026-11-22, X-13). *Why:* the spec spelling
+  (`chromatograms.md`, l.53); 0.12.0 had taken `data_processing_ref` for it.
+- **The spectrum data processing is kept** as `SpectrumDescription.dataProcessingRef`, read from `data_processing_id`
+  (else `data_processing_ref`) and written as `data_processing_id` by the split layout, the column only when some
+  spectrum has one; the packed layout drops it with a warning (2026-11-23, X-25, D13-21). *Why:* spectra.md
+  (l.108-111) names the column; until then the reader skipped it and the converter lost `spectrum@dataProcessingRef`.
+- **Products and the precursor MS level are read, not written**: `SpectrumDescription.products()` and
+  `Chromatogram.products()` (`Product(precursorIndex, productIndex, isolationWindow, parameters)`, in
+  `product_index` order) from the products members, and `Precursor.msLevel()` from the precursor `ms_level`
+  (2026-11-23, X-26, D13-21). *Why:* spectra.md and chromatograms.md define them; writing products would make the
+  Rust reader panic (`src/reader/metadata.rs`, `DataKind::Products => todo!()`), so both stay write losses
+  (WriteLossAuditTest).
+- **The writer rejects undeclared CV prefixes and dangling references** before anything is written, naming the
+  entity (2026-11-23, X-27, D13-6, D13-9, D13-26; replaces "the writer warns" on unknown CURIE prefixes and the stub
+  part of D-17). A CURIE (a param accession or unit, an extra-array key that is a CURIE, a chromatogram type or
+  intensity unit) needs a prefix `metadata.cv_list` declares: one of `CvEntry.known()` or a caller entry with all four
+  fields. A param unit without a colon, such as `seconds`, is written as given by the packed layout; the split
+  layout refuses a param accession or unit of an entity, its scans or its precursors that is neither null nor
+  `PREFIX:number` with a u32 number, on which the Rust reference reader panics (2026-11-23, X-40, D13-28;
+  upstream-issues.md R-16); an intensity unit of a spectrum, its
+  peaks or a chromatogram, and a session's spectrum intensity unit, must be a CURIE, since it becomes the unit of an
+  array of the array index (`array_index.json`, pattern `\S+:\S+`; 2026-11-23, final fix-up of 0.13.0, until then
+  `percent` was written there). An explicit reference must name an entry of
+  the file metadata: a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
+  of an instrument configuration or processing method, a scan setting's source file and the run's non-null defaults.
+  A batch write checks before its target exists, a session at open (file metadata, scan settings, spectrum arrays)
+  and at each add. A null run default is still filled, with a stub and a WARNING when nothing can be named. Without
+  file metadata (`null` or `FileMetadata.EMPTY`) nothing is declared, so every non-null reference is rejected
+  (2026-11-23, final fix-up of 0.13.0; until then no reference was checked there): the spectra a reader returns are
+  written with the file metadata it returns, as `ExtractSpectra` does. diaPASEF.ref and diaPASEF.grid, whose run names
+  instrument configuration 1 while only 0 exists, are now written only with that configuration added. *Why:*
+  `conformance.md` requires every CV prefix used to be declared (l.24-25) and every non-null foreign key to resolve
+  (§Validation); a stub or an undeclared prefix wrote a file that fails both.
+- **The split layout declares the spec-required item fields of `parameters` and `auxiliary_arrays` required**
+  (2026-11-23, X-37, D13-27, W14; until then every one was optional): in every `parameters` list of a metadata table
+  the item group, its `value` group and its `name`; in each auxiliary array its `name` group, that group's `name`,
+  `data_type`, `compression` and `items` (still UINT64). The `parameters` list inside an auxiliary array keeps the
+  optional item fields auxiliary-arrays.md gives it, although metadata-tables.md requires them in every `parameters`
+  list: the two spec documents disagree, and mzPeakJ follows the one about auxiliary arrays. The auxiliary array's
+  `data`, which auxiliary-arrays.md also marks required, stayed optional in X-37 and is required since the final
+  fix-up (U5). The packed layout keeps
+  every item field optional (frozen dialect, D13-11). The planner refuses a parameter with neither name nor
+  accession before anything is written; the split writer refuses one too, naming the metadata row. Reading is
+  unchanged, and the Rust reference reader (rdump) and the HEAD Python reader read the new files as before. *Why:*
+  metadata-tables.md §The parameters list (l.96-117) gives the item, `value` and `name` without `optional`, and
+  auxiliary-arrays.md (l.16-58) marks the auxiliary-array fields `required`.
+- **Chromatogram times are written in minutes** (2026-11-22, X-20, X-21, D13-1; replaces the writer half of D-12,
+  which wrote the given unit and refused chromatograms of different units). Second, millisecond and hour are
+  converted once; any other unit is refused, and the message lists the supported ones. The reader still returns the
+  stored values with their unit, and the converter no longer converts a chromatogram into the first one's unit, so
+  its B-15 line about chromatogram times is gone. *Why:* `chromatograms.md` (l.21): "the units MUST be minutes".
+- **A NaN m/z, time, wavelength or intensity fails the write, and so the conversion** (2026-11-22, X-18, D13-14;
+  until then a NaN m/z in mzML input was warned as B-34). A NaN extra-array cell and a NaN optional metadata double
+  are written as null. *Why:* parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec
+  requires a page index for every column (`conformance.md`, l.36); a null axis value would be a null-marked point and
+  a null intensity reads as 0, so neither has a form that reads back as written.
+- **A selected ion without m/z is kept with `mz` NaN** (2026-11-22, X-24, D13-22; until then the read dropped it and
+  the converter warned B-18). The writer writes the NaN m/z as null, the converter writes no m/z cvParam for it.
+  *Why:* `spectra.md` (l.288-316) and `precursor_selectedion_must` let the charge alone describe a selected ion.
 - **mzML output is always 64-bit float, zlib by default, no MS-Numpress** (2026-11-09). *Why:* exact for `double[]`;
   jmzML's Numpress encoder writes wrong values without an error for values it cannot hold.
 - **Param order follows jmzML** (an element's own params before its groups') (2026-11-09). *Why:* order carries no
@@ -150,17 +209,17 @@ these ids.
 | D-4 | CLAUDE.md describes the current state and the agent-team process | it described an earlier state |
 | D-5 | Numpress intensities stay full doubles; no float32 narrowing | the difference is at most 5.95e-8 relative, and arrays are `double[]` throughout |
 | D-6 | Split facet rows whose `source_index` names no spectrum are dropped silently | as the Rust reader does |
-| D-7 | Manifest parsing as strict as the Rust reader's serde: malformed manifests are rejected with a message naming the entry and field, duplicate known fields included | a tolerant reader let a wrongly typed document shadow a valid one |
+| D-7 | Manifest parsing as strict as the Rust reader's serde: malformed manifests are rejected with a message naming the entry and field, duplicate known fields included. Refined by C6 (D13-2, 2026-11-22): fields the JSON schema makes optional may be absent | a tolerant reader let a wrongly typed document shadow a valid one |
 | D-8 | A null or blank `ion_mobility_type` next to a value throws | it silently became drift time; Rust panics there |
 | D-9 | Packed spectra keep their unconsumed scalar columns as Params (D-9a), and per-row unit columns are resolved for leftover Params and collision energy (D-9b) | the spectrum counterpart of the packed wavelength rule; Rust reads unit columns per row |
 | D-10 | Recover the read-path slowdown by resolving metadata columns once per member; bar 0.90 × base on the metadata path, not lowered | measured on the 295,811-spectrum Astral file: 2674 ms → 2232 ms (0.835 × base) |
 | D-11 | The Numpress encoder rejects non-finite m/z or intensity and negative SLOF/PIC intensities, with the spectrum index, before anything is written | the vendored codec encodes such values as garbage without an error |
-| D-12 | Chromatograms carry their time unit (`Chromatogram.timeUnit()`); the reader returns times as stored, the writer writes the unit, conversion only on request (`withTimeUnit`); the converter keeps the unit (D-12c) | the writer declared minutes for values in the file's unit |
-| D-13 | Close every known write loss: ion mobility columns in scans and selected ions, wavelength scans with the full scan schema, chromatogram auxiliary arrays | the values must survive a round trip in the columns readers look at |
+| D-12 | Chromatograms carry their time unit (`Chromatogram.timeUnit()`); the reader returns times as stored, the writer writes the unit, conversion only on request (`withTimeUnit`); the converter keeps the unit (D-12c). The writer half is replaced by W3 (D13-1, 2026-11-22): the writer stores minutes | the writer declared minutes for values in the file's unit |
+| D-13 | Close every known write loss: ion mobility columns in scans and selected ions, wavelength scans with the full scan schema, chromatogram auxiliary arrays. Since 0.13.0 the wavelength scans have the spec's table, without the ion mobility and spectrum reference columns and with float32 windows in nanometers (D13-12, D13-24) | the values must survive a round trip in the columns readers look at |
 | D-14 | Imaging output keeps following the Rust reference (IMS URI, `opt_` names, no `is_imaging`) | the reference is the only producer; the profile is a draft |
 | D-15 | Duplicate ZIP member names: the last wins, with a warning; archives without spectrum metadata open; a manifest major version above 0 is rejected (`Options.withVersionCheck`) | as the Rust reader; a future major version is a different format |
 | D-16 | `verifyIntegrity()` checks the SHA-512 member checksums and reports per member (`IntegrityReport`) | the checksums were written but never checked |
-| D-17 | No dangling run, software or data-processing references in written footers | the spec schemas require them to resolve |
+| D-17 | No dangling run, software or data-processing references in written footers. The stub part is replaced by W12 (D13-6, D13-9, 2026-11-23): an explicit reference that names nothing is refused; only a null run default still gets a stub | the spec schemas require them to resolve |
 | D-18 | The pinned Rust reference reader is built in CI and reads every split output mzPeakJ writes ([known issues](upstream-issues.md)) | "readable by the Rust reference" becomes a tested claim |
 | D-19 | The converter stays as decided on 2026-11-09 (jmzML as is) | see above |
 | D-20 | The converter design and these decisions are committed under `docs/`; the working files of the design rounds stay out of git | the long round files are not documentation |
@@ -202,14 +261,55 @@ Questions the round answered itself, by the default closest to the decisions abo
 8. D-10: the bar is 0.90 × base on the metadata path, not lowered; measured on OpenJDK 27.0.1.
 9. D-12: `timeUnit` is the last record component; a file without a time unit reads as minutes; the reader takes the
    unit of the values column, else of the start column; the writer refuses chromatograms of mixed time units; the
-   converter keeps chromatogram time units (B-15 narrows).
+   converter keeps chromatogram time units (B-15 narrows). The writer half is replaced by D13-1: the writer stores
+   minutes, and chromatograms of mixed units are written together.
 10. D-13: ion mobility is promoted only for the four types whose reader name and unit are fixed; chromatogram metadata
     gets the `ARROW:schema` hint with its auxiliary arrays.
 11. D-17: every dangling footer reference gets a stub with a WARNING, a dangling `default_instrument_id` included; stub
-    ids are numeric; entity-level `data_processing_ref` cells are not checked.
+    ids are numeric; entity-level `data_processing_ref` cells are not checked. Replaced by D13-6 and D13-9: dangling
+    references, those of entities included, are refused; only a null run default gets a stub.
 12. F-2: 64 MiB central-directory cap and 196,651 bytes per header.
 13. F-3: the decoder keeps the stored cell at a null-filled position; a test pins it.
 14. F-4 covers `ContentDigest` and the manifest line separator only; `FileMetadata.ComponentType.parse` lower-cases in
     the default locale and is backlog.
 15. F-5: lock with hashes, CPython 3.13.12 as the golden environment.
 16. The upstream issue table is committed as [upstream-issues.md](upstream-issues.md).
+
+## 2026-11-22 and 2026-11-23: decisions for 0.13.0
+
+The spec-conformance round against the mzPeak specification at `963d64a`: D13-1 to D13-7 are the maintainer's
+defaults, D13-8 to D13-27 the round's own, adopted where the instruction did not settle a question, and D13-28 the
+maintainer's default of its final fix-up. The item ids (C and R reading, W writing) are those of the round;
+[the 0.13.0 release notes](releases/0.13.0.md) describe what each changes, and some bullets above give the longer
+form.
+
+| # | Decision | Reason |
+|---|---|---|
+| D13-1 | W3 overrides D-12 in part: chromatogram times are written in minutes (second, millisecond and hour converted once, any other unit refused); `Chromatogram.timeUnit` stays, the reader is unchanged, chromatograms of mixed units are written together; the converter drops its own normalisation | `chromatograms.md`: "the units MUST be minutes" |
+| D13-2 | C6 refines D-7: parsing stays strict for wrong types, schema-required fields and values outside a closed enum; fields the JSON schema makes optional may be absent; a param `unit` is any string or null | conformant manifests without the optional fields were rejected |
+| D13-3 | R9: a ZIP member stored with another method than STORED, or with the encryption bit set, is rejected, naming the member | mzPeak archives hold STORED members, which are read in place |
+| D13-4 | C1: every Parquet codec is read; all but ZSTD (still `zstd-jni`, native, as before) with pure-JVM code: GZIP via the JDK's `java.util.zip`, SNAPPY, LZ4, LZ4_RAW and LZO with `io.airlift:aircompressor` 2.0.3 (Apache-2.0, now a direct dependency), BROTLI with `org.brotli:dec` 0.1.2 (MIT); the writer keeps ZSTD. OSV listed no advisory for either (2026-11-22) | the spec allows every Parquet codec; no new native code |
+| D13-5 | C2: the first array-index entry with `buffer_format: index` and `array_type: MS:1003870` is the entity key; another index entry, such as a parallel time index, never is | the array index may hold other index entries |
+| D13-6 | W12: undeclared CV prefixes and dangling references are refused before anything is written, naming the entity; replaces "the writer warns" on unknown CURIE prefixes and the stub part of D-17 | `conformance.md` requires declared prefixes and resolving references |
+| D13-7 | W4, W5, W11: written names follow the spec (`data_processing_id`, `source_file_references` and target objects, `opt_spectrum_representation`); the reader keeps reading the old names | files of 0.12.0 and of the reference stay readable |
+| D13-8 | C1: LZO is read too; LZ4 and LZO pages are decoded with Hadoop's block framing, by a bounded decoder of mzPeakJ's own instead of aircompressor's `Lz4HadoopStreams`/`LzoHadoopStreams`, whose buffers take untrusted chunk lengths (45223e7), cross-checked in the tests against pages those streams frame (`TestCodecs`), an LZ4 page that does not parse so as one raw block (as Arrow C++ does); `PureJavaCodecFactory` holds the codecs, and `ZstdCompressionCodecFactory` stays as its deprecated subclass | parquet.apache.org lists LZO; no API break |
+| D13-9 | W12: "dangling" is an explicit reference that names nothing (a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software of an instrument configuration or processing method, a scan setting's source file, a non-null run default); a null run default is still filled, else a stub with a WARNING. diaPASEF.ref and diaPASEF.grid as read are refused | the spec requires the run keys; the upstream examples name an undeclared configuration |
+| D13-10 | Deviation from the W12 default: in a batch write entities are still renumbered 0..n-1, and a `precursor_index` naming no written spectrum is still written as null with its `precursor_id`, instead of refusing gaps and such references (X-28 pins both); a session refuses a `precursor_index` naming no spectrum of the session at `finish()` | refusing them would break writing a subset of what the reader returns; spectra.md requires the null `precursor_index` |
+| D13-11 | W1, W5, W14: the `PACKED` pin dialect stays frozen (`default_instrument_id`, `source_file_refs`, bare target arrays, optional param item fields); only the split dialect changes | W13, the packed layout's conformance, is out of scope |
+| D13-12 | W11: `lambda_max` and `ion_injection_time` are spec names and stay; `spectrum_representation` of wavelength spectra becomes `opt_spectrum_representation`; wavelength scans lose `ion_mobility_value`, `ion_mobility_type` and `spectrum_reference` (the split layout refuses a wavelength scan with a spectrum reference) | the spec's wavelength tables |
+| D13-13 | R2 replaces "Null-pair fill keeps mzPeakJ's rule (Q-U4)": null-marked values are filled by the spec's rule, per chunk row in the chunked and Numpress layouts and per entity in the point layout; a flank steps by the second median spacing of its segment, by the delta model next to a single stored value (without one, by the entity's second median spacing, mzPeakJ's fallback); an unpaired null between stored values throws; a run of three or more is filled, with one DEBUG message | signal-data.md, Decoding null pairs; mzPeakJ agrees with the HEAD Python reader, at a median error against the mzML of small of about 9.8e-8 instead of 3.9e-9 |
+| D13-14 | W10: no NaN is written to a column: a NaN extra-array cell or optional metadata double is written as null, a NaN axis value or intensity is refused (also by the converter) | parquet-java 1.18.2 writes no column index for a page holding a NaN, and the spec requires one; the Rust reader reads the null extra cell as 0.0 (upstream R-10) |
+| D13-15 | W8: a caller's or mzML cv list entry of a known CV is kept only with evidence of a fixed release, else mzPeakJ's entry is declared with a WARNING; an unknown CV without version or at a moving URI is refused by `Options.withCvList`, and dropped by the converter when no written CURIE uses it | `conformance.md` requires CV URIs of fixed releases |
+| D13-16 | W2: `Long`, `Integer`, `Short`, `Byte`, `Double`, `Float`, `String`, `Boolean` and collections or arrays of them (JSON text in Parquet, a JSON array in the JSON metadata) are written; any other type is refused | other types were written as no value |
+| D13-17 | C7: a JSON array param value, and a list-valued column, reads as its compact JSON text; a JSON array in footer or manifest metadata comes back as a JSON string when written again (accepted loss) | `Param.value` stays a plain Java value |
+| D13-18 | W7: the core writer replicates the MSn selected-ion chain from a written parent's precursors, unless the spectrum lists that `precursor_index` already | readers find the whole precursor chain of an MSn spectrum on it (W7) |
+| D13-19 | R1: `AuxiliaryArray` holds the bytes as stored with their compression; `doubles()` decompresses none and zlib on demand; the writer writes the bytes and compression unchanged (narrowed by D13-28) | one invariant for reading, writing and the converter |
+| D13-20 | R5: `Spectrum.intensityUnit()` and `peakIntensityUnit()`; one intensity column per unit; a batch write surveys the units, a session declares them (`Options.withSpectrumIntensityUnits`) and refuses others, and the converter declares what its survey finds | signal-data.md wants every column known before writing and one per unit; the Rust range read sees only the first (upstream R-11) |
+| D13-21 | R6: the spectrum `data_processing_id` is read and written; the precursor `ms_level` and the products are read only | writing products makes the Rust reader panic |
+| D13-22 | R7: a selected ion without m/z is kept with `mz` NaN and written as null | spectra.md lets the charge alone describe it |
+| D13-23 | R9: members are checked when read (the index, a listed member, `verifyIntegrity`, which reports `REJECTED_MEMBER`); the encryption flag is checked before the STORED size | an unlisted member that is never read must not fail the open; an encrypted member gets the right message |
+| D13-24 | R8: wavelength scans have their own scan-window mapping, FLOAT in nanometers (UO:0000018); the reader takes the unit from the mapping; legacy packed wavelength scans are not read (such a spectrum has no scans) | wavelength-spectra.md; the packed dialect is frozen |
+| D13-25 | W6: buffer priority per logical array (array type, name, unit); companion entries copy it | signal-data.md, Buffer priority |
+| D13-26 | C6, W12: a param unit that is not a CURIE (such as `seconds`) is not prefix-checked and is written as given; a CURIE-shaped unit is checked. Superseded for the split layout's param lists by D13-28 | param.json has no pattern for the unit |
+| D13-27 | W14: in the split dialect the param item, its `value` group and `name` are required in every metadata-table `parameters` list, and an auxiliary array's `data` (since U5), `name`, `name.name`, `data_type`, `compression` and `items` (UINT64) are required; its own `parameters` list keeps optional fields (a spec inconsistency, see [upstream issues](upstream-issues.md#inconsistencies-in-the-specification)) | metadata-tables.md and auxiliary-arrays.md |
+| D13-28 | Maintainer's default (X-32, X-40): the writer refuses what the Rust reference reader panics on. In every layout, an auxiliary array whose name accession, data type or compression that reader does not map, or whose unit, name unit, param accession or param unit is not `PREFIX:number` with a u32 number; in the split layout, the accession and unit of every param of a spectrum, scan, precursor (isolation window, activation), selected ion, chromatogram and its precursors, wavelength spectrum and wavelength scan that is neither null nor `PREFIX:number` (u32). Supersedes D13-26 for the split layout; the file metadata, the scan settings and the packed layout keep it | written files must stay readable by the Rust reference reader (upstream R-15, R-16) |

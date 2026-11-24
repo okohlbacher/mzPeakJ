@@ -127,6 +127,23 @@ class ParquetGroupsTest {
                         + " (high bit set)");
     }
 
+    /**
+     * A uint64 of 2^63 or more reads as the nearest double: the low bit kept while halving decides the rounding, so
+     * 2^63 + 1025 rounds up to 2^63 + 2048, and 2^63 + 1024, halfway between two doubles, rounds to the even 2^63
+     * (halving without the low bit would give 2^63 for both).
+     */
+    @Test
+    void optDoubleRoundsAUint64WithTheHighBitSetToTheNearestDouble() {
+        String schema = "message m { optional int64 u64 (INTEGER(64,false)); }";
+        Group aboveHalf = record(schema);
+        aboveHalf.add("u64", 0x8000000000000401L);
+        Group half = record(schema);
+        half.add("u64", 0x8000000000000400L);
+
+        assertThat(ParquetGroups.optDouble(aboveHalf, "u64")).isEqualTo(9.223372036854777856E18);
+        assertThat(ParquetGroups.optDouble(half, "u64")).isEqualTo(9.223372036854775808E18);
+    }
+
     @Test
     void optLongRefusesNonNumericLeaves() {
         Group g = record("message m { optional binary s (STRING); optional boolean b; }");

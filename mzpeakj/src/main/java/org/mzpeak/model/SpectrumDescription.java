@@ -21,6 +21,12 @@ import java.util.List;
  *                            m/z MS:1000504, base peak intensity MS:1000505, total ion current MS:1000285) and the
  *                            {@code spectrum_type} term marker appear here only when read from the split metadata
  *                            layout; packed (pin-era) rows yield only their {@code parameters} list
+ * @param dataProcessingRef   id of the data processing that governs this spectrum, or {@code null} when the
+ *                            spectrum uses the run's default data processing
+ *                            ({@link org.mzpeak.model.meta.FileMetadata.MsRun#defaultDataProcessingId()}); read from
+ *                            the {@code data_processing_id} column, else a {@code data_processing_ref} column
+ * @param products            product ion selections, in {@link Product#productIndex()} order; never {@code null},
+ *                            may be empty. Read from the products facet; mzPeakJ does not write them
  */
 public record SpectrumDescription(long index,
                                   String id,
@@ -32,12 +38,35 @@ public record SpectrumDescription(long index,
                                   long numberOfPeaks,
                                   List<ScanEvent> scans,
                                   List<Precursor> precursors,
-                                  List<Param> parameters) {
+                                  List<Param> parameters,
+                                  String dataProcessingRef,
+                                  List<Product> products) {
 
     public SpectrumDescription {
         scans = scans == null ? List.of() : List.copyOf(scans);
         precursors = precursors == null ? List.of() : List.copyOf(precursors);
         parameters = parameters == null ? List.of() : List.copyOf(parameters);
+        products = products == null ? List.of() : List.copyOf(products);
+    }
+
+    /** A spectrum without products. */
+    public SpectrumDescription(long index, String id, int msLevel, double retentionTime, Polarity polarity,
+                               SignalContinuity signalContinuity, long numberOfDataPoints, long numberOfPeaks,
+                               List<ScanEvent> scans, List<Precursor> precursors, List<Param> parameters,
+                               String dataProcessingRef) {
+        this(index, id, msLevel, retentionTime, polarity, signalContinuity, numberOfDataPoints, numberOfPeaks, scans,
+                precursors, parameters, dataProcessingRef, List.of());
+    }
+
+    /**
+     * A spectrum under the run's default data processing ({@link #dataProcessingRef} {@code null}), without
+     * products.
+     */
+    public SpectrumDescription(long index, String id, int msLevel, double retentionTime, Polarity polarity,
+                               SignalContinuity signalContinuity, long numberOfDataPoints, long numberOfPeaks,
+                               List<ScanEvent> scans, List<Precursor> precursors, List<Param> parameters) {
+        this(index, id, msLevel, retentionTime, polarity, signalContinuity, numberOfDataPoints, numberOfPeaks, scans,
+                precursors, parameters, null);
     }
 
 

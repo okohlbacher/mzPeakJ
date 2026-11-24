@@ -131,6 +131,27 @@ class ExtractSpectraTest {
         }
     }
 
+    /**
+     * diaPASEF.ref names instrument configuration 1 as its run default but declares only 0, so the writer refuses
+     * the file metadata the reader returns (D13-9): run prints the refusal to err without a stack trace and returns 1,
+     * and nothing is written.
+     */
+    @Test
+    void runPrintsARefusedWriteAndReturns1(@TempDir Path tmp) {
+        Path in = Fixtures.current("diaPASEF.ref.mzpeak").toAbsolutePath();
+        Path out = tmp.resolve("dia.mzpeak");
+
+        Captured r = runCaptured(in.toString(), out.toString(), "--ms-level", "1");
+
+        assertThat(r.status()).isEqualTo(1);
+        assertThat(r.out()).isEmpty();
+        assertThat(r.err()).isEqualTo("ExtractSpectra: file metadata: run: default_instrument_configuration_id 1"
+                + " names no instrument configuration (declared: 0); declare the configuration in"
+                + " FileMetadata.instrumentConfigurations or set MsRun.defaultInstrumentId to a declared one"
+                + System.lineSeparator());
+        assertThat(out).doesNotExist();
+    }
+
     @Test
     void mainPrintsWhatItWrote(@TempDir Path tmp) throws Exception {
         Path out = tmp.resolve("ms2.mzpeak");

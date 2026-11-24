@@ -23,7 +23,7 @@ import org.mzpeak.io.MzPeakManifest.Entry;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
 import org.mzpeak.io.parquet.ParquetGroups;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.WavelengthSpectrum;
 
@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the lowest and highest observed wavelength and a spectrum title, which the reader used to drop and the writer used
  * to write as an empty list. The reader takes a row's {@code parameters} list first, then, in both layouts (packed
  * since LIB-1), the leftover columns whose accession is not already there (a term marker as
- * {@code Param(null, CURIE)}). The split writer writes the representation, base peak intensity and TIC into their
- * columns, as the reference does, and the others into the {@code parameters} column; the packed writer, whose schema is
- * frozen, writes none of them, and warns once. The cv-list prefix scan covers them (design §7).
+ * {@code Param(null, CURIE)}). The split writer writes the type, representation, wavelength range, base peak
+ * intensity and TIC into their columns only (W11), and the others into the {@code parameters} column; the packed
+ * writer, whose schema is frozen, writes none of them, and warns once. The cv-list prefix scan covers them (design §7).
  */
 class WavelengthParamsTest {
 
@@ -143,13 +143,13 @@ class WavelengthParamsTest {
     // ---- (c): written and read again ------------------------------------------------------------------------
 
     /**
-     * The split writer writes the list Params into the parameters column and the representation, base peak intensity
-     * and TIC, which the reader appended from has_uv's columns, into the same columns, in the reference's order;
-     * reading it back gives every Param in the order read. The representation, a term marker the reader gives without
-     * a name, never reaches the list (the Rust reader requires a name there).
+     * The split writer writes the title into the parameters column and the type, wavelength range, representation,
+     * base peak intensity and TIC into their columns only (W11); reading it back gives every Param, the column terms
+     * after the title, the type without its name ({@link WavelengthColumnsTest#readBack}). The representation, a term
+     * marker the reader gives without a name, never reaches the list (the Rust reader requires a name there).
      */
     @Test
-    void splitWriteKeepsEveryParamInOrder() {
+    void splitWriteKeepsEveryParam() {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current(HAS_UV));
         Path out = tmp.resolve("split.mzpeak");
         List<LogRecord> warnings = packedWarnings(() -> MzPeakWriter.writeDirectory(out, source.spectra,
@@ -162,11 +162,10 @@ class WavelengthParamsTest {
             List<Param> expected = source.wavelengthSpectra.get(i).parameters();
             assertThat(expected).as("source spectrum %d", i).hasSize(7);
             assertThat(back.get(i).parameters()).as("spectrum %d", i)
-                    .containsExactlyInAnyOrderElementsOf(expected)
-                    .isEqualTo(expected);
+                    .isEqualTo(WavelengthColumnsTest.readBack(expected));
         }
-        // The member itself: the four list Params are list entries, the type and wavelength range also columns (as
-        // in has_uv), the three leftovers columns only.
+        // The member itself: the title is the list entry, the type, wavelength range and three leftovers columns
+        // only.
         List<Group> rows = new ArrayList<>();
         ParquetGroups.forEach(out.resolve(METADATA), rows::add);
         assertThat(rows).hasSameSizeAs(source.wavelengthSpectra);
@@ -174,14 +173,14 @@ class WavelengthParamsTest {
             Group row = rows.get(i);
             List<Param> params = source.wavelengthSpectra.get(i).parameters();
             assertThat(ParquetGroups.readParams(row, "parameters")).as("spectrum %d", i)
-                    .isEqualTo(params.subList(0, 4)).extracting(Param::name).doesNotContainNull();
+                    .containsExactly(params.get(3)).extracting(Param::name).doesNotContainNull();
             assertThat(ParquetGroups.optString(row, "spectrum_type")).as("spectrum %d", i)
                     .isEqualTo(params.get(0).accession());
             assertThat(ParquetGroups.optDouble(row, "lowest_observed_wavelength")).as("spectrum %d", i)
                     .isEqualTo(params.get(1).value());
             assertThat(ParquetGroups.optDouble(row, "highest_observed_wavelength")).as("spectrum %d", i)
                     .isEqualTo(params.get(2).value());
-            assertThat(ParquetGroups.optString(row, "spectrum_representation")).as("spectrum %d", i)
+            assertThat(ParquetGroups.optString(row, "opt_spectrum_representation")).as("spectrum %d", i)
                     .isEqualTo("MS:1000128").isEqualTo(params.get(4).accession());
             assertThat(ParquetGroups.optDouble(row, "base_peak_intensity")).as("spectrum %d", i)
                     .isEqualTo(params.get(5).value());
@@ -189,13 +188,16 @@ class WavelengthParamsTest {
                     .isEqualTo(params.get(6).value());
         }
         assertThat(rows.get(0).getType().getFields()).extracting(t -> t.getName())
-                .containsExactly("index", "id", "time", "spectrum_type", "spectrum_representation",
+                .containsExactly("index", "id", "time", "spectrum_type", "opt_spectrum_representation",
                         "lowest_observed_wavelength", "highest_observed_wavelength", "number_of_data_points",
                         "lambda_max", "base_peak_intensity", "total_ion_current", "parameters", "auxiliary_arrays",
                         "number_of_auxiliary_arrays");
     }
 
-    /** The packed schema has no parameters column: one warning with the counts, and the Params read back empty. */
+    /**
+     * The packed schema has no parameters column: one warning with the counts, and the Params read back empty; and
+     * no wavelength scans member: another for the scans (R8).
+     */
     @Test
     void packedWriteWarnsOnceAndReadsBackEmptyParams() {
         Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current(HAS_UV));
@@ -204,7 +206,8 @@ class WavelengthParamsTest {
                 source.chromatograms, source.wavelengthSpectra, source.scanSettings, source.fileMetadata, PACKED));
         assertThat(warnings).extracting(LogRecord::getMessage).containsExactly(
                 "520 wavelength spectra carry parameters (3640 in all), which the packed metadata layout does not"
-                        + " write");
+                        + " write",
+                "520 wavelength spectra carry scans (520 in all), which the packed metadata layout does not write");
 
         List<WavelengthSpectrum> back = wavelengthSpectra(out);
         assertThat(back).hasSize(520).allSatisfy(w -> assertThat(w.parameters()).isEmpty());
@@ -262,8 +265,10 @@ class WavelengthParamsTest {
     // ---- (f): the cv-list prefix scan ------------------------------------------------------------------------
 
     /**
-     * A BTO accession on has_uv's first wavelength spectrum, and an NCIT unit on its second, are declared in
+     * A BTO accession on has_uv's first wavelength spectrum, and an EFO unit on its second, are declared in
      * metadata.cv_list of a split write; has_uv uses neither CV elsewhere, so a write without them declares neither.
+     * (An NCIT unit such as NCIT:C48505 is no CURIE the Rust reference reader parses, which the split layout refuses,
+     * D13-28, X-40.)
      */
     @Test
     void aCvUsedOnlyInAWavelengthParamIsDeclared() throws IOException {
@@ -271,10 +276,10 @@ class WavelengthParamsTest {
         Path plain = tmp.resolve("plain.mzpeak");
         MzPeakWriter.writeDirectory(plain, source.spectra, source.chromatograms, source.wavelengthSpectra,
                 source.scanSettings, source.fileMetadata, SPLIT);
-        assertThat(cvIds(plain)).doesNotContain("BTO", "NCIT");
+        assertThat(cvIds(plain)).doesNotContain("BTO", "EFO");
 
         Param brain = new Param("brain", "BTO:0000142", null, null);
-        Param mass = new Param("sample mass", "MS:1000004", 1.5, "NCIT:C48505");
+        Param mass = new Param("sample mass", "MS:1000004", 1.5, "EFO:0000408");
         List<WavelengthSpectrum> waves = new ArrayList<>(source.wavelengthSpectra);
         waves.set(0, withParam(waves.get(0), brain));
         waves.set(1, withParam(waves.get(1), mass));
@@ -282,10 +287,10 @@ class WavelengthParamsTest {
         MzPeakWriter.writeDirectory(out, source.spectra, source.chromatograms, waves, source.scanSettings,
                 source.fileMetadata, SPLIT);
 
-        assertThat(cvIds(out)).contains("BTO", "NCIT");
+        assertThat(cvIds(out)).contains("BTO", "EFO");
         assertThat(WriterCvListTest.assertEveryWrittenPrefixIsDeclared(out)).containsEntry("BTO", "BTO:0000142")
-                .containsEntry("NCIT", "NCIT:C48505");
-        // Each added Param stays in the list, so it reads back after the list Params and before the three columns.
+                .containsEntry("EFO", "EFO:0000408");
+        // Each added Param stays in the list, so it reads back after the title and before the columns.
         List<WavelengthSpectrum> back = wavelengthSpectra(out);
         assertThat(back.get(0).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(0), brain));
         assertThat(back.get(1).parameters()).isEqualTo(listThenColumns(source.wavelengthSpectra.get(1), mass));
@@ -311,7 +316,7 @@ class WavelengthParamsTest {
                 .optional(PrimitiveTypeName.DOUBLE).named("bpi_a")
                 .optional(PrimitiveTypeName.DOUBLE).named("bpi_b")
                 .optional(PrimitiveTypeName.BINARY).as(LogicalTypeAnnotation.stringType()).named("comment")
-                .addField(ParquetOutput.paramListField())
+                .addField(ParquetOutput.paramListField(false))
                 .named("arrow_schema");
         Param user = new Param("operator", null, "x", null);
         Param lowest = new Param("lowest observed wavelength", "MS:1000619", 190.0, "UO:0000018");
@@ -329,7 +334,7 @@ class WavelengthParamsTest {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(METADATA), entry)).containsExactly(
                     new WavelengthMetadataDecoder.Header(0, "w0", 0.5, 374.0, List.of(user, lowest,
                             new Param("base peak intensity", "MS:1000505", 1.5, "MS:1000131"),
-                            new Param("comment", null, "note", null))));
+                            new Param("comment", null, "note", null)), List.of()));
         }
     }
 
@@ -344,7 +349,7 @@ class WavelengthParamsTest {
         Entry entry = new Entry(METADATA, "wavelength_spectrum", "metadata");
         try (MzPeakSource source = MzPeakSource.open(tmp)) {
             assertThat(WavelengthMetadataDecoder.decode(source.inputFile(METADATA), entry)).containsExactly(
-                    new WavelengthMetadataDecoder.Header(0, "w0", Double.NaN, null, List.of()));
+                    new WavelengthMetadataDecoder.Header(0, "w0", Double.NaN, null, List.of(), List.of()));
         }
     }
 
@@ -410,10 +415,7 @@ class WavelengthParamsTest {
 
     /** The four list Params of a has_uv spectrum {@code w}, then {@code added}, then its three column Params. */
     private static List<Param> listThenColumns(WavelengthSpectrum w, Param added) {
-        List<Param> out = new ArrayList<>(w.parameters().subList(0, 4));
-        out.add(added);
-        out.addAll(w.parameters().subList(4, 7));
-        return out;
+        return WavelengthColumnsTest.readBack(withParam(w, added).parameters());
     }
 
     private static WavelengthSpectrum withParam(WavelengthSpectrum w, Param param) {
@@ -439,7 +441,7 @@ class WavelengthParamsTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

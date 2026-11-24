@@ -3,9 +3,12 @@ package org.mzpeak.io;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.Entry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.ScanEvent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,8 +18,8 @@ import java.util.Set;
 /**
  * Decodes the wavelength-spectrum metadata member into one {@link Header} per wavelength spectrum, in either layout,
  * through {@link MetadataTable}: the pin-era packed struct {@code spectrum} or the split table keyed by
- * {@code index}. Columns are resolved by accession. Only the wavelength-spectrum table itself is read; its scans
- * facet (the packed {@code scan} struct or the split scans member) is not decoded.
+ * {@code index}. Columns are resolved by accession. The split scans member is decoded by {@link #scans}; the packed
+ * {@code scan} struct of the legacy layout is not decoded (its dialect is frozen, D13-24).
  */
 final class WavelengthMetadataDecoder {
 
@@ -38,8 +41,11 @@ final class WavelengthMetadataDecoder {
      * @param time       its {@code time}, or {@code NaN} when the cell is null
      * @param lambdaMax  its MS:1003812 (lambda max) cell, in nm, or {@code null}
      * @param parameters its Params, as {@link #decode} reads them
+     * @param auxiliaryArrays its auxiliary arrays, as {@link AuxiliaryArrayDecoder} reads them; empty when there are
+     *                   none
      */
-    record Header(long index, String id, double time, Double lambdaMax, List<Param> parameters) {
+    record Header(long index, String id, double time, Double lambdaMax, List<Param> parameters,
+                  List<AuxiliaryArray> auxiliaryArrays) {
     }
 
     /**
@@ -68,7 +74,8 @@ final class WavelengthMetadataDecoder {
             Double lambdaMax = columns.doubleValue(g, consume(consumed, columns.resolve(LAMBDA_MAX)));
             consume(consumed, columns.resolve(N_POINTS));
             byIndex.put(index, new Header(index, id, time == null ? Double.NaN : time, lambdaMax,
-                    parameters(columns.params(g), columns.leftoversInBothLayouts(g, consumed))));
+                    parameters(columns.params(g), columns.leftoversInBothLayouts(g, consumed)),
+                    AuxiliaryArrayDecoder.decode(g, columns.member(), "wavelength spectrum " + index)));
         });
         return List.copyOf(byIndex.values());
     }
@@ -91,6 +98,21 @@ final class WavelengthMetadataDecoder {
             }
         }
         return out;
+    }
+
+    /**
+     * The scans of the split scans member {@code file}, whose manifest entry is {@code entry}, by their
+     * {@code source_index}, each wavelength spectrum's in file order, decoded as spectrum scans are
+     * ({@link ScanRowDecoder}); the scan windows are in the unit of their mapping, nanometers when the column_mapping
+     * does not map them ({@link ColumnTable}).
+     *
+     * @throws MzPeakException as {@link MetadataTable#forEachRow} and {@link ScanRowDecoder#decode}
+     */
+    static Map<Long, List<ScanEvent>> scans(InputFile file, Entry entry) {
+        Map<Long, List<ScanEvent>> bySource = new HashMap<>();
+        MetadataTable.forEachRow(file, entry, Facet.WAVELENGTH_SCAN, row -> bySource
+                .computeIfAbsent(row.key(), k -> new ArrayList<>()).add(ScanRowDecoder.decode(row)));
+        return bySource;
     }
 
     /** Adds the resolved {@code field}, unless {@code null}, to {@code consumed}, and returns it. */

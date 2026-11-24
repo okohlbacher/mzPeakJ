@@ -27,9 +27,9 @@ final class SelectedIonRowDecoder {
     }
 
     /**
-     * Decodes one selected-ion row, or returns {@code null} when its m/z is null (the Rust reference instead keeps
-     * such an ion with m/z 0.0, together with its charge and intensity). Its Params are the {@code parameters} list,
-     * then the typed ion mobility ({@link IonMobilityParams}, in both layouts), then the scope's leftovers
+     * Decodes one selected-ion row; a null m/z gives {@code mz} NaN, since spectra.md lets an ion be described by its
+     * charge alone (D13-22; the Rust reference reads it as m/z 0.0). Its Params are the {@code parameters} list, then
+     * the typed ion mobility ({@link IonMobilityParams}, in both layouts), then the scope's leftovers
      * ({@link ColumnResolver#leftovers}, split layout only).
      */
     static SelectedIon decode(FacetRow ion) {
@@ -37,9 +37,6 @@ final class SelectedIonRowDecoder {
         Group g = ion.group();
         String mzField = columns.resolve(SELECTED_MZ);
         Double mz = columns.doubleValue(g, mzField);
-        if (mz == null) {
-            return null;
-        }
         String chargeField = columns.resolve(CHARGE);
         String intensityField = columns.resolve(SELECTED_INTENSITY);
         List<Param> params = IonMobilityParams.withTypedIonMobility(ion, columns.params(g));
@@ -55,7 +52,7 @@ final class SelectedIonRowDecoder {
             params = new ArrayList<>(params);
             params.addAll(leftovers);
         }
-        return new SelectedIon(mz,
+        return new SelectedIon(mz == null ? Double.NaN : mz,
                 columns.intValue(g, chargeField),
                 columns.doubleValue(g, intensityField),
                 params);

@@ -12,8 +12,8 @@ import java.util.Optional;
  * <p>Mirrors the imzML {@code <scanSettings>} concept: pixel grid dimensions, pixel size, and scan
  * direction. All measured values are surfaced as a {@link Param} list (accession + value + unit);
  * the most common ones have typed convenience accessors. Like the mzML {@code <scanSettings>}, an entry also names
- * the source files holding the acquisition settings ({@code source_file_refs}) and lists the targets of an inclusion
- * list ({@code targets}), each target a param list.
+ * the source files holding the acquisition settings ({@code source_file_references}, {@code source_file_refs} in the
+ * packed layout) and lists the targets of an inclusion list ({@code targets}), each target a param list.
  *
  * <p>The params are stored as JSON, which has no non-finite numbers: a {@code Double} that is infinite or NaN reads
  * back as the {@code String} {@code Infinity}, {@code -Infinity} or {@code NaN}.

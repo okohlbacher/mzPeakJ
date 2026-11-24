@@ -21,7 +21,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link GridChunk#read} on in-memory grid cells for the edge cases no fixture or written member reaches: a grid
- * without indices, a negative index in a list that is not INT32 (where only INT32 holds unsigned bit patterns), and an
+ * without indices, a negative index in an un-annotated INT32 list (the bit pattern of a uint32) and in a list that is
+ * not INT32 (where only INT32 holds unsigned bit patterns), and an
  * indices column whose struct has no fields. The grid read of diaPASEF.grid and its errors are covered by
  * {@link GridDecodeTest}.
  */
@@ -31,13 +32,29 @@ class GridChunkTest {
 
     @Test
     void aGridWithoutIndicesHasNone() {
-        GridChunk grid = GridChunk.read(gridCell("required int32 element (INTEGER(32,false));", null), MZ_GRID, 0);
+        GridChunk grid = GridChunk.read(gridCell("required int32 element (INTEGER(32,false));", null), MZ_GRID,
+                SignalEntity.SPECTRUM.ref(0));
 
         assertThat(grid.field()).isEqualTo(MZ_GRID);
         assertThat(grid.gridType()).isEqualTo(GridModels.LINEAR);
         assertThat(grid.parameters()).containsExactly(95.0, 3.75e-7);
         assertThat(grid.indices()).isEmpty();
-        assertThat(grid.cumulativeIndices(0)).isEmpty();
+        assertThat(grid.cumulativeIndices(SignalEntity.SPECTRUM.ref(0))).isEmpty();
+    }
+
+    /**
+     * An INT32 list without the unsigned annotation holds the bit patterns of the uint32 indices: -1 is the index
+     * 2^32-1. (An annotated uint32 list is read unsigned by {@code ParquetGroups} already, since X-6.)
+     */
+    @Test
+    void aNegativeIndexOfAPlainInt32ListIsItsUnsignedValue() {
+        Group chunk = gridCell("required int32 element;", indices -> {
+            indices.addGroup("list").add("element", 5);
+            indices.addGroup("list").add("element", -1);
+        });
+
+        assertThat(GridChunk.read(chunk, MZ_GRID, SignalEntity.SPECTRUM.ref(0)).indices())
+                .containsExactly(5L, 4_294_967_295L);
     }
 
     /** Only an INT32 list stores unsigned bit patterns; a negative INT64 or DOUBLE index is outside the range. */
@@ -56,7 +73,7 @@ class GridChunkTest {
             }
         });
 
-        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, 3))
+        assertThatThrownBy(() -> GridChunk.read(chunk, MZ_GRID, SignalEntity.SPECTRUM.ref(3)))
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("grid " + MZ_GRID + " has the index -1 at position 1, outside 0..4294967295,"
                         + " for spectrum_index 3");
@@ -74,7 +91,7 @@ class GridChunkTest {
         cell.add("grid_type", GridModels.LINEAR);
         cell.addGroup("indices");
 
-        GridChunk read = GridChunk.read(record.getGroup("chunk", 0), MZ_GRID, 0);
+        GridChunk read = GridChunk.read(record.getGroup("chunk", 0), MZ_GRID, SignalEntity.SPECTRUM.ref(0));
 
         assertThat(read.gridType()).isEqualTo(GridModels.LINEAR);
         assertThat(read.parameters()).isEmpty();

@@ -4,6 +4,7 @@ import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
 import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.io.MzPeakWriter;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -38,20 +40,29 @@ import java.util.function.Supplier;
  *
  * <p>{@link #toMzPeak} reads the mzML through {@link MzMLReader}: its header and survey first, so that what the model
  * cannot carry is rejected before the target is created, then every spectrum, wavelength spectrum and chromatogram
- * into a {@link MzPeakWriter.Session} opened with the header's file metadata, scan settings and cv list and the
- * survey's extra array keys. Before a spectrum is added, the selected ions of each of its precursors that shares its
- * precursor index (its parent) with an earlier precursor of the spectrum are moved to the first of them, which keeps
- * its own first; every isolation window and activation stays (design 5.6, B-19). The times of a chromatogram whose
- * time unit differs from the first chromatogram's are converted into that unit and counted (B-15), since the mzPeak
- * writer refuses chromatograms of different time units; the reader refuses a time unit that
+ * into a {@link MzPeakWriter.Session} opened with the header's file metadata, scan settings and cv list, the survey's
+ * extra array keys and, as its spectrum intensity units, the intensity units of the MS spectra with points the survey
+ * found (R5).
+ * Before a spectrum is added, the selected ions of each of its precursors that shares its precursor index (its parent)
+ * with an earlier precursor of the spectrum are moved to the first of them, which keeps its own first; every isolation
+ * window and activation stays (design 5.6, B-19). Each chromatogram is added in its own
+ * time unit, which the mzPeak writer converts to minutes (W3); the reader refuses a time unit that
  * {@link Chromatogram#withTimeUnit} cannot convert, so every chromatogram converts. It counts what the mzPeak read
  * changes (design 6.1): extra arrays of spectra and chromatograms without a value other than NaN, empty ones included,
- * which it drops (B-26); spectra with a NaN m/z, which it interpolates (B-34); non-finite values of file-level params,
- * which come back as the Strings {@code Infinity}, {@code -Infinity} or {@code NaN} (B-35); chromatograms without
- * points, whose intensity unit it drops (B-36); and what the mzPeak writer adds (B-24): a spectrum type to spectra
- * without one, the five summary params to spectra with points and none of them, a scan to spectra without scans,
- * and a run default source file when the run names none. A failure closes the session, which removes the target and
- * the temp files it created.
+ * which it drops (B-26); non-finite values of file-level params, which come back as the Strings {@code Infinity},
+ * {@code -Infinity} or {@code NaN} (B-35); chromatograms without points, whose intensity unit it drops, and spectra
+ * without points in an intensity unit other than MS:1000131, whose unit it drops too (B-36); and what
+ * the mzPeak writer adds (B-24): a spectrum type to spectra without one, the five summary params to spectra with
+ * points and none of them, a scan to spectra without scans, and a run default source file when the run names none;
+ * in the split layout also the precursors of the MSn chain (W7) and a scan holding the time of each wavelength
+ * spectrum without scans. A
+ * NaN m/z, time, wavelength or intensity fails the conversion with the writer's message, which names the spectrum,
+ * chromatogram or wavelength spectrum and the position (W10). The mzML cv list goes to the session as far as
+ * {@link MzPeakWriter.Options#withCvList} accepts it (W8, D13-15): it rejects an entry of a CV {@link CvEntry#known()}
+ * lacks that has no version or a moving URI (a master branch, a CVS checkout and the like). The conversion leaves such
+ * an entry out, with one warning, when no param accession or unit, array key, chromatogram type or unit of the mzML
+ * uses its prefix, and else fails with the writer's message, the header before the target is created. A failure closes
+ * the session, which removes the target and the temp files it created.
  *
  * <p>{@link #toMzML} refuses an existing target before it opens the input (Q66), then reads the mzPeak through
  * {@link MzPeakReader} with its default options (profile points reconstructed, both signal members) and writes it
@@ -70,21 +81,26 @@ import java.util.function.Supplier;
 public final class MzMLConversion {
 
     // The losses of design 6.1 toMzPeak counts itself, one line each after the reader's.
-    static final String B_15_CHROMATOGRAM_TIMES = "B-15 chromatogram times converted to the time unit of the first"
-            + " chromatogram";
     static final String B_19 = "B-19 selected ions moved to the first precursor of their spectrum with the same parent";
     static final String B_24_TYPE = "B-24 spectrum types added by the mzPeak writer to spectra without one";
     static final String B_24_SUMMARY = "B-24 summary params (m/z range, base peak, total ion current) added by the"
             + " mzPeak writer to spectra with points and none of the five";
     static final String B_24_SCAN = "B-24 scans added by the mzPeak writer to spectra without scans";
+    static final String B_24_WAVELENGTH_SCAN = "B-24 scans holding the time added by the mzPeak writer to wavelength"
+            + " spectra without scans";
+    static final String B_24_PRECURSOR = "B-24 precursors of the MSn chain added by the mzPeak writer from the"
+            + " precursors of the parent spectra (W7)";
     static final String B_24_SOURCE = "B-24 run defaultSourceFileRef added by the mzPeak writer (the first source"
             + " file, else a stub source file)";
     static final String B_26 = "B-26 extra arrays without a value other than NaN, which the mzPeak read drops";
-    static final String B_34 = "B-34 spectra with a NaN m/z, which the mzPeak read interpolates";
     static final String B_35 = "B-35 non-finite file-level param values, which the mzPeak read gives as the Strings"
             + " Infinity, -Infinity or NaN";
     static final String B_36 = "B-36 chromatograms without points, whose intensity unit the mzPeak read drops";
+    static final String B_36_SPECTRUM = "B-36 spectra without points in an intensity unit other than MS:1000131,"
+            + " whose intensity unit the mzPeak read drops";
 
+    /** Number of detector counts, the intensity unit the mzML written back gives a spectrum without one. */
+    private static final String COUNTS = "MS:1000131";
     /** The source file the mzPeak writer adds when the run and the file description name none (design 5.10). */
     private static final SourceFile SOURCE_STUB = new SourceFile("mzpeakj_source", "unknown", "file:///unknown",
             List.of());
@@ -103,8 +119,8 @@ public final class MzMLConversion {
      * @param spectra           the number of MS spectra written
      * @param wavelengthSpectra the number of wavelength spectra written
      * @param chromatograms     the number of chromatograms written
-     * @param warnings          the limit lines, then one line per kind of loss with its count (design 6, 10);
-     *                          unmodifiable
+     * @param warnings          the limit lines, then one line per kind of loss with its count (design 6, 10), then
+     *                          for {@code toMzPeak} one line per mzML cv left out of the cv list (W8); unmodifiable
      */
     public record Result(long spectra, long wavelengthSpectra, long chromatograms, List<String> warnings) {
 
@@ -117,13 +133,18 @@ public final class MzMLConversion {
     /**
      * Converts the mzML file {@code mzml} into the mzPeak dataset {@code target}: an unpacked directory if
      * {@code directory}, else a ZIP archive, written with {@code options} and the mzML's cv list: the cv list of
-     * {@code options} ({@link MzPeakWriter.Options#cvList()}) is replaced by the mzML's {@code cvList}, whatever it
-     * holds.
+     * {@code options} ({@link MzPeakWriter.Options#cvList()}) is replaced by the entries of the mzML's {@code cvList}
+     * that {@link MzPeakWriter.Options#withCvList} accepts; an entry it rejects is left out, with a warning, if no
+     * written CURIE uses its prefix (W8, D13-15). For an mzML with MS spectra, the spectrum intensity units of
+     * {@code options} are replaced by those of its spectra, first seen first
+     * ({@link MzPeakWriter.Options#withSpectrumIntensityUnits}, R5).
      *
      * @throws MzPeakException      if the mzML cannot be read or holds what the model cannot carry (as
      *                              {@link MzMLReader} states), before the target is created; if {@code target} exists
-     *                              (for an unpacked directory: and is not an empty directory); or if a spectrum or the
-     *                              dataset cannot be written, after which nothing the conversion wrote remains
+     *                              (for an unpacked directory: and is not an empty directory); if a CURIE uses the
+     *                              prefix of a cv list entry {@link MzPeakWriter.Options#withCvList} rejects; or if a
+     *                              spectrum or the dataset cannot be written, after which nothing the conversion wrote
+     *                              remains
      * @throws NullPointerException if an argument is null
      */
     public static Result toMzPeak(Path mzml, Path target, boolean directory, MzPeakWriter.Options options) {
@@ -133,22 +154,33 @@ public final class MzMLConversion {
         MzMLReader reader = new MzMLReader(mzml);
         MzMLReader.Header header = reader.header();
         MzMLReader.Survey survey = reader.survey();
+        Cvs cvs = new Cvs(mzml, header.cvList());
+        List<List<Param>> headerParams = headerParams(header.fileMetadata(), header.scanSettings());
+        cvs.check("the file metadata or scan settings", headerParams, List.of());
+        // The session checks the CV prefixes of the spectrum arrays when it opens (W12); this message says why.
+        cvs.check("a spectrum array", List.of(), List.copyOf(survey.spectrumArrays()));
         Losses losses = new Losses();
-        losses.note(B_35, nonFinite(header.fileMetadata(), header.scanSettings()));
+        losses.note(B_35, nonFinite(headerParams));
         losses.note(B_24_SOURCE, header.fileMetadata().run().defaultSourceFileId() == null ? 1 : 0);
-        MzPeakWriter.Options withCvList = options.withCvList(header.cvList());
+        Set<String> intensityUnits = reader.spectrumIntensityUnits();
+        MzPeakWriter.Options withCvList = intensityUnits.isEmpty() ? options.withCvList(cvs.kept)
+                : options.withCvList(cvs.kept).withSpectrumIntensityUnits(intensityUnits.toArray(String[]::new));
         Adding adding;
         try (MzPeakWriter.Session session = directory
                 ? MzPeakWriter.openDirectory(target, header.fileMetadata(), header.scanSettings(),
                 survey.spectrumArrays(), withCvList)
                 : MzPeakWriter.openArchive(target, header.fileMetadata(), header.scanSettings(),
                 survey.spectrumArrays(), withCvList)) {
-            adding = new Adding(session, losses);
+            adding = new Adding(session, losses, cvs,
+                    withCvList.metadataLayout() == MzPeakWriter.MetadataLayout.SPLIT);
             reader.read(adding);
+            losses.note(B_24_PRECURSOR, adding.chainedPrecursors());
             session.finish();
         }
         List<String> warnings = new ArrayList<>(reader.warnings());
         warnings.addAll(losses.lines());
+        cvs.rejected.forEach((id, why) -> warnings.add("the mzML cv " + id + " is not declared in"
+                + " metadata.cv_list, which no written CURIE needs, since " + why));
         return new Result(adding.spectra, adding.wavelengthSpectra, adding.chromatograms, warnings);
     }
 
@@ -208,42 +240,88 @@ public final class MzMLConversion {
 
         private final MzPeakWriter.Session session;
         private final Losses losses;
+        private final Cvs cvs;
+        /** Whether the session writes the split layout, which replicates the MSn chain and writes wavelength scans. */
+        private final boolean split;
+        /** In the split layout, the precursor_index of each precursor of every spectrum added, by its index (W7). */
+        private final List<List<Long>> precursorKeys = new ArrayList<>();
         long spectra;
         long wavelengthSpectra;
         long chromatograms;
-        /** The time unit of the first chromatogram, into which every later one is converted; null before it. */
-        private String timeUnit;
 
-        Adding(MzPeakWriter.Session session, Losses losses) {
+        Adding(MzPeakWriter.Session session, Losses losses, Cvs cvs, boolean split) {
             this.session = session;
             this.losses = losses;
+            this.cvs = cvs;
+            this.split = split;
+        }
+
+        /**
+         * The number of precursors the mzPeak writer appends to the spectra added (W7, B-24): in the split layout,
+         * to each spectrum, for each of its precursors in turn, those it appends included, the precursors of the
+         * spectrum its precursor_index names whose precursor_index (null equal to null) the list does not hold yet, as
+         * {@link MzPeakWriter} documents the chain; none in the packed layout, which writes the primary precursor
+         * only. The session refuses a precursor_index that names no spectrum, which the reader never gives.
+         */
+        long chainedPrecursors() {
+            long added = 0;
+            for (List<Long> own : precursorKeys) {
+                List<Long> all = new ArrayList<>(own);
+                for (int i = 0; i < all.size(); i++) {
+                    Long parent = all.get(i);
+                    if (parent == null) {
+                        continue;
+                    }
+                    for (Long key : precursorKeys.get(Math.toIntExact(parent))) {
+                        if (!all.contains(key)) {
+                            all.add(key);
+                            added++;
+                        }
+                    }
+                }
+            }
+            return added;
         }
 
         @Override
         public void spectrum(Spectrum spectrum) {
-            losses.note(B_34, Arrays.stream(spectrum.mz()).anyMatch(Double::isNaN) ? 1 : 0);
-            losses.note(B_26, nanOnly(spectrum.arrays()));
             SpectrumDescription d = spectrum.description();
+            List<String> curies = new ArrayList<>(spectrum.arrays().keySet());
+            curies.addAll(spectrum.peakArrays().keySet());
+            curies.addAll(Arrays.asList(spectrum.intensityUnit(), spectrum.peakIntensityUnit()));
+            curies.addAll(auxiliaryCuries(spectrum.auxiliaryArrays()));
+            cvs.check("spectrum " + d.id(), descriptionParams(d), curies);
+            losses.note(B_26, nanOnly(spectrum.arrays()));
             losses.note(B_24_TYPE, has(d.parameters(), MzMLTerms.SPECTRUM_TYPES.keySet()) ? 0 : 1);
             losses.note(B_24_SUMMARY, spectrum.mz().length == 0 || has(d.parameters(), SUMMARIES) ? 0 : 1);
             losses.note(B_24_SCAN, d.scans().isEmpty() ? 1 : 0);
+            losses.note(B_36_SPECTRUM, spectrum.mz().length == 0 && !COUNTS.equals(spectrum.intensityUnit()) ? 1 : 0);
             session.addSpectrum(sharedParentsMoved(spectrum));
+            if (split) {
+                precursorKeys.add(d.precursors().stream().map(Precursor::precursorIndex).toList());
+            }
             spectra++;
         }
 
         @Override
         public void wavelengthSpectrum(WavelengthSpectrum spectrum) {
+            List<List<Param>> params = new ArrayList<>(List.of(spectrum.parameters()));
+            spectrum.scans().forEach(scan -> params.add(scan.parameters()));
+            cvs.check("wavelength spectrum " + spectrum.id(), params, auxiliaryCuries(spectrum.auxiliaryArrays()));
+            losses.note(B_24_WAVELENGTH_SCAN, split && spectrum.scans().isEmpty() ? 1 : 0);
             session.addWavelengthSpectrum(spectrum);
             wavelengthSpectra++;
         }
 
         @Override
         public void chromatogram(Chromatogram chromatogram) {
-            if (timeUnit == null) {
-                timeUnit = chromatogram.timeUnit();
-            }
-            losses.note(B_15_CHROMATOGRAM_TIMES, chromatogram.timeUnit().equals(timeUnit) ? 0 : 1);
-            chromatogram = chromatogram.withTimeUnit(timeUnit);
+            List<List<Param>> params = new ArrayList<>(List.of(chromatogram.parameters()));
+            params.addAll(precursorParams(chromatogram.precursors()));
+            List<String> curies = new ArrayList<>(chromatogram.arrays().keySet());
+            curies.addAll(Arrays.asList(chromatogram.typeCurie(), chromatogram.intensityUnit(),
+                    chromatogram.timeUnit()));
+            curies.addAll(auxiliaryCuries(chromatogram.auxiliaryArrays()));
+            cvs.check("chromatogram " + chromatogram.id(), params, curies);
             losses.note(B_26, nanOnly(chromatogram.arrays()));
             losses.note(B_36, chromatogram.size() == 0 && chromatogram.intensityUnit() != null ? 1 : 0);
             session.addChromatogram(chromatogram);
@@ -268,9 +346,9 @@ public final class MzMLConversion {
                     List<SelectedIon> ions = new ArrayList<>(f.selectedIons());
                     ions.addAll(p.selectedIons());
                     precursors.set(first, new Precursor(f.precursorIndex(), f.precursorId(), f.isolationWindow(), ions,
-                            f.activation()));
+                            f.activation(), f.msLevel()));
                     precursors.set(i, new Precursor(p.precursorIndex(), p.precursorId(), p.isolationWindow(),
-                            List.of(), p.activation()));
+                            List.of(), p.activation(), p.msLevel()));
                     moved += p.selectedIons().size();
                 }
             }
@@ -280,10 +358,18 @@ public final class MzMLConversion {
             losses.note(B_19, moved);
             SpectrumDescription description = new SpectrumDescription(d.index(), d.id(), d.msLevel(),
                     d.retentionTime(), d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(),
-                    d.scans(), precursors, d.parameters());
+                    d.scans(), precursors, d.parameters(), d.dataProcessingRef(), d.products());
             return new Spectrum(description, spectrum.mz(), spectrum.intensity(), spectrum.peaks(), spectrum.arrays(),
-                    spectrum.peakArrays());
+                    spectrum.peakArrays(), spectrum.intensityUnit(), spectrum.peakIntensityUnit(),
+                    spectrum.auxiliaryArrays());
         }
+    }
+
+    /** The accessions of the names and the units of {@code arrays}, auxiliary arrays the mzML read made (R1). */
+    private static List<String> auxiliaryCuries(List<AuxiliaryArray> arrays) {
+        List<String> curies = new ArrayList<>();
+        arrays.forEach(a -> curies.addAll(Arrays.asList(a.name().accession(), a.unit())));
+        return curies;
     }
 
     /** Whether {@code params} hold a param with one of {@code accessions}; a userParam has none (null). */
@@ -297,11 +383,11 @@ public final class MzMLConversion {
     }
 
     /**
-     * The number of non-finite Double values among the params of the file description (contents, source files,
-     * contacts), samples, software, scan settings and their targets, instrument configurations and their components,
-     * data processing methods and the run of an mzML header (B-35).
+     * The param lists of the file description (contents, source files, contacts), samples, software, scan settings
+     * and their targets, instrument configurations and their components, data processing methods and the run of an
+     * mzML header.
      */
-    private static long nonFinite(FileMetadata m, List<ScanSettings> scanSettings) {
+    private static List<List<Param>> headerParams(FileMetadata m, List<ScanSettings> scanSettings) {
         List<List<Param>> lists = new ArrayList<>();
         FileDescription d = m.fileDescription();
         lists.add(d.contents());
@@ -319,8 +405,82 @@ public final class MzMLConversion {
         });
         m.dataProcessingMethods().forEach(dp -> dp.methods().forEach(pm -> lists.add(pm.parameters())));
         lists.add(m.run().parameters());
+        return lists;
+    }
+
+    /** The number of non-finite Double values among {@code lists}, the {@link #headerParams} of a header (B-35). */
+    private static long nonFinite(List<List<Param>> lists) {
         return lists.stream().flatMap(List::stream)
                 .filter(p -> p.value() instanceof Double v && !Double.isFinite(v)).count();
+    }
+
+    /**
+     * The param lists of {@code d}, its scans and its precursors (their isolation windows, selected ions and
+     * activations).
+     */
+    private static List<List<Param>> descriptionParams(SpectrumDescription d) {
+        List<List<Param>> lists = new ArrayList<>();
+        lists.add(d.parameters());
+        d.scans().forEach(scan -> lists.add(scan.parameters()));
+        lists.addAll(precursorParams(d.precursors()));
+        return lists;
+    }
+
+    /** The param lists of the isolation windows, selected ions and activations of {@code precursors}. */
+    private static List<List<Param>> precursorParams(List<Precursor> precursors) {
+        List<List<Param>> lists = new ArrayList<>();
+        for (Precursor p : precursors) {
+            if (p.isolationWindow() != null) {
+                lists.add(p.isolationWindow().parameters());
+            }
+            p.selectedIons().forEach(ion -> lists.add(ion.parameters()));
+            lists.add(p.activation().parameters());
+        }
+        return lists;
+    }
+
+    /**
+     * The mzML cv list as the mzPeak writer takes it (W8, D13-15): every entry {@link MzPeakWriter.Options#withCvList}
+     * accepts is {@link #kept}; the others, of CVs {@link CvEntry#known()} lacks, are {@link #rejected}, unless an
+     * accepted entry has their id, and a written CURIE with their prefix fails the conversion.
+     */
+    private static final class Cvs {
+
+        private final Path mzml;
+        /** The entries the writer accepts, in the mzML's order. */
+        final List<CvEntry> kept = new ArrayList<>();
+        /** Why the writer rejects the entry of each id rejected, in the mzML's order. */
+        final Map<String, String> rejected = new LinkedHashMap<>();
+
+        Cvs(Path mzml, List<CvEntry> cvList) {
+            this.mzml = mzml;
+            for (CvEntry cv : cvList) {
+                try {
+                    MzPeakWriter.Options.defaults().withCvList(List.of(cv));
+                    kept.add(cv);
+                } catch (IllegalArgumentException e) {
+                    rejected.putIfAbsent(cv.id(), e.getMessage());
+                }
+            }
+            kept.forEach(cv -> rejected.remove(cv.id()));
+        }
+
+        /**
+         * @throws MzPeakException naming the mzML, {@code what}, the CURIE and why its CV is rejected, if the
+         *                         accession or unit of a param of {@code params} or a CURIE of {@code curies} has the
+         *                         prefix of a rejected CV
+         */
+        void check(String what, List<List<Param>> params, List<String> curies) {
+            List<String> all = new ArrayList<>(curies);
+            params.forEach(list -> list.forEach(p -> all.addAll(Arrays.asList(p.accession(), p.unit()))));
+            for (String curie : all) {
+                int colon = curie == null ? -1 : curie.indexOf(':');
+                String why = colon > 0 ? rejected.get(curie.substring(0, colon)) : null;
+                if (why != null) {
+                    throw new MzPeakException("mzML " + mzml + ": " + what + " uses " + curie + ", but " + why);
+                }
+            }
+        }
     }
 
     // ---- mzPeak -> mzML (design 5.10, 5.11) ------------------------------------------------------------------------
@@ -349,24 +509,17 @@ public final class MzMLConversion {
 
     /**
      * The CV prefixes the params of {@code spectra} (with their scans, isolation windows, selected ions and
-     * activations) and of {@code wavelengthSpectra} use, as accession or unit, in the order first used (design 5.11,
-     * 8.1).
+     * activations) and of {@code wavelengthSpectra} (with their scans) use, as accession or unit, in the order first
+     * used (design 5.11, 8.1).
      */
     private static Set<String> spectrumPrefixes(List<SpectrumDescription> spectra,
                                                 List<WavelengthSpectrum> wavelengthSpectra) {
         List<List<Param>> lists = new ArrayList<>();
-        for (SpectrumDescription d : spectra) {
-            lists.add(d.parameters());
-            d.scans().forEach(scan -> lists.add(scan.parameters()));
-            for (Precursor p : d.precursors()) {
-                if (p.isolationWindow() != null) {
-                    lists.add(p.isolationWindow().parameters());
-                }
-                p.selectedIons().forEach(ion -> lists.add(ion.parameters()));
-                lists.add(p.activation().parameters());
-            }
+        spectra.forEach(d -> lists.addAll(descriptionParams(d)));
+        for (WavelengthSpectrum w : wavelengthSpectra) {
+            lists.add(w.parameters());
+            w.scans().forEach(scan -> lists.add(scan.parameters()));
         }
-        wavelengthSpectra.forEach(w -> lists.add(w.parameters()));
         Set<String> used = new LinkedHashSet<>();
         for (List<Param> params : lists) {
             for (Param p : params) {

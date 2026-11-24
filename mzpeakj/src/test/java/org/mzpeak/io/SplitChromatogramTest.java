@@ -20,7 +20,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mzpeak.io.GoldenMeta.Row;
 import org.mzpeak.io.MzPeakManifest.ColumnMapping;
 import org.mzpeak.io.MzPeakManifest.Entry;
-import org.mzpeak.io.parquet.ZstdCompressionCodecFactory;
+import org.mzpeak.io.parquet.PureJavaCodecFactory;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Polarity;
 
@@ -276,11 +276,11 @@ class SplitChromatogramTest {
 
     /**
      * The header of a chromatogram of unknown polarity, without data processing reference, without Params and
-     * without precursors.
+     * without precursors, products and auxiliary arrays.
      */
     private static ChromatogramMetadataDecoder.Header header(long index, String id, String typeCurie) {
         return new ChromatogramMetadataDecoder.Header(index, id, typeCurie, Polarity.UNKNOWN, null, List.of(),
-                List.of());
+                List.of(), List.of(), List.of());
     }
 
     /** A split chromatogram table with {@code index}, {@code id} and the type column {@code typeColumn}. */
@@ -297,7 +297,7 @@ class SplitChromatogramTest {
         try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(tmp.resolve(name)))
                 .withConf(new PlainParquetConfiguration())
                 .withType(schema)
-                .withCodecFactory(new ZstdCompressionCodecFactory())
+                .withCodecFactory(new PureJavaCodecFactory())
                 .withCompressionCodec(CompressionCodecName.ZSTD)
                 .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
                 .build()) {

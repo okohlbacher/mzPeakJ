@@ -2,6 +2,7 @@ package org.mzpeak.mzml;
 
 import org.mzpeak.io.MzPeakException;
 import org.mzpeak.io.MzPeakManifest.CvEntry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.CvTerms;
@@ -100,8 +101,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * announce them, and {@link #finish()} adds the chromatograms and marshals the whole tree with jmzML's
  * {@code MzMLMarshaller} to a temp file next to the target, which it then moves to the target without replacing
  * anything there. Nothing is written before {@code finish()}; the whole document is held in memory until then. Every
- * writer notes the limit lines {@link #LIMITS} (design 6.0) and the fixed lines {@link #NOT_VISIBLE} of the losses it
- * cannot see (A-13, A-14), and what the mzML cannot carry as it is is counted in
+ * writer notes the limit lines {@link #LIMITS} (design 6.0) and the fixed line {@link #NOT_VISIBLE} of the loss it
+ * does not count (A-13), and what the mzML cannot carry as it is is counted in
  * {@link #warnings()} (design 6.2), as is every PSI mapping-rule violation it passes through (design 6.4: spectra
  * without exactly one spectrum type and representation, scanLists without exactly one combination term, spectrum
  * precursor activations without dissociation method, instrument configurations synthesized or without exactly one
@@ -150,7 +151,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * without zlib; an empty array is never compressed (jmzML's encoder does not return on one). A key of
  * {@link CvTerms#ARRAY_TYPES} is written as that array type, every other key as MS:1000786 'non-standard data array'
  * with the key as its value; each with its unit from {@link CvTerms#DEFAULT_ARRAY_UNITS}, a chromatogram's time
- * as stored with its {@code timeUnit} (D-12c) and its intensity with its {@code intensityUnit}.
+ * as stored with its {@code timeUnit} (D-12c) and its intensity with its {@code intensityUnit}, an MS spectrum's
+ * intensity with its {@code intensityUnit}, MS:1000131 when it has none (R5).
  *
  * <p><b>Spectra</b> (design 5.4-5.7) are written with their m/z, intensity and extra arrays, the length of the m/z
  * array as their default array length, and their cvParams in a fixed order: the spectrum types, else MS1 or MSn
@@ -164,9 +166,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * injection time, filter string, preset scan configuration, the ion mobility terms and then its other params, its
  * instrument configuration and its windows. A precursor holds its isolation window (omitted when it holds nothing), its
  * selected ions (the list omitted when empty) and its activation (always). <b>Wavelength spectra</b> (design 5.9) come
- * after all MS spectra, each with one scan holding its time, its wavelength and intensity arrays, and its cvParams in
- * the order spectrum types, representation, MS:1000619, MS:1000618, MS:1000505, MS:1000285, lambda max (MS:1003812 in
- * nanometers), the others.
+ * after all MS spectra, each with its scans as MS spectra have them but with their windows in nanometers (R8), else one
+ * scan holding its time (A-8), a time that is not the first scan's start time lost (A-9); its wavelength and intensity
+ * arrays, and its cvParams in the order spectrum types, representation, MS:1000619, MS:1000618, MS:1000505, MS:1000285,
+ * lambda max (MS:1003812 in nanometers), the others.
  *
  * <p><b>Chromatograms</b> (design 5.8) carry one chromatogram type, their {@code typeCurie}, else the first type among
  * their params; a further type param is dropped, counted when it names another type (A-31). They keep their first
@@ -196,14 +199,14 @@ public final class MzMLWriter implements AutoCloseable {
                     + " near -Xmx)");
 
     /**
-     * The losses of design 6.2 the converter cannot see and so cannot count, noted as fixed lines after
-     * {@link #LIMITS}: A-13, the units and data types of arrays as stored in mzPeak; A-14, auxiliary arrays.
+     * The loss of design 6.2 the converter does not count, noted as a fixed line after {@link #LIMITS}: A-13, the
+     * data types of arrays as stored in mzPeak and the units of arrays other than a spectrum's intensity, which is
+     * written in its intensity unit (R5). A-14 is withdrawn: auxiliary arrays are written (R1).
      */
     static final List<String> NOT_VISIBLE = List.of(
-            "A-13 array units and data types as stored in mzPeak are not visible to the converter: every array is"
-                    + " written as 64-bit floats in the default unit of its key, or without unit",
-            "A-14 auxiliary_arrays of the mzPeak input are not visible to the converter (the library does not read"
-                    + " them)");
+            "A-13 array units and data types as stored in mzPeak, which the converter does not use yet: every array"
+                    + " is written as 64-bit floats in the default unit of its key, or without unit, a spectrum's"
+                    + " intensity in its intensity unit");
 
     // The losses of design 6.2 this writer counts, one line each in warnings().
     static final String A_1 = "A-1 peak lists that are not a row copy of the spectrum's arrays dropped";
@@ -237,6 +240,10 @@ public final class MzMLWriter implements AutoCloseable {
     static final String A_32 = "A-32 spectrum-level scan start times that differ from the first scan's dropped";
     static final String A_33 = "A-33 non-standard data arrays without a name given the name 'non-standard data"
             + " array'";
+    static final String A_34 = "A-34 auxiliary arrays written without their params, data processing or a unit whose CV"
+            + " prefix the cv list lacks";
+    static final String A_35 = "A-35 auxiliary arrays whose compression or data type the converter cannot decode"
+            + " dropped";
     // Warned by design 5.2 and 5.3, without a loss number.
     static final String CV_WITHOUT_ID = "cv list entries without id dropped";
     static final String CV_COMPLETED = "CVs without fullName or URI completed from the known CVs, else with the prefix"
@@ -392,13 +399,14 @@ public final class MzMLWriter implements AutoCloseable {
     }
 
     /**
-     * Adds the next MS spectrum to the document (design 5.4-5.7), with its id from the registry and its position as
-     * its index.
+     * Adds the next MS spectrum to the document (design 5.4-5.7), with its id from the registry, its position as its
+     * index and its data processing where it differs from the spectrumList's; a reference that names no data
+     * processing of the file metadata is dropped (A-18).
      *
      * @throws IllegalStateException if its id is not the next of {@link Contents#spectrumIds()}, all of which were
      *                               written already, or the writer is finished or closed
-     * @throws MzPeakException       naming the prefix, if an accession or unit of its params has a CV prefix the cv
-     *                               list does not declare (design 5.11)
+     * @throws MzPeakException       naming the prefix, if an accession or unit of its params, or its intensity unit,
+     *                               has a CV prefix the cv list does not declare (design 5.11)
      * @throws NullPointerException  if {@code spectrum} or its description is null
      */
     public void write(Spectrum spectrum) {
@@ -414,8 +422,14 @@ public final class MzMLWriter implements AutoCloseable {
         declared(name, d.parameters());
         d.scans().forEach(scan -> declared(name, scan.parameters()));
         d.precursors().forEach(p -> precursorParams(p, params -> declared(name, params)));
+        // the intensity unit is written with its cvRef too; the contents do not announce it (U6)
+        declared(name, List.of(new Param(null, null, null, spectrum.intensityUnit())));
 
         uk.ac.ebi.jmzml.model.mzml.Spectrum x = spectrum(i, spectrumIds.get(i), spectrum.mz().length);
+        String processing = ref(dataProcessingIds, d.dataProcessingRef(), "spectrum dataProcessingRef dropped");
+        if (processing != null && !processing.equals(spectrumListDefault)) {
+            x.setDataProcessingRef(text(processing));
+        }
         List<Param> rest = new ArrayList<>(d.parameters());
         List<Param> types = take(rest, SPECTRUM_TYPE);
         if (types.isEmpty() && d.msLevel() >= 1) {
@@ -439,7 +453,7 @@ public final class MzMLWriter implements AutoCloseable {
             note(A_32, minutes != null && start.value() instanceof Number n
                     && minutes.applyAsDouble(n.doubleValue()) == time ? 0 : 1);
         }
-        x.setScanList(scanList(scans, rest));
+        x.setScanList(scanList(scans, rest, MZ));
         params(x, rest);
         spectrumMust(x);
         if (!d.precursors().isEmpty()) {
@@ -449,7 +463,9 @@ public final class MzMLWriter implements AutoCloseable {
             x.setPrecursorList(precursors);
         }
         note(A_1, spectrum.peaks().isEmpty() || rowCopy(spectrum) ? 0 : 1);
-        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(), COUNTS, spectrum.arrays()));
+        x.setBinaryDataArrayList(arrays(MZ_ARRAY, MZ, spectrum.mz(), spectrum.intensity(),
+                Objects.requireNonNullElse(spectrum.intensityUnit(), COUNTS), spectrum.arrays(),
+                spectrum.auxiliaryArrays()));
         add(list, x);
     }
 
@@ -477,19 +493,26 @@ public final class MzMLWriter implements AutoCloseable {
                     + "' after the " + wavelengthIds.size() + " wavelength spectra announced");
         }
         next(contents.wavelengthSpectrumIds().get(k), spectrum.id(), "wavelength spectrum #" + k);
-        declared("wavelength spectrum #" + k + " (" + spectrum.id() + ")", spectrum.parameters());
+        String name = "wavelength spectrum #" + k + " (" + spectrum.id() + ")";
+        declared(name, spectrum.parameters());
+        spectrum.scans().forEach(scan -> declared(name, scan.parameters()));
 
         uk.ac.ebi.jmzml.model.mzml.Spectrum x = spectrum(i, wavelengthIds.get(k), spectrum.wavelength().length);
         List<Param> rest = new ArrayList<>(spectrum.parameters());
         params(x, take(rest, SPECTRUM_TYPE));
         params(x, take(rest, WAVELENGTH_ORDER));
         scalar(x, "MS:1003812", spectrum.lambdaMax(), NANOMETER);
-        x.setScanList(scanList(List.of(new ScanEvent(spectrum.time(), null, null, null, null, null, null, null)),
-                rest));
+        List<ScanEvent> scans = spectrum.scans();
+        if (scans.isEmpty()) {
+            scans = List.of(new ScanEvent(spectrum.time(), null, null, null, null, null, null, null));
+            note(String.format(A_8, "scan holding the time of a wavelength spectrum without scans"));
+        }
+        note(A_9, Double.compare(scans.get(0).startTime(), spectrum.time()) == 0 ? 0 : 1);
+        x.setScanList(scanList(scans, rest, NANOMETER));
         params(x, rest);
         spectrumMust(x);
         x.setBinaryDataArrayList(arrays(WAVELENGTH_ARRAY, NANOMETER, spectrum.wavelength(), spectrum.intensity(),
-                COUNTS, Map.of()));
+                COUNTS, Map.of(), spectrum.auxiliaryArrays()));
         add(list, x);
     }
 
@@ -1092,7 +1115,7 @@ public final class MzMLWriter implements AutoCloseable {
             x.setPrecursor(precursor);
         }
         x.setBinaryDataArrayList(arrays(TIME_ARRAY, c.timeUnit(), c.time(), c.intensity(), c.intensityUnit(),
-                c.arrays()));
+                c.arrays(), c.auxiliaryArrays()));
         return x;
     }
 
@@ -1150,8 +1173,9 @@ public final class MzMLWriter implements AutoCloseable {
     /**
      * The scanList of {@code scans}, none for none: the combination terms taken from {@code params}, else
      * MS:1000795 'no combination' for exactly one scan (A-7); two or more scans without one get none (design 6.4).
+     * The scan windows are in {@code windowUnit}.
      */
-    private ScanList scanList(List<ScanEvent> scans, List<Param> params) {
+    private ScanList scanList(List<ScanEvent> scans, List<Param> params, String windowUnit) {
         if (scans.isEmpty()) {
             return null;
         }
@@ -1163,7 +1187,7 @@ public final class MzMLWriter implements AutoCloseable {
         }
         params(list, combination);
         note(SCAN_MUST, combination.size() == 1 ? 0 : 1);
-        scans.forEach(scan -> list.getScan().add(scan(scan)));
+        scans.forEach(scan -> list.getScan().add(scan(scan, windowUnit)));
         list.setCount(scans.size());
         return list;
     }
@@ -1171,9 +1195,9 @@ public final class MzMLWriter implements AutoCloseable {
     /**
      * A scan: its instrument configuration (dropped when it names none, A-18) and spectrum reference; its start time
      * (none for NaN), injection time, filter string and preset scan configuration; its ion mobility terms, then its
-     * other params; its windows, each with its two limits.
+     * other params; its windows, each with its two limits in {@code windowUnit}.
      */
-    private Scan scan(ScanEvent e) {
+    private Scan scan(ScanEvent e, String windowUnit) {
         Scan x = new Scan();
         x.setInstrumentConfigurationRef(text(ref(instrumentIds, e.instrumentConfigurationRef(),
                 "scan instrumentConfigurationRef dropped")));
@@ -1188,8 +1212,8 @@ public final class MzMLWriter implements AutoCloseable {
             ScanWindowList windows = new ScanWindowList();
             for (ScanWindow w : e.scanWindows()) {
                 ParamGroup window = new ParamGroup();
-                scalar(window, "MS:1000501", w.lowerLimit(), MZ);
-                scalar(window, "MS:1000500", w.upperLimit(), MZ);
+                scalar(window, "MS:1000501", w.lowerLimit(), windowUnit);
+                scalar(window, "MS:1000500", w.upperLimit(), windowUnit);
                 windows.getScanWindow().add(window);
             }
             windows.setCount(e.scanWindows().size());
@@ -1356,17 +1380,46 @@ public final class MzMLWriter implements AutoCloseable {
 
     /**
      * The arrays of a spectrum or chromatogram: its axis array {@code axis} in {@code axisUnit}, its intensity in
-     * {@code intensityUnit}, then the extras in map order, each in its default unit if it has one.
+     * {@code intensityUnit}, then the extras in map order, each in its default unit if it has one, then the
+     * {@code auxiliary} arrays in their order ({@link #auxiliary}).
      */
     private BinaryDataArrayList arrays(String axis, String axisUnit, double[] axisValues, double[] intensity,
-                                       String intensityUnit, Map<String, double[]> extras) {
+                                       String intensityUnit, Map<String, double[]> extras,
+                                       List<AuxiliaryArray> auxiliary) {
         BinaryDataArrayList list = new BinaryDataArrayList();
         list.getBinaryDataArray().add(array(axis, axisValues, axisUnit));
         list.getBinaryDataArray().add(array(INTENSITY_ARRAY, intensity, intensityUnit));
         extras.forEach((key, values) -> list.getBinaryDataArray()
                 .add(array(key, values, CvTerms.DEFAULT_ARRAY_UNITS.get(key))));
+        auxiliary.forEach(a -> auxiliary(list, a));
         list.setCount(list.getBinaryDataArray().size());
         return list;
+    }
+
+    /**
+     * Adds the auxiliary array {@code a} to {@code list} (R1, D13-19): its values ({@link AuxiliaryArray#doubles()})
+     * as {@link #array} writes an array, keyed by the accession of its name, for MS:1000786 by its name's String value
+     * and for a name without accession by its name, in its unit, with {@code arrayLength} its number of values, since
+     * it may differ from the owner's {@code defaultArrayLength}. Its params, its data processing and a unit whose CV
+     * prefix the cv list lacks are not written (A-34); an array whose compression or data type {@code doubles()}
+     * cannot decode is dropped (A-35).
+     */
+    private void auxiliary(BinaryDataArrayList list, AuxiliaryArray a) {
+        double[] values;
+        try {
+            values = a.doubles();
+        } catch (UnsupportedOperationException e) {
+            note(A_35);
+            return;
+        }
+        Param name = a.name();
+        String key = NON_STANDARD_ARRAY.equals(name.accession()) && name.value() instanceof String s ? s
+                : name.accession() == null ? Objects.requireNonNullElse(name.name(), "") : name.accession();
+        String unit = cvs.containsKey(prefix(a.unit())) ? a.unit() : null;
+        note(A_34, a.parameters().isEmpty() && a.dataProcessingId() == null && Objects.equals(unit, a.unit()) ? 0 : 1);
+        BinaryDataArray array = array(key, values, unit);
+        array.setArrayLength(values.length);
+        list.getBinaryDataArray().add(array);
     }
 
     /**
@@ -1374,7 +1427,8 @@ public final class MzMLWriter implements AutoCloseable {
      * returns on an empty array with zlib); then its type, or MS:1000786 named {@code key}, with {@code unit}. A
      * nameless non-standard array (the key MS:1000786, which the library gives one, or an empty key) is named
      * 'non-standard data array', which the mzML read takes as its key (A-33); without a name it would be dropped.
-     * {@code arrayLength} is never written; {@code encodedLength} is the Base64 length of the encoded bytes.
+     * {@code arrayLength} is not written here ({@link #auxiliary} writes it); {@code encodedLength} is the Base64
+     * length of the encoded bytes.
      */
     private BinaryDataArray array(String key, double[] values, String unit) {
         BinaryDataArray a = new BinaryDataArray();

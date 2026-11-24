@@ -59,8 +59,11 @@ import static org.mzpeak.mzml.ModelAssert.Mode.STRICT;
  *       twin_mzml_lane.mzpeak. {@link MzMLReader}'s model M1 goes through {@link MzMLConversion#toMzPeak} and back
  *       through {@link MzMLConversion#toMzML} (zlib and without, each {@link MzMLAssert#valid}) to M3, which equals
  *       M1 strictly up to the exclusions of the case, each hiding a pinned count (tiny: A_26, its run start time
- *       without a zone, under UTC; timsTOF: {@link #A_29}). Our intermediate mzPeak is then compared with the other
- *       converter's, the oracle: ids, MS levels, polarity, continuity and retention times equal (a spectrum without
+ *       without a zone, under UTC, and W_3, the time arrays and time units of its two chromatograms in seconds,
+ *       which the writer stores in minutes, and W_8, the URI and version of its MS and the full name, URI and version
+ *       of its UO, at SourceForge CVS checkouts, for which the writer declares its own entries; timsTOF:
+ *       {@link #A_29}, and W_3 for its nine chromatograms in seconds).
+ *       Our intermediate mzPeak is then compared with the other converter's, the oracle: ids, MS levels, polarity, continuity and retention times equal (a spectrum without
  *       scan start time has NaN in ours and 0.0 in the oracle: tiny's scan=21); profile spectra after the zero-run
  *       stripping of upstream {@code find_where_not_zero_run} ({@link MzMLRustOracleTest#notInZeroRun}), which the
  *       oracle applies; intensities exact; m/z within 1e-9 relative (measured: 2.3e-10, swath and timsTOF) and within
@@ -253,9 +256,10 @@ class MzMLCorpusTest {
 
     /** Each B case: the mzML (a corpus name, or tiny), its oracle and the exclusions M1 vs M3 needs, with counts. */
     static Stream<Arguments> directionB() {
-        return Stream.of(arguments(MzMLFixtures.TINY, "repro-mixed.mzpeak", Map.of(ModelAssert.A_26, 1)),
+        return Stream.of(arguments(MzMLFixtures.TINY, "repro-mixed.mzpeak",
+                Map.of(ModelAssert.A_26, 1, ModelAssert.W_3, 4, ModelAssert.W_8, 5)),
                 arguments(SWATH, "repro-centroid.mzpeak", Map.of()),
-                arguments(TIMS_TOF, "twin_mzml_lane.mzpeak", Map.of(A_29, 7)));
+                arguments(TIMS_TOF, "twin_mzml_lane.mzpeak", Map.of(A_29, 7, ModelAssert.W_3, 2 * 9)));
     }
 
     /**

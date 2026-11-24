@@ -125,23 +125,23 @@ class WriterAxisOrderTest {
 
     /**
      * The permutation is stable (equal m/z keep their order) and orders by {@link Double#compare}: -Infinity first,
-     * then the finite values, +Infinity, NaN last.
+     * then the finite values, +Infinity last (a NaN m/z is refused, W10).
      */
     @Test
-    void reSortIsStableAndPutsNaNLast(@TempDir Path tmp) {
-        double[] mz = {2.0, Double.NaN, 1.0, 2.0, Double.POSITIVE_INFINITY, 1.0, Double.NEGATIVE_INFINITY};
-        double[] intensity = {1, 2, 3, 4, 5, 6, 7};
+    void reSortIsStableAndPutsInfinityLast(@TempDir Path tmp) {
+        double[] mz = {2.0, 1.0, 2.0, Double.POSITIVE_INFINITY, 1.0, Double.NEGATIVE_INFINITY};
+        double[] intensity = {1, 3, 4, 5, 6, 7};
         Spectrum s = profile(0, mz, intensity);
 
         assertThat(warnings(Options.defaults(), List.of(s), List.of(), List.of()))
-                .containsExactly("spectrum 0: main axis not ascending; re-sorted 7 rows");
+                .containsExactly("spectrum 0: main axis not ascending; re-sorted 6 rows");
         Path out = tmp.resolve("out.mzpeak");
         MzPeakWriter.writeDirectory(out, List.of(s), List.of(), List.of(), List.of(), FileMetadata.EMPTY);
 
         double[][] stored = storedRows(out.resolve(DATA), "spectrum_index", "mz", 0);
-        double[] expectedMz = {Double.NEGATIVE_INFINITY, 1.0, 1.0, 2.0, 2.0, Double.POSITIVE_INFINITY, Double.NaN};
+        double[] expectedMz = {Double.NEGATIVE_INFINITY, 1.0, 1.0, 2.0, 2.0, Double.POSITIVE_INFINITY};
         assertThat(Arrays.equals(stored[0], expectedMz)).as("stored m/z %s", Arrays.toString(stored[0])).isTrue();
-        assertThat(stored[1]).containsExactly(7, 3, 6, 1, 4, 5, 2);
+        assertThat(stored[1]).containsExactly(7, 3, 6, 1, 4, 5);
     }
 
     /**
@@ -176,9 +176,9 @@ class WriterAxisOrderTest {
 
     static Stream<double[]> axesWrittenAsGiven() {
         return Stream.of(
-                new double[] {1, Double.NaN, 3},
+                new double[] {1, Double.NEGATIVE_INFINITY, 3},
                 new double[] {1, 1, 2},
-                new double[] {Double.NaN, 2, Double.POSITIVE_INFINITY, 2, 3},
+                new double[] {Double.NEGATIVE_INFINITY, 2, Double.POSITIVE_INFINITY, 2, 3},
                 new double[] {Double.POSITIVE_INFINITY, 1, Double.NEGATIVE_INFINITY, 2});
     }
 
@@ -211,7 +211,7 @@ class WriterAxisOrderTest {
     void callerArraysAreNotModified(@TempDir Path tmp) {
         double[] mz = {5, 4, 3, 2, 1};
         double[] intensity = {5e8, 4e8, 3e8, 2e8, 1e8};
-        double[] time = {3.0, Double.NaN, 1.0};
+        double[] time = {3.0, Double.POSITIVE_INFINITY, 1.0};
         double[] ticIntensity = {30, 20, 10};
         double[] wavelength = {300, 250, 200};
         double[] absorbance = {0.3, -0.1, 0.2};

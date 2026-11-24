@@ -2,6 +2,8 @@ package org.mzpeak.io;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.io.LocalInputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
@@ -14,15 +16,20 @@ import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.MzPeakReader.SignalMode;
 import org.mzpeak.io.MzPeakWriter.MetadataLayout;
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.io.parquet.ParquetGroups;
 import org.mzpeak.model.Activation;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.ScanEvent;
+import org.mzpeak.model.ScanWindow;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
+import org.mzpeak.model.meta.FileMetadata;
+import org.mzpeak.model.meta.ScanSettings;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -30,6 +37,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,7 +81,9 @@ class RustReaderAcceptanceTest {
 
     /**
      * has_uv, read and written split as an archive: Rust reads all 212 spectra and all 520 wavelength spectra
-     * without a panic, with the ids, wavelengths and intensities the mzPeakJ reader reads from the fixture.
+     * without a panic, with the ids, wavelengths and intensities the mzPeakJ reader reads from the fixture, and the
+     * spectrum type and observed wavelength range once each (W11; Rust gives them twice for the reference's has_uv,
+     * which writes them both as columns and in the list).
      */
     @ParameterizedTest
     @MethodSource("hasUv")
@@ -97,7 +107,43 @@ class RustReaderAcceptanceTest {
                     .isEqualTo(expected.wavelength());
             assertThat(dump.array(w.path("arrays").path("IntensityArray"))).as("intensity of %d", i)
                     .isEqualTo(expected.intensity());
+            // W11: the type and wavelength range are columns only now, and Rust reads each once from there
+            List<Integer> accessions = new ArrayList<>();
+            for (JsonNode p : w.path("desc").path("params")) {
+                accessions.add(p.path("accession").asInt());
+            }
+            assertThat(accessions).as("param accessions of %d", i).containsOnlyOnce(1000804, 1000619, 1000618);
         }
+    }
+
+    /**
+     * R8 writer: current has_uv with a second scan of wavelength spectrum 0 (instrument configuration 1, one window
+     * 200-400 nm), written split with the scans and their FLOAT windows: Rust reads all 520 wavelength spectra without
+     * a panic, the first with its ids and arrays; it does not read the wavelength scans (R-3).
+     */
+    @Test
+    void rustReadsWrittenWavelengthScansWithAWindow() throws Exception {
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
+        List<WavelengthSpectrum> waves = new ArrayList<>(source.wavelengthSpectra);
+        WavelengthSpectrum w = waves.get(0);
+        List<ScanEvent> scans = new ArrayList<>(w.scans());
+        scans.add(new ScanEvent(w.time(), null, null, null, 1, null, List.of(new ScanWindow(200, 400)), List.of()));
+        waves.set(0, new WavelengthSpectrum(w.index(), w.id(), w.time(), w.lambdaMax(), w.wavelength(),
+                w.intensity(), w.parameters(), scans, w.auxiliaryArrays()));
+        Path out = tmp.resolve("scans.mzpeak");
+        MzPeakWriter.writeArchive(out, source.spectra, source.chromatograms, waves, source.scanSettings,
+                WavelengthScansTest.withConfiguration(source.fileMetadata, 1), SPLIT);
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            assertThat(reader.getWavelengthSpectrum(0).orElseThrow().scans()).isEqualTo(scans);
+        }
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("W");
+        assertThat(records).hasSize(520).allSatisfy(r -> assertThat(r.has("panic") || r.has("none"))
+                .as("%s", r).isFalse());
+        assertThat(records.get(0).path("id").asText()).isEqualTo(w.id());
+        assertThat(dump.array(records.get(0).path("arrays").path("WavelengthArray"))).isEqualTo(w.wavelength());
+        assertThat(dump.array(records.get(0).path("arrays").path("IntensityArray"))).isEqualTo(w.intensity());
     }
 
     /** An integer collision energy without unit, as mzML writers give it, reaches Rust as 35 eV, not 0. */
@@ -130,6 +176,141 @@ class RustReaderAcceptanceTest {
         JsonNode precursor = record.path("prec").get(0);
         assertThat(precursor.path("energy").asDouble()).isEqualTo(35.0);
         assertThat(precursor.path("methods").get(0).asText()).isEqualTo("CollisionInducedDissociation");
+    }
+
+    /**
+     * X-25 (R6): small.unpacked written split as an archive with a data processing reference on spectrum 3, so that
+     * spectra_metadata has a {@code data_processing_id} column: Rust, which skips the column, reads all 48 spectra
+     * without a panic, spectrum 3, a centroid spectrum, with its id and the peak m/z mzPeakJ reads.
+     */
+    @Test
+    void rustReadsSpectraWithADataProcessingReference() throws Exception {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        Spectrum s = spectra.get(3);
+        SpectrumDescription d = s.description();
+        spectra.set(3, new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                d.precursors(), d.parameters(), "mzpeak_conversion1"), s.mz(), s.intensity(), s.peaks(), s.arrays(),
+                s.peakArrays()));
+        Path out = tmp.resolve("data-processing.mzpeak");
+        MzPeakWriter.writeArchive(out, spectra, small.chromatograms, small.wavelengthSpectra, small.scanSettings,
+                small.fileMetadata, SPLIT);
+        double[] mz;
+        try (MzPeakReader reader = MzPeakReader.open(out,
+                MzPeakReader.Options.defaults().withSignalMode(SignalMode.CENTROID))) {
+            assertThat(reader.metadataAt(3).dataProcessingRef()).isEqualTo("mzpeak_conversion1");
+            mz = reader.getSpectrumAt(3).mz();
+        }
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(48).allSatisfy(r -> assertThat(r.has("panic") || r.has("none")).as("%s", r)
+                .isFalse());
+        JsonNode record = records.get(3);
+        assertThat(record.path("id").asText()).isEqualTo(d.id());
+        assertThat(mz).isNotEmpty();
+        assertValues("spectrum 3 peak m/z", dump.array(record.path("peaks"), "mz_off"), mz, Match.MZ);
+    }
+
+    /**
+     * R1 (X-32): small.unpacked with spectrum 0 given the plain and the zlib auxiliary array of
+     * {@link AuxiliaryArrayWriteTest}, written split as an archive: Rust reads both among the arrays of spectrum 0,
+     * each decoded to [1, 2, 3], next to its m/z and intensity; spectrum 1 has neither.
+     */
+    @Test
+    void rustReadsTheAuxiliaryArraysOfASpectrum() throws Exception {
+        Source small = AuxiliaryArrayWriteTest.withSpectrumArrays(Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN, AuxiliaryArrayWriteTest.ZLIB));
+        Path out = tmp.resolve("auxiliary.mzpeak");
+        MzPeakWriter.writeArchive(out, small.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, SPLIT);
+
+        assertAuxiliaryArraysOfSpectrum0(rdump(out), small.spectra.get(0));
+    }
+
+    /**
+     * R1 (X-32): the same spectra written as a directory with a row-group size of 1 KiB, so that the 13589 points of
+     * spectrum 0 in spectra_data span several row groups: Rust's read of a spectrum over several row groups
+     * (reader.rs:552 onward) still reads its auxiliary arrays.
+     */
+    @Test
+    void rustReadsTheAuxiliaryArraysOfASpectrumOverSeveralRowGroups() throws Exception {
+        Source small = AuxiliaryArrayWriteTest.withSpectrumArrays(Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN, AuxiliaryArrayWriteTest.ZLIB));
+        Path out = tmp.resolve("row-groups.mzpeak");
+        MzPeakWriter.writeDirectory(out, small.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, SPLIT.withRowGroupSize(1024));
+        try (ParquetFileReader pfr = ParquetFileReader.open(new LocalInputFile(out.resolve("spectra_data.parquet")),
+                ParquetGroups.readOptions())) {
+            assertThat(pfr.getRowGroups()).hasSizeGreaterThan(1);
+            assertThat(pfr.getRowGroups().get(0).getRowCount()).as("rows of spectrum 0 in row group 0")
+                    .isLessThan(small.spectra.get(0).mz().length);
+        }
+
+        assertAuxiliaryArraysOfSpectrum0(rdump(out), small.spectra.get(0));
+    }
+
+    /**
+     * R1 (X-32), R-14: in the chunked layout Rust drops the auxiliary arrays of a spectrum whose chunks span several
+     * row groups: its chunk path (reader.rs:552-565) returns before {@code load_auxiliary_arrays_for_spectrum}.
+     * small.unpacked written with Numpress chunks and a row-group size of 1 KiB, spectra 0 and 8 given
+     * {@link AuxiliaryArrayWriteTest#PLAIN}: spectrum 0's chunks lie in row group 0 (parquet-java checks the size
+     * first after 100 rows) and Rust reads the array; spectrum 8's chunks span row groups 0 and 1, and Rust reads its
+     * signal without the array. mzPeakJ reads both.
+     */
+    @Test
+    void rustDropsTheAuxiliaryArraysOfAChunkedSpectrumOverSeveralRowGroups() throws Exception {
+        Source small = AuxiliaryArrayWriteTest.withSpectrumArrays(Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN));
+        small.spectra.set(8, AuxiliaryArrayWriteTest.withArrays(small.spectra.get(8),
+                List.of(AuxiliaryArrayWriteTest.PLAIN)));
+        Path out = tmp.resolve("chunk-row-groups.mzpeak");
+        MzPeakWriter.writeDirectory(out, small.spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata,
+                SPLIT.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS).withRowGroupSize(1024));
+        Path data = out.resolve("spectra_data.parquet");
+        long firstRowGroup;
+        try (ParquetFileReader pfr = ParquetFileReader.open(new LocalInputFile(data), ParquetGroups.readOptions())) {
+            firstRowGroup = pfr.getRowGroups().get(0).getRowCount();
+        }
+        List<Long> chunkSpectra = new ArrayList<>();
+        ParquetGroups.forEach(data, row -> chunkSpectra.add(ParquetGroups.optLong(
+                ParquetGroups.optGroup(row, "chunk"), "spectrum_index")));
+        assertThat(chunkSpectra.get(0)).isZero();
+        assertThat(chunkSpectra.get((int) firstRowGroup - 1)).as("last spectrum of row group 0").isEqualTo(8);
+        assertThat(chunkSpectra.get((int) firstRowGroup)).as("first spectrum of row group 1").isEqualTo(8);
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            for (int i : new int[] {0, 8}) {
+                assertThat(reader.getSpectrum(i).orElseThrow().auxiliaryArrays()).as("spectrum %d", i).hasSize(1);
+            }
+        }
+
+        Dump dump = rdump(out);
+        List<JsonNode> records = dump.records("S");
+        JsonNode s0 = records.get(0).path("arrays");
+        assertThat(dump.array(s0.path("SignalToNoiseArray"))).as("%s", s0).containsExactly(1.0, 2.0, 3.0);
+        JsonNode s8 = records.get(8).path("arrays");
+        assertThat(s8.has("MZArray")).as("%s", s8).isTrue();
+        assertThat(s8.has("SignalToNoiseArray")).as("R-14: %s", s8).isFalse();
+    }
+
+    /**
+     * Rust's read of spectrum 0, given {@link AuxiliaryArrayWriteTest#PLAIN} and {@link AuxiliaryArrayWriteTest#ZLIB},
+     * and of spectrum 1: the plain array decodes to [1, 2, 3] next to the m/z of {@code s0}; the zlib array, whose
+     * {@code data} holds the zlib bytes as auxiliary-arrays.md stores them, fails to decode (R-13: the reader passes
+     * the bytes to mzdata as if they were base64 text); spectrum 1 has neither.
+     */
+    private static void assertAuxiliaryArraysOfSpectrum0(Dump dump, Spectrum s0) {
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(48);
+        JsonNode arrays = records.get(0).path("arrays");
+        assertThat(dump.array(arrays.path("SignalToNoiseArray"))).as("%s", arrays).containsExactly(1.0, 2.0, 3.0);
+        JsonNode zlib = arrays.path("NonStandardDataArray { name: \"" + AuxiliaryArrayWriteTest.ZLIB_NAME + "\" }");
+        assertThat(zlib.path("error").asText()).as("R-13: %s", arrays)
+                .isEqualTo("The content was not properly Base64 encoded");
+        assertThat(dump.array(arrays.path("MZArray"))).isEqualTo(s0.mz());
+        assertThat(records.get(1).path("arrays").size()).as("%s", records.get(1)).isEqualTo(2);
     }
 
     /**
@@ -177,11 +358,12 @@ class RustReaderAcceptanceTest {
     }
 
     /**
-     * D-12b (V-22): small.unpacked with its chromatogram in seconds, written split as an archive: Rust reads the
-     * chromatogram with its time array in seconds and the times as written.
+     * W3 (D13-1): small.unpacked with its chromatogram in seconds, written split as an archive: the writer stores the
+     * times in minutes, and Rust reads the chromatogram with its time array in minutes and the input times divided by
+     * 60. Until W3 the times were written, and read, in seconds (D-12b, V-22).
      */
     @Test
-    void rustReadsAChromatogramInSeconds() throws Exception {
+    void rustReadsAChromatogramWrittenFromSeconds() throws Exception {
         Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
         Chromatogram seconds = WriterChromatogramTimeUnitTest.secondsChromatogram(tmp);
         Path out = tmp.resolve("seconds.mzpeak");
@@ -193,10 +375,164 @@ class RustReaderAcceptanceTest {
             assertThat(c.has("panic") || c.has("none")).as("%s", c).isFalse();
             assertThat(c.path("id").asText()).isEqualTo(seconds.id());
             JsonNode time = c.path("arrays").path("TimeArray");
-            assertThat(time.path("unit").asText()).as("%s", c).isEqualTo("Second");
-            assertThat(dump.array(time)).isEqualTo(seconds.time());
+            assertThat(time.path("unit").asText()).as("%s", c).isEqualTo("Minute");
+            assertThat(dump.array(time)).isEqualTo(Arrays.stream(seconds.time()).map(t -> t / 60).toArray());
             assertThat(dump.array(c.path("arrays").path("IntensityArray"))).isEqualTo(seconds.intensity());
         });
+    }
+
+    /**
+     * D13-28 (X-40, R-16): has_uv with a param in UO:0000010 (second) and one without unit added to spectrum 0, its
+     * first scan, chromatogram 0 and wavelength spectrum 0, written split as an archive (the split layout refuses a
+     * unit such as {@code seconds} there, on which Rust panics): Rust reads every spectrum, chromatogram and
+     * wavelength spectrum without a panic, and spectrum 0's and chromatogram 0's params with the unit second and
+     * without unit.
+     */
+    @Test
+    void rustReadsParamsWithACurieUnitAndWithoutUnit() throws Exception {
+        Source source = ForwardBackwardCorpusTest.readSource(Fixtures.current("has_uv.mzpeak"));
+        Param second = new Param("x40 second", "MS:1000786", 1.5, "UO:0000010");
+        Param unitless = new Param("x40 unitless", null, "v", null);
+        List<Spectrum> spectra = new ArrayList<>(source.spectra);
+        spectra.set(0, SplitParamCurieTest.withScanParam(SplitParamCurieTest.withParam(
+                SplitParamCurieTest.withParam(spectra.get(0), second), unitless), second));
+        List<Chromatogram> chromatograms = new ArrayList<>(source.chromatograms);
+        chromatograms.set(0, SplitParamCurieTest.withParam(SplitParamCurieTest.withParam(chromatograms.get(0),
+                second), unitless));
+        List<WavelengthSpectrum> waves = new ArrayList<>(source.wavelengthSpectra);
+        waves.set(0, SplitParamCurieTest.withParam(SplitParamCurieTest.withParam(waves.get(0), second), unitless));
+        Path out = tmp.resolve("curies.mzpeak");
+        MzPeakWriter.writeArchive(out, spectra, chromatograms, waves, source.scanSettings, source.fileMetadata,
+                SPLIT);
+
+        Dump dump = rdump(out);
+        assertThat(dump.records("S")).hasSize(spectra.size()).allSatisfy(r -> assertThat(r.has("panic")
+                || r.has("none")).as("%s", r).isFalse());
+        assertThat(dump.records("C")).hasSize(chromatograms.size()).allSatisfy(r -> assertThat(r.has("panic")
+                || r.has("none")).as("%s", r).isFalse());
+        assertThat(dump.records("W")).hasSize(waves.size()).allSatisfy(r -> assertThat(r.has("panic")
+                || r.has("none")).as("%s", r).isFalse());
+        for (JsonNode desc : List.of(dump.records("S").get(0).path("desc"), dump.records("C").get(0).path("desc"))) {
+            Map<String, String> units = new HashMap<>();
+            desc.path("params").forEach(p -> units.put(p.path("name").asText(), p.path("unit").asText()));
+            assertThat(units).as("%s", desc).containsEntry("x40 second", "Second")
+                    .containsEntry("x40 unitless", "Unknown");
+        }
+    }
+
+    /**
+     * W2 (D13-16): small.unpacked with spectrum 0 given params {@code Integer 3}, {@code Float 1.5f} and
+     * {@code List.of(1, 2)} (its first scan {@code List.of("x", 1.5f)}), a software with the param
+     * {@code List.of("a", "b")} and scan settings with the param {@code List.of(1, 2)}, written split as an archive:
+     * Rust opens it and reads spectrum 0's params as the integer 3, the float 1.5 and the string {@code "[1,2]"}.
+     */
+    @Test
+    void rustReadsParamValuesOfEveryType() throws Exception {
+        Source small = ForwardBackwardCorpusTest.readSource(Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        spectra.set(0, ParamValueTypesTest.withParams(spectra.get(0), List.of(
+                ParamValueTypesTest.param("w2 integer", 3), ParamValueTypesTest.param("w2 float", 1.5f),
+                ParamValueTypesTest.param("w2 list", List.of(1, 2)))));
+        List<FileMetadata.Software> software = new ArrayList<>(small.fileMetadata.software());
+        software.add(new FileMetadata.Software("w2", "1", List.of(ParamValueTypesTest.param("w2 list",
+                List.of("a", "b")))));
+        List<ScanSettings> scanSettings = List.of(new ScanSettings("w2 settings",
+                List.of(ParamValueTypesTest.param("w2 list", List.of(1, 2)))));
+        Path out = tmp.resolve("params.mzpeak");
+        MzPeakWriter.writeArchive(out, spectra, small.chromatograms, small.wavelengthSpectra, scanSettings,
+                ParamValueTypesTest.withSoftware(small.fileMetadata, software), SPLIT);
+
+        Dump dump = rdump(out);
+        assertThat(dump.header().path("n_spectra").asInt()).isEqualTo(spectra.size());
+        JsonNode desc = dump.records("S").get(0).path("desc");
+        Map<String, String> values = new HashMap<>();
+        desc.path("params").forEach(p -> values.put(p.path("name").asText(), p.path("value").toString()));
+        assertThat(values).as("%s", desc).containsEntry("w2 integer", "{\"Int\":3}")
+                .containsEntry("w2 float", "{\"Float\":1.5}").containsEntry("w2 list", "{\"String\":\"[1,2]\"}");
+        JsonNode scanParams = desc.path("acquisition").path("scans").get(0).path("params");
+        assertThat(scanParams.get(scanParams.size() - 1).path("value").path("String").asText()).as("%s", desc)
+                .isEqualTo("[\"x\",1.5]");
+    }
+
+    /**
+     * R-10 (W10): the probe of {@link NoNaNInWrittenColumnsTest}, its spectrum 1 with the signal-to-noise array
+     * {@code [1, NaN, 3]}, which mzPeakJ writes as {@code [1, null, 3]}, written split as an archive in the point
+     * layout and as Numpress: Rust reads the null cell as 0.0 ({@code src/reader/point.rs:128},
+     * {@code unwrap_or_default}), so the array as {@code [1, 0, 3]}, where mzPeakJ reads {@code [1, NaN, 3]}.
+     */
+    @Test
+    void rustReadsANullExtraCellAsZero() throws Exception {
+        List<Spectrum> probe = NoNaNInWrittenColumnsTest.probe(new double[] {1, Double.NaN, 3});
+        for (Options options : List.of(SPLIT, SPLIT.withSignalEncoding(MzPeakWriter.SignalEncoding.NUMPRESS))) {
+            Path out = tmp.resolve("null-extra-" + options.signalEncoding() + ".mzpeak");
+            MzPeakWriter.writeArchive(out, probe, List.of(), List.of(), List.of(), FileMetadata.EMPTY, options);
+            try (MzPeakReader reader = MzPeakReader.open(out)) {
+                assertThat(reader.getSpectrumAt(1).arrays().get("MS:1000517")).containsExactly(1, Double.NaN, 3);
+            }
+
+            Dump dump = rdump(out);
+            List<JsonNode> records = dump.records("S");
+            assertThat(records).hasSize(2);
+            JsonNode record = records.get(1);
+            String what = options.signalEncoding() + " " + record;
+            assertThat(record.has("panic") || record.has("none")).as(what).isFalse();
+            assertThat(dump.array(record.path("arrays").path("SignalToNoiseArray"))).as(what)
+                    .containsExactly(1, 0, 3);
+            assertThat(dump.array(record.path("arrays").path("IntensityArray"))).as(what)
+                    .hasSize(3);
+        }
+    }
+
+    /**
+     * R-11 (R5, D13-20): the two-unit copy of current small.unpacked ({@link SpectrumIntensityUnitTest}, spectrum 1
+     * with the intensities [25, 100] in percent of base peak only), written split as an archive, which gives
+     * spectra_data the columns {@code intensity} (MS:1000131) and {@code intensity_MS_1000132}: Rust reads all 48
+     * spectra without a panic, spectrum 1 by index with its two points and intensities in {@code PercentBasePeak}, and
+     * spectrum 0 in {@code DetectorCounts}; its range read over spectra 0-1 ({@code extract_signal}, which projects
+     * only the first intensity column, {@code src/reader/point.rs:528}) returns spectrum 0 whole but spectrum 1's two
+     * points without intensity. The spec requires a column for each unit, so no form both accept.
+     */
+    @Test
+    void rustReadsAPercentSpectrumByIndexButNotInARangeRead() throws Exception {
+        Path copy = MemberRewrite.copy(Fixtures.current("small.unpacked.mzpeak"), Files.createDirectories(
+                tmp.resolve("source")));
+        double[] mz = SpectrumIntensityUnitTest.rewritePoint(copy.resolve("spectra_data.parquet"));
+        Source source = ForwardBackwardCorpusTest.readSource(copy);
+        Path out = tmp.resolve("units.mzpeak");
+        MzPeakWriter.writeArchive(out, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, SPLIT);
+        Spectrum zero;
+        try (MzPeakReader reader = MzPeakReader.open(out)) {
+            zero = reader.getSpectrumAt(0);
+            assertThat(reader.getSpectrumAt(1).intensityUnit()).isEqualTo("MS:1000132");
+        }
+
+        Dump dump = rdump(out, "--signal-range", "0", "1");
+        List<JsonNode> records = dump.records("S");
+        assertThat(records).hasSize(48).allSatisfy(r -> assertThat(r.has("panic") || r.has("none")).as("%s", r)
+                .isFalse());
+        JsonNode intensity0 = records.get(0).path("arrays").path("IntensityArray");
+        assertThat(intensity0.path("unit").asText()).isEqualTo("DetectorCounts");
+        assertValues("spectrum 0 intensity", dump.array(intensity0), zero.intensity(), Match.EXACT);
+        JsonNode arrays1 = records.get(1).path("arrays");
+        assertThat(arrays1.path("IntensityArray").path("unit").asText()).as("%s", arrays1)
+                .isEqualTo("PercentBasePeak");
+        assertThat(dump.array(arrays1.path("IntensityArray"))).containsExactly(25.0, 100.0);
+        assertValues("spectrum 1 m/z", dump.array(arrays1.path("MZArray")), mz, Match.MZ);
+
+        // the range read: spectrum 0 whole, spectrum 1 without intensity (R-11)
+        List<JsonNode> range = dump.records("R");
+        assertThat(range).extracting(r -> r.path("index").asInt()).containsExactly(0, 1);
+        assertThat(range).allSatisfy(r -> assertThat(r.path("columns")).extracting(JsonNode::asText)
+                .containsExactly("spectrum_index", "mz", "intensity"));
+        JsonNode range0 = range.get(0);
+        assertThat(range0.path("intensity_non_null").asInt()).isEqualTo(zero.pointCount());
+        assertValues("range spectrum 0 intensity", dump.array(range0, "int_off"), zero.intensity(), Match.EXACT);
+        JsonNode range1 = range.get(1);
+        assertThat(range1.path("n").asInt()).isEqualTo(2);
+        assertValues("range spectrum 1 m/z", dump.array(range1, "mz_off"), mz, Match.MZ);
+        assertThat(range1.path("intensity_non_null").asInt()).as("R-11: spectrum 1 without intensity").isZero();
+        assertThat(dump.array(range1, "int_off")).containsExactly(Double.NaN, Double.NaN);
     }
 
     /**
@@ -471,10 +807,14 @@ class RustReaderAcceptanceTest {
         }
     }
 
-    private Dump rdump(Path dataset) throws IOException, InterruptedException {
+    /** rdump's output for {@code dataset}, run with the further arguments {@code args} (README.md of rdump). */
+    private Dump rdump(Path dataset, String... args) throws IOException, InterruptedException {
         Path prefix = tmp.resolve("dump");
-        Process process = new ProcessBuilder(System.getProperty("mzpeak.rust.rdump"), dataset.toString(),
-                prefix.toString()).redirectErrorStream(true).redirectOutput(tmp.resolve("rdump.log").toFile()).start();
+        List<String> command = new ArrayList<>(List.of(System.getProperty("mzpeak.rust.rdump"), dataset.toString(),
+                prefix.toString()));
+        command.addAll(List.of(args));
+        Process process = new ProcessBuilder(command).redirectErrorStream(true)
+                .redirectOutput(tmp.resolve("rdump.log").toFile()).start();
         assertThat(process.waitFor(10, TimeUnit.MINUTES)).as("rdump finished").isTrue();
         assertThat(process.exitValue()).as("rdump exit, log: %s", Files.readString(tmp.resolve("rdump.log")))
                 .isZero();

@@ -169,6 +169,35 @@ class ConvertToDtaTest {
                 .containsExactly("2398.97817 4", "110.00000 5.0000", "120.00000 6.0000");
     }
 
+    /**
+     * R7: a selected ion may carry only a charge (m/z NaN, written as null and read back as NaN). Such an ion gives no
+     * MH+, so the first ion with an m/z is used, and a spectrum whose precursor has none is skipped.
+     */
+    @Test
+    void usesTheFirstSelectedIonWithAnMzAndSkipsPrecursorsWithoutOne(@TempDir Path tmp) throws IOException {
+        Path input = tmp.resolve("constructed");
+        MzPeakWriter.writeDirectory(input, List.of(
+                // only an ion without m/z: skipped
+                new Spectrum(ms(0, "scan=20", 2, 1.0, precursor(new SelectedIon(Double.NaN, 2, null, List.of()))),
+                        new double[]{100, 200}, new double[]{1, 2}, List.of()),
+                // an ion without m/z, then one with: the second one and its charge
+                new Spectrum(ms(1, "scan=21", 2, 1.1, precursor(new SelectedIon(Double.NaN, 2, null, List.of()),
+                        new SelectedIon(500.25, 3, null, List.of()))),
+                        new double[]{150.5, 250.25}, new double[]{10.5, 20.25}, List.of())));
+        try (MzPeakReader reader = MzPeakReader.open(input)) {
+            assertThat(reader.getSpectrumAt(0).description().primaryPrecursor().primaryIon().mz()).isNaN();
+            assertThat(reader.getSpectrumAt(1).description().primaryPrecursor().selectedIons()).hasSize(2);
+        }
+        Path out = tmp.resolve("out");
+
+        assertThat(ConvertToDta.run(input, out, filter(), 4)).isEqualTo(1);
+
+        assertThat(fileNames(out)).containsExactly("constructed.21.21.3.dta");
+        // 500.25 * 3 - 2 * proton
+        assertThat(Files.readAllLines(out.resolve("constructed.21.21.3.dta")))
+                .containsExactly("1498.73545 3", "150.50000 10.5000", "250.25000 20.2500");
+    }
+
     @Test
     void reportsTheOutputDirectoryWhenWritingFails(@TempDir Path tmp) throws IOException {
         Path notADirectory = Files.writeString(tmp.resolve("taken"), "x");

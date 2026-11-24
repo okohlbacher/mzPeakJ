@@ -68,11 +68,12 @@ class NumpressRangeTest {
             + " 4294967295 at its fixed point 100000 (m/z 42949.67295)";
 
     /**
-     * The read-back digest recorded on the base code (da74f60), the same for both outputs and both modes: the metadata
+     * The read-back digest recorded on the base code (da74f60) and re-recorded when R2 (X-8) changed the null fill of
+     * the source the writes start from, the same for both outputs and both modes: the metadata
      * layout does not change the signal, and Numpress chunks carry no null markers.
      */
     private static final String PIC_READ_BACK = "entries=48 absent=none values=536796"
-            + " sha256=d48b2d8b74bde14d859dcee4b43fcda6ffc8155cd7820ff9ff96578f7ed18e5f";
+            + " sha256=c4ded46919dbd15fef2a83e1463099cf17f78cc7e282c5b99420b7b6dcdd32d2";
 
     private static Source source;
 
@@ -176,15 +177,16 @@ class NumpressRangeTest {
 
     /**
      * Each value is refused in both intensity encodings by the plan, before any I/O: the error names the spectrum, the
-     * array, the value, the member it would be written to and the point layout as the alternative, and neither a
-     * directory nor an archive is created.
+     * array, the value, the member it would be written to and the point layout as the alternative (a NaN gets the
+     * planner's NaN error, which every encoding gives, W10), and neither a directory nor an archive is created.
      */
     @ParameterizedTest(name = "{0} {1}")
     @MethodSource("unencodableByEncoding")
     void aValueTheCodecsCannotEncodeIsRefusedBeforeAnyIo(NumpressIntensityEncoding encoding, Unencodable u,
                                                         @TempDir Path tmp) {
         Spectrum s = profile(u.mz(), u.intensity());
-        String message = refusal(u.array(), u.value(), "spectra_data", encoding);
+        String message = Double.isNaN(u.value()) ? nanRefusal(u)
+                : refusal(u.array(), u.value(), "spectra_data", encoding);
 
         assertRefused(s, numpress(encoding), message, tmp);
     }
@@ -370,8 +372,8 @@ class NumpressRangeTest {
     // ---- point layout -------------------------------------------------------------------------------------------
 
     /**
-     * The point layout writes every refused spectrum, and each reads back as written, apart from the NaN m/z: the
-     * reader takes a stored NaN m/z for its null placeholder and interpolates it (design §6.1 B-34).
+     * The point layout writes every refused spectrum but those with a NaN, and each reads back as written; a NaN m/z
+     * or intensity it refuses too, before anything is written (W10).
      */
     @Test
     void thePointLayoutWritesTheRefusedSpectra(@TempDir Path tmp) {
@@ -380,19 +382,16 @@ class NumpressRangeTest {
         cases.add(new Unencodable("PIC count 2^31", MZ, new double[] {3.0, ABOVE_PIC}, "intensity", ABOVE_PIC));
         for (int i = 0; i < cases.size(); i++) {
             Unencodable u = cases.get(i);
-            Spectrum back = readBack(write(tmp.resolve(i + ".mzpeak"), profile(u.mz(), u.intensity()),
-                    Options.defaults()));
+            if (Double.isNaN(u.value())) {
+                assertRefused(profile(u.mz(), u.intensity()), Options.defaults(), nanRefusal(u),
+                        tmp.resolve("nan-" + i));
+                continue;
+            }
+            Path out = write(tmp.resolve(i + ".mzpeak"), profile(u.mz(), u.intensity()), Options.defaults());
+            Spectrum back = readBack(out);
             assertThat(Arrays.equals(back.intensity(), u.intensity())).as("intensity of %s: %s", u,
                     Arrays.toString(back.intensity())).isTrue();
-            if (u.name().equals("m/z NaN")) {
-                assertThat(back.mz()).hasSize(3);
-                assertThat(back.mz()[0]).isEqualTo(100.0);
-                assertThat(back.mz()[1]).as("interpolated m/z").isEqualTo(100.25);
-                assertThat(back.mz()[2]).isEqualTo(100.5);
-            } else {
-                assertThat(Arrays.equals(back.mz(), u.mz())).as("m/z of %s: %s", u, Arrays.toString(back.mz()))
-                        .isTrue();
-            }
+            assertThat(Arrays.equals(back.mz(), u.mz())).as("m/z of %s: %s", u, Arrays.toString(back.mz())).isTrue();
         }
     }
 
@@ -424,6 +423,18 @@ class NumpressRangeTest {
                 : "Numpress SLOF, which takes only finite intensities >= 0";
         return "spectrum 3: " + array + " " + value + " in " + member + " cannot be encoded with " + codec
                 + "; use SignalEncoding.POINT";
+    }
+
+    /** The planner's error for the NaN of {@code u}, which it refuses in every encoding (W10). */
+    private static String nanRefusal(Unencodable u) {
+        double[] values = u.array().equals("m/z") ? u.mz() : u.intensity();
+        int at = 0;
+        while (!Double.isNaN(values[at])) {
+            at++;
+        }
+        return "spectrum 3: the " + u.array() + " at position " + at + " is NaN; mzPeak writes no NaN m/z, time,"
+                + " wavelength or intensity, since a Parquet page holding a NaN gets no column index (conformance.md"
+                + " requires a page index for every column)";
     }
 
     /** The error for the m/z at {@code at} of {@code mz}, too far from its extrapolation, in {@code member}. */

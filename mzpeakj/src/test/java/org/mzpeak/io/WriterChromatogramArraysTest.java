@@ -66,6 +66,7 @@ class WriterChromatogramArraysTest {
     private static final String INT64 = "MS:1000522";
     private static final String FLOAT64 = "MS:1000523";
     private static final String PRIMARY = "primary";
+    private static final String SECONDARY = "secondary";
     private static final String TIC_TYPE = "MS:1000235";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -116,7 +117,7 @@ class WriterChromatogramArraysTest {
      * Current has_uv read, written as an archive in either metadata layout and read again: the TIC keeps its
      * intensities in MS:1000131 and its {@code ms level} array, the DAD chromatogram its absorbances in UO:0000269 and
      * no {@code ms level}. The MS:1000131 column is {@code intensity}, with buffer priority primary; the absorbance
-     * column is {@code intensity_UO_0000269}, without buffer priority, as the reference writes has_uv's.
+     * column is {@code intensity_UO_0000269}, secondary (W6, D13-25).
      */
     @ParameterizedTest
     @EnumSource(MetadataLayout.class)
@@ -148,7 +149,7 @@ class WriterChromatogramArraysTest {
                         tuple("chromatogram_index", INDEX_ARRAY, null, PRIMARY),
                         tuple("time", TIME, MINUTE, PRIMARY),
                         tuple("intensity", INTENSITY, COUNTS, PRIMARY),
-                        tuple("intensity_UO_0000269", INTENSITY, ABSORBANCE, null),
+                        tuple("intensity_UO_0000269", INTENSITY, ABSORBANCE, SECONDARY),
                         tuple("ms_level", NON_STANDARD, DIMENSIONLESS, PRIMARY));
     }
 
@@ -269,14 +270,14 @@ class WriterChromatogramArraysTest {
 
     /**
      * Seven chromatograms in six distinct units, null included: the MS:1000131 column is {@code intensity}, every
-     * other unit's column {@code intensity_} and the unit with each character other than an ASCII letter, digit or
-     * underscore as {@code _}, the null unit's {@code intensity_unitless}, made unique with {@code _2}; the columns
-     * follow the primary one in the order the units first occur. Each chromatogram reads back with its own unit and
-     * values.
+     * other unit's column {@code intensity_} and the unit with its colon as {@code _}, the null unit's
+     * {@code intensity_unitless}, made unique with {@code _2} ({@code A:b_c} and {@code A_b:c}, of two CVs the cv list
+     * gives); the columns follow the primary one in the order the units first occur. Each chromatogram reads back
+     * with its own unit and values. A unit must be a CURIE (array_index.json).
      */
     @Test
     void eachDistinctUnitGetsAnIntensityColumnOfItsOwn(@TempDir Path tmp) {
-        List<String> units = Arrays.asList(ABSORBANCE, null, COUNTS, "UO_0000269", "unitless", null, "a b.c");
+        List<String> units = Arrays.asList(ABSORBANCE, null, COUNTS, "A:b_c", "A_b:c", null, "MS:1000132");
         List<Chromatogram> chromatograms = new ArrayList<>();
         for (int i = 0; i < units.size(); i++) {
             chromatograms.add(new Chromatogram(i, "C" + i, TIC_TYPE, new double[] {1.0, 2.0},
@@ -284,17 +285,21 @@ class WriterChromatogramArraysTest {
         }
         Path out = tmp.resolve("units.mzpeak");
 
-        MzPeakWriter.writeDirectory(out, List.of(), chromatograms);
+        MzPeakWriter.writeDirectory(out, List.of(), chromatograms, List.of(), List.of(),
+                org.mzpeak.model.meta.FileMetadata.EMPTY, Options.defaults().withCvList(List.of(
+                        new MzPeakManifest.CvEntry("A", "A ontology", "https://example.org/A/1/A.obo", "1"),
+                        new MzPeakManifest.CvEntry("A_b", "A_b ontology", "https://example.org/A_b/1/A_b.obo",
+                                "1"))));
 
         assertThat(chromatogramIndex(out).entries()).filteredOn(e -> INTENSITY.equals(e.arrayType()))
                 .extracting(Entry::field, Entry::unit, Entry::bufferPriority, Entry::dataType, Entry::format)
                 .containsExactly(
                         tuple("intensity", COUNTS, PRIMARY, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_UO_0000269", ABSORBANCE, null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_unitless", null, null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_UO_0000269_2", "UO_0000269", null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_unitless_2", "unitless", null, FLOAT64, BufferFormat.POINT),
-                        tuple("intensity_a_b_c", "a b.c", null, FLOAT64, BufferFormat.POINT));
+                        tuple("intensity_UO_0000269", ABSORBANCE, SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_unitless", null, SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_A_b_c", "A:b_c", SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_A_b_c_2", "A_b:c", SECONDARY, FLOAT64, BufferFormat.POINT),
+                        tuple("intensity_MS_1000132", "MS:1000132", SECONDARY, FLOAT64, BufferFormat.POINT));
         List<Chromatogram> back = ForwardBackwardCorpusTest.readSource(out).chromatograms;
         assertThat(back).extracting(Chromatogram::intensityUnit).containsExactlyElementsOf(units);
         for (int i = 0; i < units.size(); i++) {
@@ -318,7 +323,7 @@ class WriterChromatogramArraysTest {
 
         assertThat(chromatogramIndex(out).entries()).filteredOn(e -> INTENSITY.equals(e.arrayType()))
                 .extracting(Entry::field, Entry::unit, Entry::bufferPriority)
-                .containsExactly(tuple("intensity", ABSORBANCE, PRIMARY), tuple("intensity_unitless", null, null));
+                .containsExactly(tuple("intensity", ABSORBANCE, PRIMARY), tuple("intensity_unitless", null, SECONDARY));
         List<Chromatogram> back = ForwardBackwardCorpusTest.readSource(out).chromatograms;
         assertThat(back).extracting(Chromatogram::id, Chromatogram::intensityUnit)
                 .containsExactly(tuple("absorbance", ABSORBANCE), tuple("unitless", null));

@@ -28,9 +28,16 @@ final class PrecursorRowDecoder {
     private static final String F_PRECURSOR_ID = "precursor_id";
     private static final String F_ACTIVATION = "activation";
     private static final String F_ISOLATION = "isolation_window";
+    /** The precursor's MS level: a column mapped to MS:1000511, else {@code ms_level}. */
+    private static final String MS_LEVEL = "MS:1000511";
+    private static final String F_MS_LEVEL = "ms_level";
     private static final String ISO_TARGET = "MS:1000827";
     private static final String ISO_LOWER = "MS:1000828";
     private static final String ISO_UPPER = "MS:1000829";
+    // the spec names of the isolation-window columns, for the products facets, which have no ColumnTable rows
+    private static final String F_ISO_TARGET = "isolation_window_target";
+    private static final String F_ISO_LOWER = "isolation_window_lower_offset";
+    private static final String F_ISO_UPPER = "isolation_window_upper_offset";
     private static final String DISSOCIATION_METHOD = "MS:1000044";
     private static final String COLLISION_ENERGY = "MS:1000045";
 
@@ -45,24 +52,27 @@ final class PrecursorRowDecoder {
         Activation activation = activationRow == null ? Activation.EMPTY : activation(activationRow);
         ColumnResolver columns = precursor.columns();
         Group g = precursor.group();
-        dropLeftovers(precursor, precursor, "precursor", Set.of(F_PRECURSOR_ID));
+        String msLevel = columns.resolve(MS_LEVEL, F_MS_LEVEL);
+        dropLeftovers(precursor, precursor, "precursor", consumed(F_PRECURSOR_ID, msLevel));
         return new PrecursorPart(
                 columns.longValue(g, F_PRECURSOR_INDEX),
                 columns.stringValue(g, F_PRECURSOR_ID),
                 window,
-                activation);
+                activation,
+                columns.intValue(g, msLevel));
     }
 
     /**
-     * The isolation window: its target and offsets (MS:1000827, MS:1000828, MS:1000829), and as its parameters the
-     * scope's {@code parameters} list followed by its leftovers ({@link ColumnResolver#leftovers}, split layout only).
+     * The isolation window: its target and offsets (MS:1000827, MS:1000828, MS:1000829, else the columns of their
+     * spec names), and as its parameters the scope's {@code parameters} list followed by its leftovers
+     * ({@link ColumnResolver#leftovers}, split layout only). Precursor and product rows share it.
      */
-    private static IsolationWindow isolationWindow(FacetRow iso) {
+    static IsolationWindow isolationWindow(FacetRow iso) {
         ColumnResolver columns = iso.columns();
         Group g = iso.group();
-        String target = columns.resolve(ISO_TARGET);
-        String lower = columns.resolve(ISO_LOWER);
-        String upper = columns.resolve(ISO_UPPER);
+        String target = columns.resolve(ISO_TARGET, F_ISO_TARGET);
+        String lower = columns.resolve(ISO_LOWER, F_ISO_LOWER);
+        String upper = columns.resolve(ISO_UPPER, F_ISO_UPPER);
         List<Param> params = new ArrayList<>(columns.params(g));
         params.addAll(columns.leftovers(g, consumed(target, lower, upper)));
         return new IsolationWindow(
@@ -136,6 +146,6 @@ final class PrecursorRowDecoder {
 
     /** One precursor record without its selected ions. */
     record PrecursorPart(Long precursorIndex, String precursorId, IsolationWindow isolationWindow,
-                         Activation activation) {
+                         Activation activation, Integer msLevel) {
     }
 }

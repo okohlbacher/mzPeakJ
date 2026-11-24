@@ -19,6 +19,7 @@ import org.mzpeak.model.Precursor;
 import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.SelectedIon;
 import org.mzpeak.model.Spectrum;
+import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 
 import java.io.IOException;
@@ -27,6 +28,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -113,9 +116,12 @@ class UpstreamInteropTest {
             "}))",
             "");
 
-    /** D-12b (V-22): the arrays of chromatogram 0 of one dataset, as the Python reader reads them. */
+    /**
+     * D-12b (V-22), W3: the arrays of chromatogram 0 of one dataset, as the Python reader reads them, and the units
+     * of the time columns of its chromatogram array index.
+     */
     private static final String CHROMATOGRAM_ARRAYS_PROBE = String.join("\n",
-            "\"\"\"Chromatogram 0's arrays (mzPeakJ UpstreamInteropTest, V-22).\"\"\"",
+            "\"\"\"Chromatogram 0's arrays and time unit (mzPeakJ UpstreamInteropTest, V-22, W3).\"\"\"",
             "import json",
             "import sys",
             "",
@@ -124,7 +130,10 @@ class UpstreamInteropTest {
             "",
             "reader = MzPeakFile(sys.argv[1])",
             "data = reader.chromatogram_data[0]",
-            "print(json.dumps({str(k): [float(x) for x in v] for k, v in data.items() if isinstance(v, np.ndarray)}))",
+            "out = {str(k): [float(x) for x in v] for k, v in data.items() if isinstance(v, np.ndarray)}",
+            "index = reader.chromatogram_data.array_index.values()",
+            "out[\"time unit\"] = [e.unit for e in index if e.array_type == \"MS:1000595\"]",
+            "print(json.dumps(out))",
             "");
 
     /** V-24: the ion mobility columns of the scans and selected-ion frames, in row order, a null cell as null. */
@@ -297,11 +306,13 @@ class UpstreamInteropTest {
     }
 
     /**
-     * D-12b (V-22): small.unpacked with its chromatogram in seconds, written split as an archive: the Python reader
-     * reads the stored times, the seconds as written, and the archive passes {@code check_archive_integrity()}.
+     * W3 (D13-1): small.unpacked with its chromatogram in seconds, written split as an archive: the writer stores the
+     * times in minutes, the Python reader reads them, the input times divided by 60, from a time column in
+     * UO:0000031, and the archive passes {@code check_archive_integrity()}. Until W3 the times were written, and
+     * read, in seconds (D-12b, V-22).
      */
     @Test
-    void thePythonReaderReadsTheStoredTimesOfAChromatogramInSeconds() throws IOException {
+    void thePythonReaderReadsAChromatogramWrittenFromSeconds() throws IOException {
         Path dir = Files.createDirectories(tmp.resolve("seconds"));
         ForwardBackwardCorpusTest.Source small = ForwardBackwardCorpusTest.readSource(
                 Fixtures.current("small.unpacked.mzpeak"));
@@ -315,7 +326,9 @@ class UpstreamInteropTest {
         Result probed = python(script, archive, "seconds.json");
         assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
         JsonNode arrays = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
-        assertThat(doubles(arrays.path("time array"))).as("%s", arrays).isEqualTo(seconds.time());
+        assertThat(arrays.path("time unit").toString()).as("%s", arrays).isEqualTo("[\"UO:0000031\"]");
+        assertThat(doubles(arrays.path("time array"))).as("%s", arrays)
+                .isEqualTo(Arrays.stream(seconds.time()).map(t -> t / 60).toArray());
         assertThat(doubles(arrays.path("intensity array"))).as("%s", arrays).isEqualTo(seconds.intensity());
 
         Result counted = python(probe, archive, "seconds-counts.json");
@@ -323,6 +336,180 @@ class UpstreamInteropTest {
         JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
         assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
         assertThat(counts.path("chromatograms").asInt()).isEqualTo(1);
+    }
+
+    /**
+     * X-25 (R6): small.unpacked written split as an archive with the data processing reference
+     * {@code mzpeak_conversion1} on spectrum 3: the Python reader opens it, with all 48 spectra, and its spectra table
+     * holds the reference in the {@code data_processing_id} column for spectrum 3 only.
+     */
+    @Test
+    void thePythonReaderReadsASpectrumDataProcessingReference() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("data-processing"));
+        ForwardBackwardCorpusTest.Source small = ForwardBackwardCorpusTest.readSource(
+                Fixtures.current("small.unpacked.mzpeak"));
+        List<Spectrum> spectra = new ArrayList<>(small.spectra);
+        Spectrum s = spectra.get(3);
+        SpectrumDescription d = s.description();
+        spectra.set(3, new Spectrum(new SpectrumDescription(d.index(), d.id(), d.msLevel(), d.retentionTime(),
+                d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), d.scans(),
+                d.precursors(), d.parameters(), "mzpeak_conversion1"), s.mz(), s.intensity(), s.peaks(), s.arrays(),
+                s.peakArrays()));
+        Path archive = dir.resolve("data-processing.mzpeak");
+        MzPeakWriter.writeArchive(archive, spectra, small.chromatograms, small.wavelengthSpectra,
+                small.scanSettings, small.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("data_processing.py"), String.join("\n",
+                "import json",
+                "import sys",
+                "",
+                "import pandas as pd",
+                "from mzpeak import MzPeakFile",
+                "",
+                "reader = MzPeakFile(sys.argv[1])",
+                "column = reader.spectra['data_processing_id']",
+                "print(json.dumps({",
+                "    \"spectra\": len(reader),",
+                "    \"data_processing_id\": [None if pd.isna(v) else str(v) for v in column],",
+                "}))",
+                ""), StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "data-processing.json");
+
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(read.path("spectra").asInt()).isEqualTo(48);
+        List<String> expected = new ArrayList<>(Collections.nCopies(48, null));
+        expected.set(3, "mzpeak_conversion1");
+        assertThat(nullableStrings(read.path("data_processing_id"))).isEqualTo(expected);
+    }
+
+    /**
+     * R5 (D13-20): the two-unit copy of current small.unpacked ({@link SpectrumIntensityUnitTest}) written split as an
+     * archive, its spectra_data with the intensity columns {@code intensity} (MS:1000131, primary) and
+     * {@code intensity_MS_1000132} (secondary): the Python reader reads both entries, spectrum 1 with its intensities
+     * [25, 100] from the percent column, spectra 0 and 7 as mzPeakJ wrote them, and the archive passes
+     * {@code check_archive_integrity()}.
+     */
+    @Test
+    void thePythonReaderReadsBothSpectrumIntensityUnits() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("intensity-units"));
+        Path copy = MemberRewrite.copy(Fixtures.current("small.unpacked.mzpeak"), Files.createDirectories(
+                dir.resolve("source")));
+        double[] mz = SpectrumIntensityUnitTest.rewritePoint(copy.resolve("spectra_data.parquet"));
+        ForwardBackwardCorpusTest.Source source = ForwardBackwardCorpusTest.readSource(copy);
+        Path archive = dir.resolve("intensity-units.mzpeak");
+        MzPeakWriter.writeArchive(archive, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("intensity_units.py"), String.join("\n",
+                "import json",
+                "import sys",
+                "",
+                "import numpy as np",
+                "from mzpeak import MzPeakFile",
+                "",
+                "reader = MzPeakFile(sys.argv[1])",
+                "out = {}",
+                "for i in (0, 1, 7):",
+                "    data = reader.spectrum_data[i]",
+                "    out[str(i)] = {str(k): [float(x) for x in v] for k, v in data.items()",
+                "                   if isinstance(v, np.ndarray)}",
+                "index = reader.spectrum_data.array_index.values()",
+                "out['intensity'] = [[str(e.path), str(e.unit), str(e.buffer_priority)] for e in index",
+                "                    if e.array_type == 'MS:1000515']",
+                "print(json.dumps(out))",
+                ""), StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "intensity-units.json");
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        assertThat(read.path("intensity").toString()).isEqualTo("[[\"point.intensity\",\"MS:1000131\","
+                + "\"BufferPriority.Primary\"],[\"point.intensity_MS_1000132\",\"MS:1000132\","
+                + "\"BufferPriority.Secondary\"]]");
+        for (int i : new int[] {0, 1, 7}) {
+            Spectrum s = source.spectra.get(i);
+            JsonNode arrays = read.path(String.valueOf(i));
+            assertThat(doubles(arrays.path("m/z array"))).as("spectrum %d", i).isEqualTo(s.mz());
+            assertThat(doubles(arrays.path("intensity array"))).as("spectrum %d", i).isEqualTo(s.intensity());
+        }
+        assertThat(source.spectra.get(1).mz()).isEqualTo(mz);
+        assertThat(source.spectra.get(1).intensity()).containsExactly(25.0, 100.0);
+
+        Result counted = python(probe, archive, "intensity-units-counts.json");
+        assertThat(counted.exit()).as("probe on %s: %s", archive, counted).isZero();
+        JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
+        assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
+        assertThat(counts.path("spectra").asInt()).isEqualTo(48);
+    }
+
+    /**
+     * R1 (X-32): small.unpacked with spectrum 0 given the plain and the zlib auxiliary array of
+     * {@link AuxiliaryArrayWriteTest}, and spectrum 1 the plain one, written split as an archive. The Python reader
+     * decodes the plain array to [1, 2, 3] and reads spectrum 1 with it under its name; the zlib array, whose
+     * {@code data} holds the zlib bytes as auxiliary-arrays.md stores them, it fails to decode: it hands the list of
+     * bytes pyarrow gives it to {@code zlib.decompress} (reader.py:196), so its read of spectrum 0 fails (a known limit
+     * of the reader, README.md). The archive passes {@code check_archive_integrity()} with its 48 spectra.
+     */
+    @Test
+    void thePythonReaderReadsThePlainAuxiliaryArraysButNotTheZlibOne() throws IOException {
+        Path dir = Files.createDirectories(tmp.resolve("auxiliary"));
+        ForwardBackwardCorpusTest.Source source = AuxiliaryArrayWriteTest.withSpectrumArrays(
+                Fixtures.current("small.unpacked.mzpeak"),
+                List.of(AuxiliaryArrayWriteTest.PLAIN, AuxiliaryArrayWriteTest.ZLIB));
+        source.spectra.set(1, AuxiliaryArrayWriteTest.withArrays(source.spectra.get(1),
+                List.of(AuxiliaryArrayWriteTest.PLAIN)));
+        Path archive = dir.resolve("auxiliary.mzpeak");
+        MzPeakWriter.writeArchive(archive, source.spectra, source.chromatograms, source.wavelengthSpectra,
+                source.scanSettings, source.fileMetadata, MzPeakWriter.Options.defaults());
+        Path script = Files.writeString(tmp.resolve("auxiliary.py"), String.join("\n",
+                "import json",
+                "import sys",
+                "",
+                "from mzpeak import MzPeakFile",
+                "from mzpeak.reader import _AuxiliaryArrayDecoder",
+                "",
+                "def error(e):",
+                "    return type(e).__name__ + ': ' + str(e)",
+                "",
+                "reader = MzPeakFile(sys.argv[1])",
+                "arrays = []",
+                "for item in reader.spectrum_metadata.spectra.loc[0, 'auxiliary_arrays']:",
+                "    try:",
+                "        a = _AuxiliaryArrayDecoder.decode(item)",
+                "        arrays.append({'name': a.name, 'values': [float(x) for x in a.values]})",
+                "    except Exception as e:",
+                "        arrays.append({'error': error(e)})",
+                "spectra = {}",
+                "for i in (0, 1, 2):",
+                "    try:",
+                "        spec = reader[i]",
+                "        spectra[str(i)] = {'signal to noise array': [float(x) for x in spec['signal to noise array']]",
+                "                           } if 'signal to noise array' in spec else {}",
+                "    except Exception as e:",
+                "        spectra[str(i)] = error(e)",
+                "print(json.dumps({'arrays': arrays, 'spectra': spectra}))",
+                ""), StandardCharsets.UTF_8);
+
+        Result probed = python(script, archive, "auxiliary.json");
+
+        assertThat(probed.exit()).as("probe on %s: %s", archive, probed).isZero();
+        JsonNode read = MAPPER.readTree(Files.readString(probed.stdout(), StandardCharsets.UTF_8));
+        JsonNode arrays = read.path("arrays");
+        assertThat(arrays.size()).as("%s", read).isEqualTo(2);
+        assertThat(arrays.get(0).path("name").asText()).as("%s", read).isEqualTo("signal to noise array");
+        assertThat(doubles(arrays.get(0).path("values"))).as("%s", read).containsExactly(1.0, 2.0, 3.0);
+        String zlibError = "TypeError: a bytes-like object is required, not 'list'";
+        assertThat(arrays.get(1).path("error").asText()).as("%s", read).isEqualTo(zlibError);
+        JsonNode spectra = read.path("spectra");
+        assertThat(spectra.path("0").asText()).as("%s", read).isEqualTo(zlibError);
+        assertThat(doubles(spectra.path("1").path("signal to noise array"))).as("%s", read)
+                .containsExactly(1.0, 2.0, 3.0);
+        assertThat(spectra.path("2").size()).as("%s", read).isZero();
+
+        Result counted = python(probe, archive, "auxiliary-counts.json");
+        assertThat(counted.exit()).as("probe on %s: %s", archive, counted).isZero();
+        JsonNode counts = MAPPER.readTree(Files.readString(counted.stdout(), StandardCharsets.UTF_8));
+        assertThat(counts.path("integrity").toString()).isEqualTo("[true,[]]");
+        assertThat(counts.path("spectra").asInt()).isEqualTo(48);
     }
 
     /**

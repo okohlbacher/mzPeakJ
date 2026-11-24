@@ -46,6 +46,9 @@ class WriterDispositionTest {
     private static final String METADATA = "spectra_metadata.parquet";
     private static final String DATA = "spectra_data.parquet";
     private static final String PEAKS = "spectra_peaks.parquet";
+    /** The end of the planner's error for a NaN m/z or intensity (W10). */
+    private static final String NAN = " is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, since a"
+            + " Parquet page holding a NaN gets no column index (conformance.md requires a page index for every column)";
     /** The count columns of the packed spectrum struct. */
     private static final String DATA_POINTS = "MS_1003060_number_of_data_points";
     private static final String NUMBER_OF_PEAKS = "MS_1003059_number_of_peaks";
@@ -216,14 +219,15 @@ class WriterDispositionTest {
 
     /**
      * The peak list matches every row but the one whose m/z is non-finite, which {@link Spectrum} filters out: a peak
-     * copy, but the reader cannot give a stored non-finite m/z back (its null fill, design §8.3, interpolates NaN, and
-     * Numpress linear cannot encode it), so such a spectrum keeps both files: its arrays, non-finite row included, go
-     * to spectra_data and its peak list to spectra_peaks. Re-read, {@code peaks()} equals the source's (m/z and
-     * intensity; {@link CentroidPeak#index()} is the position in the stored peak list), the stored spectra_data rows
-     * are {@code Arrays.equals} to the source, and so are the re-read arrays apart from a NaN m/z.
+     * copy, but the reader would read an infinite m/z row of spectra_peaks as a peak (and Numpress linear cannot encode
+     * it), so such a spectrum keeps both files: its arrays, infinite row included, go to spectra_data and its peak
+     * list to spectra_peaks. Re-read, {@code peaks()} equals the source's (m/z and intensity;
+     * {@link CentroidPeak#index()} is the position in the stored peak list), and the stored spectra_data rows and the
+     * re-read arrays are {@code Arrays.equals} to the source. A NaN m/z is refused (W10,
+     * {@link #aNaNMzIsRefusedInThePointLayout}).
      */
     @ParameterizedTest
-    @ValueSource(doubles = {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    @ValueSource(doubles = {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
     void centroidPeakCopyWithANonFiniteMzRowKeepsBothFiles(double nonFinite, @TempDir Path tmp) {
         double[] mz = {100.0, nonFinite, 300.0};
         double[] intensity = {1.0, 2.0, 3.0};
@@ -237,13 +241,7 @@ class WriterDispositionTest {
             assertThat(mzs(back.peaks())).containsExactly(mzs(s.peaks()));
             assertThat(intensities(back.peaks())).containsExactly(intensities(s.peaks()));
             assertThat(back.intensity()).isEqualTo(intensity);
-            if (Double.isNaN(nonFinite)) {
-                assertThat(back.mz()).hasSize(3);
-                assertThat(back.mz()[0]).isEqualTo(100.0);
-                assertThat(back.mz()[2]).isEqualTo(300.0);
-            } else {
-                assertThat(Arrays.equals(back.mz(), mz)).as("re-read m/z %s", Arrays.toString(back.mz())).isTrue();
-            }
+            assertThat(Arrays.equals(back.mz(), mz)).as("re-read m/z %s", Arrays.toString(back.mz())).isTrue();
         }
         assertThat(WritePlanner.isPeakCopy(s)).isTrue();
         assertThat(WritePlanner.disposition(s)).isEqualTo(new SpectrumEntry(s, 0, true, true, false));
@@ -261,7 +259,7 @@ class WriterDispositionTest {
      * reason: in spectra_peaks the reader would turn that row into a peak.
      */
     @ParameterizedTest
-    @ValueSource(doubles = {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    @ValueSource(doubles = {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
     void arrayOnlyCentroidSpectrumWithANonFiniteMzRowStaysInSpectraData(double nonFinite, @TempDir Path tmp) {
         double[] mz = {100.0, nonFinite, 300.0};
         double[] intensity = {1.0, 2.0, 3.0};
@@ -279,6 +277,23 @@ class WriterDispositionTest {
         double[][] data = storedRows(out.resolve(DATA), 0);
         assertThat(Arrays.equals(data[0], mz)).as("stored m/z %s", Arrays.toString(data[0])).isTrue();
         assertThat(Arrays.equals(data[1], intensity)).as("stored intensity %s", Arrays.toString(data[1])).isTrue();
+    }
+
+    /**
+     * A CENTROID spectrum with a NaN m/z row, as a peak copy and array-only, is refused by the point layout before
+     * anything is written (W10): a page holding the NaN would get no column index.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void aNaNMzIsRefusedInThePointLayout(boolean peakCopy, @TempDir Path tmp) {
+        double[] mz = {100.0, Double.NaN, 300.0};
+        double[] intensity = {1.0, 2.0, 3.0};
+        Spectrum s = new Spectrum(description(0, SignalContinuity.CENTROID), mz, intensity,
+                peakCopy ? copyOf(mz, intensity) : List.of());
+
+        assertThatThrownBy(() -> write(tmp, s)).isExactlyInstanceOf(MzPeakException.class)
+                .hasMessage("spectrum 0: the m/z at position 1" + NAN);
+        assertThat(tmp.resolve("out.mzpeak")).doesNotExist();
     }
 
     /**
@@ -350,8 +365,8 @@ class WriterDispositionTest {
      * A CENTROID spectrum with a non-finite m/z row, as a peak copy and array-only, in Numpress: its arrays go to
      * spectra_data and its peak list, if any, to spectra_peaks, but Numpress linear cannot encode the non-finite m/z,
      * so the write is refused before anything is written (MZ-23, design Q27; on the base code the m/z was written as
-     * another value). The point layout writes such a spectrum
-     * ({@link #centroidPeakCopyWithANonFiniteMzRowKeepsBothFiles}).
+     * another value). The point layout writes such a spectrum with an infinite m/z
+     * ({@link #centroidPeakCopyWithANonFiniteMzRowKeepsBothFiles}); a NaN m/z every encoding refuses (W10).
      */
     @ParameterizedTest(name = "{0} {1} peak copy={2}")
     @MethodSource("numpressNonFiniteMzRows")
@@ -365,7 +380,8 @@ class WriterDispositionTest {
 
         assertThatThrownBy(() -> writeNumpress(tmp, s, encoding))
                 .isExactlyInstanceOf(MzPeakException.class)
-                .hasMessage("spectrum 0: m/z " + nonFinite + " in spectra_data cannot be encoded with Numpress linear,"
+                .hasMessage(Double.isNaN(nonFinite) ? "spectrum 0: the m/z at position 1" + NAN
+                        : "spectrum 0: m/z " + nonFinite + " in spectra_data cannot be encoded with Numpress linear,"
                         + " which takes only finite m/z >= 0 that round to at most 4294967295 at its fixed point 100000"
                         + " (m/z 42949.67295); use SignalEncoding.POINT");
         assertThat(tmp.resolve("out.mzpeak")).doesNotExist();
@@ -504,8 +520,10 @@ class WriterDispositionTest {
         return peaks;
     }
 
+    /** Spectrum {@code index} of {@code source}, without references, for a write without file metadata (W12). */
     private static Spectrum spectrum(Source source, long index) {
-        return source.spectra.stream().filter(s -> s.index() == index).findFirst().orElseThrow();
+        return Fixtures.withoutReferences(List.of(source.spectra.stream().filter(s -> s.index() == index)
+                .findFirst().orElseThrow())).get(0);
     }
 
     private static Path write(Path tmp, Spectrum spectrum) {

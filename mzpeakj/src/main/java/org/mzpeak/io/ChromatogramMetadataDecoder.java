@@ -3,9 +3,11 @@ package org.mzpeak.io;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.io.InputFile;
 import org.mzpeak.io.MzPeakManifest.Entry;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.Param;
 import org.mzpeak.model.Polarity;
 import org.mzpeak.model.Precursor;
+import org.mzpeak.model.Product;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -26,7 +28,8 @@ import java.util.function.Consumer;
  * the members the manifest lists for them. Their rows are decoded as those of spectra, by
  * {@link PrecursorRowDecoder} and {@link SelectedIonRowDecoder}, and joined by {@link PrecursorJoin} on the key
  * {@code (source_index, precursor_index)}. A chromatogram's {@code precursor_index} names a chromatogram (spec HEAD
- * chromatograms.md:75-80); it is read as stored.
+ * chromatograms.md:75-80); it is read as stored. Its products come from the products facet, decoded by
+ * {@link ProductRowDecoder}; a pin-era packed member has none.
  */
 final class ChromatogramMetadataDecoder {
 
@@ -37,9 +40,9 @@ final class ChromatogramMetadataDecoder {
     private static final String POLARITY = "MS:1000465";
     /** Number of data points: the length of the data arrays, so not a Param. */
     private static final String N_POINTS = "MS:1003060";
-    /** The data processing reference as the spec spells it. */
+    /** The data processing reference as mzPeakJ 0.12.0 and earlier wrote it. */
     private static final String F_DATA_PROCESSING_REF = "data_processing_ref";
-    /** The data processing reference as the Rust writer spells it. */
+    /** The data processing reference as the spec, the Rust writer and mzPeakJ since 0.13.0 spell it. */
     private static final String F_DATA_PROCESSING_ID = "data_processing_id";
 
     private ChromatogramMetadataDecoder() {
@@ -58,20 +61,25 @@ final class ChromatogramMetadataDecoder {
      * @param parameters        its Params, as {@link #decode} reads them
      * @param precursors        its precursors in file order, as {@link PrecursorJoin} joins the precursor and
      *                          selected-ion rows whose {@code source_index} is its index; empty when there are none
+     * @param products          its products in {@code product_index} order, as {@link ProductRowDecoder} decodes the
+     *                          product rows whose {@code source_index} is its index; empty when there are none
+     * @param auxiliaryArrays   its auxiliary arrays, as {@link AuxiliaryArrayDecoder} reads them; empty when there are
+     *                          none
      */
     record Header(long index, String id, String typeCurie, Polarity polarity, String dataProcessingRef,
-                  List<Param> parameters, List<Precursor> precursors) {
+                  List<Param> parameters, List<Precursor> precursors, List<Product> products,
+                  List<AuxiliaryArray> auxiliaryArrays) {
     }
 
     /**
      * The headers of the member that {@code manifest} lists as {@code entry} in {@code source}, as
      * {@link #decode(InputFile, Entry)} reads them, with, in the split layout, the precursors of the precursor and
-     * selected-ion members the manifest lists, read from {@code source}. A facet member the manifest does not list
+     * selected-ion members and the products of the products member the manifest lists, read from {@code source}. A facet member the manifest does not list
      * contributes no rows.
      *
      * @throws MzPeakException as {@link #decode(InputFile, Entry)}, and if a facet member has rows but neither
      *                         metadata shape, or a split row's {@code source_index} is null, or a key has the high
-     *                         bit set
+     *                         bit set, or a product row has no {@code product_index}
      */
     static List<Header> decode(MzPeakSource source, MzPeakManifest manifest, Entry entry) {
         return decode(source.inputFile(entry.name()), entry, source, manifest);
@@ -91,7 +99,7 @@ final class ChromatogramMetadataDecoder {
      * <p>The precursors are those of the member's own {@code precursor} and {@code selected_ion} structs in the packed
      * layout, each struct read when the schema has it. A split member keeps its facets in members of their own,
      * which only a manifest names ({@link #decode(MzPeakSource, MzPeakManifest, Entry)}), so here its chromatograms
-     * have no precursors.
+     * have no precursors and no products.
      *
      * @throws MzPeakException if the member has rows but neither metadata shape, or a split row's index is null, or
      *                         an index or {@code source_index} has the high bit set
@@ -120,7 +128,8 @@ final class ChromatogramMetadataDecoder {
                 dataProcessingRef = columns.stringValue(g, columns.resolveName(F_DATA_PROCESSING_ID));
             }
             byIndex.put(index, new Header(index, id, type, polarity, dataProcessingRef,
-                    parameters(columns.params(g), columns.leftovers(g, consumed)), List.of()));
+                    parameters(columns.params(g), columns.leftovers(g, consumed)), List.of(), List.of(),
+                    AuxiliaryArrayDecoder.decode(g, columns.member(), "chromatogram " + index)));
         });
         // The member was read, so it has a shape: packed, split, or empty without rows.
         ParquetFooter footer = ParquetFooter.read(file);
@@ -128,7 +137,8 @@ final class ChromatogramMetadataDecoder {
                 FacetRow.keyColumn(footer.schema(), Facet.CHROMATOGRAM), entry.name()) == MetadataShape.PACKED;
         // facet -> source_index -> the facet's rows of that chromatogram, in file order
         Map<Facet, Map<Long, List<FacetRow>>> facetRows = new EnumMap<>(Facet.class);
-        for (Facet facet : List.of(Facet.CHROMATOGRAM_PRECURSOR, Facet.CHROMATOGRAM_SELECTED_ION)) {
+        for (Facet facet : List.of(Facet.CHROMATOGRAM_PRECURSOR, Facet.CHROMATOGRAM_SELECTED_ION,
+                Facet.CHROMATOGRAM_PRODUCT)) {
             Map<Long, List<FacetRow>> rows = new HashMap<>();
             facetRows.put(facet, rows);
             Consumer<FacetRow> bucket = row -> rows.computeIfAbsent(row.key(), k -> new ArrayList<>()).add(row);
@@ -147,7 +157,9 @@ final class ChromatogramMetadataDecoder {
         for (Header h : byIndex.values()) {
             out.add(new Header(h.index(), h.id(), h.typeCurie(), h.polarity(), h.dataProcessingRef(), h.parameters(),
                     PrecursorJoin.join(facetRows.get(Facet.CHROMATOGRAM_PRECURSOR).get(h.index()),
-                            facetRows.get(Facet.CHROMATOGRAM_SELECTED_ION).get(h.index()))));
+                            facetRows.get(Facet.CHROMATOGRAM_SELECTED_ION).get(h.index())),
+                    ProductRowDecoder.decode(facetRows.get(Facet.CHROMATOGRAM_PRODUCT).get(h.index())),
+                    h.auxiliaryArrays()));
         }
         return List.copyOf(out);
     }

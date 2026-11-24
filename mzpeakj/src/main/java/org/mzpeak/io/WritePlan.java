@@ -1,6 +1,7 @@
 package org.mzpeak.io;
 
 import org.mzpeak.io.MzPeakWriter.Options;
+import org.mzpeak.model.AuxiliaryArray;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Precursor;
@@ -9,15 +10,17 @@ import org.mzpeak.model.SpectrumDescription;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.ScanSettings;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Everything {@link DatasetWriter} writes, decided by {@link WritePlanner} before any I/O: the entities in the order
  * they are written and the index each is written with, the precursors as written, the signal files each spectrum goes
- * to, the order of each entity's rows, the extra columns of the spectrum signal files, the intensity and extra columns
- * of chromatograms_data, which members exist, the footer key-values of spectra_metadata and the manifest, and the
+ * to, the order of each entity's rows, the intensity and extra columns of the spectrum signal files and of
+ * chromatograms_data, which members exist, the footer key-values of spectra_metadata and the manifest, and the
  * report that collects the write's warnings. The entities of each kind are in the order of the caller's indices and
  * are written as 0..n-1 in that order (design §11.5, WR-8). spectra_peaks is written when a spectrum's rows go there.
  *
@@ -26,9 +29,15 @@ import java.util.Objects;
  * @param spectrumSignals    the signal of each of {@code spectra}, in the same order, which {@link DatasetWriter}
  *                           appends to spectra_data and spectra_peaks; empty in the plan of a
  *                           {@link MzPeakWriter.Session}, which appends each signal as the spectrum is added
- * @param chromatograms      the chromatograms in index order
+ * @param chromatograms      the chromatograms in index order, with their times in minutes
  * @param wavelengthSpectra  the wavelength spectra in index order
  * @param writesSpectraData  whether spectra_data is written
+ * @param spectrumIntensities
+ *                           the intensity columns that spectra_data and spectra_peaks both get, one for each intensity
+ *                           unit a spectrum may write ({@link SpectrumSignal#intensityUnit}): in a batch plan each unit
+ *                           of the written spectra, in a session's plan each unit it was opened with
+ *                           ({@link Options#spectrumIntensityUnits()}); the primary {@code intensity} column first,
+ *                           as for {@code chromatogramIntensities}
  * @param spectrumExtras     the extra columns that spectra_data and spectra_peaks both get, one for each key of the
  *                           written spectra's {@link Spectrum#arrays()} and {@link Spectrum#peakArrays()}, in
  *                           first-seen order: index order, and in a spectrum the arrays' map order, then the peak
@@ -41,10 +50,6 @@ import java.util.Objects;
  * @param chromatogramExtras the extra columns of chromatograms_data, one for each key of the chromatograms'
  *                           {@link Chromatogram#arrays()}, in first-seen order: index order, and in a chromatogram the
  *                           map's order
- * @param chromatogramTimeUnit
- *                           the unit chromatograms_data declares for its time column: the {@link
- *                           Chromatogram#timeUnit()} every chromatogram shares ({@link WritePlanner} refuses
- *                           chromatograms of different units), minute (UO:0000031) without chromatograms
  * @param scanSettings       the scan settings for the manifest, possibly {@code null}: the caller's, in the split
  *                           layout with an id given to each one without
  * @param footer             the file metadata serialized once, for the spectra_metadata footer and the manifest
@@ -52,10 +57,10 @@ import java.util.Objects;
  */
 record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSignal> spectrumSignals,
                  List<Entry<Chromatogram>> chromatograms, List<Entry<WavelengthSpectrum>> wavelengthSpectra,
-                 boolean writesSpectraData, List<ExtraColumn> spectrumExtras,
-                 List<IntensityColumn> chromatogramIntensities, List<ExtraColumn> chromatogramExtras,
-                 String chromatogramTimeUnit, List<ScanSettings> scanSettings, Map<String, String> footer,
-                 WriteReport report) {
+                 boolean writesSpectraData, List<IntensityColumn> spectrumIntensities,
+                 List<ExtraColumn> spectrumExtras, List<IntensityColumn> chromatogramIntensities,
+                 List<ExtraColumn> chromatogramExtras,
+                 List<ScanSettings> scanSettings, Map<String, String> footer, WriteReport report) {
 
     /**
      * An extra column of the spectrum signal files or of chromatograms_data and its array-index entry (design §11.7,
@@ -75,14 +80,16 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
     /**
      * An intensity column of a signal file and its array-index entry (design §11.7, WR-11): the 64-bit float
      * intensities (MS:1000515) in {@code unit}. chromatograms_data has one for each distinct
-     * {@link Chromatogram#intensityUnit()}; every other signal file has one, {@code intensity}.
+     * {@link Chromatogram#intensityUnit()}, spectra_data and spectra_peaks one for each spectrum intensity unit
+     * (D13-20); wavelength_spectra_data has one, {@code intensity}. The first column's entry has buffer priority
+     * primary, the others secondary ({@link ArrayIndex#builder}). In the Numpress chunk layout a spectrum intensity
+     * column is stored as the transform column {@code <column>_numpress_slof_bytes} or
+     * {@code <column>_numpress_pic_bytes}.
      *
-     * @param unit    the unit of the values and of the entry, null when they have none
-     * @param column  the column's name inside the prefix struct, unique among the file's columns
-     * @param primary whether the entry has buffer priority primary, which only the column {@code intensity} has; the
-     *                others have none, as the reference writes has_uv's absorbance column
+     * @param unit   the unit of the values and of the entry, null when they have none
+     * @param column the column's name inside the prefix struct, unique among the file's columns
      */
-    record IntensityColumn(String unit, String column, boolean primary) {
+    record IntensityColumn(String unit, String column) {
     }
 
     /**
@@ -92,33 +99,36 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
      * derived from its payload. {@code data} sends {@code mz()}/{@code intensity()} to spectra_data; {@code peaks}
      * sends to spectra_peaks either {@code mz()}/{@code intensity()} ({@code peaksFromArrays}) or {@code peaks()}.
      * {@code precursors} are those of the caller's description, in its order, each with the precursor_index it is
-     * written with (WR-8).
+     * written with (WR-8), followed in the split layout by the MSn selected-ion chain the planner appends (W7).
      *
-     * @param dataRows the rows this spectrum writes to spectra_data, its number_of_data_points; 0 without
-     *                 {@code data}
-     * @param peakRows the rows this spectrum writes to spectra_peaks, its number_of_peaks; 0 without {@code peaks}
-     * @param summary  the summary values of the caller's spectrum ({@link SpectrumSummary#derive})
+     * @param dataRows        the rows this spectrum writes to spectra_data, its number_of_data_points; 0 without
+     *                        {@code data}
+     * @param peakRows        the rows this spectrum writes to spectra_peaks, its number_of_peaks; 0 without
+     *                        {@code peaks}
+     * @param summary         the summary values of the caller's spectrum ({@link SpectrumSummary#derive})
+     * @param auxiliaryArrays the caller's {@link Spectrum#auxiliaryArrays()}, which the split layout writes to the
+     *                        spectrum's metadata row as they are (R1)
      */
     record SpectrumEntry(SpectrumDescription description, long sourceIndex, List<Precursor> precursors, boolean data,
                          boolean peaks, boolean peaksFromArrays, int dataRows, int peakRows,
-                         SpectrumSummary.Values summary) {
+                         SpectrumSummary.Values summary, List<AuxiliaryArray> auxiliaryArrays) {
 
         /**
          * The entry of {@code source}, written as {@code sourceIndex} with the caller's precursors as given, whose rows
          * go where {@code data}, {@code peaks} and {@code peaksFromArrays} say. It keeps nothing of the signal of
-         * {@code source} but the row counts and summary values derived from it.
+         * {@code source} but the row counts and summary values derived from it, and its auxiliary arrays.
          */
         SpectrumEntry(Spectrum source, long sourceIndex, boolean data, boolean peaks, boolean peaksFromArrays) {
             this(source.description(), sourceIndex, source.description().precursors(), data, peaks, peaksFromArrays,
                     data ? source.mz().length : 0,
                     peaks ? (peaksFromArrays ? source.mz().length : source.peaks().size()) : 0,
-                    SpectrumSummary.derive(source));
+                    SpectrumSummary.derive(source), source.auxiliaryArrays());
         }
 
         /** This entry written as {@code index}, with {@code precursors} written in place of its own. */
         SpectrumEntry renumbered(long index, List<Precursor> precursors) {
             return new SpectrumEntry(description, index, precursors, data, peaks, peaksFromArrays, dataRows, peakRows,
-                    summary);
+                    summary, auxiliaryArrays);
         }
 
         /** The first of {@link #precursors()}, the only one the packed layout writes, or {@code null}. */
@@ -150,6 +160,31 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
                         : arrays.inWrittenOrder(source.arrays().get(key));
             }
             return out;
+        }
+
+        /**
+         * The unit of the intensities this spectrum writes to spectra_peaks ({@code peaksFile}) or spectra_data:
+         * {@link Spectrum#peakIntensityUnit()} where {@code peaks()} are written, else
+         * {@link Spectrum#intensityUnit()}; MS:1000131 for a null unit, the unit the writer has always declared.
+         */
+        String intensityUnit(boolean peaksFile) {
+            String unit = peaksFile && !entry.peaksFromArrays() ? source.peakIntensityUnit() : source.intensityUnit();
+            return unit == null ? ArrayIndex.COUNTS_UNIT : unit;
+        }
+
+        /**
+         * The units of the intensities this spectrum writes ({@link #intensityUnit}), to spectra_data, then to
+         * spectra_peaks, each once; empty when it writes no rows.
+         */
+        Set<String> intensityUnits() {
+            Set<String> units = new LinkedHashSet<>();
+            if (entry.data()) {
+                units.add(intensityUnit(false));
+            }
+            if (entry.peaks()) {
+                units.add(intensityUnit(true));
+            }
+            return units;
         }
 
         /** The value of {@code peakArray} at the {@link CentroidPeak#index()} of each of {@code peaks()}, or null. */
@@ -212,8 +247,12 @@ record WritePlan(Options options, List<SpectrumEntry> spectra, List<SpectrumSign
 
     /** The column of {@link #chromatogramIntensities()} that holds the intensities of {@code c}, that of its unit. */
     String intensityColumn(Chromatogram c) {
-        return chromatogramIntensities.stream().filter(i -> Objects.equals(i.unit(), c.intensityUnit())).findFirst()
-                .orElseThrow().column();
+        return intensityColumn(chromatogramIntensities, c.intensityUnit());
+    }
+
+    /** The column of {@code intensities} whose unit is {@code unit}, which one of them has. */
+    static String intensityColumn(List<IntensityColumn> intensities, String unit) {
+        return intensities.stream().filter(i -> Objects.equals(i.unit(), unit)).findFirst().orElseThrow().column();
     }
 
     /** Whether chromatograms_metadata and chromatograms_data are written. */

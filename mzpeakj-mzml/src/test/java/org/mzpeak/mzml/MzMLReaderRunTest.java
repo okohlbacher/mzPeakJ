@@ -566,15 +566,38 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void anIntensityArrayInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+    void anIntensityArrayInPercentIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20,
                 "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
-                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""));
+                "name=\"intensity array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000187\""));
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000515 array in unit MS:1000132 cannot be"
-                        + " converted to MS:1000131");
+                .hasMessage(prefix(file, "spectrum #1 (scan=20)") + "its MS:1000515 array in unit UO:0000187 is none of"
+                        + " the spectrum intensity units MS:1000131, MS:1000132, MS:1000814");
+    }
+
+    /**
+     * R5 (D13-20): an MS spectrum's intensity array in percent of base peak or counts per second keeps its unit as
+     * the spectrum's intensity unit, one without unit reads as detector counts; the survey gives the units first seen
+     * first, the values are read as stored.
+     */
+    @Test
+    void anIntensityArrayKeepsItsSpectrumIntensityUnit(@TempDir Path dir) throws IOException {
+        String counts = "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"";
+        Path file = tinyWith(dir, s -> replaceAfter(replaceAfter(replaceAfter(s, SCAN_19, counts,
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000814\""), SCAN_20,
+                counts, "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""),
+                SCAN_21, " unitCvRef=\"MS\" unitAccession=\"MS:1000131\" unitName=\"number of counts\"", ""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).extracting(Spectrum::intensityUnit)
+                .containsExactly("MS:1000814", "MS:1000132", "MS:1000131", "MS:1000131");
+        assertThat(run.spectra.get(0).intensity()).startsWith(15, 14);
+        assertThat(run.reader.spectrumIntensityUnits()).containsExactly("MS:1000814", "MS:1000132", "MS:1000131");
+        assertThat(new MzMLReader(file).spectrumIntensityUnits())
+                .containsExactly("MS:1000814", "MS:1000132", "MS:1000131");
     }
 
     @Test
@@ -604,15 +627,28 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void anIntensityOnlySpectrumInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+    void anIntensityOnlySpectrumInPercentIsRejectedBySurvey(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> removeFirstArray(replaceAfter(s, SCAN_19,
                 "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
-                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""), SCAN_19));
+                "name=\"intensity array\" value=\"\" unitCvRef=\"UO\" unitAccession=\"UO:0000187\""), SCAN_19));
 
         assertThatThrownBy(() -> new MzMLReader(file).survey())
                 .isInstanceOf(MzPeakException.class)
-                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000515 array in unit MS:1000132 cannot be"
-                        + " converted to MS:1000131");
+                .hasMessage(prefix(file, "spectrum #0 (scan=19)") + "its MS:1000515 array in unit UO:0000187 is none of"
+                        + " the spectrum intensity units MS:1000131, MS:1000132, MS:1000814");
+    }
+
+    /** A wavelength spectrum's intensity array, unlike an MS spectrum's, is still only taken in MS:1000131. */
+    @Test
+    void aWavelengthSpectrumsIntensityInPercentOfBasePeakIsRejectedBySurvey(@TempDir Path dir) throws IOException {
+        Path file = tofWith(dir, s -> replaceAfter(s, UV_0,
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000131\"",
+                "name=\"intensity array\" value=\"\" unitCvRef=\"MS\" unitAccession=\"MS:1000132\""));
+
+        assertThatThrownBy(() -> new MzMLReader(file).survey())
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage(prefix(file, "spectrum #212 (merged=212 row=0)") + "its MS:1000515 array in unit"
+                        + " MS:1000132 cannot be converted to MS:1000131");
     }
 
     @Test
@@ -1166,23 +1202,81 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-29 second arrays of a type already present dropped (2)");
     }
 
-    /** An extra array declared shorter (3), then longer (16), than scan=19's m/z array (15). */
+    /**
+     * An extra array declared shorter (3), then longer (16), than scan=19's m/z array (15) is kept as an auxiliary
+     * array (R1): its values as 64-bit floats without compression, named by its array type, its unit kept.
+     */
     @Test
-    void anExtraArrayOfAnotherDeclaredLengthIsDropped(@TempDir Path dir) throws IOException {
+    void anExtraArrayOfAnotherDeclaredLengthIsAnAuxiliaryArray(@TempDir Path dir) throws IOException {
         for (int length : new int[] {3, 16}) {
-            String values = floats(ramp(length));
-            String sn = "<binaryDataArray arrayLength=\"" + length + "\" encodedLength=\"" + values.length() + "\">\n"
-                    + F64 + "\n" + NO_COMPRESSION + "\n" + SN_TYPE + "\n<binary>" + values
-                    + "</binary>\n</binaryDataArray>\n";
-            Path file = tinyWith(dir, s -> withArray(s, SCAN_19, sn));
+            Path file = tinyWith(dir, s -> withArray(s, SCAN_19, sized(length, SN_TYPE, ramp(length))));
 
             Run run = read(file);
 
-            assertThat(run.spectra.get(0).arrays()).as("length %d", length).isEmpty();
+            Spectrum spectrum = run.spectra.get(0);
+            assertThat(spectrum.arrays()).as("length %d", length).isEmpty();
             assertThat(run.reader.survey().spectrumArrays()).as("length %d", length).isEmpty();
-            assertThat(run.reader.warnings()).as("length %d", length)
-                    .contains("B-21 dropped array whose declared length differs from its axis array's (1)");
+            assertThat(spectrum.auxiliaryArrays()).as("length %d", length).singleElement().satisfies(a -> {
+                assertThat(a.name()).isEqualTo(new Param("signal to noise array", SN, null, null));
+                assertThat(a.dataType()).isEqualTo("MS:1000523");
+                assertThat(a.compression()).isEqualTo("MS:1000576");
+                assertThat(a.items()).isEqualTo(length);
+                assertThat(a.unit()).isNull();
+                assertThat(a.parameters()).isEmpty();
+                assertThat(a.dataProcessingId()).isNull();
+                assertThat(a.doubles()).containsExactly(ramp(length));
+                assertThat(a.data()).hasSize(8 * length);
+            });
+            assertThat(run.reader.warnings()).as("length %d", length).noneMatch(w -> w.contains("declared length"));
         }
+    }
+
+    /**
+     * Arrays of another declared length become auxiliary arrays before any rule but B-29: a non-standard data array
+     * keeps its name as the value of MS:1000786, a drift-time array in seconds keeps its values and unit unconverted,
+     * and the arrays of a chromatogram and of a wavelength spectrum (whose extras B-28 drops) are kept too. An array
+     * type the Rust reference reader does not map (MS:1002742 noise array) is dropped (B-43). A second array of a key,
+     * of the axis, the intensity, a kept extra or an earlier auxiliary array, is dropped whatever its length (B-29):
+     * the Rust reference reader would let it replace the first.
+     */
+    @Test
+    void arraysOfAnotherDeclaredLengthOfEveryOwnerAreAuxiliaryArrays(@TempDir Path dir) throws IOException {
+        String named = cv("MS:1000786", "non-standard data array", "my array", "UO:0000186");
+        String drift = cv("MS:1002816", "mean ion mobility array", "", "UO:0000010");
+        String mz = cv("MS:1000514", "m/z array", "", "MS:1000040");
+        String intensity = cv("MS:1000515", "intensity array", "", "MS:1000131");
+        String noise = cv("MS:1002742", "noise array", "", null);
+        List<String> scanArrays = List.of(sized(2, named, 1, 2), sized(1, drift, 1.5), sized(3, mz, 7, 8, 9),
+                sized(1, intensity, 4), sized(2, noise, 5, 6), sized(1, named, 3), array(SN_TYPE, ramp(15)),
+                sized(2, SN_TYPE, 5, 6), array(drift, ramp(15)));
+        Path file = tinyWith(dir, s -> {
+            String t = withArray(s, "id=\"tic\"", sized(2, SN_TYPE, 3, 4));
+            for (String a : scanArrays) {
+                t = withArray(t, SCAN_19, a);
+            }
+            return t;
+        });
+
+        Run run = read(file);
+
+        assertThat(run.spectra.get(0).mz()).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+        assertThat(run.spectra.get(0).intensity()).containsExactly(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1);
+        assertThat(run.spectra.get(0).arrays()).containsOnlyKeys(SN);
+        assertThat(run.spectra.get(0).arrays().get(SN)).containsExactly(ramp(15));
+        assertThat(run.spectra.get(0).auxiliaryArrays()).extracting(a -> a.name(), a -> a.unit(),
+                a -> Arrays.stream(a.doubles()).boxed().toList()).containsExactly(
+                tuple(new Param("non-standard data array", "MS:1000786", "my array", null), "UO:0000186",
+                        List.of(1.0, 2.0)),
+                tuple(new Param("mean ion mobility array", "MS:1002816", null, null), "UO:0000010", List.of(1.5)));
+        assertThat(run.chromatograms.get(0).auxiliaryArrays()).singleElement()
+                .satisfies(a -> assertThat(a.doubles()).containsExactly(3, 4));
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_43 + " (1)", MzMLReader.B_29 + " (5)");
+
+        Path tof = tofWith(dir, s -> withArray(s, UV_0, sized(2, SN_TYPE, 5, 6)));
+        Run uv = read(tof);
+        assertThat(uv.wavelengthSpectra.get(0).auxiliaryArrays()).singleElement()
+                .satisfies(a -> assertThat(a.doubles()).containsExactly(5, 6));
+        assertThat(uv.reader.warnings()).noneMatch(w -> w.startsWith("B-28"));
     }
 
     @Test
@@ -1632,7 +1726,7 @@ class MzMLReaderRunTest {
 
         assertThat(run.spectra.get(0).description().scans().get(0).scanWindows()).isEmpty();
         assertThat(run.spectra.get(1).description().scans().get(0).scanWindows()).hasSize(1);
-        assertThat(run.reader.warnings()).contains("B-17 scan windows without both limits in m/z dropped (1)");
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_17_WINDOW + " (1)");
     }
 
     @Test
@@ -1644,7 +1738,7 @@ class MzMLReaderRunTest {
         Run run = read(file);
 
         assertThat(run.spectra.get(0).description().scans().get(0).scanWindows()).isEmpty();
-        assertThat(run.reader.warnings()).contains("B-17 scan windows without both limits in m/z dropped (1)",
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_17_WINDOW + " (1)",
                 "B-17 scan window params other than the limits lost (1)");
     }
 
@@ -1663,7 +1757,7 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void aSelectedIonMzInNanometersStaysAParamAndIsNoted(@TempDir Path dir) throws IOException {
+    void aSelectedIonMzInNanometersStaysAParamAndTheIonHasMzNaN(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_20,
                 "value=\"445.33999999999997\" unitCvRef=\"MS\" unitAccession=\"MS:1000040\"",
                 "value=\"445.33999999999997\" unitCvRef=\"UO\" unitAccession=\"UO:0000018\""));
@@ -1675,12 +1769,11 @@ class MzMLReaderRunTest {
         assertThat(ion.charge()).isEqualTo(2);
         assertThat(ion.parameters()).containsExactly(new Param("selected ion m/z", "MS:1000744", 445.34,
                 "UO:0000018"));
-        assertThat(run.reader.warnings())
-                .contains("B-18 selected ions without an m/z in unit MS:1000040, which the mzPeak read drops (1)");
+        assertThat(run.reader.warnings()).noneMatch(line -> line.startsWith("B-18"));
     }
 
     @Test
-    void aSelectedIonWithoutMzIsNoted(@TempDir Path dir) throws IOException {
+    void aSelectedIonWithoutMzIsReadWithMzNaNAndNotCounted(@TempDir Path dir) throws IOException {
         Path file = tinyWith(dir, s -> replaceCvParam(s, SCAN_20, "accession=\"MS:1000744\"", ""));
 
         Run run = read(file);
@@ -1688,8 +1781,7 @@ class MzMLReaderRunTest {
         SelectedIon ion = run.spectra.get(1).description().primaryPrecursor().primaryIon();
         assertThat(ion.mz()).isNaN();
         assertThat(ion.intensity()).isEqualTo(120053.0);
-        assertThat(run.reader.warnings())
-                .contains("B-18 selected ions without an m/z in unit MS:1000040, which the mzPeak read drops (1)");
+        assertThat(run.reader.warnings()).noneMatch(line -> line.startsWith("B-18"));
     }
 
     @Test
@@ -1868,18 +1960,46 @@ class MzMLReaderRunTest {
     }
 
     @Test
-    void spectrumAttributesAndScanListParamsTheModelLacksAreNoted(@TempDir Path dir) throws IOException {
-        Path file = tinyWith(dir, s -> replaceAfter(replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
-                        SCAN_19 + " defaultArrayLength=\"15\" dataProcessingRef=\"pwiz_processing\""), SCAN_19,
-                "<scan instrumentConfigurationRef", "<userParam name=\"averaged\" value=\"no\"/>\n"
-                        + "<scan instrumentConfigurationRef"));
+    void scanListParamsTheModelLacksAreNoted(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceAfter(s, SCAN_19, "<scan instrumentConfigurationRef",
+                "<userParam name=\"averaged\" value=\"no\"/>\n<scan instrumentConfigurationRef"));
 
         Run run = read(file);
 
         assertThat(run.spectra.get(0).description().parameters()).endsWith(
                 new Param("no combination", "MS:1000795", null, null), new Param("averaged", null, "no", null));
-        assertThat(run.reader.warnings()).contains("B-10 spectrum@dataProcessingRef lost (1)",
+        assertThat(run.reader.warnings()).contains(
                 "B-13 scanList params other than the combination term moved to the spectrum (1)");
+    }
+
+    /**
+     * X-25 (R6): an MS spectrum's dataProcessingRef is kept where it differs from the spectrumList's default; one
+     * equal to that default reads as null, like a spectrum without one. Neither is noted as lost.
+     */
+    @Test
+    void anMsSpectrumKeepsADataProcessingOtherThanTheSpectrumListDefault(@TempDir Path dir) throws IOException {
+        Path file = tinyWith(dir, s -> replaceOnce(replaceOnce(s, SCAN_19 + " defaultArrayLength=\"15\"",
+                        SCAN_19 + " defaultArrayLength=\"15\" dataProcessingRef=\"CompassXtract_x0020_processing\""),
+                SCAN_20 + " defaultArrayLength=\"10\"",
+                SCAN_20 + " defaultArrayLength=\"10\" dataProcessingRef=\"pwiz_processing\""));
+
+        Run run = read(file);
+
+        assertThat(run.spectra).extracting(s -> s.description().dataProcessingRef())
+                .containsExactly("CompassXtract_x0020_processing", null, null, null);
+        assertThat(run.reader.warnings()).noneMatch(w -> w.contains("dataProcessingRef lost") && w.startsWith("B-10"));
+    }
+
+    /** A wavelength spectrum, whose model has no data processing reference, loses its dataProcessingRef (B-10). */
+    @Test
+    void aWavelengthSpectrumLosesItsDataProcessingRef(@TempDir Path dir) throws IOException {
+        Path file = tofWith(dir, s -> replaceOnce(s, UV_0 + " defaultArrayLength=\"96\"",
+                UV_0 + " defaultArrayLength=\"96\" dataProcessingRef=\"pwiz_Reader_Agilent_conversion\""));
+
+        Run run = read(file);
+
+        assertThat(run.wavelengthSpectra).hasSize(520);
+        assertThat(run.reader.warnings()).contains("B-10 spectrum@dataProcessingRef lost (1)");
     }
 
     @Test
@@ -1934,9 +2054,20 @@ class MzMLReaderRunTest {
         assertThat(run.reader.warnings()).contains("B-28 extra arrays of wavelength spectra dropped (1)");
     }
 
+    /**
+     * R8 (D13-24): a wavelength spectrum keeps its scans, the first one's start time as its time, a second scan, a
+     * scan's instrument configuration and a window in nm; it loses a precursor list and a scan's spectrum reference
+     * (B-23), and a window in m/z (B-17).
+     */
     @Test
-    void wavelengthSpectrumContentBesidesTheStartTimeIsLost(@TempDir Path dir) throws IOException {
-        String scan = "<scan>\n" + cv("MS:1000016", "scan start time", "0.5", "UO:0000031") + "\n</scan>\n";
+    void wavelengthSpectrumScansAreKeptAndPrecursorsAndScanReferencesLost(@TempDir Path dir) throws IOException {
+        String scan = "<scan spectrumRef=\"merged=0\">\n" + cv("MS:1000016", "scan start time", "0.5", "UO:0000031")
+                + "\n<scanWindowList count=\"2\">\n<scanWindow>\n"
+                + cv("MS:1000501", "scan window lower limit", "200", "UO:0000018") + "\n"
+                + cv("MS:1000500", "scan window upper limit", "400", "UO:0000018") + "\n</scanWindow>\n<scanWindow>\n"
+                + cv("MS:1000501", "scan window lower limit", "200", "MS:1000040") + "\n"
+                + cv("MS:1000500", "scan window upper limit", "400", "MS:1000040")
+                + "\n</scanWindow>\n</scanWindowList>\n</scan>\n";
         String precursors = "<precursorList count=\"1\">\n<precursor>\n<activation/>\n</precursor>\n</precursorList>\n";
         Path file = tofWith(dir, s -> {
             String edited = replaceAfter(s, UV_0, "</scanList>", scan + "</scanList>");
@@ -1951,11 +2082,17 @@ class MzMLReaderRunTest {
 
         Run run = read(file);
 
-        assertThat(run.wavelengthSpectra.get(0).time()).isEqualTo(0.001833333333);
+        WavelengthSpectrum first = run.wavelengthSpectra.get(0);
+        assertThat(first.time()).isEqualTo(0.001833333333);
+        assertThat(first.scans()).containsExactly(
+                new ScanEvent(0.001833333333, null, null, null, null, null, List.of(), List.of()),
+                new ScanEvent(0.5, null, null, null, null, null, List.of(new ScanWindow(200, 400)), List.of()));
         assertThat(run.wavelengthSpectra.get(1).time()).isNaN();
-        // a second scan, a precursor list and a scan's configuration ref; a wavelength spectrum without scans loses none
-        assertThat(run.reader.warnings()).contains(
-                "B-23 wavelength spectrum content other than the first scan's start time lost (3)");
+        assertThat(run.wavelengthSpectra.get(1).scans()).isEmpty();
+        assertThat(run.wavelengthSpectra.get(3).scans()).extracting(ScanEvent::instrumentConfigurationRef)
+                .containsExactly(0);
+        // the precursor list and the second scan's spectrum reference
+        assertThat(run.reader.warnings()).contains(MzMLReader.B_23 + " (2)", MzMLReader.B_17_WINDOW + " (1)");
     }
 
     /** Each of the three wavelength spectrum types makes a spectrum without arrays a wavelength spectrum. */
@@ -1995,7 +2132,8 @@ class MzMLReaderRunTest {
         assertThat(run.spectra.get(0).description().primaryPrecursor().precursorIndex()).isNull();
         assertThat(run.reader.warnings()).contains(
                 "B-11 MS spectra after wavelength spectra, their interleaving lost (3)",
-                "B-23 wavelength spectrum content other than the first scan's start time lost (1)",
+                // its scan keeps its start time, filter string and the rest; its window in m/z is dropped
+                MzMLReader.B_17_WINDOW + " (1)", MzMLReader.B_17_PARAMS + " (2)",
                 "B-33 spectrum references whose kind (local or external) changes on the way back (1)");
     }
 
@@ -2350,6 +2488,14 @@ class MzMLReaderRunTest {
         String base64 = floats(values);
         return "<binaryDataArray encodedLength=\"" + base64.length() + "\">\n" + F64 + "\n" + NO_COMPRESSION + "\n"
                 + type + "\n<binary>" + base64 + "</binary>\n</binaryDataArray>\n";
+    }
+
+    /**
+     * A binaryDataArray of 64-bit floats without compression, with the array type term {@code type} and the declared
+     * length {@code length}.
+     */
+    private static String sized(int length, String type, double... values) {
+        return array(type, values).replace("<binaryDataArray ", "<binaryDataArray arrayLength=\"" + length + "\" ");
     }
 
     /** A binaryDataArray with the cvParam elements {@code terms} and {@code binary} as its Base64 text. */

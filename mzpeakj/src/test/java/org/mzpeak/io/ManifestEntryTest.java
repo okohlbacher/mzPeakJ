@@ -192,8 +192,8 @@ class ManifestEntryTest {
     }
 
     /**
-     * A parameter's {@code unit} key is required (Rust {@code MetaParam.unit}, D-7); when it is null, the pin-era
-     * {@code unit_accession} beside it is read. A {@code unit_accession} without a {@code unit} key is rejected.
+     * A parameter's {@code unit} is read; when it is null or absent (param.json makes it optional, D13-2), the
+     * pin-era {@code unit_accession} beside it is read.
      */
     @Test
     void parametersReadUnitElseUnitAccession(@TempDir Path tmp) throws IOException {
@@ -236,8 +236,8 @@ class ManifestEntryTest {
 
         ((ObjectNode) params.get(1)).remove("unit");
         writeIndex(copy, index);
-        assertThatThrownBy(() -> manifest(copy)).isInstanceOf(MzPeakException.class).hasMessage(
-                "mzpeak_index.json files[0] (spectra_data.parquet).parameters[1].unit: absent in " + copy);
+        assertThat(entry(manifest(copy), "spectra_data.parquet").parameters().get(1))
+                .isEqualTo(new Param("label", null, "x", "UO:0000010"));
     }
 
     @Test

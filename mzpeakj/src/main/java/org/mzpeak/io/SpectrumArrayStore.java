@@ -20,10 +20,12 @@ import org.mzpeak.io.parquet.ParquetGroups;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.System.Logger.Level;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -36,12 +38,19 @@ import java.util.function.DoubleUnaryOperator;
  * {@code spectrum_array_index} footer, or inferred from the column names when it has none (as in mzPeakJ output).
  * Supports the {@code point} layout, delta-encoded {@code chunk} layout, MS-Numpress chunks (linear m/z +
  * SLOF intensity) and coordinate grid chunks; chunk rows are decoded by {@link ChunkRowDecoder}. A chunk it cannot
- * decode (a coordinate grid of an unknown grid_type, an unknown {@code chunk_encoding}, Numpress intensity without
- * Numpress m/z, an unknown Numpress column with a value, or intensities only in an intensity chunk transform other
- * than SLOF and PIC) throws an {@link MzPeakException} instead of being dropped or misdecoded. A point row's intensity
- * is the first non-null value among the plan's value-bearing intensity columns, in index order; a point member whose
- * plan names no m/z values or no such intensity column throws on its first row.
- * Null-marked m/z is resolved by {@link NullFill}.
+ * decode (a coordinate grid of an unknown grid_type, an unknown {@code chunk_encoding}, SLOF or PIC intensity whose
+ * length fits neither the chunk's m/z values nor values+1, an unknown Numpress column with a value, or intensities
+ * only in an intensity chunk transform other than SLOF and PIC) throws an {@link MzPeakException} instead of being
+ * dropped or misdecoded. A point row's intensity is the first non-null value among the plan's value-bearing intensity
+ * columns, in index order; a point member whose plan names no m/z values or no such intensity column throws on its
+ * first row.
+ * Null-marked m/z is resolved by {@link NullFill}; a spectrum whose null m/z cannot be filled throws only when it
+ * is requested, not when it is decoded alongside another.
+ *
+ * <p><b>Intensity unit</b> (R5): the unit of the plan entry that supplied a spectrum's intensities, the point
+ * intensity column or the chunk row's intensity, SLOF or PIC column ({@link ChunkRowDecoder.Row#intensityField()}).
+ * It is null when no entry supplied a value, when the entries that did differ in unit (with a WARNING), and for an
+ * {@link ArrayIndex.Source#INFERRED INFERRED} plan, whose entries carry no unit.
  *
  * <p><b>Extra arrays:</b> every other array the plan lists ({@link SignalPlan#extras()}), such as diaPASEF's ion
  * mobility, is read parallel to the m/z, with null cells as NaN. A spectrum whose cells of an extra are all null
@@ -55,17 +64,24 @@ import java.util.function.DoubleUnaryOperator;
  *
  * <p><b>Streaming:</b> per-row-group min/max statistics of the plan's index column ({@code spectrum_index}) are
  * read at open time; {@link #get} decodes only the row group(s) covering the requested index, caching the last
- * decoded block run. Memory usage is bounded to one row-group run rather than the whole file.
+ * decoded block run. Memory usage is bounded to one row-group run rather than the whole file. Row groups of 0 rows
+ * (members MAY be empty) are never read, and a spectrum's rows may continue past one into the next row group.
  */
 final class SpectrumArrayStore implements AutoCloseable {
 
     /**
      * The decoded arrays of one spectrum.
      *
-     * @param extras the extra arrays, each parallel to {@code mz}, keyed as in {@link SignalPlan#extras()} and in
-     *               plan order; empty when the member has none
+     * @param extras        the extra arrays, each parallel to {@code mz}, keyed as in {@link SignalPlan#extras()}
+     *                      and in plan order; empty when the member has none
+     * @param intensityUnit the unit of the intensity column that supplied {@code intensity}, or null (see the class
+     *                      comment)
      */
-    record Arrays(double[] mz, double[] intensity, Map<String, double[]> extras) {
+    record Arrays(double[] mz, double[] intensity, Map<String, double[]> extras, String intensityUnit) {
+
+        Arrays(double[] mz, double[] intensity, Map<String, double[]> extras) {
+            this(mz, intensity, extras, null);
+        }
     }
 
     private static final System.Logger LOG = System.getLogger(SpectrumArrayStore.class.getName());
@@ -78,6 +94,8 @@ final class SpectrumArrayStore implements AutoCloseable {
     private final Map<Long, double[]> deltaModels;
     private final long[] rgMin;
     private final long[] rgMax;
+    /** Per row group: whether it holds 0 rows; such a group is skipped, whatever its index statistics say. */
+    private final boolean[] empty;
     private final ColumnIOFactory columnIO = new ColumnIOFactory();
     /** The member name in warnings. */
     private final String member;
@@ -90,10 +108,15 @@ final class SpectrumArrayStore implements AutoCloseable {
     private int cachedFirst = -1;
     private int cachedLast = -2;
     private Map<Long, Arrays> cache = Map.of();
+    /**
+     * The null-fill errors of the spectra in the cached run, rethrown only when such a spectrum is requested: a
+     * neighbouring spectrum whose rows continue outside the run is decoded only in part, and must not fail another.
+     */
+    private Map<Long, MzPeakException> cacheErrors = Map.of();
 
     private SpectrumArrayStore(ParquetFileReader reader, MessageType schema, SignalPlan plan,
                                boolean reconstructProfile, Map<Long, double[]> deltaModels, long[] rgMin,
-                               long[] rgMax, String member) {
+                               long[] rgMax, boolean[] empty, String member) {
         this.reader = reader;
         this.schema = schema;
         this.plan = plan;
@@ -102,6 +125,7 @@ final class SpectrumArrayStore implements AutoCloseable {
         this.deltaModels = deltaModels;
         this.rgMin = rgMin;
         this.rgMax = rgMax;
+        this.empty = empty;
         this.member = member;
         for (SignalPlan.Extra extra : plan.extras().values()) {
             if (ArrayUnits.DRIFT_TIME_ARRAYS.contains(extra.arrayType())) {
@@ -142,13 +166,15 @@ final class SpectrumArrayStore implements AutoCloseable {
                 List<BlockMetaData> blocks = reader.getRowGroups();
                 long[] rgMin = new long[blocks.size()];
                 long[] rgMax = new long[blocks.size()];
+                boolean[] empty = new boolean[blocks.size()];
                 for (int b = 0; b < blocks.size(); b++) {
                     long[] range = indexRange(blocks.get(b), indexPath);
                     rgMin[b] = range[0];
                     rgMax[b] = range[1];
+                    empty[b] = blocks.get(b).getRowCount() == 0;
                 }
                 return new SpectrumArrayStore(reader, schema, plan, reconstructProfile, deltaModels, rgMin, rgMax,
-                        member);
+                        empty, member);
             } catch (RuntimeException e) {
                 try {
                     reader.close();
@@ -187,9 +213,16 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
         int last = lastBlock(spectrumIndex, first);
         if (first != cachedFirst || last != cachedLast) {
-            cache = decodeBlocks(first, last);
+            Map<Long, MzPeakException> errors = new HashMap<>();
+            cache = decodeBlocks(first, last, errors);
+            cacheErrors = errors;
             cachedFirst = first;
             cachedLast = last;
+        }
+        MzPeakException error = cacheErrors.get(spectrumIndex);
+        if (error != null) {
+            // a chunk decode error keeps its cause, as it had when it escaped the decoding of the row groups
+            throw new MzPeakException(error.getMessage(), error.getCause() != null ? error.getCause() : error);
         }
         return cache.get(spectrumIndex);
     }
@@ -200,28 +233,45 @@ final class SpectrumArrayStore implements AutoCloseable {
 
     private int firstBlock(long index) {
         for (int b = 0; b < rgMin.length; b++) {
-            if (index >= rgMin[b] && index <= rgMax[b]) {
+            if (!empty[b] && index >= rgMin[b] && index <= rgMax[b]) {
                 return b;
             }
         }
         return -1;
     }
 
-    /** A spectrum may span consecutive blocks (its rows cross a row-group boundary); find the last such block. */
+    /**
+     * A spectrum may span consecutive blocks (its rows cross a row-group boundary); find the last such block. Empty
+     * blocks in between are passed over: the spectrum continues in the next non-empty block that holds its index.
+     */
     private int lastBlock(long index, int first) {
         int last = first;
-        while (last + 1 < rgMin.length && index >= rgMin[last + 1] && index <= rgMax[last + 1]) {
-            last++;
+        for (int b = first + 1; b < rgMin.length; b++) {
+            if (empty[b]) {
+                continue;
+            }
+            if (index < rgMin[b] || index > rgMax[b]) {
+                break;
+            }
+            last = b;
         }
         return last;
     }
 
-    private Map<Long, Arrays> decodeBlocks(int first, int last) {
+    /**
+     * Decodes the row groups {@code first..last}; a spectrum whose null m/z cannot be filled, or one of whose chunk
+     * rows {@link ChunkRowDecoder} cannot decode, is put into {@code errors} instead of the result, so the other
+     * spectra of those row groups still read.
+     */
+    private Map<Long, Arrays> decodeBlocks(int first, int last, Map<Long, MzPeakException> errors) {
         Map<Long, Arrays> result = new HashMap<>();
-        Accumulator acc = new Accumulator(result, reconstructProfile, deltaModels, plan, chunks, this::dropExtra,
+        Accumulator acc = new Accumulator(result, errors, reconstructProfile, deltaModels, plan, chunks, this::dropExtra,
                 member, toMilliseconds);
         try {
             for (int b = first; b <= last; b++) {
+                if (empty[b]) {
+                    continue; // parquet-java refuses to read a row group of 0 rows
+                }
                 PageReadStore pages = reader.readRowGroup(b);
                 MessageColumnIO cio = columnIO.getColumnIO(schema);
                 RecordReader<Group> rr = cio.getRecordReader(pages, new GroupRecordConverter(schema));
@@ -264,6 +314,8 @@ final class SpectrumArrayStore implements AutoCloseable {
     /** Buffers one spectrum's points/chunks and flushes when the sorted {@code spectrum_index} changes. */
     private static final class Accumulator implements Consumer<Group> {
         private final Map<Long, Arrays> result;
+        /** The spectra whose null m/z cannot be filled, or a chunk row of which cannot be decoded, with the error. */
+        private final Map<Long, MzPeakException> errors;
         private final boolean reconstructProfile;
         private final Map<Long, double[]> deltaModels;
         private final String prefix;
@@ -271,7 +323,9 @@ final class SpectrumArrayStore implements AutoCloseable {
         /** Point layout: the m/z values column, or null when the plan names none. */
         private final String mzField;
         /** Point layout: the value-bearing intensity columns, in index order; a row's first non-null one is read. */
-        private final List<String> intensityFields;
+        private final List<Column> intensityColumns;
+        /** The plan's intensity columns by field, for the unit of the column a chunk row's intensities came from. */
+        private final Map<String, Column> intensityByField = new HashMap<>();
         /** The member name in errors. */
         private final String member;
         /** Chunk layout: the row decoder; null for the point layout. */
@@ -283,24 +337,36 @@ final class SpectrumArrayStore implements AutoCloseable {
         private final Map<String, DoubleUnaryOperator> toMilliseconds;
         private long current = Long.MIN_VALUE;
         private boolean started = false;
+        /** Chunk layout: why a chunk row of the current spectrum cannot be decoded, or null; then its rows are skipped. */
+        private MzPeakException failed;
+        /** Point layout: the current spectrum's m/z. */
         private DoubleArrayBuilder mz = new DoubleArrayBuilder();
+        /** Chunk layout: the current spectrum's m/z, one array per chunk row, filled row by row on flush. */
+        private List<double[]> mzRows = new ArrayList<>();
         private DoubleArrayBuilder intensity = new DoubleArrayBuilder();
         /** The current spectrum's extras not dropped so far, in plan order. */
         private Map<String, DoubleArrayBuilder> extras;
+        /** The units of the current spectrum's intensity columns that supplied values, in first-use order. */
+        private Set<String> units = new LinkedHashSet<>();
+        /** The column that last supplied an intensity of the current spectrum. */
+        private Column lastSupplier;
 
-        Accumulator(Map<Long, Arrays> result, boolean reconstructProfile, Map<Long, double[]> deltaModels,
+        Accumulator(Map<Long, Arrays> result, Map<Long, MzPeakException> errors, boolean reconstructProfile, Map<Long, double[]> deltaModels,
                     SignalPlan plan, ChunkRowDecoder chunks, ExtraDrops drops, String member,
                     Map<String, DoubleUnaryOperator> toMilliseconds) {
             this.result = result;
+            this.errors = errors;
             this.reconstructProfile = reconstructProfile;
             this.deltaModels = deltaModels;
             this.prefix = plan.prefix();
             this.indexField = plan.indexField();
             this.mzField = plan.axis().values() == null ? null : plan.axis().values().field();
-            this.intensityFields = plan.intensities().stream()
+            this.intensityColumns = plan.intensities().stream()
                     .filter(c -> c.format().valueBearing())
-                    .map(Column::field)
                     .toList();
+            for (Column column : plan.intensities()) {
+                intensityByField.put(column.field(), column);
+            }
             this.member = member;
             this.chunks = chunks;
             plan.extras().forEach((key, extra) -> extraFields.put(key,
@@ -334,12 +400,22 @@ final class SpectrumArrayStore implements AutoCloseable {
                 acceptPoint(row, si);
                 return;
             }
-            ChunkRowDecoder.Row decoded = chunks.decode(row, si);
-            double[] axis = decoded.axis();
-            double[] values = decoded.intensity();
-            for (int i = 0; i < axis.length; i++) {
-                mz.add(axis[i]);
-                intensity.add(values[i]);
+            if (failed != null) {
+                return;
+            }
+            ChunkRowDecoder.Row decoded;
+            try {
+                decoded = chunks.decode(row, si);
+            } catch (MzPeakException e) {
+                failed = e;
+                return;
+            }
+            if (decoded.intensityField() != null) {
+                supplied(intensityByField.get(decoded.intensityField()));
+            }
+            mzRows.add(decoded.axis());
+            for (double v : decoded.intensity()) {
+                intensity.add(v);
             }
             for (Iterator<Map.Entry<String, DoubleArrayBuilder>> it = extras.entrySet().iterator(); it.hasNext(); ) {
                 Map.Entry<String, DoubleArrayBuilder> extra = it.next();
@@ -356,7 +432,7 @@ final class SpectrumArrayStore implements AutoCloseable {
         }
 
         private void acceptPoint(Group point, long si) {
-            if (mzField == null || intensityFields.isEmpty()) {
+            if (mzField == null || intensityColumns.isEmpty()) {
                 throw new MzPeakException(member + ": the signal plan names no "
                         + (mzField == null ? "m/z values" : "value-bearing intensity")
                         + " column, so the point rows of spectrum_index " + si + " cannot be read");
@@ -381,15 +457,42 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
         }
 
-        /** The first non-null value among the value-bearing intensity columns, in index order, or null. */
+        /**
+         * The first non-null value among the value-bearing intensity columns, in index order, or null; the column
+         * that has it is noted as a supplier of the current spectrum.
+         */
         private Double pointIntensity(Group point) {
-            for (String field : intensityFields) {
-                Double v = ParquetGroups.optDouble(point, field);
+            for (Column column : intensityColumns) {
+                Double v = ParquetGroups.optDouble(point, column.field());
                 if (v != null) {
+                    supplied(column);
                     return v;
                 }
             }
             return null;
+        }
+
+        /** Notes that {@code column} supplied intensities of the current spectrum. */
+        private void supplied(Column column) {
+            if (column != lastSupplier) {
+                lastSupplier = column;
+                units.add(column.unit());
+            }
+        }
+
+        /** The intensity unit of the current spectrum (see the class comment). */
+        private String intensityUnit() {
+            if (units.isEmpty()) {
+                return null;
+            }
+            if (units.size() > 1) {
+                Set<String> differing = units;
+                long si = current;
+                LOG.log(Level.WARNING, () -> member + ": the intensities of spectrum_index " + si + " come from"
+                        + " columns of different units " + differing + "; the intensity unit is left unset");
+                return null;
+            }
+            return units.iterator().next();
         }
 
         private long requireIndex(Group g) {
@@ -410,26 +513,48 @@ final class SpectrumArrayStore implements AutoCloseable {
             }
         }
 
+        /**
+         * Completes the current spectrum: null-marked m/z filled ({@code reconstructProfile}) per chunk row, or for
+         * the point layout per spectrum, else dropped. A spectrum whose null m/z cannot be filled goes to
+         * {@code errors}: it may be one whose rows continue outside the decoded row groups. So does a spectrum one of
+         * whose chunk rows could not be decoded, with that row's error.
+         */
         void flush() {
-            double[] mzArray = mz.toArray();
+            List<double[]> rows = chunks == null ? List.of(mz.toArray()) : mzRows;
             double[] intensityArray = intensity.toArray();
             Map<String, double[]> extraArrays = extraArrays();
-            double[] model = deltaModels == null ? null : deltaModels.get(current);
-            Arrays arrays;
-            if (reconstructProfile && model != null && model.length > 0) {
-                // Exact reconstruction: fill null-marked m/z by stepping with the stored polynomial delta model.
-                NullFill.polynomialFill(mzArray, model);
-                arrays = new Arrays(mzArray, intensityArray, extraArrays);
+            Arrays arrays = null;
+            MzPeakException error = null;
+            if (failed != null) {
+                error = failed; // a chunk row could not be decoded: the spectrum reads as that row's error
+            } else if (reconstructProfile) {
+                double[] model = deltaModels == null ? null : deltaModels.get(current);
+                try {
+                    arrays = new Arrays(NullFill.fill(rows, chunks != null, model, member,
+                            SignalEntity.SPECTRUM.ref(current)), intensityArray, extraArrays);
+                } catch (MzPeakException e) {
+                    error = e;
+                }
             } else {
-                arrays = NullFill.finalizeArrays(mzArray, intensityArray, extraArrays, reconstructProfile);
+                arrays = NullFill.dropNulls(NullFill.concat(rows), intensityArray, extraArrays);
             }
-            if (result.putIfAbsent(current, arrays) != null) {
+            boolean repeated = result.containsKey(current) || errors.containsKey(current);
+            if (arrays != null) {
+                result.put(current, new Arrays(arrays.mz(), arrays.intensity(), arrays.extras(), intensityUnit()));
+            } else {
+                errors.put(current, error);
+            }
+            if (repeated) {
                 throw new MzPeakException("signal file is not sorted by spectrum_index (index " + current
                         + " appears in multiple non-contiguous runs)");
             }
             mz = new DoubleArrayBuilder();
+            mzRows = new ArrayList<>();
             intensity = new DoubleArrayBuilder();
             extras = newExtras();
+            units = new LinkedHashSet<>();
+            lastSupplier = null;
+            failed = null;
         }
 
         /**

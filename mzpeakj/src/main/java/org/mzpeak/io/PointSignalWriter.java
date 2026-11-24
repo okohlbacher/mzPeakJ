@@ -25,18 +25,15 @@ import static org.mzpeak.io.ParquetOutput.UINT64;
  * Writes the point layout of {@link MzPeakWriter}: one row per point, carrying the entity index, the axis value
  * and the intensity, for spectra (spectra_data and spectra_peaks, appended one spectrum at a time), chromatograms and
  * wavelength spectra; a spectrum or chromatogram row also carries the plan's extra columns, null where the entity has
- * no such array. A chromatogram row holds its intensity in the plan's intensity column of the chromatogram's unit and
- * null in the others. Each file's footer holds the array index of its columns and the counts
- * ({@link ParquetOutput.SignalFile}).
+ * no such array and where its value is NaN (W10). A spectrum or chromatogram row holds its intensity in the plan's
+ * intensity column of the entity's unit and null in the others. Each file's footer holds the array index of its columns
+ * and the counts ({@link ParquetOutput.SignalFile}).
  */
 final class PointSignalWriter {
 
-    /** The intensity column of the spectrum signal files: detector counts. */
-    private static final List<IntensityColumn> SPECTRUM_INTENSITY = List.of(
-            new IntensityColumn(ArrayIndex.COUNTS_UNIT, "intensity", true));
     /** The intensity column of wavelength_spectra_data, whose unit is unknown. */
     private static final List<IntensityColumn> WAVELENGTH_INTENSITY = List.of(
-            new IntensityColumn(null, "intensity", true));
+            new IntensityColumn(null, "intensity"));
 
     private static final MessageType WAVELENGTH_DATA_SCHEMA = pointSchema("wavelength_spectrum_index", "wavelength",
             WAVELENGTH_INTENSITY, List.of());
@@ -60,11 +57,7 @@ final class PointSignalWriter {
                 .index(entity.indexField())
                 .axis(xField, BufferFormat.POINT, null, xUnit);
         for (IntensityColumn intensity : intensities) {
-            if (intensity.primary()) {
-                builder.intensity(intensity.column(), BufferFormat.POINT, null, intensity.unit());
-            } else {
-                builder.secondaryIntensity(intensity.column(), BufferFormat.POINT, intensity.unit());
-            }
+            builder.intensity(intensity.column(), BufferFormat.POINT, null, intensity.unit());
         }
         for (ExtraColumn extra : extras) {
             builder.extra(extra.column(), extra.arrayType(), extra.arrayName(), extra.unit(), BufferFormat.POINT);
@@ -87,31 +80,34 @@ final class PointSignalWriter {
     }
 
     /**
-     * Opens spectra_data or spectra_peaks in the point layout, with a column for each of {@code extras}, the plan's
-     * extra columns, for {@link #appendSpectrumPoints}.
+     * Opens spectra_data or spectra_peaks in the point layout, with a column for each of {@code intensities} and
+     * {@code extras}, the plan's spectrum intensity and extra columns, for {@link #appendSpectrumPoints}.
      */
-    static SignalFile openSpectrumPoints(Path file, List<ExtraColumn> extras, Options options) throws IOException {
-        return new SignalFile(file, pointSchema("spectrum_index", "mz", SPECTRUM_INTENSITY, extras),
-                pointIndex(SignalEntity.SPECTRUM, "mz", ArrayIndex.MZ_UNIT, SPECTRUM_INTENSITY, extras), options);
+    static SignalFile openSpectrumPoints(Path file, List<IntensityColumn> intensities, List<ExtraColumn> extras,
+                                         Options options) throws IOException {
+        return new SignalFile(file, pointSchema("spectrum_index", "mz", intensities, extras),
+                pointIndex(SignalEntity.SPECTRUM, "mz", ArrayIndex.MZ_UNIT, intensities, extras), options);
     }
 
     /**
-     * Append to {@code file}, opened by {@link #openSpectrumPoints} with {@code extras}, the rows {@code spectrum}
-     * writes to spectra_data ({@code mz()}/{@code intensity()}) or, for {@code peaksFile}, to spectra_peaks
-     * ({@code mz()}/{@code intensity()} or {@code peaks()}, as its entry says), each with the values of the extra
-     * columns ({@link SpectrumSignal#extraValues}), and add them to the file's points. {@code mz()}/{@code intensity()}
-     * are written in the order of the spectrum's {@link WritePlan.SignalArrays}.
+     * Append to {@code file}, opened by {@link #openSpectrumPoints} with {@code intensities} and {@code extras}, the
+     * rows {@code spectrum} writes to spectra_data ({@code mz()}/{@code intensity()}) or, for {@code peaksFile}, to
+     * spectra_peaks ({@code mz()}/{@code intensity()} or {@code peaks()}, as its entry says), the intensity in the
+     * column of its unit ({@link SpectrumSignal#intensityUnit}), each with the values of the extra columns
+     * ({@link SpectrumSignal#extraValues}), and add them to the file's points. {@code mz()}/{@code intensity()} are
+     * written in the order of the spectrum's {@link WritePlan.SignalArrays}.
      */
-    static void appendSpectrumPoints(SignalFile file, SpectrumSignal spectrum, List<ExtraColumn> extras,
-                                     boolean peaksFile) throws IOException {
+    static void appendSpectrumPoints(SignalFile file, SpectrumSignal spectrum, List<IntensityColumn> intensities,
+                                     List<ExtraColumn> extras, boolean peaksFile) throws IOException {
         long index = spectrum.entry().sourceIndex();
+        String intensityColumn = WritePlan.intensityColumn(intensities, spectrum.intensityUnit(peaksFile));
         double[][] extraValues = spectrum.extraValues(extras, peaksFile);
         int points;
         if (peaksFile && !spectrum.entry().peaksFromArrays()) {
             List<CentroidPeak> peaks = spectrum.source().peaks();
             points = peaks.size();
             for (int i = 0; i < points; i++) {
-                writePoint(file, "spectrum_index", index, "mz", peaks.get(i).mz(), "intensity",
+                writePoint(file, "spectrum_index", index, "mz", peaks.get(i).mz(), intensityColumn,
                         peaks.get(i).intensity(), extras, extraValues, i);
             }
         } else {
@@ -119,7 +115,7 @@ final class PointSignalWriter {
             double[] intensity = spectrum.arrays().intensity();
             points = mz.length;
             for (int i = 0; i < points; i++) {
-                writePoint(file, "spectrum_index", index, "mz", mz[i], "intensity", intensity[i], extras,
+                writePoint(file, "spectrum_index", index, "mz", mz[i], intensityColumn, intensity[i], extras,
                         extraValues, i);
             }
         }
@@ -130,13 +126,13 @@ final class PointSignalWriter {
      * Write the plan's chromatograms_data rows: each chromatogram's time and intensity in the order of its
      * {@link WritePlan.SignalArrays}, the intensity in the column of its unit ({@link WritePlan#intensityColumn}),
      * with the values of the plan's extra columns from its {@link Chromatogram#arrays()} in the same order. The time
-     * column is declared in the plan's {@link WritePlan#chromatogramTimeUnit()}, the times written as given.
+     * column is declared in minutes ({@link ArrayIndex#MINUTE_UNIT}), the unit the planner converted the times to.
      */
     static void writeChromatogramData(Path file, WritePlan plan) throws IOException {
         List<IntensityColumn> intensities = plan.chromatogramIntensities();
         List<ExtraColumn> extras = plan.chromatogramExtras();
         try (SignalFile out = new SignalFile(file, pointSchema("chromatogram_index", "time", intensities, extras),
-                pointIndex(SignalEntity.CHROMATOGRAM, "time", plan.chromatogramTimeUnit(), intensities, extras),
+                pointIndex(SignalEntity.CHROMATOGRAM, "time", ArrayIndex.MINUTE_UNIT, intensities, extras),
                 plan.options())) {
             out.setEntityCount(plan.chromatograms().size());
             for (Entry<Chromatogram> entry : plan.chromatograms()) {
@@ -175,7 +171,9 @@ final class PointSignalWriter {
     /**
      * One row: the entity {@code index}, the axis value {@code x}, the {@code intensity} in {@code intensityField},
      * and the point {@code row} of {@code extraValues}, each array the values of the extra column at its position of
-     * {@code extras}, written where the array is not null. Every other column of the row is null.
+     * {@code extras}, written where the array is not null and the value is not NaN: a NaN cell is written as null,
+     * which reads back as NaN, since parquet-java writes no column index for a page holding a NaN (W10). The axis
+     * value and the intensity are never NaN ({@link WritePlanner} refuses it). Every other column of the row is null.
      */
     private static void writePoint(SignalFile file, String indexField, long index, String xField, double x,
                                    String intensityField, double intensity, List<ExtraColumn> extras,
@@ -186,7 +184,7 @@ final class PointSignalWriter {
         point.add(xField, x);
         point.add(intensityField, intensity);
         for (int k = 0; k < extraValues.length; k++) {
-            if (extraValues[k] != null) {
+            if (extraValues[k] != null && !Double.isNaN(extraValues[k][row])) {
                 point.add(extras.get(k).column(), extraValues[k][row]);
             }
         }

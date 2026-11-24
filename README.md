@@ -25,6 +25,12 @@ output; it currently fails, because mzpeak-validate 0.9.25 predates the array-in
 (HUPO-PSI/mzPeak `0220201`), and whether the CV list of `PACKED` output must declare IMS is undecided, so the
 output is not claimed to validate. See [Scope & limitations](#scope--limitations) for what's deferred.
 
+mzPeakJ 0.13.0 was checked against the HUPO-PSI mzPeak specification at commit
+`963d64a04244ebc543532b5141c6e6103aa1f05a` ([HUPO-PSI/mzPeak-specification](https://github.com/HUPO-PSI/mzPeak-specification),
+2026-11-21, "revise signing process"), and its written files against the Rust reference reader of mzPeak-reference
+`2ee2589` (`mzpeak_prototyping` from HUPO-PSI/mzPeak at `2ee2589facddea6de6c1e7c6cfa77e56895420ec`, see
+[`tools/rdump`](tools/rdump/README.md)); see the [0.13.0 release notes](docs/releases/0.13.0.md).
+
 ## About the mzPeak format
 
 mzPeak ([paper DOI 10.1021/acs.jproteome.5c00435](https://doi.org/10.1021/acs.jproteome.5c00435)) stores
@@ -163,7 +169,9 @@ old constructors still compile (and give minute), but a Java 21 record pattern w
 (`case Chromatogram(var index, …, var precursors)`) needs a 12th one. The drift-time ion mobility arrays among the
 extra arrays of spectra and chromatograms (MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156)
 are in milliseconds, converted from the unit the file's array index declares. Up to mzPeakJ 0.10.3 these values came
-in the file's unit.
+in the file's unit. The scan windows of wavelength spectra are in nanometers, converted from the unit the column
+mapping gives (micrometer, millimeter or meter); any other unit, m/z included, is refused once a window holds a
+value, naming the member and the column.
 
 #### Options, range queries and the other reader features
 
@@ -210,6 +218,8 @@ try (MzPeakReader reader = MzPeakReader.open(Path.of("data/run.mzpeak"))) {
     Map<String, double[]> arrays = s.arrays();          // parallel to mz(), e.g. MS:1003006 ion mobility
     Map<String, double[]> peakArrays = s.peakArrays();  // parallel to the stored peaks, by CentroidPeak.index()
     Optional<double[]> ionMobility = s.ionMobility();   // the first ion mobility array, if any
+    String unit = s.intensityUnit();                    // unit of intensity(), e.g. MS:1000131; null if undeclared
+    String peakUnit = s.peakIntensityUnit();            // unit of the peaks' intensities, likewise
     tic.ifPresent(c -> System.out.println(
             c.intensityUnit() + " " + c.arrays().keySet()));   // Chromatogram.arrays(): e.g. MS:1000131 [ms level]
 
@@ -231,8 +241,8 @@ try (MzPeakReader reader = MzPeakReader.open(MzPeakSource.zip("data/run.mzpeak",
 // Integrity: compare each member with the SHA-512 checksum in the manifest (never done on open)
 IntegrityReport report = MzPeakReader.verifyIntegrity(Path.of("data/run.mzpeak"));  // or reader.verifyIntegrity()
 System.out.println(report.outcome());                  // VALID, INVALID or UNVERIFIABLE (a checksum is missing)
-for (IntegrityReport.MemberResult m : report.failures()) {   // MISMATCH and MISSING_MEMBER, in manifest order
-    System.out.println(m.name() + ": " + m.status());
+for (IntegrityReport.MemberResult m : report.failures()) {   // MISMATCH, MISSING_MEMBER, REJECTED_MEMBER
+    System.out.println(m.name() + ": " + m.status());       // REJECTED_MEMBER: compressed/encrypted ZIP member, m.reason()
 }
 ```
 
@@ -311,8 +321,9 @@ Without a row-group size, the `mzpeak.writer.rowGroupSize` system property appli
   manifest uses the current dialect, with column mappings. The HEAD reference Python reader and the Rust
   reference reader read this output; both are checked (the Rust reader in CI, see the writer notes).
 - **`PACKED`** writes the pin-era layout that mzPeakJ 0.10.3 and earlier wrote: one packed struct per facet,
-  and only the first scan and the primary precursor of a spectrum; no wavelength-spectrum Params, and no
-  chromatogram polarity, data processing reference, Params or precursors (one WARNING for each kind dropped).
+  and only the first scan and the primary precursor of a spectrum; no spectrum data processing reference, no
+  wavelength-spectrum Params, no chromatogram polarity, data processing reference, Params or precursors, and no
+  auxiliary arrays or wavelength scans (one WARNING for each kind dropped).
   Since 0.12.0 a spectrum type or summary term it writes as a column no longer stays in the `parameters` list as
   well. Use it only for readers of that era; the current Python and Rust readers reject it.
 
@@ -332,47 +343,106 @@ Writer notes:
 - ZSTD-compressed Parquet, fully Hadoop-free; writes format version `0.9.0`, the CV list, an array index in
   every signal file and a SHA-512 checksum for every member.
 - Emits the reference metadata schema: derived spectrum columns (observed m/z range, base peak, TIC,
-  spectrum type), precursor **activation** (dissociation method + collision energy), **scan windows**,
+  spectrum type; the base peak intensity and TIC, whose columns are in detector counts, only of a payload in
+  MS:1000131 or without unit), precursor **activation** (dissociation method + collision energy), **scan windows**,
   typed **ion-mobility** and **imaging-position** columns, and per-spectrum/scan/selected-ion CV params.
 - A CV param that has a standardized column (summary values, spectrum type, representation, dissociation method,
-  collision energy, imaging position, wavelength representation, base peak intensity and TIC) is written to that
-  column and leaves the `parameters` list, so it reads back after the list, in column order, and without its name
-  where the column is a term marker. CV param order carries no meaning; a description whose promoted terms did not
-  come last reads back in another order, and one read from mzPeakJ's own output keeps its order. As the reference
-  does, a wavelength spectrum's type and observed wavelength range are written to their columns and also stay in the
-  list. A param with an accession but no name in a `parameters` list is written with its term's name (its accession
+  collision energy, imaging position, and of a wavelength spectrum its type, representation, observed wavelength
+  range, base peak intensity and TIC) is written to that column and leaves the `parameters` list, so it reads back
+  after the list, in column order, and without its name where the column is a term marker. CV param order carries no
+  meaning; a description whose promoted terms did not come last reads back in another order, and one read from
+  mzPeakJ's own output keeps its order. Unlike the reference, a wavelength spectrum's type and observed wavelength
+  range are not also kept in the list (the spec forbids writing a term both ways); the Rust reference reader takes
+  them from the columns, once each, where it reads the reference's has_uv with each twice. A param with an accession but no name in a `parameters` list is written with its term's name (its accession
   where mzPeakJ does not know the term), which the Rust reference reader requires.
-- In the `SPLIT` layout, `spectra_metadata` and `wavelength_spectra_metadata` carry empty `auxiliary_arrays` and
-  an `ARROW:schema` footer entry that types them as the reference does; the Rust reference reader needs both.
+- In the `SPLIT` layout, `spectra_metadata`, `chromatograms_metadata` and `wavelength_spectra_metadata` carry each
+  entity's `auxiliaryArrays()` in `auxiliary_arrays`, their bytes and compression as given (compressed bytes stay
+  compressed), with `number_of_auxiliary_arrays`, and an `ARROW:schema` footer entry that types them as the
+  reference does; the Rust reference reader needs both columns. Their names, units and params pass the CV prefix
+  check below, their data processing must be declared, and the accession of their name (a binary data array type,
+  MS:1000786 non-standard data array with the array's name as its value included), their data type and their
+  compression must each be a term the Rust reference reader accepts (it panics on a name without an accession and
+  on any other value), else the write is refused. So is a unit of the array, of its name or of a param, or a param
+  accession, that is neither null nor a CURIE that reader parses, `PREFIX:number` with a number up to 4294967295
+  (it panics on others): a unit such as `seconds` is refused here, give `UO:0000010`. The Rust reference reader
+  cannot decode a zlib-compressed one (R-13) and drops those of a chunked spectrum spanning row groups (R-14); the
+  `PACKED` layout writes none and warns.
 - Centroid data goes to `spectra_peaks`: a CENTROID spectrum whose arrays are its peak list is written there
   only; other point arrays go to `spectra_data` and peak lists to `spectra_peaks` (a spectrum may carry both).
   A CENTROID spectrum with a non-finite m/z keeps both files, since `spectra_peaks` would read such a row back
   as an invented peak (a deviation from the spec's routing).
 - An m/z, chromatogram time or wavelength axis that is not ascending is written re-sorted, with one WARNING per
-  entity. The sort orders rows by `Double.compare`, so rows with a NaN move to the end.
+  entity. The sort orders rows by `Double.compare`, so -Infinity comes first and +Infinity last.
 - Numpress intensity (SLOF) is lossy; total ion current is preserved to well under 1%. The Numpress layout takes
   only finite m/z of at least 0 that its fixed point encodes (see `SignalEncoding.NUMPRESS`; sorted m/z up to
   21474.83 always are) and only finite intensities of at least 0 (PIC: rounding to at most 2147483647), and refuses
-  any other value, naming the spectrum, before anything is written. The point layout writes every m/z, but reads a
-  NaN m/z back interpolated, as its null marker; so transition data without a product-ion m/z (SRM/MRM) keeps its
-  NaN m/z in neither layout.
+  any other value, naming the spectrum, before anything is written. The point layout writes every m/z but NaN.
+- No NaN is written to a column: parquet-java writes no column index for a page holding a NaN, and the spec requires
+  a page index for every column. A NaN m/z, time, wavelength or intensity is refused in every encoding, naming the
+  entity and the position, before anything is written (so transition data without a product-ion m/z, SRM/MRM, needs
+  its rows without m/z dropped first); a NaN extra-array cell is written as null and reads back as NaN, and a NaN
+  optional metadata double is written as null and reads back absent.
+- A `Param` value may be a `Long`, `Integer`, `Short` or `Byte` (written as an integer, read back as a `Long`), a
+  `Double` or `Float` (read back as a `Double`), a `String`, a `Boolean`, or a `Collection` or Java array of these,
+  which is written as a JSON array in the JSON metadata and as its JSON text in a Parquet `parameters` list, and
+  reads back as its compact JSON text (`"[1,2]"`). Any other type is refused, naming the entity and the param, before
+  anything is written. Up to mzPeakJ 0.12.0 a Parquet `parameters` list held only `Long`, `Double`, `String` and
+  `Boolean` values (any other as no value), and the JSON metadata wrote the types other than those and `Integer` with
+  `toString()`.
 - Extra signal arrays are written: those of spectra (`arrays()` and `peakArrays()`, such as per-peak ion
   mobility) as extra columns of `spectra_data` and `spectra_peaks` in both signal encodings, those of
   chromatograms (such as the TIC's `ms level`) as extra columns of `chromatograms_data`, which holds the
   intensities of each chromatogram intensity unit in a column of their own, so the unit is kept (a chromatogram
   without points reads back without one). The default `SPLIT` layout also writes chromatogram polarity, data
   processing reference, Params and precursors, and wavelength-spectrum Params.
-- Chromatogram times are written as given, with their `timeUnit` declared, and read back in that unit.
-  Chromatograms of different time units in one dataset are refused before anything is written; convert them first
-  with `Chromatogram.withTimeUnit`.
+- `spectra_data` and `spectra_peaks` hold the intensities of each spectrum intensity unit (`intensityUnit()`,
+  `peakIntensityUnit()`; MS:1000131 when null) in a column of their own: `intensity` for MS:1000131 (else the first
+  unit), `intensity_MS_1000132` and the like, secondary, for the others; in the Numpress encoding the transform
+  columns `intensity_numpress_slof_bytes`, `intensity_MS_1000132_numpress_slof_bytes` (or `_pic_bytes`). The batch
+  overloads take the units from the spectra. A `Session` declares them when it opens,
+  `Options.withSpectrumIntensityUnits("MS:1000131", "MS:1000132")` (default MS:1000131 only), and refuses a spectrum
+  in another unit, naming the spectrum and the declared units. The Rust reference reader's range read
+  (`extract_signal`) reads only the first intensity column (R-11 in
+  [docs/upstream-issues.md](docs/upstream-issues.md)).
+- Chromatogram times are written in minutes (UO:0000031), as `chromatograms.md` requires: times in second,
+  millisecond or hour are converted once, the caller's chromatogram is not modified, and chromatograms of different
+  units may be written together (W3, D13-1). Any other unit is refused before anything is written, with a message
+  that lists the supported ones. They read back in minutes.
 - In the `SPLIT` layout the scans and selected ions carry `ion_mobility_value` and `ion_mobility_type` (a Param of
   one of the four ion mobility types the reader names, with its unit, moves there), the wavelength scans have the
-  full scan schema, and `chromatograms_metadata` carries empty `auxiliary_arrays` with its `ARROW:schema` entry, as
-  the reference writes them.
-- Every reference in the file-level documents resolves: a run default or software reference that names nothing
-  gets a stub entity of that id (an instrument configuration, data processing, source file or software), with one
-  WARNING each; files whose references resolve are written unchanged. diaPASEF.ref and diaPASEF.grid, whose run
-  names instrument configuration 1 while only 0 exists, are written with a stub configuration 1.
+  scan schema without these two and `spectrum_reference` (the spec's wavelength scan table has none of them), their
+  scan windows FLOAT in nanometers, each wavelength spectrum's scans as given (one holding its time if it has none),
+  and `chromatograms_metadata` carries `auxiliary_arrays` with its `ARROW:schema` entry, as the reference writes
+  them. The wavelength representation column is `opt_spectrum_representation` (the spec's wavelength table does not
+  name it); the reader also reads the reference's `spectrum_representation`.
+- Every reference resolves and every CV prefix is declared, or the write is rejected before anything is written
+  (in a session: before that entity is written; spectra added earlier may already be on disk), naming the entity:
+  a scan's instrument configuration, a spectrum's or chromatogram's data processing, the software
+  of an instrument configuration or processing method, a scan setting's source file and a non-null run default must
+  name an entry of the file metadata (without file metadata nothing is declared, so any such reference is
+  rejected), and the prefix of every CURIE (param
+  accessions and units, extra-array keys, chromatogram types and intensity units, spectrum intensity units,
+  auxiliary-array names, params and units) must be one of
+  `CvEntry.known()` or have a full entry in `Options.withCvList`. A unit that is not a CURIE, such as `seconds`, is
+  written as given in the file metadata, the scan settings and the params of the `PACKED` layout, except as an
+  intensity unit (of a spectrum, its peaks or a chromatogram), which becomes an array unit of the array index and
+  must be a CURIE, and in an auxiliary array (see above). A null run default gets the first entry of its list, else
+  a stub entity with one WARNING. A blank String reference, such as the empty `software_reference` mzpeak-convert
+  0.17.2 writes, counts as absent and is written as given. In the `SPLIT` layout every param of the scan settings and
+  of the file metadata, which are written as JSON, needs a name (`schema/param.json`); the `PACKED` layout writes a
+  nameless one as given.
+- The `SPLIT` layout declares the fields the spec requires as required (W14): the item, `value` and `name` of every
+  `parameters` list of a metadata table, and the `data`, `name`, `name.name`, `data_type`, `compression` and `items`
+  of each auxiliary array; the `parameters` list inside an auxiliary array keeps optional item fields, as
+  auxiliary-arrays.md gives it (metadata-tables.md disagrees). The `PACKED` layout keeps them all optional.
+- In the `SPLIT` layout the accession and unit of every param of a spectrum, its scans and precursors (isolation
+  window, activation, selected ions), a chromatogram and its precursors, a wavelength spectrum and its scans must be
+  null or a CURIE the Rust reference reader parses, `PREFIX:number` with a number up to 4294967295 (it panics on
+  any other value, R-16 in [docs/upstream-issues.md](docs/upstream-issues.md)), else the write is refused before
+  anything is written, naming the entity, its index, the param's position and the field: give `UO:0000010`, not
+  `seconds`.
+  diaPASEF.ref and diaPASEF.grid, whose run names instrument configuration 1 while only 0 exists, are rejected as
+  read; add configuration 1 to write them.
 - A `SPLIT` write of a legacy (packed) dataset keeps the summary values it stores (observed m/z range, base peak,
   TIC) instead of deriving them from the arrays, since the reader now gives them as Params; a spectrum without them
   still gets derived values. This deviates from a default of the 0.12.0 design round, see
@@ -391,7 +461,10 @@ Writer notes:
   (`reader.py:421`, a pandas groupby drops NaN keys; mzPeakJ and the Rust reference attach them), its
   pynumpress cannot decode a spectrum of one point in the Numpress layout (a 12-byte linear payload; the writer
   never leaves a one-point chunk otherwise), and it cannot open a dataset with 0 spectra, such as one written for
-  a chromatogram-only mzML (an `IndexError` in `_read_spectra`, `reader.py:569-573`).
+  a chromatogram-only mzML (an `IndexError` in `_read_spectra`, `reader.py:569-573`). It cannot read a spectrum
+  with a zlib-compressed auxiliary array: it hands the array's bytes, which pyarrow gives as a list, to
+  `zlib.decompress` (`reader.py:196`, `TypeError: a bytes-like object is required, not 'list'`); uncompressed
+  auxiliary arrays read.
 
 ## Running the CLI & examples
 
@@ -454,7 +527,9 @@ summary.
 ./run-example.sh org.mzpeak.examples.ExtractSpectra \
     mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/ms2.mzpeak --ms-level 2 --rt-max 0.1
 ```
-Produces an unpacked directory or STORED ZIP depending on the output name.
+Produces an unpacked directory or STORED ZIP depending on the output name. A write the writer refuses, such as
+diaPASEF.ref or diaPASEF.grid with their undeclared run default instrument configuration, prints its message and
+exits with status 1.
 
 #### `ConvertToDta` — MSn spectra → Sequest `.dta` files
 
@@ -489,9 +564,9 @@ java -jar "$jar" mzpeakj-mzml/src/test/resources/mzml/tiny.pwiz.1.1.mzML /tmp/ti
 java -Xmx2g -jar "$jar" mzpeakj/src/test/resources/mzpeak/small.mzpeak /tmp/small.mzML
 ```
 
-The jar bundles only the 81 classes of fastutil that jmzML uses. Chromatogram times keep their unit in both
-directions; when an mzML holds chromatograms of different time units, the later ones are converted to the unit of the
-first (loss B-15). The [mzML converter page](docs/mzml-converter.md) gives the full mapping.
+The jar bundles only the 81 classes of fastutil that jmzML uses. Chromatogram times are written to mzPeak in minutes,
+whatever the unit of each chromatogram in the mzML (W3). The [mzML converter page](docs/mzml-converter.md) gives the
+full mapping.
 
 The direction comes from the names, case-insensitive:
 
@@ -560,8 +635,13 @@ it; arrays compressed with the combined MS-Numpress-and-zlib terms MS:1002746, M
 MS-Numpress PIC counts of 2^31 and above; an empty MS-Numpress linear array (an empty or header-only payload) and an
 empty SLOF payload; arrays without a binary data type term (jmzML: "Required precision CV parameter not found");
 m/z, intensity, wavelength and time arrays in a unit the model cannot carry; and m/z and intensity arrays (or
-wavelength or time and intensity arrays) of different declared lengths. Lenient: of two compression or two data type
-terms on one array, jmzML decodes by the one it knows, and the other is not checked. Counted under B-40: the
+wavelength or time and intensity arrays) of different declared lengths. The mzPeak writer's checks fail a
+conversion too ([converter limits](docs/mzml-converter.md#limits)): a NaN in an axis or intensity array, a CURIE of
+a CV the `cvList` does not declare, a reference that names nothing of the header and, in the default `split`
+layout, a cvParam accession or unit that is not `PREFIX:number` (such as an NCIT term; `--layout packed` writes it where it writes the param list, and drops chromatogram and
+wavelength-spectrum Params and wavelength scans).
+Lenient: of two compression or two data type terms on one array, jmzML decodes by the one it knows, and the other
+is not checked. Counted under B-40: the
 attributes of `run`, `spectrumList` and `chromatogramList` are taken from their start tags as jmzML's index reads
 them, so a character or entity reference stays as written and, whatever the declared encoding, each byte >= 0x80
 becomes U+FFFD (a default ref with such a byte then names nothing, while the header lists keep the character).
@@ -604,14 +684,14 @@ the CLI reports it as an `error:` line (exit 1). `--help` prints both memory rul
 ### What is lost
 
 Beyond the limits, every conversion reports what the target format cannot carry as it is, one `warning:` line per
-kind with its count: B-1 … B-42 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, scan
-start times converted to minutes or lost array data processing refs, and A-1 … A-33 for mzPeak → mzML, such as required
+kind with its count: B-1 … B-43 for mzML → mzPeak (→ mzML), such as referenceableParamGroups expanded inline, scan
+start times converted to minutes or lost array data processing refs, and A-1 … A-35 for mzPeak → mzML, such as required
 content synthesized, ids encoded as NCNames or a run start time rewritten by jmzML. The
 [losses section of the mzML converter design](docs/mzml-converter.md#losses) lists each loss and which class counts
 it; the Javadoc of `MzMLReader`, `MzMLWriter` and `MzMLConversion` describes them.
-Two losses the converter cannot see are printed as fixed lines without count after the limits of mzPeak → mzML:
-A-13 (array units and data types as stored in mzPeak) and A-14 (`auxiliary_arrays`, which the library does not
-read). The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
+One loss the converter does not count is printed as a fixed line without count after the limits of mzPeak → mzML:
+A-13 (array units and data types as stored in mzPeak); only a spectrum's intensity unit is kept, both ways
+(MS:1000131, MS:1000132 or MS:1000814). Arrays whose length differs from the axis travel as `auxiliary_arrays` both ways. The mzML writer also warns, with a count, about each PSI mapping rule its output breaks because the input
 lacks what the rule asks for (it does not invent the data): spectra without exactly one spectrum type and
 representation (`spectrum_must`), scanLists of several scans without a combination term (`scan_must`), spectrum
 precursor activations without a dissociation method (`precursor_activation_must`), instrument configurations
@@ -625,6 +705,9 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
 - A-33: a non-standard data array without a name (keyed MS:1000786 or with an empty key) is written with the name
   'non-standard data array', the name the library gives such an array, under which it comes back; the mzML read
   drops a nameless one.
+- A-34, A-35: an auxiliary array is written with its decoded values, its name and its unit; its params, its data
+  processing and a unit whose CV prefix the cv list lacks are not written (A-34), and an array whose compression or
+  data type cannot be decoded is dropped (A-35).
 - B-14 also counts the summary params (m/z range, base peak, total ion current) and selected-ion peak intensities
   written without unit, as ProteoWizard writes the total ion current: they are given their default unit (m/z or
   detector counts) and typed as numbers with decimals, so that they reach the mzPeak summary columns (and the TIC
@@ -635,6 +718,9 @@ exactly one type (`chromatogram_must`). Added after the design's tables:
   reference, the `spectrumRef`.
 - B-42: a `spectrumRef` that names no spectrum of the file is kept as the reference's id, without index, and comes
   back as an `externalSpectrumID`.
+- B-43: an array whose declared length differs from its axis array's becomes an auxiliary array, unless its array
+  type is one the Rust reference reader does not map for auxiliary arrays (MS:1002478, MS:1002742 to MS:1002745,
+  MS:1003143): such an array is dropped.
 - A-18 also counts the spectrum precursors without index that are written as `externalSpectrumID`, and drops (and
   counts) every external reference when the run has no default source file, which mzML requires next to an
   `externalSpectrumID`. The HEAD Python reader attaches selected ions to their precursor by `(source_index,
@@ -653,14 +739,19 @@ readers, the fixture sets and golden oracles), see **[DESIGN.md](DESIGN.md)**.
 | `org.mzpeak.model` | Pure data — no I/O deps: `CentroidPeak`, `Spectrum`, `SpectrumDescription`, `Precursor`, `Activation`, `SelectedIon`, `IsolationWindow`, `ScanEvent`, `Chromatogram`, `WavelengthSpectrum`, `Param`, `Tolerance`, `CvTerms`, … |
 | `org.mzpeak.model.meta` | File/run-level metadata records: `FileMetadata`, `InstrumentConfiguration`, `Software`, `MsRun`, `DataProcessing`, `Sample`, `FileDescription` |
 | `org.mzpeak.io` | `MzPeakReader`, `MzPeakWriter`, `MzPeakManifest`, `SignalQuery`, `ColumnStatistics`, source abstraction (`MzPeakSource`, `RandomAccessBytes`; `DirectorySource` / `ZipSource` / `UnpackedSource`), metadata + array + chromatogram + wavelength stores |
-| `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O: `ParquetGroups` (type-variance-safe accessors), `ZstdCompressionCodecFactory`, `ByteArrayInputFile`, `FileSliceInputFile` |
+| `org.mzpeak.io.parquet` | Hadoop-free Parquet I/O: `ParquetGroups` (type-variance-safe accessors), `PureJavaCodecFactory` (`ZstdCompressionCodecFactory`, deprecated), `ByteArrayInputFile`, `FileSliceInputFile` |
 | `org.mzpeak.cli` / `org.mzpeak.examples` | Runnable demonstrator tools |
 | `org.mzpeak.mzml` / `org.mzpeak.mzml.cli` (module `mzpeakj-mzml`) | mzML ↔ mzPeak through jmzML: `MzMLReader`, `MzMLWriter`, `MzMLConversion`; the CLI `MzPeakConvert` |
 
-**Parquet without Hadoop:** mzPeak Parquet files are ZSTD-compressed. Rather than using parquet-java's
-default Hadoop-based codec factory, mzPeakJ supplies a `ZstdCompressionCodecFactory` backed by the
-self-contained `zstd-jni` jar. No Hadoop FileSystem, Configuration, native libraries, or cluster setup is
-ever used. A single self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
+**Parquet without Hadoop:** mzPeak Parquet files are usually ZSTD-compressed, but the specification allows
+every Parquet codec. Rather than using parquet-java's default Hadoop-based codec factory, mzPeakJ supplies a
+`PureJavaCodecFactory`: ZSTD through the self-contained `zstd-jni` jar, GZIP through `java.util.zip`, SNAPPY,
+LZ4, LZ4_RAW and LZO through aircompressor and BROTLI through `org.brotli:dec`, all of them but zstd-jni pure Java;
+it writes ZSTD (and UNCOMPRESSED). No Hadoop FileSystem, Configuration, Hadoop native libraries, or cluster setup is
+ever used. On JDK 24 and later, the first SNAPPY, LZ4, LZ4_RAW or LZO page read makes the JVM print its one-time
+`sun.misc.Unsafe` warning about aircompressor 2.0.3; `--sun-misc-unsafe-memory-access=allow` turns it off.
+aircompressor 3.x, which no longer uses `sun.misc.Unsafe`, needs Java 22, so mzPeakJ (Java 17) stays on 2.x. A single
+self-contained `hadoop-client-api` jar must be on the classpath because parquet-java's
 classes statically reference Hadoop types — but it is never actually invoked.
 
 ## Format notes
@@ -710,8 +801,8 @@ classes statically reference Hadoop types — but it is never actually invoked.
   Numpress encoding is lossy; total ion current is preserved to <1%.
 - Spectra (MS1 + MSn): metadata in the split and the legacy packed layout + precursor/selected-ion/activation
   params (facet join by `source_index`), `double[]` m/z + intensity, centroid peaks, extra arrays such as
-  per-peak ion mobility, and profile reconstruction of null-marked points using the stored m/z delta-model
-  polynomial (linear interpolation fallback when no model is stored).
+  per-peak ion mobility, auxiliary arrays, intensity units, and profile reconstruction of null-marked points by
+  the spec's null-pair rule (per chunk row; the stored m/z delta model next to a single stored value).
 - Chromatograms (TIC, DAD/absorption, …) — point and chunk time-axis layouts both decoded, with their time and
   intensity units and per-point extra arrays (`Chromatogram.arrays()`, such as the TIC's `ms level`).
 - Wavelength (UV/DAD) spectra as a dedicated `WavelengthSpectrum` type.
@@ -755,8 +846,12 @@ classes statically reference Hadoop types — but it is never actually invoked.
 
 - **Writing**: the delta-`chunk` layout (the m/z + intensity payload is preserved in full). The `PACKED`
   compatibility layout writes only the primary scan / precursor / selected ion of a spectrum (with a warning),
-  so combineIMS frames lose their secondary mobility-scan metadata there, and no wavelength-spectrum Params or
-  chromatogram polarity, data processing reference, Params or precursors (with a warning each).
+  so combineIMS frames lose their secondary mobility-scan metadata there, and no spectrum data processing
+  reference, wavelength-spectrum Params, chromatogram polarity, data processing reference, Params or precursors,
+  auxiliary arrays or wavelength scans (with a warning each). No layout writes the products (`SpectrumDescription.products()`,
+  `Chromatogram.products()`) or the precursor MS level (`Precursor.msLevel()`), which are read only (D13-21; the
+  Rust reference panics on a chromatogram products member); a write that drops any of these warns once, with the
+  counts.
 - **Chromatogram chunk writing** (chunk time-axis layout is decoded but not written).
 - **Null-marking re-encoding** (the null/sparse profile layout is reconstructed on read; the writer emits
   the resulting arrays, not the original sparse layout).
@@ -791,7 +886,7 @@ Project site: <https://okohlbacher.github.io/mzPeakJ/>
 - in the two `-all` jars only, the runtime libraries: parquet-java 1.18.2, Jackson 2.23.0, hadoop-client-api 3.5.0,
   snappy-java 1.1.10.12, aircompressor 2.0.3 and commons-pool 1.6 (Apache-2.0); zstd-jni 1.5.7-3 (BSD-2-Clause);
   jts-core 1.20.0 (EPL-2.0 or EDL-1.0); javax.annotation-api 1.3.2 (CDDL + GPLv2 with Classpath Exception);
-  slf4j-api and slf4j-nop 1.7.33 (MIT); and the native code compiled into the native libraries of two of them:
+  slf4j-api and slf4j-nop 1.7.33 and org.brotli:dec 0.1.2 (MIT); and the native code compiled into the native libraries of two of them:
   zstd 1.5.7 in zstd-jni's (BSD-3-Clause; zstd is dual-licensed BSD or GPLv2), snappy 1.1.10 (BSD-3-Clause) and
   bitshuffle 0.3.4 (MIT) in snappy-java's. Each `-all` jar carries their licence and notice files (`META-INF/`,
   those of several jars concatenated), this project's as `META-INF/LICENSE.mzpeakj` and `META-INF/NOTICE.mzpeakj`,

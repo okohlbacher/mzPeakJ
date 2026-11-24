@@ -40,8 +40,8 @@ class SpectrumFacetAssemblerTest {
                 d.polarity(), d.signalContinuity(), d.numberOfDataPoints(), d.numberOfPeaks(), scans, d.precursors(),
                 d.parameters());
         Path out = tmp.resolve("timeless.mzpeak");
-        MzPeakWriter.writeDirectory(out, List.of(new Spectrum(timeless, spectrum.mz(), spectrum.intensity(),
-                spectrum.peaks())));
+        MzPeakWriter.writeDirectory(out, Fixtures.withoutReferences(List.of(new Spectrum(timeless, spectrum.mz(),
+                spectrum.intensity(), spectrum.peaks()))));
 
         try (MzPeakReader reader = MzPeakReader.open(out)) {
             SpectrumDescription back = reader.metadataAt(0);

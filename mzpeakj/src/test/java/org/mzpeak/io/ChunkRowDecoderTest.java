@@ -10,12 +10,16 @@ import org.junit.jupiter.api.Test;
 import org.mzpeak.io.MzPeakManifest.DataKind;
 import org.mzpeak.io.MzPeakManifest.EntityType;
 import org.mzpeak.io.SignalPlan.Layout;
+import org.mzpeak.io.parquet.ParquetGroups;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * {@link ChunkRowDecoder} on constructed chunk rows of spectrum signal members, for the plans and rows that the
@@ -48,17 +52,32 @@ class ChunkRowDecoderTest {
 
     // ---- the plan --------------------------------------------------------------------------------------------------
 
+    /**
+     * A chromatogram plan decodes its chunk rows with the time as the main axis (C4: before, the constructor threw
+     * IllegalArgumentException "chunk rows of CHROMATOGRAM are not decoded here"): small.chunked's TIC row gives 48
+     * times from its chunk start, paired with its intensity list, whose column it reports.
+     */
     @Test
-    void aChromatogramPlanIsNotDecodedHere() {
+    void aChromatogramPlanDecodesItsTimeAxis() {
         ParquetFooter f = ArrayIndexTest.footer(Fixtures.current("small.chunked.mzpeak"), EntityType.CHROMATOGRAM,
                 DataKind.DATA_ARRAYS);
         SignalPlan plan = SignalPlan.of(ArrayIndex.of(f.keyValue(), f.schema(), SignalEntity.CHROMATOGRAM),
                 f.schema(), SignalEntity.CHROMATOGRAM);
         assertThat(plan.layout()).isEqualTo(Layout.CHUNK);
+        List<Group> rows = new ArrayList<>();
+        try (MzPeakSource source = MzPeakSource.open(Fixtures.current("small.chunked.mzpeak"))) {
+            ParquetGroups.forEach(source.inputFile("chromatograms_data.parquet"), rows::add);
+        }
+        Group chunk = rows.get(0).getGroup("chunk", 0);
 
-        assertThatThrownBy(() -> new ChunkRowDecoder(plan))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("chunk rows of CHROMATOGRAM are not decoded here");
+        ChunkRowDecoder.Row row = new ChunkRowDecoder(plan).decodeSignal(chunk, 0);
+
+        assertThat(row.axis()).hasSize(48);
+        assertThat(row.axis()[0]).isEqualTo(0.004935);
+        assertThat(row.axis()[47]).isCloseTo(0.487237, within(1e-6));
+        assertThat(row.intensity()).hasSize(48);
+        assertThat(row.intensityField()).isEqualTo("intensity");
+        assertThat(row.extras()).isEmpty();
     }
 
     // ---- axis values ----------------------------------------------------------------------------------------------
@@ -77,6 +96,97 @@ class ChunkRowDecoderTest {
 
         assertThat(row.axis()).containsExactly(100.0, 100.5, 100.75);
         assertThat(row.intensity()).containsExactly(1.0, 2.0, 3.0);
+    }
+
+    /**
+     * chunked-layout.md requires the chunk start of a chunk: a delta row whose chunk_start is null is refused, naming
+     * the spectrum, and so is a plan without the column (the audit's fx/c7 spectrum 0: values 0.1, 0.1 and three
+     * intensities, which decoded as m/z 0.0, 0.1, 0.2), and a row of one intensity without values, which read as
+     * the start alone at m/z 0. A basic (absolute) row needs no start, and a row without points decodes empty.
+     */
+    @Test
+    void aDeltaRowWithoutAChunkStartIsRefused() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY);
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        Group nullStart = row(schema);
+        addList(nullStart, "mz_chunk_values", 0.1, 0.1);
+        nullStart.add("chunk_encoding", DELTA);
+        addList(nullStart, "intensity", 1, 2, 3);
+
+        assertThatThrownBy(() -> decoder.decode(nullStart, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of spectrum_index 0 has a null m/z chunk start, which chunked-layout.md"
+                        + " requires of a chunk whose values are not absolute; decoding it from 0 would invent m/z"
+                        + " values");
+
+        MessageType withoutStart = schema(VALUES, ENCODING, INTENSITY);
+        Group noColumn = row(withoutStart);
+        addList(noColumn, "mz_chunk_values", 0.1, 0.1);
+        noColumn.add("chunk_encoding", DELTA);
+        addList(noColumn, "intensity", 1, 2);
+        assertThatThrownBy(() -> new ChunkRowDecoder(inferred(withoutStart)).decode(noColumn, 3))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("chunk row of spectrum_index 3 has no m/z chunk start column in its signal plan, which"
+                        + " chunked-layout.md requires of a chunk whose values are not absolute; decoding it from 0"
+                        + " would invent m/z values");
+        // a single intensity would read as the start alone, at m/z 0
+        Group startOnly = row(schema);
+        addList(startOnly, "mz_chunk_values");
+        startOnly.add("chunk_encoding", DELTA);
+        addList(startOnly, "intensity", 7);
+        assertThatThrownBy(() -> decoder.decode(startOnly, 4))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chunk row of spectrum_index 4 has a null m/z chunk start");
+
+        Group basic = row(schema);
+        addList(basic, "mz_chunk_values", 100.0, 100.5);
+        basic.add("chunk_encoding", "MS:1000576");
+        addList(basic, "intensity", 1, 2);
+        assertThat(decoder.decode(basic, 1).axis()).containsExactly(100.0, 100.5);
+        Group empty = row(schema);
+        addList(empty, "mz_chunk_values");
+        empty.add("chunk_encoding", DELTA);
+        addList(empty, "intensity");
+        assertThat(decoder.decode(empty, 2).axis()).isEmpty();
+    }
+
+    /**
+     * An absolute (MS:1000576 or MS:1003088) row with one intensity more than values reads the chunk start as its
+     * first point: a null chunk start, or a plan without the column, is refused rather than read as m/z 0 (U2; the
+     * Rust reference always writes a non-null chunk_start). With the start, the row decodes as before.
+     */
+    @Test
+    void anAbsoluteRowWithValuesPlusOneIntensitiesNeedsTheChunkStart() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY);
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        for (String encoding : List.of("MS:1000576", "MS:1003088")) {
+            Group nullStart = row(schema);
+            addList(nullStart, "mz_chunk_values", 100.5, 101.0);
+            nullStart.add("chunk_encoding", encoding);
+            addList(nullStart, "intensity", 1, 2, 3);
+            assertThatThrownBy(() -> decoder.decode(nullStart, 5))
+                    .isInstanceOf(MzPeakException.class)
+                    .hasMessage("chunk row of spectrum_index 5 has one intensity more than m/z values, whose first"
+                            + " point is the m/z chunk start, but its m/z chunk start is null; reading it as 0 would"
+                            + " invent m/z values");
+        }
+
+        MessageType withoutStart = schema(VALUES, ENCODING, INTENSITY);
+        Group noColumn = row(withoutStart);
+        addList(noColumn, "mz_chunk_values", 100.5);
+        noColumn.add("chunk_encoding", "MS:1000576");
+        addList(noColumn, "intensity", 1, 2);
+        assertThatThrownBy(() -> new ChunkRowDecoder(inferred(withoutStart)).decode(noColumn, 6))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessageStartingWith("chunk row of spectrum_index 6 has one intensity more than m/z values")
+                .hasMessageContaining("but its signal plan has no m/z chunk start column;");
+
+        Group withStart = row(schema);
+        withStart.add("mz_chunk_start", 100.0);
+        addList(withStart, "mz_chunk_values", 100.5, 101.0);
+        withStart.add("chunk_encoding", "MS:1000576");
+        addList(withStart, "intensity", 1, 2, 3);
+        assertThat(decoder.decode(withStart, 5).axis()).containsExactly(100.0, 100.5, 101.0);
     }
 
     @Test
@@ -192,6 +302,78 @@ class ChunkRowDecoderTest {
                 .isInstanceOf(MzPeakException.class)
                 .hasMessage("grid_type (none) of mz_grid is not one of MS:1003824, MS:1003825, MS:9999002,"
                         + " MS:9999001 for spectrum_index 0");
+    }
+
+    /**
+     * X-9 (R3): SLOF or PIC intensity pairs one-to-one with the m/z of a grid chunk; another length throws naming the
+     * column. Up to 0.12.0 the grid row read the plain list only and the SLOF or PIC payload was not read.
+     */
+    @Test
+    void aGridChunkPairsWithSlofOrPicIntensity() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY, MZ_GRID,
+                bytes("intensity_numpress_slof_bytes"), bytes("intensity_numpress_pic_bytes"));
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        Group picRow = row(schema);
+        picRow.add("chunk_encoding", ChunkCodecs.GRID_ENCODING);
+        addGrid(picRow, GridModels.LINEAR, 7, 8);
+        double[] counts = {10, 20};
+        byte[] pic = new byte[counts.length * 5];
+        addBytes(picRow, "intensity_numpress_pic_bytes", Arrays.copyOf(pic, MSNumpress.encodePic(counts, 2, pic)));
+        Group slofRow = row(schema);
+        slofRow.add("chunk_encoding", ChunkCodecs.GRID_ENCODING);
+        addGrid(slofRow, GridModels.LINEAR, 7, 8);
+        double[] three = {10, 20, 30};
+        byte[] slof = new byte[8 + three.length * 2];
+        addBytes(slofRow, "intensity_numpress_slof_bytes", Arrays.copyOf(slof,
+                MSNumpress.encodeSlof(three, 3, slof, MSNumpress.optimalSlofFixedPoint(three, 3))));
+
+        ChunkRowDecoder.Row row = decoder.decode(picRow, 0);
+
+        assertThat(row.axis()).containsExactly(7.0, 15.0);
+        assertThat(row.intensity()).containsExactly(10.0, 20.0);
+        assertThatThrownBy(() -> decoder.decode(slofRow, 0))
+                .isInstanceOf(MzPeakException.class)
+                .hasMessage("grid chunk intensity length (3) must equal its mz_grid indices (2) for spectrum_index 0"
+                        + " (SLOF intensity column intensity_numpress_slof_bytes)");
+    }
+
+    /**
+     * X-9 (R3): on a delta row and on a grid row with SLOF, PIC and plain intensities all filled, the SLOF values are
+     * read; with a SLOF payload of its header only, the PIC values are. The plain list is read only without either.
+     */
+    @Test
+    void slofThenPicWinOverThePlainIntensityOnDeltaAndGridRows() {
+        MessageType schema = schema(START, VALUES, ENCODING, INTENSITY, MZ_GRID,
+                bytes("intensity_numpress_slof_bytes"), bytes("intensity_numpress_pic_bytes"));
+        ChunkRowDecoder decoder = new ChunkRowDecoder(inferred(schema));
+        for (boolean grid : new boolean[] {false, true}) {
+            double[] mz = grid ? new double[] {7.0, 15.0} : new double[] {100.5, 100.75};
+            for (boolean headerOnlySlof : new boolean[] {false, true}) {
+                Group chunk = row(schema);
+                if (grid) {
+                    chunk.add("chunk_encoding", ChunkCodecs.GRID_ENCODING);
+                    addGrid(chunk, GridModels.LINEAR, 7, 8);
+                } else {
+                    chunk.add("chunk_encoding", DELTA);
+                    chunk.add("mz_chunk_start", 100.0);
+                    addList(chunk, "mz_chunk_values", 0.5, 0.25);
+                }
+                addList(chunk, "intensity", 50, 60);
+                addBytes(chunk, "intensity_numpress_slof_bytes", headerOnlySlof ? slof() : slof(10, 20));
+                addBytes(chunk, "intensity_numpress_pic_bytes", pic(30, 40));
+
+                ChunkRowDecoder.Row row = decoder.decode(chunk, 0);
+
+                assertThat(row.axis()).as("grid %s", grid).containsExactly(mz);
+                if (headerOnlySlof) {
+                    assertThat(row.intensity()).as("grid %s", grid).containsExactly(30.0, 40.0);
+                } else {
+                    assertThat(row.intensity()).as("grid %s", grid).hasSize(2);
+                    assertThat(row.intensity()[0]).isCloseTo(10.0, within(10.0 * 1e-3));
+                    assertThat(row.intensity()[1]).isCloseTo(20.0, within(20.0 * 1e-3));
+                }
+            }
+        }
     }
 
     // ---- Numpress columns -----------------------------------------------------------------------------------------
@@ -393,6 +575,18 @@ class ChunkRowDecoderTest {
         for (byte b : bytes) {
             list.addGroup("list").add("element", b & 0xff);
         }
+    }
+
+    /** The SLOF payload of {@code values}; of none, its 8-byte header only. */
+    private static byte[] slof(double... values) {
+        byte[] buffer = new byte[8 + values.length * 2];
+        double fixedPoint = values.length == 0 ? 1.0 : MSNumpress.optimalSlofFixedPoint(values, values.length);
+        return Arrays.copyOf(buffer, MSNumpress.encodeSlof(values, values.length, buffer, fixedPoint));
+    }
+
+    private static byte[] pic(double... values) {
+        byte[] buffer = new byte[values.length * 5];
+        return Arrays.copyOf(buffer, MSNumpress.encodePic(values, values.length, buffer));
     }
 
     /** Adds {@code mz_grid} with {@code gridType} (none when null), parameters {@code [0, 1]} and {@code indices}. */

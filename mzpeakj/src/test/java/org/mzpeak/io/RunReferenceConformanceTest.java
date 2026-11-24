@@ -21,6 +21,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -57,7 +58,7 @@ class RunReferenceConformanceTest {
     @Test
     void theCheckerFindsMissingKeysWrongTypesAndUnresolvedReferences() {
         Map<String, String> footer = Map.of(
-                "run", "{\"id\":5,\"default_instrument_id\":\"0\",\"default_data_processing_id\":\"dp\"}",
+                "run", "{\"id\":5,\"default_instrument_configuration_id\":\"0\",\"default_data_processing_id\":\"dp\"}",
                 "instrument_configuration_list", "[{\"id\":0,\"components\":[],\"parameters\":[],"
                         + "\"software_reference\":\"sw\"},{\"id\":\"1\",\"components\":{}}]",
                 "data_processing_method_list", "[{\"id\":\"dp\",\"methods\":[{\"order\":1,"
@@ -67,15 +68,17 @@ class RunReferenceConformanceTest {
         assertThat(SpecSchemaCheck.violations(footer)).containsExactlyInAnyOrder(
                 "run: required key default_source_file_id is missing",
                 "run.id: NUMBER 5 is not of type \"string\"",
-                "run.default_instrument_id: STRING \"0\" is not of type \"integer\"",
+                "run.default_instrument_configuration_id: STRING \"0\" is not of type \"integer\"",
                 "software_list[0].version: NULL null is not of type \"string\"",
+                "software_list[0]: required key parameters is missing",
+                "data_processing_method_list[0].methods[0]: required key parameters is missing",
                 "instrument_configuration_list[1]: required key parameters is missing",
                 "instrument_configuration_list[1]: required key software_reference is missing",
                 "instrument_configuration_list[1].components: OBJECT {} is not of type \"array\"",
                 "instrument_configuration_list[1].id: STRING \"1\" is not of type \"integer\"");
         assertThat(SpecSchemaCheck.unresolved(footer)).containsExactlyInAnyOrder(
                 "data processing \"dp\" method software_reference \"other\" names nothing of [sw]",
-                "run default_instrument_id \"0\" names no instrument configuration of [0, 1]",
+                "run default_instrument_configuration_id \"0\" names no instrument configuration of [0, 1]",
                 "run default_source_file_id is missing");
     }
 
@@ -93,10 +96,10 @@ class RunReferenceConformanceTest {
 
         assertThat(out.footer.keySet()).containsExactly("run", "software_list", "instrument_configuration_list",
                 "data_processing_method_list", "file_description");
-        assertThat(out.footer.get("run")).isEqualTo("{\"id\":\"mzpeakj_run\",\"default_instrument_id\":0,"
+        assertThat(out.footer.get("run")).isEqualTo("{\"id\":\"mzpeakj_run\",\"default_instrument_configuration_id\":0,"
                 + "\"default_data_processing_id\":\"mzpeakj_export\",\"default_source_file_id\":\"mzpeakj_source\","
                 + "\"parameters\":[]}");
-        assertThat(json(out.footer, "run").get("default_instrument_id").isInt()).isTrue();
+        assertThat(json(out.footer, "run").get("default_instrument_configuration_id").isInt()).isTrue();
         assertThat(out.footer.get("instrument_configuration_list")).isEqualTo("[{\"id\":0,"
                 + "\"software_reference\":\"mzpeakj_software\",\"components\":[],\"parameters\":[]}]");
         assertThat(out.footer.get("software_list"))
@@ -109,7 +112,7 @@ class RunReferenceConformanceTest {
         assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
         assertThat(out.warnings).containsExactly(
                 "instrument_configuration_list: added the stub instrument configuration 0, which"
-                        + " run.default_instrument_id" + UNDECLARED,
+                        + " run.default_instrument_configuration_id" + UNDECLARED,
                 "data_processing_method_list: added the stub data processing mzpeakj_export, which"
                         + " run.default_data_processing_id" + UNDECLARED,
                 "file_description: added the stub source file mzpeakj_source, which run.default_source_file_id"
@@ -147,7 +150,7 @@ class RunReferenceConformanceTest {
                 new Dangling("instrument", m -> withRun(m, run(m, m.run().defaultDataProcessingId(),
                         m.run().defaultSourceFileId(), 7)), "instrument_configuration_list",
                         "{\"id\":7,\"software_reference\":\"Xcalibur\",\"components\":[],\"parameters\":[]}",
-                        "instrument configuration 7, which run.default_instrument_id"));
+                        "instrument configuration 7, which run.default_instrument_configuration_id"));
     }
 
     /**
@@ -170,7 +173,7 @@ class RunReferenceConformanceTest {
         assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
         assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
         JsonNode run = json(out.footer, "run");
-        assertThat(run.path("default_instrument_id").asInt()).isEqualTo(meta.run().defaultInstrumentId());
+        assertThat(run.path("default_instrument_configuration_id").asInt()).isEqualTo(meta.run().defaultInstrumentId());
         assertThat(run.path("default_data_processing_id").asText()).isEqualTo(meta.run().defaultDataProcessingId());
         assertThat(run.path("default_source_file_id").asText()).isEqualTo(meta.run().defaultSourceFileId());
     }
@@ -197,7 +200,7 @@ class RunReferenceConformanceTest {
         assertThat(out.warnings).isEmpty();
         JsonNode runJson = json(out.footer, "run");
         assertThat(runJson.path("id").asText()).isEqualTo("mzpeakj_run");
-        assertThat(runJson.path("default_instrument_id").asInt())
+        assertThat(runJson.path("default_instrument_configuration_id").asInt())
                 .isEqualTo(fixture.instrumentConfigurations().get(0).id());
         JsonNode version = json(out.footer, "software_list").get(0).path("version");
         assertThat(version.isTextual()).isTrue();
@@ -211,7 +214,8 @@ class RunReferenceConformanceTest {
     /**
      * Without configurations a stub configuration 0 names the first software; without a file description the stub
      * source file comes with one; an explicit default data processing without any data processing gets a stub of its
-     * own id. A processing method without software stays without one.
+     * own id. A processing method without software names the software a configuration without one names (W1: spec
+     * 963d64a requires it), without a stub or a warning when that software is declared.
      */
     @Test
     void stubsOfFileMetadataWithoutConfigurationsFileDescriptionOrProcessing() throws IOException {
@@ -233,10 +237,12 @@ class RunReferenceConformanceTest {
 
         Serialized withoutSoftware = serialize(withMethodSoftware(fixture, null));
         assertThat(json(withoutSoftware.footer, "data_processing_method_list").get(0).path("methods").get(0)
-                .has("software_reference")).isFalse();
+                .path("software_reference").asText()).isEqualTo("Xcalibur");
         assertThat(withoutSoftware.warnings).isEmpty();
         assertThat(withoutSoftware.footer.get("software_list"))
                 .isEqualTo(FooterMetadataWriter.serialize(fixture).get("software_list"));
+        assertThat(SpecSchemaCheck.violations(withoutSoftware.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(withoutSoftware.footer)).isEmpty();
     }
 
     /**
@@ -258,7 +264,7 @@ class RunReferenceConformanceTest {
 
         Serialized out = serialize(meta);
 
-        assertThat(json(out.footer, "run").path("default_instrument_id").asInt()).isEqualTo(3);
+        assertThat(json(out.footer, "run").path("default_instrument_configuration_id").asInt()).isEqualTo(3);
         assertThat(json(out.footer, "instrument_configuration_list")).extracting(c -> c.path("id").asInt())
                 .containsExactly(3, 4);
         assertThat(out.warnings).isEmpty();
@@ -286,7 +292,8 @@ class RunReferenceConformanceTest {
 
     /**
      * A software without an id cannot be named: a configuration without software names the first software with an id,
-     * and without one the stub software, so every configuration keeps its required software_reference.
+     * and without one the stub software, so every configuration keeps its required software_reference. The software
+     * is written with a fresh id of its position (W1: spec 963d64a requires one), without a warning.
      */
     @Test
     void aSoftwareWithoutIdIsNotNamedByAConfiguration() throws IOException {
@@ -298,8 +305,8 @@ class RunReferenceConformanceTest {
 
         assertThat(out.footer.get("instrument_configuration_list")).isEqualTo("[{\"id\":0,"
                 + "\"software_reference\":\"mzpeakj_software\",\"components\":[],\"parameters\":[]}]");
-        assertThat(out.footer.get("software_list")).isEqualTo("[{\"version\":\"\",\"parameters\":[]},"
-                + "{\"id\":\"mzpeakj_software\",\"version\":\"\",\"parameters\":[]}]");
+        assertThat(out.footer.get("software_list")).isEqualTo("[{\"id\":\"mzpeakj_software_0\",\"version\":\"\","
+                + "\"parameters\":[]},{\"id\":\"mzpeakj_software\",\"version\":\"\",\"parameters\":[]}]");
         assertThat(out.warnings).hasSize(4).endsWith("software_list: added the stub software mzpeakj_software, which"
                 + " instrument_configuration_list[0].software_reference" + UNDECLARED);
         assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
@@ -314,6 +321,40 @@ class RunReferenceConformanceTest {
         assertThat(named.warnings).hasSize(3);
         assertThat(SpecSchemaCheck.violations(named.footer)).isEmpty();
         assertThat(SpecSchemaCheck.unresolved(named.footer)).isEmpty();
+    }
+
+    /**
+     * W1: a software and a data processing without an id get a fresh id of their position, one not taken by another
+     * entry of the list; the packed layout's dialect writes them without an id, keeps a processing method without
+     * software without one and names the default instrument {@code default_instrument_id}.
+     */
+    @Test
+    void anonymousEntitiesGetFreshIdsInTheCurrentDialectOnly() throws IOException {
+        Software anonymous = new Software(null, "2", List.of());
+        DataProcessing dp = new DataProcessing(null, List.of(new ProcessingMethod(1, null, List.of())));
+        FileMetadata meta = new FileMetadata(null, List.of(), List.of(dp, new DataProcessing("mzpeakj_processing_0",
+                List.of())), List.of(), List.of(new Software("mzpeakj_software_1", "1", List.of()), anonymous),
+                new MsRun("run", 0, "mzpeakj_processing_0", null, null, List.of()));
+
+        Serialized out = serialize(meta);
+
+        assertThat(json(out.footer, "software_list")).extracting(s -> s.path("id").asText())
+                .containsExactly("mzpeakj_software_1", "mzpeakj_software_1_");
+        assertThat(json(out.footer, "data_processing_method_list")).extracting(p -> p.path("id").asText())
+                .containsExactly("mzpeakj_processing_0_", "mzpeakj_processing_0");
+        assertThat(json(out.footer, "data_processing_method_list").get(0).path("methods").get(0)
+                .path("software_reference").asText()).isEqualTo("mzpeakj_software_1");
+        assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
+        assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+
+        Map<String, String> packed = FooterMetadataWriter.serialize(meta, MzPeakWriter.MetadataLayout.PACKED);
+        assertThat(packed.get("software_list")).isEqualTo("[{\"id\":\"mzpeakj_software_1\",\"version\":\"1\","
+                + "\"parameters\":[]},{\"version\":\"2\",\"parameters\":[]}]");
+        assertThat(packed.get("data_processing_method_list")).isEqualTo("[{\"methods\":[{\"order\":1,"
+                + "\"parameters\":[]}]},{\"id\":\"mzpeakj_processing_0\",\"methods\":[]}]");
+        assertThat(json(packed, "run").path("default_instrument_id").asInt()).isZero();
+        assertThat(json(packed, "run").has("default_instrument_configuration_id")).isFalse();
+        assertThat(SpecSchemaCheck.unresolved(packed)).isEmpty();
     }
 
     /** Without a run nothing names a default, so only the software references are resolved. */
@@ -350,16 +391,17 @@ class RunReferenceConformanceTest {
         assertThat(configurations).hasSize(2);
         assertThat(configurations.get(1).toString()).isEqualTo(
                 "{\"id\":1,\"software_reference\":\"ACQ_SW\",\"components\":[],\"parameters\":[]}");
-        assertThat(json(out.footer, "run").path("default_instrument_id").asInt()).isEqualTo(1);
+        assertThat(json(out.footer, "run").path("default_instrument_configuration_id").asInt()).isEqualTo(1);
         assertThat(out.warnings).containsExactly("instrument_configuration_list: added the stub instrument"
-                + " configuration 1, which run.default_instrument_id" + UNDECLARED);
+                + " configuration 1, which run.default_instrument_configuration_id" + UNDECLARED);
         assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
         assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
     }
 
     /**
      * (f) Every file metadata document of every dataset {@link InteropOutputs} writes, in the split and the packed
-     * layout, in the manifest and in each member's footer, passes the schema check and resolves. Exactly the manifest
+     * layout, in the manifest and in each member's footer, resolves, and in the split layout passes the schema check
+     * (the packed layout keeps the pin-era run key {@code default_instrument_id}, D13-11). Exactly the manifest
      * and the spectrum and wavelength spectrum metadata members hold them ({@link SpecSchemaCheck#fileMetadataPlaces}),
      * each the manifest's documents.
      */
@@ -372,17 +414,16 @@ class RunReferenceConformanceTest {
         List<String> problems = new ArrayList<>();
         for (InteropOutputs.Output output : outputs) {
             Map<String, Map<String, String>> places = SpecSchemaCheck.documents(output.path());
-            if (output.kind() == InteropOutputs.Kind.MS2_SUBSET) {
-                // ExtractSpectra writes no file metadata.
-                assertThat(places).as(output.name()).isEmpty();
-                continue;
-            }
+            // The schemas are those of the current dialect; the packed layout keeps the pin-era one (D13-11).
+            boolean packed = output.kind() == InteropOutputs.Kind.PACKED_ARCHIVE;
             assertThat(places.keySet()).as(output.name())
                     .containsExactlyElementsOf(SpecSchemaCheck.fileMetadataPlaces(output.path()));
             places.forEach((place, documents) -> {
                 assertThat(documents).as(output.name() + " " + place).isEqualTo(places.get("mzpeak_index.json"));
                 assertThat(documents).as(output.name() + " " + place).containsKey("run");
-                SpecSchemaCheck.violations(documents).forEach(v -> problems.add(output + " " + place + ": " + v));
+                if (!packed) {
+                    SpecSchemaCheck.violations(documents).forEach(v -> problems.add(output + " " + place + ": " + v));
+                }
                 SpecSchemaCheck.unresolved(documents).forEach(u -> problems.add(output + " " + place + ": " + u));
             });
         }
@@ -392,28 +433,42 @@ class RunReferenceConformanceTest {
     static Stream<Arguments> unchangedFixtures() {
         return Stream.of(
                 arguments("legacy small", Fixtures.legacy("small.mzpeak"),
+                        "c47bfffd80631a8915b54e3118750b865185929eda79f96d932c1d08f767eccb",
                         "2d884f6b44b6550697f6237142c625f86b172c1159180c47c01f43dd41e24490"),
                 arguments("current small", Fixtures.current("small.mzpeak"),
+                        "c47bfffd80631a8915b54e3118750b865185929eda79f96d932c1d08f767eccb",
                         "2d884f6b44b6550697f6237142c625f86b172c1159180c47c01f43dd41e24490"),
                 arguments("has_uv", Fixtures.current("has_uv.mzpeak"),
+                        "613a9e75c740a3bbae572eeafcaf73205f13fe57484c94856828ec073c887490",
                         "fafe3cae2690253edbf7328590c39867c5e3bbdf25e80f71179d266d2dd9ad73"),
                 arguments("Example_Processed.img", Fixtures.current("Example_Processed.img.mzpeak"),
+                        "a6b24c2e7c2d33b853acfe68a9e91f981ff6763f104c09603f6926691d311d7b",
                         "c7fd6cde3aa7554b385fa01be353a544218c28d2eb0bbe7cbf989ac74a98f6bd"));
     }
 
     /**
-     * (d) The file metadata of a fixture without a dangling reference serializes byte-identically to the writer before
-     * WR-9: no stub is added, so their writer snapshots stay. The documents pass the schema check and resolve.
+     * (d) The file metadata of a fixture without a dangling reference serializes without a stub: in the packed
+     * layout's dialect byte-identically to the writer before WR-9 ({@code packedSha256}), in the current dialect as
+     * the same documents with the run key {@code default_instrument_configuration_id} (W1, {@code sha256}). The
+     * current documents pass the schema check and resolve.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("unchangedFixtures")
-    void fixturesWithoutDanglingReferencesSerializeAsBefore(String name, Path fixture, String sha256) {
-        Serialized out = serialize(fileMetadata(fixture));
+    void fixturesWithoutDanglingReferencesSerializeAsBefore(String name, Path fixture, String sha256,
+                                                            String packedSha256) {
+        FileMetadata meta = fileMetadata(fixture);
+        Serialized out = serialize(meta);
 
         assertThat(digest(out.footer)).as("%s: %s", name, out.footer).isEqualTo(sha256);
         assertThat(out.warnings).isEmpty();
         assertThat(SpecSchemaCheck.violations(out.footer)).isEmpty();
         assertThat(SpecSchemaCheck.unresolved(out.footer)).isEmpty();
+        Map<String, String> packed = FooterMetadataWriter.serialize(meta, MzPeakWriter.MetadataLayout.PACKED);
+        assertThat(digest(packed)).as("%s: %s", name, packed).isEqualTo(packedSha256);
+        Map<String, String> renamed = new LinkedHashMap<>(packed);
+        renamed.put("run", packed.get("run").replace("\"default_instrument_id\":",
+                "\"default_instrument_configuration_id\":"));
+        assertThat(renamed).containsExactlyEntriesOf(out.footer);
     }
 
     /** The documents {@link FooterMetadataWriter#serialize} returns and the warnings it logs. */

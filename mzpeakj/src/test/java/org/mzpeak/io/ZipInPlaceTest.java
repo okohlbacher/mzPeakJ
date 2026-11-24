@@ -38,7 +38,7 @@ class ZipInPlaceTest {
         String previous = System.getProperty(ROW_GROUP_SIZE);
         System.setProperty(ROW_GROUP_SIZE, "32768"); // many row groups inside the STORED members
         try {
-            MzPeakWriter.writeArchive(archive, spectra, chromatograms);
+            MzPeakWriter.writeArchive(archive, Fixtures.withoutReferences(spectra), Fixtures.chromatogramsWithoutReferences(chromatograms));
         } finally {
             StreamingReaderTest.restoreProperty(ROW_GROUP_SIZE, previous);
         }

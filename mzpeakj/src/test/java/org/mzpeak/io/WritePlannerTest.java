@@ -60,7 +60,7 @@ class WritePlannerTest {
 
         assertThat(plan.report().warnings()).isEmpty();
         assertThat(plan.chromatogramIntensities()).containsExactly(
-                new WritePlan.IntensityColumn("MS:1000131", "intensity", true));
+                new WritePlan.IntensityColumn("MS:1000131", "intensity"));
         assertThat(plan.chromatogramExtras()).containsExactly(
                 new WritePlan.ExtraColumn("ms level", "ms_level", "MS:1000786", "ms level", "UO:0000186"));
         Path out = tmp.resolve("out.mzpeak");

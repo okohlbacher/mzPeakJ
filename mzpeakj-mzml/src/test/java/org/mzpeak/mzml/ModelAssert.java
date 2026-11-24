@@ -5,6 +5,7 @@ import org.mzpeak.io.MzPeakReader;
 import org.mzpeak.model.CentroidPeak;
 import org.mzpeak.model.Chromatogram;
 import org.mzpeak.model.Param;
+import org.mzpeak.model.ScanEvent;
 import org.mzpeak.model.Spectrum;
 import org.mzpeak.model.WavelengthSpectrum;
 import org.mzpeak.model.meta.FileMetadata;
@@ -123,9 +124,10 @@ public final class ModelAssert {
      *
      * <p>In the two mixed modes (one model from {@code MzMLReader}, the other from {@link MzPeakReader}), which
      * differ only in which side is the mzPeak one: {@code numberOfDataPoints} and {@code numberOfPeaks} are not
-     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12). The peak lists ({@code peaks} and
-     * {@code peakArrays}): a non-empty {@code peaks()} or {@code peakArrays()} on the mzML side, which
-     * {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
+     * compared (mzML's {@code defaultArrayLength} is recomputed on write, B-12), nor is a spectrum's
+     * {@code peakIntensityUnit} ({@code MzMLReader} builds no peak list); its {@code intensityUnit} is (R5). The
+     * peak lists ({@code peaks} and {@code peakArrays}): a non-empty {@code peaks()} or {@code peakArrays()} on the
+     * mzML side, which {@code MzMLReader} never builds (design 5.4), is one difference at {@code spectrum[i].peaks} or
      * {@code spectrum[i].peakArrays} that {@link ModelAssert#A_1} does not hide, whatever the mzPeak side has (MJ-4);
      * the mzPeak side's peaks that are a row copy of its arrays ({@link ModelAssert#isRowCopy}, design 5.4, the reader
      * invariant for CENTROID spectra) are skipped with their peak arrays, and peaks that are not are one difference at
@@ -152,6 +154,8 @@ public final class ModelAssert {
         DOUBLE,
         /** {@code double[]}: same length, every element bit-exact ({@link Double#compare}). */
         DOUBLE_ARRAY,
+        /** {@code byte[]}: {@link Arrays#equals(byte[], byte[])}. */
+        BYTE_ARRAY,
         /** {@code List<Param>}: a multiset of (accession, else name; value; unit), one difference per accession. */
         PARAMS,
         /** A list: same size (else one {@code .size} difference), then pairwise in order by the element rule. */
@@ -167,6 +171,7 @@ public final class ModelAssert {
         static final Rule EXACT = new Rule(Kind.EXACT, null);
         static final Rule DOUBLE = new Rule(Kind.DOUBLE, null);
         static final Rule DOUBLE_ARRAY = new Rule(Kind.DOUBLE_ARRAY, null);
+        static final Rule BYTE_ARRAY = new Rule(Kind.BYTE_ARRAY, null);
         static final Rule PARAMS = new Rule(Kind.PARAMS, null);
         static final Rule RECORD = new Rule(Kind.RECORD, null);
         static final Rule MAP_OF_ARRAYS = new Rule(Kind.MAP_OF_ARRAYS, null);
@@ -192,6 +197,9 @@ public final class ModelAssert {
         components.put("peaks", Spectrum::peaks);
         components.put("arrays", Spectrum::arrays);
         components.put("peakArrays", Spectrum::peakArrays);
+        components.put("intensityUnit", Spectrum::intensityUnit);
+        components.put("peakIntensityUnit", Spectrum::peakIntensityUnit);
+        components.put("auxiliaryArrays", Spectrum::auxiliaryArrays);
         return Collections.unmodifiableMap(components);
     }
 
@@ -203,6 +211,9 @@ public final class ModelAssert {
             entry("Spectrum.peaks", Rule.list(Rule.RECORD)),
             entry("Spectrum.arrays", Rule.MAP_OF_ARRAYS),
             entry("Spectrum.peakArrays", Rule.MAP_OF_ARRAYS),
+            entry("Spectrum.intensityUnit", Rule.EXACT),
+            entry("Spectrum.peakIntensityUnit", Rule.EXACT),
+            entry("Spectrum.auxiliaryArrays", Rule.list(Rule.RECORD)),
 
             entry("SpectrumDescription.index", Rule.EXACT),
             entry("SpectrumDescription.id", Rule.EXACT),
@@ -215,6 +226,8 @@ public final class ModelAssert {
             entry("SpectrumDescription.scans", Rule.list(Rule.RECORD)),
             entry("SpectrumDescription.precursors", Rule.list(Rule.RECORD)),
             entry("SpectrumDescription.parameters", Rule.PARAMS),
+            entry("SpectrumDescription.dataProcessingRef", Rule.EXACT),
+            entry("SpectrumDescription.products", Rule.list(Rule.RECORD)),
 
             entry("ScanEvent.startTime", Rule.DOUBLE),
             entry("ScanEvent.injectionTime", Rule.DOUBLE),
@@ -233,6 +246,12 @@ public final class ModelAssert {
             entry("Precursor.isolationWindow", Rule.RECORD),
             entry("Precursor.selectedIons", Rule.list(Rule.RECORD)),
             entry("Precursor.activation", Rule.RECORD),
+            entry("Precursor.msLevel", Rule.EXACT),
+
+            entry("Product.precursorIndex", Rule.EXACT),
+            entry("Product.productIndex", Rule.EXACT),
+            entry("Product.isolationWindow", Rule.RECORD),
+            entry("Product.parameters", Rule.PARAMS),
 
             entry("IsolationWindow.targetMz", Rule.DOUBLE),
             entry("IsolationWindow.lowerOffset", Rule.DOUBLE),
@@ -262,6 +281,8 @@ public final class ModelAssert {
             entry("Chromatogram.parameters", Rule.PARAMS),
             entry("Chromatogram.precursors", Rule.list(Rule.RECORD)),
             entry("Chromatogram.timeUnit", Rule.EXACT),
+            entry("Chromatogram.products", Rule.list(Rule.RECORD)),
+            entry("Chromatogram.auxiliaryArrays", Rule.list(Rule.RECORD)),
 
             entry("WavelengthSpectrum.index", Rule.EXACT),
             entry("WavelengthSpectrum.id", Rule.EXACT),
@@ -270,6 +291,22 @@ public final class ModelAssert {
             entry("WavelengthSpectrum.wavelength", Rule.DOUBLE_ARRAY),
             entry("WavelengthSpectrum.intensity", Rule.DOUBLE_ARRAY),
             entry("WavelengthSpectrum.parameters", Rule.PARAMS),
+            entry("WavelengthSpectrum.scans", Rule.list(Rule.RECORD)),
+            entry("WavelengthSpectrum.auxiliaryArrays", Rule.list(Rule.RECORD)),
+
+            entry("AuxiliaryArray.name", Rule.RECORD),
+            entry("AuxiliaryArray.data", Rule.BYTE_ARRAY),
+            entry("AuxiliaryArray.dataType", Rule.EXACT),
+            entry("AuxiliaryArray.compression", Rule.EXACT),
+            entry("AuxiliaryArray.items", Rule.EXACT),
+            entry("AuxiliaryArray.unit", Rule.EXACT),
+            entry("AuxiliaryArray.parameters", Rule.PARAMS),
+            entry("AuxiliaryArray.dataProcessingId", Rule.EXACT),
+
+            entry("Param.name", Rule.EXACT),
+            entry("Param.accession", Rule.EXACT),
+            entry("Param.value", Rule.EXACT),
+            entry("Param.unit", Rule.EXACT),
 
             entry("FileMetadata.fileDescription", Rule.RECORD),
             entry("FileMetadata.instrumentConfigurations", Rule.list(Rule.RECORD)),
@@ -325,6 +362,9 @@ public final class ModelAssert {
     /** The components mixed mode does not compare. */
     private static final Set<String> MIXED_UNCOMPARED =
             Set.of("SpectrumDescription.numberOfDataPoints", "SpectrumDescription.numberOfPeaks");
+
+    /** The {@link #SPECTRUM_COMPONENTS} mixed mode does not compare: MzMLReader builds no peak list. */
+    private static final Set<String> MIXED_UNCOMPARED_SPECTRUM = Set.of("peakIntensityUnit");
 
     /** The rule key of a record class: its simple name, under its enclosing classes ({@code FileMetadata.Contact}). */
     static String key(Class<?> type) {
@@ -577,6 +617,9 @@ public final class ModelAssert {
             for (Map.Entry<String, Function<Spectrum, Object>> c : SPECTRUM_COMPONENTS.entrySet()) {
                 String name = c.getKey();
                 Rule rule = rule("Spectrum." + name);
+                if (mode != Mode.STRICT && MIXED_UNCOMPARED_SPECTRUM.contains(name)) {
+                    continue;
+                }
                 if (mode != Mode.STRICT && (name.equals("peaks") || name.equals("peakArrays"))) {
                     mixedPeakList(path, name, rule, c.getValue(), expected, actual);
                     continue;
@@ -636,6 +679,7 @@ public final class ModelAssert {
                     }
                     switch (rule.kind()) {
                         case DOUBLE_ARRAY -> array(path, (double[]) expected, (double[]) actual);
+                        case BYTE_ARRAY -> bytes(path, (byte[]) expected, (byte[]) actual);
                         case PARAMS -> params(path, (List<?>) expected, (List<?>) actual);
                         case LIST -> list(path, rule.element(), (List<?>) expected, (List<?>) actual);
                         case RECORD -> record(path, expected, actual);
@@ -664,6 +708,13 @@ public final class ModelAssert {
             }
             differ(path, expected, actual, count + " of " + expected.length + " values differ, first [" + first
                     + "]: expected " + expected[first] + ", got " + actual[first]);
+        }
+
+        private void bytes(String path, byte[] expected, byte[] actual) {
+            if (!Arrays.equals(expected, actual)) {
+                differ(path, expected, actual, "expected " + expected.length + " bytes "
+                        + Arrays.toString(expected) + ", got " + actual.length + " bytes " + Arrays.toString(actual));
+            }
         }
 
         private void params(String path, List<?> expected, List<?> actual) {
@@ -866,8 +917,8 @@ public final class ModelAssert {
 
     // ---- exclusions (design 6) ------------------------------------------------------------------------------------
 
-    private static final Pattern PEAK_LIST = Pattern.compile("spectrum\\[\\d+]\\.(peaks|peakArrays|numberOfPeaks)"
-            + "([.\\[].*)?");
+    private static final Pattern PEAK_LIST = Pattern.compile(
+            "spectrum\\[\\d+]\\.(peaks|peakArrays|peakIntensityUnit|numberOfPeaks)([.\\[].*)?");
     private static final Pattern RUN_ID = Pattern.compile("fileMetadata\\.run\\.id");
     private static final Pattern NO_COMBINATION =
             Pattern.compile("(spectrum|wavelengthSpectrum)\\[\\d+]\\.parameters\\[MS:1000795]");
@@ -876,8 +927,14 @@ public final class ModelAssert {
     private static final Pattern SPECTRUM_PARAM = Pattern.compile("spectrum\\[\\d+]\\.parameters\\[(.*)]");
     private static final Pattern RUN_DEFAULT_IC = Pattern.compile("fileMetadata\\.run\\.defaultInstrumentId");
     private static final Pattern RUN_START_TIME = Pattern.compile("fileMetadata\\.run\\.startTime");
+    private static final Pattern CV_FIELD = Pattern.compile("cvList\\[\\d+]\\.(fullName|uri|version)");
     private static final Pattern SIGNAL = Pattern.compile("spectrum\\[\\d+]\\.(mz|intensity|arrays(\\[.*)?)");
     private static final Pattern MZ = Pattern.compile("spectrum\\[\\d+]\\.mz");
+    private static final Pattern WAVELENGTH_SCANS =
+            Pattern.compile("wavelengthSpectrum\\[\\d+]\\.scans(\\.size|\\[\\d+]\\..*)");
+    private static final Pattern CHROMATOGRAM_TIME = Pattern.compile("chromatogram\\[\\d+]\\.(time|timeUnit)");
+    /** UO:0000031 minute, the unit the mzPeak writer stores chromatogram times in (W3). */
+    private static final String MINUTE = "UO:0000031";
 
     /** The start of the detail of a mixed-mode difference in the mzML side's own peak list, which A_1 never hides. */
     static final String MZML_SIDE = "the mzML side has ";
@@ -893,9 +950,9 @@ public final class ModelAssert {
 
     /** A-1: peak lists that are not a row copy of the arrays (design 5.4). */
     public static final Exclusion A_1 = new Exclusion("A_1",
-            "A-1: the peak list (peaks, peakArrays and numberOfPeaks) of a spectrum whose peaks on one side are not a"
-                    + " row copy of its arrays (design 5.4) and on the other side are none or a row copy; in mixed"
-                    + " mode the one difference 'not a row copy', never one in the mzML side's own peak list: current"
+            "A-1: the peak list (peaks, peakArrays, peakIntensityUnit and numberOfPeaks) of a spectrum whose peaks on"
+                    + " one side are not a row copy of its arrays (design 5.4) and on the other side are none or a row"
+                    + " copy; in mixed mode the one difference 'not a row copy', never one in the mzML side's own peak list: current"
                     + " and legacy small.chunked, 14 spectra each",
             d -> PEAK_LIST.matcher(d.path()).matches() && !d.detail().startsWith(MZML_SIDE)
                     && d.expectedRoot() instanceof Spectrum e && d.actualRoot() instanceof Spectrum a
@@ -989,9 +1046,59 @@ public final class ModelAssert {
             d -> MZ.matcher(d.path()).matches() && d.expected() instanceof double[] e
                     && d.actual() instanceof double[] a && differsOnlyAtNaN(e, a));
 
+    /** R-8: the one scan with its time a writer adds to a wavelength spectrum without scans. */
+    public static final Exclusion R_8 = new Exclusion("R_8",
+            "R-8: the scan count of a wavelength spectrum without scans in expected whose actual spectrum has only"
+                    + " the one scan with the spectrum time that the mzPeak writer (R8, D13-24) and the mzML writer"
+                    + " (A-8) write for a wavelength spectrum without scans: legacy has_uv 520 (its packed layout"
+                    + " keeps its scans in a member that is not read), in A and in the mzML leg",
+            d -> WAVELENGTH_SCANS.matcher(d.path()).matches() && d.expectedRoot() instanceof WavelengthSpectrum e
+                    && e.scans().isEmpty() && d.actualRoot() instanceof WavelengthSpectrum a && writtenScan(a));
+
+    /** W-3: chromatogram times the mzPeak writer stores in minutes. */
+    public static final Exclusion W_3 = new Exclusion("W_3",
+            "W-3: the time array and time unit of a chromatogram whose time unit is not minute (UO:0000031) in"
+                    + " expected and is minute in actual, the times of actual bit-equal to those of expected converted"
+                    + " by Chromatogram.withTimeUnit, as the mzPeak writer stores them (W3, D13-1): tiny's two"
+                    + " chromatograms and diaPASEF.mzML's two in B, and the corpus timsTOF mzML's nine, seconds ->"
+                    + " minutes",
+            d -> CHROMATOGRAM_TIME.matcher(d.path()).matches() && d.expectedRoot() instanceof Chromatogram e
+                    && d.actualRoot() instanceof Chromatogram a && inMinutes(e, a));
+
+    /** W-8: a known CV's entry that shows no fixed release replaced by the mzPeak writer's. */
+    public static final Exclusion W_8 = new Exclusion("W_8",
+            "W-8: the full name, URI or version of a cv list entry that is not an entry of CvEntry.known() in expected"
+                    + " and is the entry of CvEntry.known() with its id in actual, as the mzPeak writer declares a known"
+                    + " CV whose given entry shows no fixed release (W8, D13-15): tiny's MS and UO (SourceForge CVS"
+                    + " checkouts), those of small.mzML, TOFsulfas and diaPASEF.mzML (GitHub master branches) in B",
+            d -> CV_FIELD.matcher(d.path()).matches() && d.expectedRoot() instanceof MzPeakManifest.CvEntry e
+                    && d.actualRoot() instanceof MzPeakManifest.CvEntry a
+                    && !MzPeakManifest.CvEntry.known().contains(e) && MzPeakManifest.CvEntry.known().contains(a)
+                    && a.id().equals(e.id()));
+
     /** Every exclusion above. */
     public static final List<Exclusion> EXCLUSIONS = List.of(A_1, A_2, A_7, A_8, A_9, A_16, A_17, A_18, A_26, B_22,
-            B_34);
+            B_34, R_8, W_3, W_8);
+
+    /** Whether {@code w} has only the one scan with its time that the writers write for none (R_8). */
+    private static boolean writtenScan(WavelengthSpectrum w) {
+        return w.scans().equals(List.of(new ScanEvent(w.time(), null, null, null, null, null, List.of(), List.of())));
+    }
+
+    /**
+     * W-3: {@code expected} has another time unit than minute, {@code actual} has minute and the times of
+     * {@code expected} converted to minutes, bit for bit; false when {@code expected}'s unit cannot be converted.
+     */
+    private static boolean inMinutes(Chromatogram expected, Chromatogram actual) {
+        if (expected.timeUnit().equals(MINUTE) || !actual.timeUnit().equals(MINUTE)) {
+            return false;
+        }
+        try {
+            return Arrays.equals(expected.withTimeUnit(MINUTE).time(), actual.time());
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
 
     /**
      * A-26: {@code actual} is {@code expected} as jmzML's {@code CalendarAdapter} writes it, in the JVM's default time
@@ -1128,7 +1235,8 @@ public final class ModelAssert {
     /**
      * {@code v} lies between the nearest finite values of {@code values} before and after {@code i}, inclusive; with
      * a finite value on one side only (a leading or trailing NaN run), {@code v} is bit-equal to it, the value the
-     * mzPeak read carries to the end (design 6.1 B-34, {@code NullFill.interpolateGaps}).
+     * 0.12.0 mzPeak read carried to the end (design 6.1 B-34); the read since R2 (X-8) steps a leading or trailing
+     * null outwards by the local spacing instead, which this rule does not hide.
      */
     private static boolean betweenNeighbours(double[] values, int i, double v) {
         double before = Double.NaN;

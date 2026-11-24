@@ -1,7 +1,7 @@
 # mzML converter
 
 The module `mzpeakj-mzml` (artifact `org.mzpeak:mzpeakj-mzml`) converts mzML 1.1 to mzPeak and mzPeak to mzML. This
-page distils the converter's design as of mzPeakJ 0.12.0: scope, the decision behind it, the mapping between mzML and
+page distils the converter's design as of mzPeakJ 0.13.0: scope, the decision behind it, the mapping between mzML and
 mzPeakJ's model, what is lost, the limits, the memory rule and the command line. The Javadoc of `MzMLReader`,
 `MzMLWriter`, `MzMLConversion` and `MzPeakConvert` is the reference for the details; the decisions are listed with
 their reasons in [Design decisions](design-decisions.md).
@@ -139,7 +139,8 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 | `spectrum@index` | — | B: MS spectra and wavelength spectra are numbered in their own index spaces (B-11). A: MS spectra first, then wavelength spectra |
 | `spectrum@id` | `SpectrumDescription.id` | A: an id that is null, empty, malformed or taken is written `index=<i>` (A-3) |
 | `@defaultArrayLength` | `numberOfDataPoints` or `numberOfPeaks` | recomputed on write (B-12) |
-| `@spotID`, `@sourceFileRef`, `@dataProcessingRef` | — | lost (B-10) |
+| `@spotID`, `@sourceFileRef` | — | lost (B-10) |
+| `@dataProcessingRef` | `SpectrumDescription.dataProcessingRef` where it differs from the spectrumList default | written where it differs from that default; lost for a wavelength spectrum (B-10). A: a ref naming no data processing is dropped (A-18) |
 | MS:1000511 ms level | `msLevel` | A: written when above 0 |
 | MS:1000130 / MS:1000129 | `polarity` | both present: unknown, the terms kept as params (warned) |
 | MS:1000127 / MS:1000128 | `signalContinuity` | both present: unknown, the terms kept as params (warned) |
@@ -162,7 +163,7 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 | `@instrumentConfigurationRef` | `instrumentConfigurationRef` (int, rule IC) | a ref naming nothing reads as null (B-39) |
 | `@spectrumRef`, `@externalSpectrumID` | `spectrumReference` | one string; its kind can change on the way back (B-33, B-41, B-42) |
 | `@sourceFileRef` | — | lost (B-16) |
-| `scanWindow` MS:1000501 / MS:1000500 | `ScanWindow(lower, upper)` in m/z | windows lacking a limit in m/z, and other window params, lost (B-17) |
+| `scanWindow` MS:1000501 / MS:1000500 | `ScanWindow(lower, upper)` in m/z (in nm for a wavelength spectrum) | windows lacking a limit in that unit, and other window params, lost (B-17) |
 | other params (ion mobility included) | `parameters` | A: the ion mobility terms first |
 
 ### Precursors
@@ -171,7 +172,7 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 |---|---|---|
 | `precursor` | `Precursor` | A: a spectrum precursor's reference follows its `precursorIndex` (A-18, A-23) |
 | `isolationWindow` MS:1000827 / 828 / 829 | `IsolationWindow.targetMz`, `lowerOffset`, `upperOffset` | promoted only in m/z or without unit; other params in `IsolationWindow.parameters` |
-| `selectedIon` MS:1000744 | `SelectedIon.mz` | a selected ion without m/z in MS:1000040 is lost (B-18) |
+| `selectedIon` MS:1000744 | `SelectedIon.mz` | in MS:1000040 or without unit, else a param; an ion without m/z has `mz` NaN and is written back without m/z |
 | MS:1000041 charge state | `charge` | a non-integer value stays a param |
 | MS:1000042 peak intensity | `intensity` | in MS:1000131 or without unit (B-14) |
 | `activation` params | `Activation.parameters` | A: dissociation methods first, then MS:1000045 collision energy; always written |
@@ -188,7 +189,7 @@ is named from the term table, and every string is made XML-safe first (A-27, A-2
 | other params | `parameters` | |
 | `precursor` | `precursors` (one) | A: further precursors dropped (A-11), `precursorIndex` not written (A-19) |
 | `product` | — | lost (B-27) |
-| time array (min, s, ms, h) | `time()` as stored, `timeUnit` | kept in its unit since 0.12.0; B: a chromatogram whose unit differs from the first chromatogram's is converted to that unit (B-15) |
+| time array (min, s, ms, h) | `time()` as stored, `timeUnit` | read in its unit; B: the mzPeak writer stores it in minutes, the mzML written back then has minutes (W3) |
 | intensity array and unit | `intensity()`, `intensityUnit` | the unit is kept as given; lost for a chromatogram without points (B-36) |
 | other arrays | `arrays()` | as for spectra |
 
@@ -201,7 +202,8 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 |---|---|---|
 | spectrum classified as wavelength | one `WavelengthSpectrum`, index = UV ordinal | A: written after all MS spectra |
 | `@id` | `id` | |
-| the first scan's MS:1000016 | `time` (min) | other scan content lost (B-23) |
+| the first scan's MS:1000016 | `time` (min) | A: a time other than the first scan's start time is lost (A-9) |
+| `scanList` scans | `scans` (R8) | as for MS spectra, their windows in nm (UO:0000018); a scan's spectrum reference and the precursors lost (B-23). B: the mzPeak writer stores the windows as float32 in nm. A: a wavelength spectrum without scans gets one holding its time (A-8) |
 | MS:1003812 lambda max | `lambdaMax` | in nm or without unit, else kept as a param |
 | other params | `parameters` | |
 | wavelength array, intensity array | `wavelength()`, `intensity()` | nm and MS:1000131; further arrays dropped (B-28) |
@@ -210,12 +212,12 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 
 | mzML | Model | Notes |
 |---|---|---|
-| MS:1000514 m/z array | `Spectrum.mz()` | in MS:1000040 or without unit, else rejected; a NaN m/z is interpolated by the mzPeak read (B-34) |
-| MS:1000515 intensity array | `intensity()` | spectra: in MS:1000131 or without unit, else rejected |
+| MS:1000514 m/z array | `Spectrum.mz()` | in MS:1000040 or without unit, else rejected; a NaN m/z fails the conversion (limit below) |
+| MS:1000515 intensity array | `intensity()` | MS spectra: in MS:1000131, MS:1000132 (percent of base peak) or MS:1000814 (counts per second), kept as `intensityUnit`, or without unit, read as MS:1000131; else rejected. The survey collects the units of the spectra whose intensity array declares points and the session declares them (`Options.withSpectrumIntensityUnits`, R5); lost for a spectrum without points in a unit other than MS:1000131 (B-36). A: written in `intensityUnit` as it is, MS:1000131 when it is null; a unit of a CV the cv list lacks is refused, and one other than the three, such as MS:1000905, is written and refused when the mzML is converted back. Wavelength spectra: in MS:1000131 or without unit, else rejected |
 | MS:1000617 wavelength, MS:1000595 time | the axis of a wavelength spectrum or chromatogram | wavelength in nm; time see chromatograms |
 | any other array type | `arrays()` keyed by the CURIE | see the units below |
 | MS:1000786 non-standard data array | `arrays()` keyed by its name | B: a name that is an array-type accession is rejected. A: every key that is not a known array type is written as MS:1000786 with the key as name; a nameless one gets the name 'non-standard data array' (A-33) |
-| a second array of a type already present | — | dropped (B-29) |
+| a second array of a type already present | — | dropped (B-29), whatever its declared length |
 | data types MS:1000521, 523, 519, 522 | `double[]` | B: the type is lost (B-21, silent); 64-bit integers above 2^53 round (B-31). A: always 64-bit float |
 | MS:1001479 null-terminated ASCII | — | dropped (B-21) |
 | MS:1000520 16-bit float | — | rejected when it is the only data type term; next to a known one jmzML decodes by that one |
@@ -223,7 +225,8 @@ No chromatogram is ever synthesized. An mzPeak dataset without chromatograms giv
 | MS-Numpress MS:1002312, 1002313, 1002314 (alone or with zlib as two terms) | — | decoded by jmzML; PIC counts of 2^31 and above rejected (guard 3); never written |
 | MS:1002746, 1002747, 1002748 (Numpress and zlib in one term) | — | rejected (guard 2) |
 | any other compression (pwiz truncation, zstd, grid) | — | rejected when it is the only compression term; next to a known one jmzML decodes by that one |
-| `@arrayLength`, `@encodedLength` | — | declared lengths classify extra arrays and must agree between the main arrays; decoded lengths are not checked (L-6) |
+| an array whose declared length differs from the axis array's | `auxiliaryArrays()` | B (R1): kept as an auxiliary array of 64-bit floats without compression, named by its array type (MS:1000786 with its name as value), its declared unit kept and its values not converted; checked after B-29 (a second array of a key is dropped whatever its length, as the Rust reference reader would let it replace the first) and before B-28 and the unit rules; an array type the Rust reference reader does not map (MS:1002478, 1002742 … 1002745, 1003143) is dropped (B-43). A: every auxiliary array is written after the other arrays with its decoded values and `arrayLength`; its params, data processing and a unit of a CV the cv list lacks are not written (A-34); one whose compression or data type cannot be decoded is dropped (A-35) |
+| `@arrayLength`, `@encodedLength` | — | declared lengths tell auxiliary from extra arrays and must agree between the main arrays; decoded lengths are not checked (L-6). A: written for auxiliary arrays only |
 | array params other than type, data type and compression; `@dataProcessingRef` | — | lost (B-21) |
 
 The model has no array units; the unit of each key is fixed by `CvTerms.DEFAULT_ARRAY_UNITS`:
@@ -231,7 +234,7 @@ The model has no array units; the unit of each key is fixed by `CvTerms.DEFAULT_
 | Key | Unit |
 |---|---|
 | MS:1000514 m/z | MS:1000040 |
-| MS:1000515 intensity | MS:1000131 |
+| MS:1000515 intensity | MS:1000131 (an MS spectrum's in its `intensityUnit`, R5) |
 | MS:1000595 time | UO:0000031 minute |
 | MS:1000617 wavelength | UO:0000018 nanometer |
 | MS:1002477, MS:1002816, MS:1003007, MS:1003153, MS:1003154, MS:1003156 (drift-time arrays) | UO:0000028 millisecond |
@@ -291,12 +294,28 @@ L-9 the whole mzML document is held in memory before it is written: about 0.75 b
 ```
 
 L-7 (gzip input read without streaming) was withdrawn: jmzML 1.7.11 cannot read gzip input at all, so it is rejected.
+
+One limit is the mzPeak writer's, not jmzML's, so no warning line announces it: an mzML spectrum, chromatogram or
+wavelength spectrum with a NaN in its m/z, time, wavelength or intensity array fails the conversion (mzML → mzPeak)
+with the writer's message, which names the entity's index and the position, for example `spectrum 0: the intensity at
+position 1 is NaN; mzPeak writes no NaN m/z, time, wavelength or intensity, ...`, and leaves no target. parquet-java
+writes no column index for a page holding a NaN, and the spec requires a page index for every column (W10, D13-14). A
+NaN in any other array is written as null and reads back as NaN; an array of NaN only is dropped (B-26).
+So does, by the writer's W12 checks (D13-6, D13-9), a term whose CV prefix the mzML's `cvList` does not declare
+(nor `CvEntry.known()`), and a reference that names nothing of the header: a spectrum's or chromatogram's
+`dataProcessingRef`, the `softwareRef` of a processing method or instrument configuration, a scan setting's
+`sourceFileRef`, or the run's `defaultSourceFileRef` or the spectrum list's `defaultDataProcessingRef`. An unknown
+`instrumentConfigurationRef` is still dropped (B-39). In the default `split` layout so does, by D13-28 (X-40), a
+cvParam of a spectrum, scan, precursor, selected ion, chromatogram or wavelength spectrum whose accession or unit
+accession is not `PREFIX:number` with a number up to 4294967295, such as an NCIT term (`NCIT:C25330`), on which the
+Rust reference reader panics; `--layout packed` writes it as given in the param lists that layout writes (it drops
+chromatogram and wavelength-spectrum Params and wavelength scans with a WARNING).
 Every write through jmzML's `MzMLMarshaller` also sets the JVM-wide system property `javax.xml.stream.XMLOutputFactory`
 to `com.sun.xml.internal.stream.XMLOutputFactoryImpl`; it changes no output.
 
 ## Losses
 
-One line per loss as of 0.12.0. "Counted by" names the class whose warning line counts it; the line starts with the
+One line per loss as of 0.13.0. "Counted by" names the class whose warning line counts it; the line starts with the
 loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 
 ### Direction B (mzML → mzPeak → mzML)
@@ -312,21 +331,21 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-7 | `run@sampleRef` | `MzMLReader` |
 | B-8 | `chromatogramList@defaultDataProcessingRef` written as list default or per chromatogram (equivalent) | silent |
 | B-9 | the arrays of a spectrum, wavelength spectrum or chromatogram without its axis or intensity array | `MzMLReader` |
-| B-10 | `spectrum@spotID`, `@sourceFileRef` and `@dataProcessingRef` | `MzMLReader` |
+| B-10 | `spectrum@spotID` and `@sourceFileRef`; `@dataProcessingRef` of a wavelength spectrum | `MzMLReader` |
 | B-11 | the interleaving of MS and wavelength spectra; spectra whose index is not their position renumbered | `MzMLReader` |
 | B-12 | `defaultArrayLength`, recomputed on write | silent |
 | B-13 | scanList params other than the combination term, moved to the spectrum | `MzMLReader` |
 | B-14 | lexical forms of values, userParam types, unit names; unitless summary, peak-intensity and collision-energy params given their default unit (warned: type mismatches kept as text, units set) | `MzMLReader` |
-| B-15 | scan start times converted to minutes and drift-time arrays to milliseconds; chromatogram times kept in their unit, except that a chromatogram in another unit than the first chromatogram's is converted to that unit | `MzMLReader`, `MzMLConversion` |
+| B-15 | scan start times converted to minutes and drift-time arrays to milliseconds | `MzMLReader` |
 | B-16 | `scan@sourceFileRef` and `precursor@sourceFileRef` | `MzMLReader` |
-| B-17 | scan windows without both limits in m/z, and scan window params other than the limits | `MzMLReader` |
-| B-18 | selected ions without an m/z in MS:1000040, which the mzPeak read drops | `MzMLReader` |
+| B-17 | scan windows without both limits in m/z (in nm for wavelength spectra), and scan window params other than the limits | `MzMLReader` |
+| B-18 | withdrawn: a selected ion without m/z is kept with m/z NaN since 0.13.0 | — |
 | B-19 | selected ions of later precursors with the same parent, moved to the first precursor | `MzMLConversion` |
 | B-20 | the spectrum `productList` | `MzMLReader` |
-| B-21 | array data type and compression (silent); warned: other array params, array `dataProcessingRef`, declared units of arrays without default unit, arrays in a unit other than their default, arrays of another declared length, ASCII arrays, arrays without array type | `MzMLReader` |
+| B-21 | array data type and compression (silent); warned: other array params, array `dataProcessingRef`, declared units of arrays without default unit, arrays in a unit other than their default, ASCII arrays, arrays without array type | `MzMLReader` |
 | B-22 | m/z, time or wavelength arrays that are not ascending, written sorted | library warning |
-| B-23 | wavelength spectrum content other than the first scan's start time | `MzMLReader` |
-| B-24 | additions of the mzPeak writer: spectrum types, the five summary params, a scan for spectra without one, the run's default source file | `MzMLConversion` |
+| B-23 | precursors and scan spectrum references of wavelength spectra | `MzMLReader` |
+| B-24 | additions of the mzPeak writer: spectrum types, the five summary params, a scan for spectra without one, the run's default source file; in the split layout also the precursors the MSn chain replicates from the parent spectra (W7) and a scan holding the time for wavelength spectra without one | `MzMLConversion` |
 | B-25 | the input index and checksum, not verified | silent |
 | B-26 | extra arrays without a value other than NaN, which the mzPeak read drops | `MzMLConversion` |
 | B-27 | chromatogram products | `MzMLReader` |
@@ -336,15 +355,16 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | B-31 | 64-bit integer array values above 2^53, rounded to the nearest double | `MzMLReader` |
 | B-32 | ids renamed on the mzML write to keep them unique (a header or CV id equal to a written instrument configuration id) | `MzMLWriter`, as A-21 or A-24 |
 | B-33 | spectrum references whose kind (local or external) changes on the way back | `MzMLReader` |
-| B-34 | NaN m/z values, which the mzPeak read interpolates | `MzMLConversion` |
+| B-34 | withdrawn: a NaN m/z fails the conversion since 0.13.0 ([limits](#limits)) | — |
 | B-35 | non-finite file-level param values, which come back as the Strings `Infinity`, `-Infinity` or `NaN` | `MzMLConversion` |
-| B-36 | the intensity unit of a chromatogram without points | `MzMLConversion` |
+| B-36 | the intensity unit of a chromatogram without points, and of a spectrum without points in a unit other than MS:1000131 | `MzMLConversion` |
 | B-37 | elements the schema does not allow where they stand: part of limit L-6 | not counted |
 | B-38 | withdrawn (ids and refs are taken as jmzML gives them, L-6) | — |
 | B-39 | instrument configuration refs that name no instrument configuration, read as null | `MzMLReader` |
 | B-40 | `run`, `spectrumList` and `chromatogramList` attribute values with `&` kept as written, or with bytes >= 0x80 read as U+FFFD | `MzMLReader` |
 | B-41 | an `externalSpectrumID` next to a `spectrumRef`; the model holds one reference | `MzMLReader` |
 | B-42 | a `spectrumRef` that names no spectrum of the file, kept without index; it comes back as `externalSpectrumID` | `MzMLReader` |
+| B-43 | arrays of another declared length than their axis array whose array type no auxiliary array may have (the Rust reference reader does not map it) | `MzMLReader` |
 
 ### Direction A (mzPeak → mzML → mzPeak)
 
@@ -362,14 +382,14 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | A-10 | run start times that are no xs:dateTime | `MzMLWriter` |
 | A-11 | chromatogram precursors after the first | `MzMLWriter` |
 | A-12 | instrument components of type UNKNOWN, and component lists without a source, analyzer or detector | `MzMLWriter` |
-| A-13 | array units and data types as stored in mzPeak, which the converter does not see: arrays are written as 64-bit floats in the default unit of their key (a chromatogram's time in its `timeUnit`), or without unit | `MzMLWriter`, fixed line |
-| A-14 | `auxiliary_arrays` of the mzPeak input, which the library does not read | `MzMLWriter`, fixed line |
+| A-13 | the data types of arrays as stored in mzPeak, and the units of arrays other than a spectrum's intensity and a chromatogram's time and intensity: every array is written as 64-bit floats, in the default unit of its key or without unit; a spectrum's intensity is written in its `intensityUnit`, a chromatogram's time in its `timeUnit` and its intensity in its `intensityUnit` | `MzMLWriter`, fixed line |
+| A-14 | withdrawn (auxiliary arrays are written since 0.13.0; what they lose is A-34 and A-35) | — |
 | A-15 | withdrawn (no mzML output option changes values) | — |
 | A-16 | spectrum types derived from the MS level of spectra without one | `MzMLWriter` |
 | A-17 | CVs in use but not in the cv list, declared | `MzMLWriter` |
 | A-18 | references that name nothing, dropped or redirected; spectrum precursors without index written as `externalSpectrumID` | `MzMLWriter` |
 | A-19 | chromatogram precursor indexes | `MzMLWriter` |
-| A-20 | withdrawn (chromatogram products are not modelled) | — |
+| A-20 | chromatogram and spectrum products, which mzPeakJ reads since 0.13.0 (`Chromatogram.products`, `SpectrumDescription.products`): `MzMLWriter` writes no `product` or `productList` | not counted |
 | A-21 | header ids renamed | `MzMLWriter` |
 | A-22 | invalid xs:anyURI values, percent-encoded | `MzMLWriter` |
 | A-23 | spectrum precursor ids replaced by the id of the spectrum their index names | `MzMLWriter` |
@@ -383,6 +403,8 @@ loss id. The README's [What is lost](../README.md#what-is-lost) gives examples.
 | A-31 | chromatogram type params other than the chromatogram type | `MzMLWriter` |
 | A-32 | spectrum-level scan start times that differ from the first scan's | `MzMLWriter` |
 | A-33 | non-standard data arrays without a name, given the name 'non-standard data array' | `MzMLWriter` |
+| A-34 | auxiliary arrays written without their params, their data processing or a unit whose CV prefix the cv list lacks | `MzMLWriter` |
+| A-35 | auxiliary arrays whose compression or data type `AuxiliaryArray.doubles()` cannot decode, dropped | `MzMLWriter` |
 
 Besides the numbered losses, the reader warns about spectra and chromatograms with both polarities, spectra with both
 representations and ion injection times not in milliseconds; the writer about cv list entries without id, CVs
@@ -398,8 +420,10 @@ dangling `referenceableParamGroupRef`; m/z, intensity, wavelength and time array
 model cannot carry; main arrays of different declared or decoded lengths; a non-standard data array named with an
 array-type accession; the combined Numpress terms; data types and compressions jmzML cannot decode; an MS-Numpress
 payload too short for its header; PIC counts of 2^31 and above. With mzPeak Numpress output, values the Numpress
-encoder cannot encode fail the conversion. Every exception of jmzML, JAXB or the model is wrapped, with the original
-as its cause; a failed conversion leaves no output.
+encoder cannot encode fail the conversion, and the mzPeak writer's checks of the [limits](#limits) (NaN values,
+undeclared CV prefixes, dangling references, in the split layout params that are not `PREFIX:number`) fail it too.
+Every exception of jmzML, JAXB or the model is wrapped, with the original as its cause; a failed conversion leaves
+no output.
 
 ## Memory
 

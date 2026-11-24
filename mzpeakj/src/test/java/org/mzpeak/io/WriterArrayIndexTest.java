@@ -364,7 +364,7 @@ class WriterArrayIndexTest {
         assertThat(root.get("entries").get(0).get("unit").isNull()).isTrue();
         JsonNode absorbance = root.get("entries").get(3);
         assertThat(absorbance.get("sorting_rank").isNull()).isTrue();
-        assertThat(absorbance.get("buffer_priority").isNull()).isTrue();
+        assertThat(absorbance.get("buffer_priority").asText()).isEqualTo("secondary");
         assertThat(root.get("entries").get(0).get("buffer_format").asText()).isEqualTo("index");
         assertThat(root.get("entries").get(1).get("sorting_rank").asInt()).isEqualTo(1);
     }
@@ -398,7 +398,7 @@ class WriterArrayIndexTest {
 
     /**
      * The entries the writer lists for the chromatograms_data of the legacy {@code fixture}: the index, the time, the
-     * intensity in MS:1000131 and, for has_uv, its absorbance column without buffer priority, then the TIC's
+     * intensity in MS:1000131 and, for has_uv, its absorbance column with buffer priority secondary, then the TIC's
      * {@code ms level} array in UO:0000186.
      */
     private static List<Entry> chromatogramEntries(String fixture) {
@@ -409,7 +409,7 @@ class WriterArrayIndexTest {
                         "primary", "intensity array", entity.key(), null)));
         if (fixture.startsWith("has_uv")) {
             entries.add(new Entry("point.intensity_UO_0000269", "intensity_UO_0000269", INTENSITY, FLOAT64,
-                    ABSORBANCE, BufferFormat.POINT, null, null, null, "intensity array", entity.key(), null));
+                    ABSORBANCE, BufferFormat.POINT, null, null, "secondary", "intensity array", entity.key(), null));
         }
         entries.add(new Entry("point.ms_level", "ms_level", "MS:1000786", FLOAT64, "UO:0000186", BufferFormat.POINT,
                 null, null, "primary", "ms level", entity.key(), null));
