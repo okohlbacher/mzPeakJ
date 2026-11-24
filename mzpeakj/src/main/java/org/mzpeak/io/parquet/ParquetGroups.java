@@ -16,6 +16,7 @@ import org.apache.parquet.schema.LogicalTypeAnnotation.IntLogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.apache.parquet.schema.Type;
 import org.mzpeak.io.MzPeakException;
 
 import java.io.IOException;
@@ -251,7 +252,8 @@ public final class ParquetGroups {
      * Read a (large_)list numeric column as {@code double[]}, widening FLOAT to double and preserving nulls as
      * {@code NaN} (chunk {@code mz_chunk_values} use null markers for dropped flanking points). Handles both
      * the 3-level LIST encoding ({@code list -> element}) and a 2-level repeated primitive, navigating by field
-     * position so element names ({@code element}/{@code item}) don't matter.
+     * position so element names ({@code element}/{@code item}) don't matter. The element type is resolved once per
+     * list, at the first value, and the values are read by field index.
      */
     public static double[] doubleListNullable(Group g, String field) {
         if (!has(g, field)) {
@@ -261,21 +263,87 @@ public final class ParquetGroups {
         if (wrapper.getType().getFieldCount() == 0) {
             return EMPTY_DOUBLE;
         }
-        String repName = wrapper.getType().getFields().get(0).getName();
-        boolean primitiveElements = wrapper.getType().getType(0).isPrimitive();
-        int n = wrapper.getFieldRepetitionCount(repName);
+        Type repeated = wrapper.getType().getType(0);
+        int n = wrapper.getFieldRepetitionCount(0);
         double[] out = new double[n];
-        for (int i = 0; i < n; i++) {
-            if (primitiveElements) {
-                out[i] = primitiveAsDouble(wrapper, repName, i);
-            } else {
-                Group element = wrapper.getGroup(repName, i);
-                String valName = element.getType().getFields().get(0).getName();
-                out[i] = element.getFieldRepetitionCount(valName) > 0
-                        ? primitiveAsDouble(element, valName, 0) : Double.NaN;
+        int kind = UNRESOLVED;
+        if (repeated.isPrimitive()) {
+            for (int i = 0; i < n; i++) {
+                if (kind == UNRESOLVED) {
+                    kind = numericKind(repeated, repeated.getName());
+                }
+                out[i] = numericAsDouble(wrapper, i, kind);
             }
+            return out;
+        }
+        for (int i = 0; i < n; i++) {
+            Group element = wrapper.getGroup(0, i);
+            if (element.getFieldRepetitionCount(0) == 0) {
+                out[i] = Double.NaN;
+                continue;
+            }
+            if (kind == UNRESOLVED) {
+                Type value = element.getType().getType(0);
+                kind = numericKind(value, value.getName());
+            }
+            out[i] = numericAsDouble(element, 0, kind);
         }
         return out;
+    }
+
+    /** {@link #numericKind}: not resolved yet. */
+    private static final int UNRESOLVED = -1;
+    private static final int KIND_DOUBLE = 0;
+    private static final int KIND_FLOAT = 1;
+    private static final int KIND_INT32 = 2;
+    private static final int KIND_UINT32 = 3;
+    private static final int KIND_INT64 = 4;
+    private static final int KIND_UINT64 = 5;
+
+    /**
+     * How a list element of {@code type} reads as double: DOUBLE, FLOAT, or an INT32 or INT64 signed unless annotated
+     * as an unsigned integer, as {@link #integerAsDouble} reads it.
+     *
+     * @throws IllegalStateException when the element is not numeric
+     */
+    private static int numericKind(Type type, String field) {
+        PrimitiveType primitive = type.asPrimitiveType();
+        PrimitiveTypeName p = primitive.getPrimitiveTypeName();
+        boolean unsigned = primitive.getLogicalTypeAnnotation() instanceof IntLogicalTypeAnnotation i && !i.isSigned();
+        return switch (p) {
+            case DOUBLE -> KIND_DOUBLE;
+            case FLOAT -> KIND_FLOAT;
+            case INT32 -> unsigned ? KIND_UINT32 : KIND_INT32;
+            case INT64 -> unsigned ? KIND_UINT64 : KIND_INT64;
+            default -> throw new IllegalStateException("List element " + field + " is not numeric: " + p);
+        };
+    }
+
+    /** Value {@code index} of field 0 of {@code g} as double, read as {@code kind} says. */
+    private static double numericAsDouble(Group g, int index, int kind) {
+        switch (kind) {
+            case KIND_DOUBLE:
+                return g.getDouble(0, index);
+            case KIND_FLOAT:
+                return g.getFloat(0, index);
+            case KIND_INT32:
+                return g.getInteger(0, index);
+            case KIND_UINT32:
+                return Integer.toUnsignedLong(g.getInteger(0, index));
+            case KIND_INT64:
+                return g.getLong(0, index);
+            default:
+                return unsignedLongAsDouble(g.getLong(0, index));
+        }
+    }
+
+    /** A uint64 value as the positive double it is, rounded to the nearest double. */
+    private static double unsignedLongAsDouble(long v) {
+        if (v < 0) {
+            // Halve without losing the low bit (it decides the rounding), convert, and double again: exact scaling.
+            return (double) ((v >>> 1) | (v & 1)) * 2.0;
+        }
+        return v;
     }
 
     private static final byte[] EMPTY_BYTE = new byte[0];
@@ -303,16 +371,6 @@ public final class ParquetGroups {
             }
         }
         return out;
-    }
-
-    private static double primitiveAsDouble(Group g, String field, int index) {
-        PrimitiveTypeName p = g.getType().getType(field).asPrimitiveType().getPrimitiveTypeName();
-        return switch (p) {
-            case DOUBLE -> g.getDouble(field, index);
-            case FLOAT -> (double) g.getFloat(field, index);
-            case INT32, INT64 -> integerAsDouble(g, field, index);
-            default -> throw new IllegalStateException("List element " + field + " is not numeric: " + p);
-        };
     }
 
     /**
