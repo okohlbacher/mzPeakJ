@@ -58,14 +58,14 @@ final class ParquetOutput {
      * data_processing_id>>} as the reference writes it in {@code spectra_metadata} and
      * {@code wavelength_spectra_metadata}, also written to {@code chromatograms_metadata}: each entity's
      * {@code AuxiliaryArray}s, an empty list for an entity without any. The Rust reader projects it for every
-     * wavelength spectrum and fails when the column is missing. The item's {@code name} group and its {@code name},
-     * {@code data_type}, {@code compression} and {@code items} are required, as docs/layouts/auxiliary-arrays.md
-     * declares them (W14, D13-27); its {@code parameters} list keeps the optional item fields that document gives it,
+     * wavelength spectrum and fails when the column is missing. The item's {@code data} list, its {@code name} group
+     * and its {@code name}, {@code data_type}, {@code compression} and {@code items} are required, as
+     * docs/layouts/auxiliary-arrays.md declares them (W14, D13-27, U5); its {@code parameters} list keeps the optional item fields that document gives it,
      * although metadata-tables.md requires them in every {@code parameters} list (a spec inconsistency).
      */
     static Type auxiliaryArrayListField() {
         GroupType itemType = Types.buildGroup(Type.Repetition.OPTIONAL)
-                .addField(Types.optionalGroup().as(LogicalTypeAnnotation.listType())
+                .addField(Types.requiredGroup().as(LogicalTypeAnnotation.listType())
                         .addField(Types.repeatedGroup()
                                 .required(PrimitiveTypeName.INT32).as(LogicalTypeAnnotation.intType(8, false))
                                 .named("item")
